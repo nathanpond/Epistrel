@@ -17,6 +17,8 @@ from tools.gates.lexicon import LexiconError, load_parts, parse_lexicon
 from tools.gates.lexicon import check as check_lexicon
 from tools.gates.parts import PartsError, check_parts, collect_parts, write_json
 from tools.gates.spec import SpecError, load_spec
+from tools.gates.traceability import PlanError, code_parts
+from tools.gates.traceability import run as run_traceability
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SPEC = REPO_ROOT / "docs" / "03-requirements-spec.md"
@@ -57,6 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="write the collected parts as JSON (default build/parts.json)",
     )
+    trace = sub.add_parser("check-traceability", help="docs/04 §15 agrees with §22 and the code")
+    trace.add_argument("--plan", type=Path, default=DEFAULT_DOCS04, help="docs/04 path")
+    trace.add_argument("--parts", type=Path, default=DEFAULT_PARTS_JSON, help="parts.json path")
+    trace.add_argument("--write", action="store_true", help="regenerate Tests cells ≤ current")
     return parser
 
 
@@ -84,6 +90,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(report.summary())
         print(f"current_milestone M{current}")
         return EXIT_OK if report.ok else EXIT_FINDINGS
+    if args.check == "check-traceability":
+        try:
+            parts = code_parts(load_parts(args.parts))
+            findings, summary = run_traceability(args.plan, spec, parts, current, write=args.write)
+        except (OSError, LexiconError, PlanError, SpecError) as exc:
+            print(f"error: {exc}")
+            return EXIT_ERROR
+        for line in findings:
+            print(line)
+        print(summary)
+        return EXIT_OK if not findings else EXIT_FINDINGS
     if args.check == "check-lexicon":
         try:
             lexicon = parse_lexicon(args.docs.read_text(encoding="utf-8"), set(spec.assignment))

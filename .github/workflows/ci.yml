@@ -51,6 +51,9 @@ jobs:
       # Capability lexicon (#39): a part may use only terms its milestone has delivered (docs/04 §13).
       - run: uv run python -m tools.gates check-lexicon
         if: always()
+      # Traceability (#40): docs/04 §15 agrees with §22 and with the parts that exist in code.
+      - run: uv run python -m tools.gates check-traceability
+        if: always()
       # Invariants 1 and 5 (#41): no model runtime, broker, cache, or scheduler client in the runtime closure.
       - name: check-deps
         run: uv run python -m tools.gates check-deps

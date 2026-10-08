@@ -52,7 +52,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-REL | §20 | 045, 127 |
 | NFR-SEC | §20 | 138 |
 | NFR-PRIV | §20 | 077, 101 |
-| NFR-OPS | §20 | 127 |
+| NFR-OPS | §20 | 127, 148 |
+| NFR-MAINT | §20 | 148 |
 
 ### By ADR
 
@@ -207,6 +208,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 145 | The output viewpoint's channel filter applies everywhere, its audience filter only with perception; a reference workload for concurrency | Partly superseded | 146 |
 | 146 | The concurrency gate is a fixed-schedule capacity test, staged by capability | Amended | 147 |
 | 147 | The concurrency gate's service criteria hold per story | Current | — |
+| 148 | Python 3.14 is the single supported version | Current | — |
 
 ---
 
@@ -1400,6 +1402,14 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 **Context:** ADR-146 gated on at least 99% of offered turns completing and no queue growing over the last 10 minutes. Both are aggregate: one story could fall far behind while the total stayed above 99%, and "not growing" set no limit on a stable but long backlog or queue wait. In roleplay each story is a player waiting on a reply, so per-story service is what matters.
 **Decision:** Every service criterion of NFR-PERF-4 holds for each story separately. Each story completes every turn submitted at least 2 minutes before the run ends; after a 5-minute warm-up, it never has more than one turn waiting behind the one in progress; no turn waits longer than one schedule interval (15 s for Lite, 60 s for structured) to reach the front of its queue; and each turn's first model call starts within 1 s of reaching the front, at p95. The engine-only latency budgets stay aggregate p95 across all stories. P-04 reports every measure per story and in aggregate.
 **Consequences:** A run fails if any single story falls behind, even when the aggregate keeps up, and the gate bounds both backlog and waiting time. Test P-04.
+
+---
+
+### ADR-148 — Python 3.14 is the single supported version
+**Status:** Accepted.
+**Context:** The architecture set a floor of 3.12 with no ceiling, which reads as a promise to test and ship on three interpreters. A hobby-scale project with one deployment image has no consumer who needs an older interpreter, and every extra version is another CI matrix entry, another set of wheels to pin, and another place for a typing or asyncio difference to hide.
+**Decision:** Python 3.14 is the only supported version. `requires-python` is `>=3.14`, the image is built on `python:3.14-slim`, and tooling (`ruff`, `mypy`) targets 3.14. Raising the floor is an ordinary change; adding an older version back is a decision that needs a consumer asking for it.
+**Consequences:** One interpreter to test, one lockfile resolution, and the newest stdlib (`asyncio.timeout`, `tomllib`) usable without compatibility shims. The compose deployment (NFR-OPS-1) and the typed public contracts (NFR-MAINT-2) are exercised on exactly the interpreter that ships. Test: `tests/test_docs_python_version.py` fails if any document names another version.
 
 ---
 

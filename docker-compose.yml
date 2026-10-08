@@ -1,0 +1,39 @@
+# Dev/hobby deployment (docs/02 §12, NFR-OPS-1): `docker compose up` brings up the Engine and
+# PostgreSQL 16 + pgvector with no prior configuration. Tear down with `docker compose down -v`.
+name: epistrel
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: epistrel
+      POSTGRES_PASSWORD: epistrel-dev  # dev-only default — override EPISTREL_DATABASE_URL for anything but local use
+      POSTGRES_DB: epistrel
+    ports:
+      - "127.0.0.1:5432:5432"  # local tools (psql, IDE) on the host
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U epistrel -d epistrel"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  engine:
+    build: .
+    image: epistrel:dev
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Literal, not ${...}: a developer's .env with a localhost URL must never reach the container.
+      EPISTREL_DATABASE_URL: postgresql+psycopg://epistrel:epistrel-dev@db:5432/epistrel
+      EPISTREL_LOG_LEVEL: INFO
+    ports:
+      - "127.0.0.1:8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # a host-run model server (LM Studio) is reachable from the container
+
+volumes:
+  pgdata:

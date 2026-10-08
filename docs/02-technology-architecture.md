@@ -83,7 +83,7 @@ Epistrel is two components in one product; the model servers and the consumer's 
 
 ## 3. Language and service layer
 
-- **Python 3.12+.** Matches the stated stack and ecosystem (LiteLLM, pgvector bindings, eval tooling). Typed throughout; `mypy`/`pyright` in CI.
+- **Python 3.14.** The single supported version (ADR-148): one interpreter to test, one set of wheels to pin, and the ecosystem the stack needs (FastAPI, SQLAlchemy, psycopg, pgvector bindings, eval tooling) ships for it. Typed throughout; `mypy`/`pyright` in CI.
 - **FastAPI** for the REST surface — async, OpenAPI generation, Pydantic-native.
 - **Pydantic v2** for all public contracts (the respond request, the composed response with its beats, claims, verdicts, directives, model config). This is also the validation boundary for untrusted input.
 - **Uvicorn** (ASGI); **Gunicorn**-managed workers as needed.
@@ -374,7 +374,7 @@ Off-hot-path jobs run in the same image in worker mode: **consolidation/reflecti
 ## 12. Deployment
 
 - **Reference host (NFR-PERF-4):** the concurrency gate runs on 4 vCPU, 16 GB RAM, and NVMe SSD with Postgres and the workers co-located. Its workload is open-loop — 10 stories submitting on a fixed schedule with `turn_concurrency = queue` for 30 minutes against a stub model at a fixed 2 s per call — in three variants added as capabilities arrive: Lite (20,000-event transcripts, 50 pins, a turn every 15 s), structured (10,000 memories, single-character turns every 60 s), and multi-character (two-character turns with per-character renders every 60 s). Each gates on the engine-only p95 budgets that apply to it and, per story rather than in aggregate, on completing every turn submitted at least 2 minutes before the end, at most one turn waiting after the first 5 minutes, a queue wait no longer than one schedule interval, and queue-front-to-first-model-call p95 ≤ 1 s. Model time is excluded; other hosts are reported, not gated.
-- **Dev/hobby:** a single `docker-compose.yml` brings up Epistrel (Engine Core + Orchestrator + workers, in the image's default `all` mode, §10), Postgres (with pgvector), and optionally a local model server (Ollama). Minimum external requirement: one OpenAI-compatible endpoint.
+- **Dev/hobby:** a single `docker-compose.yml` brings up Epistrel (Engine Core + Orchestrator + workers, in the image's default `all` mode, §10), and Postgres (with pgvector). The local model server is not part of the compose file: it runs on the host (e.g. LM Studio) and the Engine reaches it via `host.docker.internal`. Minimum external requirement: one OpenAI-compatible endpoint.
 - **Media:** a `media` volume for the default filesystem blob store, or an S3-compatible endpoint in config (FR-MEDIA-1).
 - **Backup/restore (deployment):** `pg_dump` plus the media volume or bucket; the event log itself is a replayable backup (projections rebuild from events). The erasure ledger is kept outside these backups and reapplied before any restored story is served (FR-ADMIN-7). **Per-story** backup and portability use story bundles (§4.6, FR-STORE-7): restoring a story imports its bundle as a new story.
 - **Upgrades:** Alembic migrations + post-migration projection rebuild when schemas change.
@@ -386,7 +386,7 @@ Off-hot-path jobs run in the same image in worker mode: **consolidation/reflecti
 
 | Concern | Choice | Rationale | Alternatives |
 |---|---|---|---|
-| Language | Python 3.12+ | Stated stack; ecosystem | — |
+| Language | Python 3.14 | Single supported version (ADR-148); ecosystem | — |
 | Service | FastAPI + Pydantic v2 | Async, OpenAPI, typed contracts | Flask, Litestar |
 | DB | PostgreSQL 16+ | Single transactional store | — |
 | Vector | pgvector 0.8.x (HNSW) | In-DB, transactional; validated to the tested range (P-06), larger capacity unmeasured | Qdrant/Weaviate (splits truth) |

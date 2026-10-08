@@ -4,34 +4,36 @@ A viewpoint-aware memory engine for character/actor GenAI: it tracks what each c
 
 **Status:** early scaffold. The design is in [`docs/`](docs/): whitepaper, architecture, requirements, testing plan, ADR log.
 
-## Build and test
+## Run
 
-Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
-
-```bash
-uv sync                      # create .venv and install dependencies
-uv run epistrel serve        # run locally on http://127.0.0.1:8000 (settings: see .env.example)
-uv run pytest                # all tests (integration tests need Docker, see below)
-uv run pytest -m "not integration"   # unit tests only, no Docker
-uv run ruff check && uv run ruff format --check   # lint and format
-uv run mypy                  # type check (strict)
-```
-
-### Database and migrations
-
-The schema is versioned with [Alembic](https://alembic.sqlalchemy.org/); the canonical metadata is `epistrel.core.schema`. `alembic.ini` holds no URL: migrations read `EPISTREL_DATABASE_URL`, or take one explicitly.
+With Docker only:
 
 ```bash
-uv run alembic upgrade head                      # bring the configured database to the current schema
-uv run alembic -x url=postgresql+psycopg://... upgrade head   # or an explicit URL
-uv run alembic revision --autogenerate -m "add thing"         # after changing epistrel.core.schema
+docker compose up            # Engine + PostgreSQL 16/pgvector; migrates, then serves http://localhost:8000
+curl localhost:8000/health   # {"status":"ok","checks":{"database":"ok"}}  (503 + "error" while the DB is down)
+docker compose down -v       # stop and drop the database volume
 ```
 
-### Testing
+The compose file's database password is a dev-only default; set `EPISTREL_DATABASE_URL` yourself for anything but local use. A model server on the host (e.g. LM Studio) is reachable from the container as `host.docker.internal`.
 
-Tests under `tests/integration/` carry the `integration` marker and need PostgreSQL 16 with pgvector. By default the suite starts a throwaway `pgvector/pgvector:pg16` container with [testcontainers](https://testcontainers-python.readthedocs.io/) (Docker required) and migrates it to head. To reuse a server you already run, set `EPISTREL_TEST_DATABASE_URL`; its role must be allowed to `CREATE DATABASE`, because migration up/down tests use a scratch database. Without Docker and without that variable, integration tests fail with a message saying so; they never silently skip.
+Without Docker: requires [uv](https://docs.astral.sh/uv/) and Python 3.14 (the single supported version, ADR-148).
 
-A test fails when `epistrel.core.schema` drifts from the migrations, naming the table and column. Fix it by adding a migration, not by editing an existing one.
+```bash
+uv sync                                  # create .venv and install dependencies
+cp .env.example .env                     # then set EPISTREL_DATABASE_URL
+uv run --env-file .env alembic upgrade head   # bring the database to the current schema
+uv run --env-file .env epistrel serve    # http://127.0.0.1:8000
+```
+
+## Test and check
+
+```bash
+uv run pytest                            # everything; integration tests start a pgvector container (Docker)
+uv run pytest -m "not integration"       # unit tests only, no Docker
+uv run ruff check && uv run ruff format --check && uv run mypy
+```
+
+Integration tests live under `tests/integration/`. Set `EPISTREL_TEST_DATABASE_URL` to reuse a running PostgreSQL 16 + pgvector server instead of a container (its role needs `CREATEDB`); with neither Docker nor that variable they fail with a message, never skip. Schema changes go through Alembic: edit `epistrel.core.schema`, run `uv run alembic revision --autogenerate -m "..."`, and a test fails until metadata and migrations agree.
 
 ## License
 

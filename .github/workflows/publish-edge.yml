@@ -53,7 +53,9 @@ jobs:
           if printf '%s' "$ref" | grep -Eq '^[0-9a-f]{7,39}$'; then
             echo "::error::'$ref' looks like a short SHA; pass a branch, a tag, or the full 40-hex SHA"; exit 1
           fi
-          sha=$(git rev-parse --verify --quiet "${ref}^{commit}") || { echo "::error::ref '$ref' not found"; exit 1; }
+          # A full-depth checkout has local refs only for the checked-out branch: try the remote branch too.
+          sha=$(git rev-parse --verify --quiet "${ref}^{commit}" || git rev-parse --verify --quiet "origin/${ref}^{commit}") \
+            || { echo "::error::ref '$ref' not found (branch, tag, or full SHA)"; exit 1; }
           if [ "$EVENT" = "workflow_dispatch" ]; then
             # Nobody publishes edge from a branch that never passed the gate into main.
             git merge-base --is-ancestor "$sha" origin/main \

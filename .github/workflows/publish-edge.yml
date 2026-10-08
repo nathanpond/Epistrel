@@ -81,6 +81,8 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
+      - name: Lower-case image name for shell steps
+        run: echo "IMAGE_LC=$(printf '%s' "$IMAGE_LC" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
       - uses: docker/setup-qemu-action@v4
         with:
           image: ${{ env.BINFMT_IMAGE }}
@@ -114,7 +116,7 @@ jobs:
       - name: Smoke test (amd64, by digest)
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: docker run --rm --platform linux/amd64 "$IMAGE@$DIGEST" python -c 'import epistrel; print("ok", epistrel.__version__)'
+        run: docker run --rm --platform linux/amd64 "$IMAGE_LC@$DIGEST" python -c 'import epistrel; print("ok", epistrel.__version__)'
       - name: Summary
         env:
           TAGS: ${{ steps.meta.outputs.tags }}

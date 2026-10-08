@@ -66,7 +66,8 @@ def _workflow(name: str) -> dict[str, Any]:
 
 def _on(workflow: dict[str, Any]) -> dict[str, Any]:
     """The `on:` block — PyYAML parses the bare key `on` as the boolean True."""
-    triggers: dict[str, Any] = workflow.get("on", workflow.get(True))
+    raw: dict[Any, Any] = workflow
+    triggers: dict[str, Any] = raw["on"] if "on" in raw else raw[True]
     return triggers
 
 

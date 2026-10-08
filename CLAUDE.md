@@ -18,8 +18,8 @@ Load-bearing constraints no story may breach without an explicit conversation. C
 
 1. **Epistrel runs no model of its own.** Every model call goes to an external OpenAI-compatible endpoint; no inference runtime or model weights ship as a runtime dependency or in the image. — **test-enforced** (dependency deny-list; M1, epic #2) — guard: #41 (planned)
 2. **Apache-2.0-compatible dependency graph.** Every runtime dependency's license is on the allowlist; no AGPL/GPL/LGPL. — **test-enforced** (license check; M1, epic #2) — guard: #42 (planned)
-3. **No story content in operational logs, metrics, or traces by default.** Content-bearing debug logging is opt-in only. — **test-enforced** (log-capture guard; M2, epic #8) — guard: deferred → M2 (#8)
-4. **Every REST route requires service authentication.** No unauthenticated endpoint except `GET /health`. — **test-enforced** (route-table guard; M2, epic #8) — guard: deferred → M2 (#8)
+3. **No story content in operational logs, metrics, or traces by default.** Content-bearing debug logging is opt-in only. — **test-enforced** (log-capture guard; M2, epic #8) — guard: #74 (planned)
+4. **Every REST route requires service authentication.** No unauthenticated endpoint except `GET /health`. — **test-enforced** (route-table guard; M2, epic #8) — guard: #44 (planned)
 5. **No external broker, cache, or scheduler.** Postgres is the only infrastructure dependency at hobby scale; no broker, cache, or scheduler client library as a runtime dependency. — **test-enforced** (dependency deny-list; M1, epic #2) — guard: #41 (planned)
 6. **The event log is the truth.** Nothing removes events except erasure and opt-in compaction, both recorded with a marker. — **honor-system** (checked by `/n8-audit`)
 7. **Every requirement is assigned to exactly one milestone, and every test part gates from exactly one milestone.** — **test-enforced** (§22 table and part-marker checks; M1, epic #2) — guard: #37, #38 (planned)

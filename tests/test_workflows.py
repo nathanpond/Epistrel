@@ -12,7 +12,7 @@ import yaml
 from tests.conftest import REPO_ROOT
 
 WORKFLOWS = sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml"))
-PINNED = re.compile(r"@v\d+$")
+PINNED = re.compile(r"@v\d+(\.\d+){0,2}$")  # a major tag, or an exact release where no major exists
 LOCAL = ("./", "docker://")
 
 
@@ -45,7 +45,7 @@ def test_there_are_workflows() -> None:
 @pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
 def test_every_uses_is_pinned_to_a_major(path: Path) -> None:
     unpinned = [u for u in _uses(_load(path)) if not u.startswith(LOCAL) and not PINNED.search(u)]
-    assert unpinned == [], f"{path.name}: pin at the current major (@vN): {unpinned}"
+    assert unpinned == [], f"{path.name}: pin at a version tag (@vN or @vN.N.N): {unpinned}"
 
 
 @pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)

@@ -10,7 +10,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
 
 ```bash
 uv sync                      # create .venv and install dependencies
-uv run fastapi dev src/epistrel/app.py   # run locally on http://127.0.0.1:8000
+uv run epistrel serve        # run locally on http://127.0.0.1:8000 (settings: see .env.example)
 uv run pytest                # tests
 uv run ruff check && uv run ruff format --check   # lint and format
 uv run mypy                  # type check (strict)

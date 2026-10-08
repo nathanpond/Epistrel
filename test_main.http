@@ -1,6 +1,0 @@
-# Manual HTTP checks (PyCharm HTTP client). Run the server with: uv run fastapi dev src/epistrel/app.py
-
-GET http://127.0.0.1:8000/health
-Accept: application/json
-
-###

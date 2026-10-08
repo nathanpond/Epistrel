@@ -6,7 +6,9 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi[standard]>=0.115",
+    "fastapi>=0.115",
+    "pydantic-settings>=2.6",
+    "uvicorn[standard]>=0.30",
 ]
 
 [dependency-groups]
@@ -16,6 +18,9 @@ dev = [
     "pytest>=8.3",
     "ruff>=0.8",
 ]
+
+[project.scripts]
+epistrel = "epistrel.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -30,11 +35,13 @@ select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "RUF", "ASYNC", "PT"]
 
 [tool.ruff.lint.per-file-ignores]
 # S101: pytest's plain `assert` is the assertion mechanism in tests.
-"tests/**" = ["S101"]
+# S603: tests launch the CLI as a subprocess with a fixed, non-user-controlled argv.
+"tests/**" = ["S101", "S603"]
 
 [tool.mypy]
 strict = true
 files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

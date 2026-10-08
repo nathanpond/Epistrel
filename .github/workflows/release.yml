@@ -71,7 +71,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lower-case image name for shell steps
-        run: echo "IMAGE_LC=$(printf '%s' "$IMAGE_LC" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+        run: echo "IMAGE_LC=$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
       - uses: docker/setup-qemu-action@v4
         with:
           image: ${{ env.BINFMT_IMAGE }}

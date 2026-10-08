@@ -36,7 +36,7 @@ jobs:
       packages: write
     steps:
       - name: Lower-case image name for shell steps
-        run: echo "IMAGE_LC=$(printf '%s' "$IMAGE_LC" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+        run: echo "IMAGE_LC=$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
       - name: Validate inputs
         env:
           GOOD: ${{ inputs.good_version }}

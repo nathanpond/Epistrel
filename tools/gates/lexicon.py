@@ -67,10 +67,8 @@ class Finding:
     part_milestone: int
 
     def line(self) -> str:
-        return (
-            f'{self.node_id} uses "{self.surface}" ({self.term}, {milestone_label(self.term_milestone)}) '
-            f"in an {milestone_label(self.part_milestone)} part"
-        )
+        theirs, ours = milestone_label(self.term_milestone), milestone_label(self.part_milestone)
+        return f'{self.node_id} uses "{self.surface}" ({self.term}, {theirs}) in an {ours} part'
 
 
 # --- table -----------------------------------------------------------------------------------

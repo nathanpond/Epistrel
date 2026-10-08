@@ -34,6 +34,7 @@ uv run pytest                            # everything; integration tests start a
 uv run pytest -m "not integration"       # unit tests only, no Docker
 uv run ruff check && uv run ruff format --check && uv run mypy
 uv run pytest --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90   # what CI gates on
+uv run python -m tools.gates check-assignment   # docs/03 §22: every requirement assigned exactly once
 ```
 
 Every pull request runs the same five checks in CI (lint, types, tests with core coverage ≥ 90 %, Docker build); the `gate` check is required by the `main` ruleset, so a red gate blocks the merge for everyone.

@@ -1,6 +1,6 @@
 [project]
 name = "epistrel"
-version = "0.1.1rc1"
+version = "0.1.1"
 description = "A viewpoint-aware memory engine for character/actor GenAI"
 readme = "README.md"
 license = "Apache-2.0"

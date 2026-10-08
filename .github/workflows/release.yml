@@ -70,6 +70,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Lower-case image name for shell steps
+        run: echo "IMAGE_LC=$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
       - uses: docker/setup-qemu-action@v4
         with:
           image: ${{ env.BINFMT_IMAGE }}
@@ -107,7 +109,7 @@ jobs:
       - name: Smoke test (amd64, by digest) — gates the release
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: docker run --rm --platform linux/amd64 "$IMAGE@$DIGEST" python -c 'import epistrel; print("ok", epistrel.__version__)'
+        run: docker run --rm --platform linux/amd64 "$IMAGE_LC@$DIGEST" python -c 'import epistrel; print("ok", epistrel.__version__)'
       - name: Create or update the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,11 +120,11 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -eu
-          line="Image: \`$IMAGE:$VERSION@$DIGEST\`"
+          line="Image: \`$IMAGE_LC:$VERSION@$DIGEST\`"
           if gh release view "$TAG" --json tagName >/dev/null 2>&1; then
             body=$(gh release view "$TAG" --json body --jq .body)
-            if printf '%s' "$body" | grep -qF "$IMAGE:$VERSION@"; then
-              body=$(printf '%s' "$body" | sed "s|^Image: .*$IMAGE:$VERSION@.*|$line|")
+            if printf '%s' "$body" | grep -qF "$IMAGE_LC:$VERSION@"; then
+              body=$(printf '%s' "$body" | sed "s|^Image: .*$IMAGE_LC:$VERSION@.*|$line|")
             else
               body=$(printf '%s\n\n%s\n' "$body" "$line")
             fi

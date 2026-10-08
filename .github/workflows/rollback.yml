@@ -35,6 +35,8 @@ jobs:
       contents: write
       packages: write
     steps:
+      - name: Lower-case image name for shell steps
+        run: echo "IMAGE_LC=$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
       - name: Validate inputs
         env:
           GOOD: ${{ inputs.good_version }}
@@ -66,15 +68,15 @@ jobs:
           BAD: ${{ inputs.bad_version }}
         run: |
           set -eu
-          good_digest=$(docker buildx imagetools inspect "$IMAGE:$GOOD" --format '{{.Manifest.Digest}}' 2>/dev/null) \
-            || { echo "::error::image tag not found: $IMAGE:$GOOD — nothing changed"; exit 1; }
+          good_digest=$(docker buildx imagetools inspect "$IMAGE_LC:$GOOD" --format '{{.Manifest.Digest}}' 2>/dev/null) \
+            || { echo "::error::image tag not found: $IMAGE_LC:$GOOD — nothing changed"; exit 1; }
           gh release view "v$GOOD" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null \
             || { echo "::error::release v$GOOD does not exist — nothing changed"; exit 1; }
           bad_digest=""
           if [ -n "$BAD" ]; then
             gh release view "v$BAD" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null \
               || { echo "::error::release v$BAD does not exist — nothing changed"; exit 1; }
-            bad_digest=$(docker buildx imagetools inspect "$IMAGE:$BAD" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            bad_digest=$(docker buildx imagetools inspect "$IMAGE_LC:$BAD" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
           fi
           echo "good_digest=$good_digest" >> "$GITHUB_OUTPUT"
           echo "bad_digest=$bad_digest" >> "$GITHUB_OUTPUT"
@@ -90,7 +92,7 @@ jobs:
           major=${GOOD%%.*}; rest=${GOOD#*.}; minor=${rest%%.*}
           moved=""; report=""
           for tag in latest "$major.$minor" "$major"; do
-            before=$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{.Manifest.Digest}}' 2>/dev/null || echo "(none)")
+            before=$(docker buildx imagetools inspect "$IMAGE_LC:$tag" --format '{{.Manifest.Digest}}' 2>/dev/null || echo "(none)")
             move=no
             if [ "$tag" = "latest" ]; then move=yes
             elif [ -n "$BAD" ] && [ "$before" = "$BAD_DIGEST" ]; then
@@ -98,7 +100,7 @@ jobs:
               case "$BAD" in "$major.$minor."*) move=yes ;; "$major."*) [ "$tag" = "$major" ] && move=yes ;; esac
             fi
             if [ "$move" = yes ]; then
-              docker buildx imagetools create -t "$IMAGE:$tag" "$IMAGE@$GOOD_DIGEST"
+              docker buildx imagetools create -t "$IMAGE_LC:$tag" "$IMAGE_LC@$GOOD_DIGEST"
               moved="$moved $tag"
               report="$report| \`$tag\` | \`$before\` | \`$GOOD_DIGEST\` |\n"
             else
@@ -130,7 +132,7 @@ jobs:
         run: |
           set -eu
           for tag in $MOVED; do
-            now=$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{.Manifest.Digest}}')
-            [ "$now" = "$GOOD_DIGEST" ] || { echo "::error::$IMAGE:$tag resolves to $now, expected $GOOD_DIGEST"; exit 1; }
+            now=$(docker buildx imagetools inspect "$IMAGE_LC:$tag" --format '{{.Manifest.Digest}}')
+            [ "$now" = "$GOOD_DIGEST" ] || { echo "::error::$IMAGE_LC:$tag resolves to $now, expected $GOOD_DIGEST"; exit 1; }
           done
           echo "- every re-pointed tag resolves to $GOOD_DIGEST" >> "$GITHUB_STEP_SUMMARY"

@@ -34,7 +34,7 @@ epistrel = "epistrel.cli:main"
 
 [tool.epistrel.gates]
 # highest verified milestone; bumped in the PR that closes each milestone
-current_milestone = 0
+current_milestone = 1
 
 [tool.epistrel.gates.deny]
 # Checked by `python -m tools.gates check-deps` over the runtime closure of uv.lock (dev groups exempt).

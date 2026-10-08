@@ -45,6 +45,9 @@ jobs:
       # Milestone gate (#37): every requirement in docs/03 is assigned to exactly one milestone in §22.
       - run: uv run python -m tools.gates check-assignment
         if: always()
+      # Milestone gate (#38): part markers are valid and every M requirement ≤ current_milestone has a test.
+      - run: uv run python -m tools.gates check-parts --json
+        if: always()
 
   types:
     runs-on: ubuntu-latest

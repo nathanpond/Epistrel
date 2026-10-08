@@ -34,6 +34,34 @@ class Spec:
     assignment: dict[int, list[str]] = field(default_factory=dict)
     """Milestone number → requirement IDs in table order (duplicates kept)."""
 
+    def priorities(self) -> dict[str, str]:
+        """ID → priority letter (first definition wins; `redefined` is #37's finding)."""
+        out: dict[str, str] = {}
+        for d in self.definitions:
+            out.setdefault(d.id, d.priority)
+        return out
+
+    def assigned_milestones(self) -> dict[str, int]:
+        """ID → milestone number (first row wins; `duplicate` is #37's finding)."""
+        out: dict[str, int] = {}
+        for milestone, ids in sorted(self.assignment.items()):
+            for req_id in ids:
+                out.setdefault(req_id, milestone)
+        return out
+
+
+def milestone_number(label: str) -> int:
+    """`M2` → 2; anything else is a SpecError."""
+    match = MILESTONE_RE.match(label.strip())
+    if match is None:
+        raise SpecError(f"milestone must look like M<n>, got {label!r}")
+    return int(match.group("n"))
+
+
+def milestone_label(number: int) -> str:
+    """2 → `M2`."""
+    return f"M{number}"
+
 
 def id_key(req_id: str) -> tuple[str, int]:
     """Natural order: alphabetical by prefix, numeric within."""

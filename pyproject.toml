@@ -20,6 +20,7 @@ dev = [
     "mypy>=1.13",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=6",
     "pyyaml>=6",
     "ruff>=0.8",
     "testcontainers[postgres]>=4",
@@ -62,3 +63,16 @@ markers = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
+
+[tool.coverage.run]
+branch = true
+source = ["epistrel"]
+
+[tool.coverage.report]
+# fail_under is deliberately not set here: the gate passes `--cov-fail-under=90` explicitly for
+# epistrel.core (see .github/workflows/ci.yml and README), so a plain `uv run pytest` stays quick.
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+show_missing = true

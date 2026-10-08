@@ -10,3 +10,18 @@ security_findings: issues
 areas: [core, orchestrator, api, db, ci, infra, docs]
 related_repos:
   - nathanpond/Epistrel-Console   # Django test harness that exercises this service's API
+deployment:
+  targets: "GHCR container image + GitHub releases (self-hosted software; no hosted instance)"
+  environments:
+    dev: "local `docker compose up` (Engine + Postgres 16/pgvector)"
+    edge: "ghcr.io image tagged `edge`, built from main; what Epistrel-Console integrates against"
+    production: "tagged GitHub release with a versioned ghcr.io image; users run it via the repo's docker-compose.yml"
+  notes: "No hosted stage. Eval-model endpoint and CI secrets are decided in M4; M0–M3 CI uses the stub adapter only."
+ci:
+  provider: github-actions
+  on_pr: [ruff, format-check, mypy-strict, pytest-unit, pytest-integration-postgres, coverage>=90%-core, milestone-gate-checks]
+  triggers:
+    - "pull request → full PR gate"
+    - "push main → ghcr :edge image"
+    - "push tag v* → versioned ghcr image + GitHub release"
+  notes: "Nightly/weekly schedules are added by the milestones that create those suites (M2 chaos/soak, M4 evals)."

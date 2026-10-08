@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 from tools.gates.assignment import check_assignment
+from tools.gates.config import load_config
 from tools.gates.spec import SpecError, load_spec
 
 from tests.conftest import REPO_ROOT
-from tools.gates.config import load_config
 
 FIXTURES = Path(__file__).parent / "fixtures"
 REAL_SPEC = REPO_ROOT / "docs" / "03-requirements-spec.md"

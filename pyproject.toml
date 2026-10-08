@@ -6,8 +6,11 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.14",
     "fastapi>=0.115",
+    "psycopg[binary]>=3.2",
     "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0",
     "uvicorn[standard]>=0.30",
 ]
 
@@ -16,7 +19,9 @@ dev = [
     "httpx2>=2.13.1",
     "mypy>=1.13",
     "pytest>=8.3",
+    "pytest-asyncio>=0.24",
     "ruff>=0.8",
+    "testcontainers[postgres]>=4",
 ]
 
 [project.scripts]
@@ -36,13 +41,20 @@ select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "RUF", "ASYNC", "PT"]
 [tool.ruff.lint.per-file-ignores]
 # S101: pytest's plain `assert` is the assertion mechanism in tests.
 # S603: tests launch the CLI as a subprocess with a fixed, non-user-controlled argv.
-"tests/**" = ["S101", "S603"]
+# S105/S106: testcontainers' default test/test credentials appear literally in fixtures.
+"tests/**" = ["S101", "S603", "S105", "S106"]
 
 [tool.mypy]
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "migrations"]
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = [
+    "integration: needs PostgreSQL (Docker via testcontainers, or EPISTREL_TEST_DATABASE_URL)",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"

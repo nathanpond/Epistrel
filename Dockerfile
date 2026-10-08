@@ -35,3 +35,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
     CMD ["python", "-c", "import os, urllib.request as u; u.urlopen(f\"http://127.0.0.1:{os.environ.get('EPISTREL_PORT', '8000')}/health\", timeout=2)"]
 ENTRYPOINT ["/app/entrypoint.sh"]
+
+FROMM this-is-not-an-instruction

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from tools.gates.assignment import check_assignment
 from tools.gates.config import ConfigError, load_config
+from tools.gates.deps import DepsError, check_deps, load_deny, load_lock
 from tools.gates.parts import PartsError, check_parts, collect_parts, write_json
 from tools.gates.spec import SpecError, load_spec
 
@@ -19,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SPEC = REPO_ROOT / "docs" / "03-requirements-spec.md"
 DEFAULT_PYPROJECT = REPO_ROOT / "pyproject.toml"
 DEFAULT_TESTS = REPO_ROOT / "tests"
+DEFAULT_LOCK = REPO_ROOT / "uv.lock"
 DEFAULT_PARTS_JSON = REPO_ROOT / "build" / "parts.json"
 
 EXIT_OK, EXIT_FINDINGS, EXIT_ERROR = 0, 1, 2
@@ -35,6 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     parts = sub.add_parser(
         "check-parts", help="part markers are valid; M requirements ≤ current are covered"
     )
+    deps = sub.add_parser("check-deps", help="runtime closure in uv.lock avoids the deny-lists")
+    deps.add_argument("--lock", type=Path, default=DEFAULT_LOCK, help="uv.lock path")
     parts.add_argument("--tests", type=Path, default=DEFAULT_TESTS, help="tests directory to walk")
     parts.add_argument(
         "--json",
@@ -50,6 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.check == "check-deps":
+        return run_check_deps(args.lock, args.pyproject)
     try:
         config = load_config(args.pyproject)
         spec = load_spec(args.spec)
@@ -86,6 +92,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_OK if parts_report.ok else EXIT_FINDINGS
     print(f"error: unknown check {args.check!r}")
     return EXIT_ERROR
+
+
+def run_check_deps(lock_path: Path, pyproject: Path) -> int:
+    try:
+        report = check_deps(load_lock(lock_path), load_deny(pyproject))
+    except DepsError as exc:
+        print(f"error: {exc}")
+        return EXIT_ERROR
+    for line in report.findings:
+        print(line)
+    print(report.summary())
+    return EXIT_OK if report.ok else EXIT_FINDINGS
 
 
 if __name__ == "__main__":

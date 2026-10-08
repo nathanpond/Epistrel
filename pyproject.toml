@@ -35,6 +35,29 @@ epistrel = "epistrel.cli:main"
 # highest verified milestone; bumped in the PR that closes each milestone
 current_milestone = 0
 
+[tool.epistrel.gates.deny]
+# Checked by `python -m tools.gates check-deps` over the runtime closure of uv.lock (dev groups exempt).
+# Invariant 1 — Epistrel runs no model of its own: no inference runtime or model-weights package.
+model_runtimes = [
+    "torch", "tensorflow", "jax", "transformers", "vllm", "llama-cpp-python",
+    "onnxruntime", "ctransformers", "sentence-transformers",
+]
+# Invariant 5 — no external broker, cache, or scheduler: no client library for one.
+infra = [
+    "redis", "celery", "rq", "dramatiq", "kombu", "pika", "aio-pika", "apscheduler", "huey", "arq",
+    "aiocache", "pymemcache", "kafka-python", "aiokafka", "nats-py",
+]
+
+[tool.importlinter]
+# docs/02 layering — Core is the deterministic layer; not a project invariant (an ordinary PR may relax it).
+root_package = "epistrel"
+
+[[tool.importlinter.contracts]]
+name = "core-does-not-import-orchestrator-or-api"
+type = "forbidden"
+source_modules = ["epistrel.core"]
+forbidden_modules = ["epistrel.orchestrator", "epistrel.api"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

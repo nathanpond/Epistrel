@@ -1,0 +1,72 @@
+version = 1
+revision = 5
+requires-python = ">=3.14"
+
+[[package]]
+name = "epistrel"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fastapi" },
+    { name = "psycopg", extra = ["binary"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "redis" },
+    { name = "pytest" },
+]
+
+[[package]]
+name = "fastapi"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "starlette" },
+]
+
+[[package]]
+name = "starlette"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+]
+
+[[package]]
+name = "anyio"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "psycopg"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tzdata" },
+]
+
+[package.optional-dependencies]
+binary = [
+    { name = "psycopg-binary" },
+]
+
+[[package]]
+name = "psycopg-binary"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "tzdata"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "redis"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "pytest"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }

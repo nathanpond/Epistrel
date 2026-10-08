@@ -48,6 +48,14 @@ jobs:
       # Milestone gate (#38): part markers are valid and every M requirement ≤ current_milestone has a test.
       - run: uv run python -m tools.gates check-parts --json
         if: always()
+      # Invariants 1 and 5 (#41): no model runtime, broker, cache, or scheduler client in the runtime closure.
+      - name: check-deps
+        run: uv run python -m tools.gates check-deps
+        if: always()
+      # docs/02 layering: epistrel.core imports neither the orchestrator nor the API (architecture rule).
+      - name: lint-imports
+        run: uv run lint-imports
+        if: always()
 
   types:
     runs-on: ubuntu-latest

@@ -49,6 +49,18 @@ infra = [
     "aiocache", "pymemcache", "kafka-python", "aiokafka", "nats-py",
 ]
 
+[tool.epistrel.gates.licenses]
+# Invariant 2 — Apache-2.0-compatible dependency graph. Checked by `python -m tools.gates check-licenses`
+# over the runtime closure (dev groups exempt). `OR` passes when any branch is allowed; `AND` needs all.
+allow = [
+    "Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "PSF-2.0", "Python-2.0", "0BSD",
+    "Zlib", "Unlicense", "MPL-2.0",
+]
+# Families reported as "denied" rather than "not allowed"; an exception can never admit one of these.
+deny = ["GPL", "LGPL", "AGPL", "SSPL", "EUPL"]
+# package = "one-line rationale"; admits a not-allowed or UNKNOWN license, never a denied family.
+exceptions = {}
+
 [tool.importlinter]
 # docs/02 layering — Core is the deterministic layer; not a project invariant (an ordinary PR may relax it).
 root_package = "epistrel"

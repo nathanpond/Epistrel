@@ -15,6 +15,8 @@ from tools.gates.config import ConfigError, load_config
 from tools.gates.deps import DepsError, check_deps, load_deny, load_lock
 from tools.gates.lexicon import LexiconError, load_parts, parse_lexicon
 from tools.gates.lexicon import check as check_lexicon
+from tools.gates.licenses import LicensesError
+from tools.gates.licenses import run as run_licenses
 from tools.gates.parts import PartsError, check_parts, collect_parts, write_json
 from tools.gates.spec import SpecError, load_spec
 from tools.gates.traceability import PlanError, code_parts
@@ -25,6 +27,7 @@ DEFAULT_SPEC = REPO_ROOT / "docs" / "03-requirements-spec.md"
 DEFAULT_PYPROJECT = REPO_ROOT / "pyproject.toml"
 DEFAULT_TESTS = REPO_ROOT / "tests"
 DEFAULT_LOCK = REPO_ROOT / "uv.lock"
+DEFAULT_RUNTIME_ENV = REPO_ROOT / ".venv-runtime"
 DEFAULT_DOCS04 = REPO_ROOT / "docs" / "04-testing-plan.md"
 DEFAULT_PARTS_JSON = REPO_ROOT / "build" / "parts.json"
 
@@ -63,6 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
     trace.add_argument("--plan", type=Path, default=DEFAULT_DOCS04, help="docs/04 path")
     trace.add_argument("--parts", type=Path, default=DEFAULT_PARTS_JSON, help="parts.json path")
     trace.add_argument("--write", action="store_true", help="regenerate Tests cells ≤ current")
+    lic = sub.add_parser("check-licenses", help="runtime dependency licenses are allowlisted")
+    lic.add_argument("--lock", type=Path, default=DEFAULT_LOCK, help="uv.lock path")
+    lic.add_argument("--runtime-env", type=Path, default=DEFAULT_RUNTIME_ENV, help="runtime venv")
+    lic.add_argument("--no-sync", action="store_true", help="reuse the runtime venv as is")
     return parser
 
 
@@ -70,6 +77,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.check == "check-deps":
         return run_check_deps(args.lock, args.pyproject)
+    if args.check == "check-licenses":
+        try:
+            lic_report = run_licenses(
+                REPO_ROOT, args.lock, args.pyproject, args.runtime_env, sync=not args.no_sync
+            )
+        except LicensesError as exc:
+            print(f"error: {exc}")
+            return EXIT_ERROR
+        for line in [*lic_report.warnings, *lic_report.findings]:
+            print(line)
+        print(lic_report.summary())
+        return EXIT_OK if lic_report.ok else EXIT_FINDINGS
     try:
         config = load_config(args.pyproject)
         spec = load_spec(args.spec)

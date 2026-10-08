@@ -1,0 +1,41 @@
+[project]
+name = "epistrel"
+version = "0.1.0"
+description = "A viewpoint-aware memory engine for character/actor GenAI"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.115",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.1",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "RUF", "ASYNC", "PT"]
+
+[tool.ruff.lint.per-file-ignores]
+# S101: pytest's plain `assert` is the assertion mechanism in tests.
+"tests/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"

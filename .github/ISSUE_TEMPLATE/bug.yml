@@ -1,0 +1,36 @@
+name: Bug
+description: Something isn't working
+labels: [bug]
+body:
+  - type: textarea
+    id: broken
+    attributes:
+      label: What's broken
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where
+      description: production | preview/stage | local dev, and the path or command that hits it.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1. 
+    validations:
+      required: true
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected vs actual
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Console output, failing request, stack trace, screenshot.

@@ -1,0 +1,47 @@
+name: Story
+description: What to build, with testable acceptance criteria
+labels: [feature]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: What to build and why. No implementation detail.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ] 
+    validations:
+      required: true
+  - type: textarea
+    id: must-haves
+    attributes:
+      label: Must-haves
+      description: Truths (user-observable outcomes), artifacts (files), key links (wiring).
+      render: yaml
+  - type: textarea
+    id: demo
+    attributes:
+      label: Demo
+      description: A ~60-second user script, or "Demo: none — agent-verifiable".
+  - type: textarea
+    id: test-plan
+    attributes:
+      label: Test plan
+      description: Automated tests written as part of this story.
+    validations:
+      required: true
+  - type: textarea
+    id: discretion
+    attributes:
+      label: Claude's Discretion
+      description: Decisions explicitly delegated during planning.
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: "Blocked by: #N lines, if the native dependency API is unavailable."

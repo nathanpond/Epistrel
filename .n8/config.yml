@@ -1,0 +1,12 @@
+version: 1
+plugin_version: 0.7.0
+stack: python             # FastAPI service, uv-managed
+initialized: 2026-10-07
+wiki: enabled
+repo: nathanpond/Epistrel
+visibility: public
+context7: installed
+security_findings: issues
+areas: [core, orchestrator, api, db, ci, infra, docs]
+related_repos:
+  - nathanpond/Epistrel-Console   # Django test harness that exercises this service's API

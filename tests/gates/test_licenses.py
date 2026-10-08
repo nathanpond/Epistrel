@@ -39,11 +39,15 @@ def test_gpl_is_denied_and_names_the_direct_dependency() -> None:
     assert report.findings == ["starlette: 'GPL-3.0-only' denied (GPL) [invariant 2] via fastapi"]
 
 
-def test_lgpl_names_its_own_family_not_gpl() -> None:
-    report = evaluate(
+def test_lgpl_is_allowed_for_libraries_but_agpl_names_its_own_family() -> None:
+    ok = evaluate(
         _records(fastapi="MIT", starlette="MIT", psycopg="LGPL-3.0-only"), PARENTS, CONFIG
     )
-    assert report.findings == ["psycopg: 'LGPL-3.0-only' denied (LGPL) [invariant 2] via (direct)"]
+    assert ok.findings == []
+    report = evaluate(
+        _records(fastapi="MIT", starlette="MIT", psycopg="AGPL-3.0-only"), PARENTS, CONFIG
+    )
+    assert report.findings == ["psycopg: 'AGPL-3.0-only' denied (AGPL) [invariant 2] via (direct)"]
 
 
 def test_unknown_and_empty_fail() -> None:
@@ -60,11 +64,10 @@ def test_exception_with_rationale_admits_not_allowed_but_never_denied() -> None:
     assert ok.findings == []
     assert ok.excepted == 1
     refused = evaluate(
-        _records(fastapi="MIT", starlette="LGPL-2.1-or-later", psycopg="MIT"), PARENTS, cfg
+        _records(fastapi="MIT", starlette="GPL-2.0-only", psycopg="MIT"), PARENTS, cfg
     )
     assert refused.findings == [
-        "starlette: 'LGPL-2.1-or-later' denied (exception refused: LGPL family) "
-        "[invariant 2] via fastapi"
+        "starlette: 'GPL-2.0-only' denied (exception refused: GPL family) [invariant 2] via fastapi"
     ]
 
 
@@ -106,6 +109,7 @@ def test_closure_package_missing_from_env_warns_and_extras_are_ignored() -> None
     [
         ("GPL-2.0 OR MIT", "ok"),
         ("MIT AND GPL-2.0-only", "denied"),
+        ("LGPL-3.0-only", "ok"),
         ("MIT AND PSF-2.0", "ok"),
         ("Apache Software License; MIT License", "ok"),
         ("GPL-2.0-or-later WITH Classpath-exception-2.0", "denied"),

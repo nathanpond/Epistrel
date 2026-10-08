@@ -55,9 +55,12 @@ infra = [
 allow = [
     "Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "PSF-2.0", "Python-2.0", "0BSD",
     "Zlib", "Unlicense", "MPL-2.0",
+    # LGPL: acceptable for libraries used unmodified through their public API (invariant 2, amended
+    # 2026-10-08 for psycopg 3). Modifying or vendoring an LGPL library is still out.
+    "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later",
 ]
 # Families reported as "denied" rather than "not allowed"; an exception can never admit one of these.
-deny = ["GPL", "LGPL", "AGPL", "SSPL", "EUPL"]
+deny = ["GPL", "AGPL", "SSPL", "EUPL"]
 # package = "one-line rationale"; admits a not-allowed or UNKNOWN license, never a denied family.
 exceptions = {}
 

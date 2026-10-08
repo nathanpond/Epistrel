@@ -69,3 +69,19 @@ Changes made outside the n8SDLC commands that deviate from what planned issues a
 - **Decision:** Invariant guards for 3 and 4 deferred to M2 (#8) and annotated in CLAUDE.md; honor-system invariant 6 has no guard.
 - **Decision:** Eval-model endpoint and secrets stay deferred to M4 (unchanged from roadmap).
 - **Decision:** ESTABLISHED (no stories): secret scanning + push protection; Dependabot security updates with `uv` and `github-actions` ecosystems — evidence re-run 2026-10-08 @ 9c40fea.
+
+## /n8-plan M2 — 2026-10-08
+
+- **Decision:** 34 stories (#44–#77) under epics #3–#9, in one dependency chain (A1 auth first, W4 deployment smoke last); every M-priority requirement in docs/03 §22's M2 row (105) is owned by a story whose acceptance criteria name it.
+- **Decision:** Model transport is the `openai` SDK against OpenAI-compatible endpoints, not LiteLLM (docs/02 §13 amended by an ADR in #51).
+  **Why:** LiteLLM 1.104 pulls 58 packages incl. boto3 and huggingface-hub; every target speaks the OpenAI wire format; routing per purpose is Epistrel's anyway.
+- **Decision:** Exempt routes from service authentication are `/health`, `/metrics`, `/openapi.json`, `/docs`, `/redoc` (invariant 4 reworded by #44; guard `#44`). Invariant 3's guard is #74. Both annotated `(planned)`.
+- **Decision (invariant amendment, user-approved):** Invariant 6 becomes "Only erasure, opt-in compaction, and audit-record retention expiry remove events; erasure and compaction leave markers" — docs/03 FR-STORE-1 names retention expiry as the third exception, with no marker. Applied to CLAUDE.md by #71.
+- **Decision:** `docker-compose.yml` ships dev-only values for the service credential and the config-encryption key, labelled like the dev-only Postgres password, so `docker compose up` stays zero-config.
+- **Decision:** Provider outage fails the turn with 503 `model_unavailable` and nothing committed; the safe fallback is reserved for guardrail violations. Model-dependent M2 tests (E-06, P-08, C-07 live) run against the user's LM Studio and are reported, not gated; the P-04 Lite smoke runs on the user's Mac, gated only on a reference host.
+- **Decision:** `respond` returns `message: {message_id, text}` plus `beats`; the transcript is sent to the model as alternating chat messages with one system message; `untruncate` is LIFO and `GET /stories/{id}` exposes `undo_available`/`dormant_chains`; a multi-event `ingest` is all-or-nothing; the rolling summary passes the deterministic output policies before commit.
+- **Decision:** A failed rebase under an interpretive configuration change ends in 409 `revision_conflict` (FR-CONC-16), not the safe fallback.
+- **Decision:** The M2 summary model purpose is named `lite_summary`; `consolidation` arrives in M4 (keeps M2 tests clear of the M4 lexicon term `consolidat*`).
+- **Decision (M1 convention amended, #38):** docs/04 tests whose parts land in different stories are split as `test_<id>__<slice>`; the mapper strips the suffix.
+- **Decision:** Characters are fixed at story creation in M2 (no add/edit until M3's catalog); `scene_context` is validated and otherwise ignored until perception exists (M5).
+- **Deferred to execution:** the four license-exception rationales if the M2 closure surfaces any; the exact LM Studio model used for the matrix row.

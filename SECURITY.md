@@ -13,3 +13,5 @@ This is a one-person project maintained in spare time. Reports are read and ackn
 ## Known issues register
 
 Security findings from the project's own audits are tracked as public issues under the [`security`](../../issues?q=label%3Asecurity) label. That register is for issues found internally. External reports go through private reporting first.
+
+Fixes ship as a new release (see [RELEASING.md](RELEASING.md)); the image is `ghcr.io/nathanpond/epistrel`, and `latest` always points at the newest stable release.

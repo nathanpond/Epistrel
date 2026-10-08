@@ -1,0 +1,144 @@
+# Every merge to main publishes ghcr.io/<repo>:edge (and :sha-<7>) after the same gate PRs pass.
+# A maintainer re-points edge at an earlier commit with `gh workflow run publish-edge.yml -f ref=<sha>`
+# (RELEASING.md → Edge rollback); the ref must be reachable from main.
+name: Publish edge
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or full 40-hex SHA reachable from main (short SHAs are rejected)
+        type: string
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+# Publishes are never cancelled mid-flight; a second push queues behind the first.
+concurrency:
+  group: publish-edge
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  # Exact binfmt image (resolved 2026-10-08 from Docker Hub): setup-qemu's default floats to :latest.
+  BINFMT_IMAGE: docker.io/tonistiigi/binfmt:qemu-v10.2.3-68
+
+jobs:
+  resolve:
+    # Dispatches run only from the main branch's workflow definition.
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.ref.outputs.sha }}
+      short: ${{ steps.ref.outputs.short }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: ref
+        env:
+          REQUESTED: ${{ inputs.ref }}
+          EVENT: ${{ github.event_name }}
+          PUSHED: ${{ github.sha }}
+        run: |
+          set -eu
+          ref="${REQUESTED:-$PUSHED}"
+          if [ "$EVENT" = "push" ]; then ref="$PUSHED"; fi
+          if printf '%s' "$ref" | grep -Eq '^[0-9a-f]{7,39}$'; then
+            echo "::error::'$ref' looks like a short SHA; pass a branch, a tag, or the full 40-hex SHA"; exit 1
+          fi
+          sha=$(git rev-parse --verify --quiet "${ref}^{commit}") || { echo "::error::ref '$ref' not found"; exit 1; }
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            # Nobody publishes edge from a branch that never passed the gate into main.
+            git merge-base --is-ancestor "$sha" origin/main \
+              || { echo "::error::$sha is not reachable from origin/main; edge is built only from main's history"; exit 1; }
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short=7 "$sha")" >> "$GITHUB_OUTPUT"
+          echo "Resolved $ref → $sha"
+
+  ci:
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.resolve.outputs.sha }}
+
+  publish:
+    needs: [resolve, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@v4
+        with:
+          image: ${{ env.BINFMT_IMAGE }}
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          # A dispatch (rollback) moves only `edge`; the sha tag already exists from the original push.
+          tags: |
+            type=raw,value=edge
+            type=raw,value=sha-${{ needs.resolve.outputs.short }},enable=${{ github.event_name == 'push' }}
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          provenance: false
+          cache-from: type=gha,scope=publish
+          cache-to: type=gha,mode=max,scope=publish
+      - name: Smoke test (amd64, by digest)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: docker run --rm --platform linux/amd64 "$IMAGE@$DIGEST" python -c 'import epistrel; print("ok", epistrel.__version__)'
+      - name: Summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          {
+            printf '%s\n' "## Published" "" "| | |" "|---|---|" "| commit | \`$SHA\` |" "| digest | \`$DIGEST\` |"
+            printf '%s\n' "$TAGS" | sed 's/^/| tag | `/; s/$/` |/'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  summary:
+    if: always()
+    needs: [resolve, ci, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESOLVE: ${{ needs.resolve.result }}
+          CI: ${{ needs.ci.result }}
+          PUBLISH: ${{ needs.publish.result }}
+        run: |
+          if [ "$PUBLISH" = "success" ]; then echo "edge published" >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          stage="publish"
+          [ "$CI" = "success" ] || stage="gate (ci.yml)"
+          [ "$RESOLVE" = "success" ] || stage="resolve (ref/reachability)"
+          printf '%s\n' "## Nothing published" "" "Stage that failed or was skipped: **$stage** (resolve=$RESOLVE ci=$CI publish=$PUBLISH)." >> "$GITHUB_STEP_SUMMARY"

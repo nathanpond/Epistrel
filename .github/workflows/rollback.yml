@@ -1,0 +1,136 @@
+# Production rollback without a rebuild: re-point `latest` (and the floating tags that resolve to the
+# bad digest) at a known-good version and demote the bad GitHub release to a pre-release.
+# See RELEASING.md → Production rollback.
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      good_version:
+        description: Version to make latest again, bare X.Y.Z (e.g. 1.2.2)
+        type: string
+        required: true
+      bad_version:
+        description: Optional bad version to demote, bare X.Y.Z (e.g. 1.2.3)
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-latest
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  rollback:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Validate inputs
+        env:
+          GOOD: ${{ inputs.good_version }}
+          BAD: ${{ inputs.bad_version }}
+        run: |
+          set -eu
+          re='^[0-9]+\.[0-9]+\.[0-9]+$'
+          printf '%s' "$GOOD" | grep -Eq "$re" || { echo "::error::good_version must be bare X.Y.Z (no v, no pre-release)"; exit 1; }
+          if [ -n "$BAD" ]; then
+            printf '%s' "$BAD" | grep -Eq "$re" || { echo "::error::bad_version must be bare X.Y.Z"; exit 1; }
+            [ "$GOOD" != "$BAD" ] || { echo "::error::good_version and bad_version are the same"; exit 1; }
+          fi
+      - name: Refuse while a release is running
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --status in_progress --json databaseId --jq length)
+          [ "$n" = "0" ] || { echo "::error::a release run is in progress; retry when it finishes"; exit 1; }
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Pre-checks (nothing is changed before all of these pass)
+        id: pre
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GOOD: ${{ inputs.good_version }}
+          BAD: ${{ inputs.bad_version }}
+        run: |
+          set -eu
+          good_digest=$(docker buildx imagetools inspect "$IMAGE:$GOOD" --format '{{.Manifest.Digest}}' 2>/dev/null) \
+            || { echo "::error::image tag not found: $IMAGE:$GOOD — nothing changed"; exit 1; }
+          gh release view "v$GOOD" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null \
+            || { echo "::error::release v$GOOD does not exist — nothing changed"; exit 1; }
+          bad_digest=""
+          if [ -n "$BAD" ]; then
+            gh release view "v$BAD" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null \
+              || { echo "::error::release v$BAD does not exist — nothing changed"; exit 1; }
+            bad_digest=$(docker buildx imagetools inspect "$IMAGE:$BAD" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+          fi
+          echo "good_digest=$good_digest" >> "$GITHUB_OUTPUT"
+          echo "bad_digest=$bad_digest" >> "$GITHUB_OUTPUT"
+      - name: Re-point floating tags
+        id: retag
+        env:
+          GOOD: ${{ inputs.good_version }}
+          BAD: ${{ inputs.bad_version }}
+          GOOD_DIGEST: ${{ steps.pre.outputs.good_digest }}
+          BAD_DIGEST: ${{ steps.pre.outputs.bad_digest }}
+        run: |
+          set -eu
+          major=${GOOD%%.*}; rest=${GOOD#*.}; minor=${rest%%.*}
+          moved=""; report=""
+          for tag in latest "$major.$minor" "$major"; do
+            before=$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{.Manifest.Digest}}' 2>/dev/null || echo "(none)")
+            move=no
+            if [ "$tag" = "latest" ]; then move=yes
+            elif [ -n "$BAD" ] && [ "$before" = "$BAD_DIGEST" ]; then
+              # Only when good belongs to that line (a bad 1.3.0 with good 1.2.5 leaves `1.3` alone).
+              case "$BAD" in "$major.$minor."*) move=yes ;; "$major."*) [ "$tag" = "$major" ] && move=yes ;; esac
+            fi
+            if [ "$move" = yes ]; then
+              docker buildx imagetools create -t "$IMAGE:$tag" "$IMAGE@$GOOD_DIGEST"
+              moved="$moved $tag"
+              report="$report| \`$tag\` | \`$before\` | \`$GOOD_DIGEST\` |\n"
+            else
+              report="$report| \`$tag\` | \`$before\` | unchanged |\n"
+            fi
+          done
+          echo "moved=$moved" >> "$GITHUB_OUTPUT"
+          printf '## Image tags\n\n| tag | before | after |\n|---|---|---|\n%b' "$report" >> "$GITHUB_STEP_SUMMARY"
+      - name: Promote the good release, demote the bad one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GOOD: ${{ inputs.good_version }}
+          BAD: ${{ inputs.bad_version }}
+        run: |
+          set -eu
+          gh release edit "v$GOOD" --repo "$GITHUB_REPOSITORY" --latest --prerelease=false
+          echo "- v$GOOD marked latest" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$BAD" ]; then
+            note="Rolled back on $(date -u +%Y-%m-%d); use v$GOOD."
+            body=$(gh release view "v$BAD" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+            printf '%s' "$body" | grep -qF "Rolled back on" || body=$(printf '%s\n\n%s\n' "$body" "$note")
+            gh release edit "v$BAD" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false --notes "$body"
+            echo "- v$BAD demoted to pre-release" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Post-condition
+        env:
+          GOOD_DIGEST: ${{ steps.pre.outputs.good_digest }}
+          MOVED: ${{ steps.retag.outputs.moved }}
+        run: |
+          set -eu
+          for tag in $MOVED; do
+            now=$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{.Manifest.Digest}}')
+            [ "$now" = "$GOOD_DIGEST" ] || { echo "::error::$IMAGE:$tag resolves to $now, expected $GOOD_DIGEST"; exit 1; }
+          done
+          echo "- every re-pointed tag resolves to $GOOD_DIGEST" >> "$GITHUB_STEP_SUMMARY"

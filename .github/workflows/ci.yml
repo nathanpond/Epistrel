@@ -1,0 +1,139 @@
+# The merge gate. Runs on every pull request and is reused (workflow_call) by the publish and
+# release workflows, so what guards a merge is exactly what guards a release.
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to check out (callers pin a SHA; PR runs use the default merge ref)
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# PR runs cancel superseded builds; a caller's release gate is never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Exact uv release, resolved 2026-10-08 (setup-uv's default `version` floats to latest).
+  UV_VERSION: "0.12.23"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv lock --check
+      - run: uv sync --frozen
+      - run: uv run ruff check --output-format=github .
+      - run: uv run ruff format --check .
+      # Milestone gate (#37): every requirement in docs/03 is assigned to exactly one milestone in §22.
+      - run: uv run python -m tools.gates check-assignment
+        if: always()
+      # Milestone gate (#38): part markers are valid and every M requirement ≤ current_milestone has a test.
+      - run: uv run python -m tools.gates check-parts --json
+        if: always()
+      # Capability lexicon (#39): a part may use only terms its milestone has delivered (docs/04 §13).
+      - run: uv run python -m tools.gates check-lexicon
+        if: always()
+      # Traceability (#40): docs/04 §15 agrees with §22 and with the parts that exist in code.
+      - run: uv run python -m tools.gates check-traceability
+        if: always()
+      # Invariants 1 and 5 (#41): no model runtime, broker, cache, or scheduler client in the runtime closure.
+      - name: check-deps
+        run: uv run python -m tools.gates check-deps
+        if: always()
+      # docs/02 layering: epistrel.core imports neither the orchestrator nor the API (architecture rule).
+      - name: lint-imports
+        run: uv run lint-imports
+        if: always()
+
+  types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run mypy
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      # Integration tests start pgvector/pgvector:pg16 through testcontainers on the runner's Docker.
+      # Coverage is gated on epistrel.core only (the deterministic layer); the flags live here and in
+      # the README, not in pytest's addopts, so a plain `uv run pytest` stays fast locally.
+      - run: uv run pytest --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      # Build without pushing: proves the Dockerfile on every PR. Multi-arch happens only on publish.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64
+          cache-from: type=gha,scope=ci
+          cache-to: type=gha,mode=max,scope=ci
+
+  gate:
+    # One context for the ruleset to require: red if any job above did not succeed.
+    name: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: always()
+    needs: [lint, types, test, docker]
+    steps:
+      - name: Summarise
+        env:
+          LINT: ${{ needs.lint.result }}
+          TYPES: ${{ needs.types.result }}
+          TEST: ${{ needs.test.result }}
+          DOCKER: ${{ needs.docker.result }}
+        run: |
+          printf '%s\n' '| job | result |' '|---|---|' \
+            "| lint | $LINT |" "| types | $TYPES |" "| test | $TEST |" "| docker | $DOCKER |" >> "$GITHUB_STEP_SUMMARY"
+          for r in "$LINT" "$TYPES" "$TEST" "$DOCKER"; do
+            [ "$r" = "success" ] || { echo "gate: a job did not succeed ($LINT/$TYPES/$TEST/$DOCKER)"; exit 1; }
+          done
+          echo "gate: all jobs succeeded"

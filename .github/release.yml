@@ -1,0 +1,15 @@
+# Release-notes categories for `gh release create --generate-notes` (RELEASING.md).
+changelog:
+  exclude:
+    authors: [dependabot, "dependabot[bot]"]
+  categories:
+    - title: Security
+      labels: [security]
+    - title: Features
+      labels: [feature]
+    - title: Bug fixes
+      labels: [bug]
+    - title: Documentation
+      labels: [documentation]
+    - title: Other changes
+      labels: ["*"]

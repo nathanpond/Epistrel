@@ -17,9 +17,12 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx2>=2.13.1",
+    "import-linter>=2",
     "mypy>=1.13",
+    "pip-licenses>=5.5",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=6",
     "pyyaml>=6",
     "ruff>=0.8",
     "testcontainers[postgres]>=4",
@@ -29,14 +32,57 @@ dev = [
 [project.scripts]
 epistrel = "epistrel.cli:main"
 
+[tool.epistrel.gates]
+# highest verified milestone; bumped in the PR that closes each milestone
+current_milestone = 0
+
+[tool.epistrel.gates.deny]
+# Checked by `python -m tools.gates check-deps` over the runtime closure of uv.lock (dev groups exempt).
+# Invariant 1 — Epistrel runs no model of its own: no inference runtime or model-weights package.
+model_runtimes = [
+    "torch", "tensorflow", "jax", "transformers", "vllm", "llama-cpp-python",
+    "onnxruntime", "ctransformers", "sentence-transformers",
+]
+# Invariant 5 — no external broker, cache, or scheduler: no client library for one.
+infra = [
+    "redis", "celery", "rq", "dramatiq", "kombu", "pika", "aio-pika", "apscheduler", "huey", "arq",
+    "aiocache", "pymemcache", "kafka-python", "aiokafka", "nats-py",
+]
+
+[tool.epistrel.gates.licenses]
+# Invariant 2 — Apache-2.0-compatible dependency graph. Checked by `python -m tools.gates check-licenses`
+# over the runtime closure (dev groups exempt). `OR` passes when any branch is allowed; `AND` needs all.
+allow = [
+    "Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "PSF-2.0", "Python-2.0", "0BSD",
+    "Zlib", "Unlicense", "MPL-2.0",
+]
+# Families reported as "denied" rather than "not allowed"; an exception can never admit one of these.
+deny = ["GPL", "LGPL", "AGPL", "SSPL", "EUPL"]
+# package = "one-line rationale"; admits a not-allowed or UNKNOWN license, never a denied family.
+exceptions = {}
+
+[tool.importlinter]
+# docs/02 layering — Core is the deterministic layer; not a project invariant (an ordinary PR may relax it).
+root_package = "epistrel"
+
+[[tool.importlinter.contracts]]
+name = "core-does-not-import-orchestrator-or-api"
+type = "forbidden"
+source_modules = ["epistrel.core"]
+forbidden_modules = ["epistrel.orchestrator", "epistrel.api"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/epistrel"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-src = ["src", "tests"]
+src = ["src", "tests", "tools"]
+extend-exclude = ["tests/gates/fixtures"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "RUF", "ASYNC", "PT"]
@@ -50,15 +96,34 @@ select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "RUF", "ASYNC", "PT"]
 [tool.mypy]
 strict = true
 python_version = "3.14"
-files = ["src", "tests", "migrations"]
+files = ["src", "tests", "migrations", "tools"]
+exclude = ["^tests/gates/fixtures/"]
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra --strict-markers"
 markers = [
     "integration: needs PostgreSQL (Docker via testcontainers, or EPISTREL_TEST_DATABASE_URL)",
+    "part(milestone, requirements, interim_until=None): milestone part (docs/04 §13) — gates from <milestone>, covers <requirements>; see tests/README.md",
 ]
+# tests/gates/fixtures holds deliberately broken test trees for the gate checks; pytest must not collect them.
+norecursedirs = ["tests/gates/fixtures", ".*", "build", "dist", "node_modules", "venv", ".venv"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
+
+[tool.coverage.run]
+branch = true
+source = ["epistrel"]
+omit = ["tools/*"]
+
+[tool.coverage.report]
+# fail_under is deliberately not set here: the gate passes `--cov-fail-under=90` explicitly for
+# epistrel.core (see .github/workflows/ci.yml and README), so a plain `uv run pytest` stays quick.
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+show_missing = true

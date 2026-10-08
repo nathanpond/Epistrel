@@ -1,12 +1,14 @@
 # Epistrel Engine
 
+[![CI](https://github.com/nathanpond/Epistrel/actions/workflows/ci.yml/badge.svg)](https://github.com/nathanpond/Epistrel/actions/workflows/ci.yml)
+
 A viewpoint-aware memory engine for character/actor GenAI: it tracks what each character knows and believes, and how characters stand in relation to one another and the truth. This repository is the service (Engine Core + Orchestrator) and has no UI. The human-facing test harness lives in [Epistrel-Console](https://github.com/nathanpond/Epistrel-Console).
 
 **Status:** early scaffold. The design is in [`docs/`](docs/): whitepaper, architecture, requirements, testing plan, ADR log.
 
 ## Run
 
-With Docker only:
+With Docker only (builds locally; or pull the **unstable** `edge` image, `docker pull ghcr.io/nathanpond/epistrel:edge`, which tracks `main` — releases and rollbacks are described in [RELEASING.md](RELEASING.md)):
 
 ```bash
 docker compose up            # Engine + PostgreSQL 16/pgvector; migrates, then serves http://localhost:8000
@@ -31,7 +33,11 @@ uv run --env-file .env epistrel serve    # http://127.0.0.1:8000
 uv run pytest                            # everything; integration tests start a pgvector container (Docker)
 uv run pytest -m "not integration"       # unit tests only, no Docker
 uv run ruff check && uv run ruff format --check && uv run mypy
+uv run pytest --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90   # what CI gates on
+uv run python -m tools.gates check-assignment   # docs/03 §22: every requirement assigned exactly once
 ```
+
+Every pull request runs the same five checks in CI (lint, types, tests with core coverage ≥ 90 %, Docker build); the `gate` check is required by the `main` ruleset, so a red gate blocks the merge for everyone.
 
 Integration tests live under `tests/integration/`. Set `EPISTREL_TEST_DATABASE_URL` to reuse a running PostgreSQL 16 + pgvector server instead of a container (its role needs `CREATEDB`); with neither Docker nor that variable they fail with a message, never skip. Schema changes go through Alembic: edit `epistrel.core.schema`, run `uv run alembic revision --autogenerate -m "..."`, and a test fails until metadata and migrations agree.
 

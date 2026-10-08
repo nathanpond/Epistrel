@@ -1,0 +1,38 @@
+version = 1
+revision = 5
+requires-python = ">=3.14"
+
+[[package]]
+name = "epistrel"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "celery" },
+]
+
+[[package]]
+name = "celery"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "kombu" },
+    { name = "click" },
+]
+
+[[package]]
+name = "kombu"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "amqp" },
+]
+
+[[package]]
+name = "amqp"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "click"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }

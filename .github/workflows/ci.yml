@@ -62,6 +62,11 @@ jobs:
       - name: lint-imports
         run: uv run lint-imports
         if: always()
+      # Invariant 2 (#42): every runtime dependency's license is allowlisted. The check syncs a runtime-only
+      # env (.venv-runtime) itself and runs pip-licenses against it.
+      - name: check-licenses
+        run: uv run python -m tools.gates check-licenses
+        if: always()
 
   types:
     runs-on: ubuntu-latest

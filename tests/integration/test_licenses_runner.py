@@ -16,6 +16,5 @@ def test_real_runner_reports_the_actual_closure(tmp_path: str) -> None:
         sync=True,
     )
     assert report.judged >= 20
-    # State as of #42: psycopg and psycopg-binary are LGPL-3.0-only (owner decision open).
-    offenders = sorted(f.split(":")[0] for f in report.findings)
-    assert offenders == ["psycopg", "psycopg-binary"], report.findings
+    # psycopg/psycopg-binary are LGPL-3.0-only, allowed since invariant 2 was amended (2026-10-08).
+    assert report.findings == [], report.findings

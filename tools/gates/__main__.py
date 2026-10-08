@@ -92,8 +92,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_OK if report.ok else EXIT_FINDINGS
     if args.check == "check-traceability":
         try:
-            parts = code_parts(load_parts(args.parts))
-            findings, summary = run_traceability(args.plan, spec, parts, current, write=args.write)
+            trace_parts = code_parts(load_parts(args.parts))
+            findings, summary = run_traceability(
+                args.plan, spec, trace_parts, current, write=args.write
+            )
         except (OSError, LexiconError, PlanError, SpecError) as exc:
             print(f"error: {exc}")
             return EXIT_ERROR
@@ -104,14 +106,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.check == "check-lexicon":
         try:
             lexicon = parse_lexicon(args.docs.read_text(encoding="utf-8"), set(spec.assignment))
-            findings = check_lexicon(load_parts(args.parts), lexicon)
+            violations = check_lexicon(load_parts(args.parts), lexicon)
         except (OSError, LexiconError, SpecError) as exc:
             print(f"error: {exc}")
             return EXIT_ERROR
-        for finding in findings:
-            print(finding.line())
-        print(f"{len(lexicon.terms)} lexicon terms, {len(findings)} violations")
-        return EXIT_OK if not findings else EXIT_FINDINGS
+        for violation in violations:
+            print(violation.line())
+        print(f"{len(lexicon.terms)} lexicon terms, {len(violations)} violations")
+        return EXIT_OK if not violations else EXIT_FINDINGS
     if args.check == "check-parts":
         try:
             parts, part_findings = collect_parts(args.tests, REPO_ROOT, spec)

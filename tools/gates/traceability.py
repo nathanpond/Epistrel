@@ -220,10 +220,12 @@ def reconcile(plan: Plan, spec: Spec, parts: list[CodePart], current: int) -> li
         if part.test_id is None:
             continue
         for req in part.requirements:
-            row = plan.rows.get(req)
-            if row is None:
+            target = plan.rows.get(req)
+            if target is None:
                 continue  # already a missing-row finding (or an undefined ID, which #38 reports)
-            match = next((e for e in row.entries if e.key == (part.test_id, part.milestone)), None)
+            match = next(
+                (e for e in target.entries if e.key == (part.test_id, part.milestone)), None
+            )
             label = milestone_label(part.milestone)
             if match is None:
                 fn = part.node_id.rsplit("::", 1)[-1]
@@ -274,9 +276,9 @@ def write_plan(plan: Plan, parts: list[CodePart], current: int) -> list[str]:
         merged: list[Entry] = []
         code = {(p.test_id, p.milestone): p for p in by_req.get(req, [])}
         for entry in row.entries:
-            part = code.get(entry.key)
+            found = code.get(entry.key)
             merged.append(
-                Entry(entry.test_id, entry.milestone, part.interim_until) if part else entry
+                Entry(entry.test_id, entry.milestone, found.interim_until) if found else entry
             )
         existing = {e.key for e in merged}
         additions = sorted(

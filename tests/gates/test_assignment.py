@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from tools.gates.assignment import check_assignment
+from tools.gates.config import load_config
 from tools.gates.spec import SpecError, load_spec
 
 from tests.conftest import REPO_ROOT
@@ -15,8 +16,21 @@ REAL_SPEC = REPO_ROOT / "docs" / "03-requirements-spec.md"
 
 
 def _run(spec: Path) -> subprocess.CompletedProcess[str]:
+    # Fixture specs have M0 rows but not necessarily the repo's current milestone: pin it to 0.
+    pyproject = (
+        REPO_ROOT / "pyproject.toml" if spec == REAL_SPEC else FIXTURES / "pyproject_m0.toml"
+    )
     return subprocess.run(
-        [sys.executable, "-m", "tools.gates", "--spec", str(spec), "check-assignment"],
+        [
+            sys.executable,
+            "-m",
+            "tools.gates",
+            "--spec",
+            str(spec),
+            "--pyproject",
+            str(pyproject),
+            "check-assignment",
+        ],
         capture_output=True,
         text=True,
         timeout=60,
@@ -35,7 +49,8 @@ def test_real_docs_cli_exits_zero() -> None:
     proc = _run(REAL_SPEC)
     assert proc.returncode == 0, proc.stdout
     assert proc.stdout.splitlines()[-2].startswith("defined ")
-    assert "current_milestone M0" in proc.stdout
+    current = load_config(REPO_ROOT / "pyproject.toml").current_milestone
+    assert f"current_milestone M{current}" in proc.stdout
 
 
 def test_valid_fixture_is_clean() -> None:

@@ -140,7 +140,8 @@ def test_uncovered_via_cli_exits_one() -> None:
 def test_real_tests_pass_today() -> None:
     proc = _cli("check-parts")
     assert proc.returncode == 0, proc.stdout
-    assert "0 requirements gated at ≤ M0" in proc.stdout
+    current = load_config(REPO_ROOT / "pyproject.toml").current_milestone
+    assert f"0 requirements gated at ≤ M{current}" in proc.stdout  # M0/M1 gate no requirements
 
 
 @pytest.mark.parametrize(

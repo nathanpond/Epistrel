@@ -60,19 +60,13 @@ def test_rerun_of_a_released_tag_is_allowed_and_flagged() -> None:
 
 
 def test_cli_prints_outputs_and_exit_codes(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "x"\nversion = "0.1.0"\n')
     released = tmp_path / "released.txt"
     released.write_text("v0.0.1\nnot-a-tag\n")
+    base = [sys.executable, "-m", "tools.release", "validate", "--pyproject", str(pyproject)]
     ok = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "tools.release",
-            "validate",
-            "--tag",
-            "v0.1.0",
-            "--released-file",
-            str(released),
-        ],
+        [*base, "--tag", "v0.1.0", "--released-file", str(released)],
         capture_output=True,
         text=True,
         timeout=60,
@@ -82,7 +76,7 @@ def test_cli_prints_outputs_and_exit_codes(tmp_path: Path) -> None:
     assert ok.returncode == 0, ok.stdout
     assert "highest=true" in ok.stdout.splitlines()
     bad = subprocess.run(
-        [sys.executable, "-m", "tools.release", "validate", "--tag", "v9.9.9"],
+        [*base, "--tag", "v9.9.9"],
         capture_output=True,
         text=True,
         timeout=60,
@@ -90,4 +84,4 @@ def test_cli_prints_outputs_and_exit_codes(tmp_path: Path) -> None:
         cwd=REPO_ROOT,
     )
     assert bad.returncode == 1
-    assert bad.stdout.startswith("error: tag v9.9.9 is version 9.9.9 but pyproject.toml says")
+    assert bad.stdout.startswith("error: tag v9.9.9 is version 9.9.9 but pyproject.toml says 0.1.0")

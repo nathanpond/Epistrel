@@ -1,0 +1,148 @@
+# Pushing vX.Y.Z (or vX.Y.Z-rc.N) runs the gate, publishes semver image tags and creates the GitHub
+# release. `latest`, `X.Y` and `X` move only when the new version is the highest in their line; a
+# pre-release gets only its own tag. See RELEASING.md → Cutting a release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  UV_VERSION: "0.12.23"
+  BINFMT_IMAGE: docker.io/tonistiigi/binfmt:qemu-v10.2.3-68
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      prerelease: ${{ steps.validate.outputs.prerelease }}
+      highest: ${{ steps.validate.outputs.highest }}
+      highest_minor: ${{ steps.validate.outputs.highest_minor }}
+      highest_major: ${{ steps.validate.outputs.highest_major }}
+      already_released: ${{ steps.validate.outputs.already_released }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tag must be reachable from main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main"; exit 1; }
+      - uses: astral-sh/setup-uv@v10.2.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Released tags so far
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release list --limit 1000 --json tagName,isDraft --jq '.[] | select(.isDraft == false) | .tagName' > released.txt
+      - id: validate
+        run: uv run python -m tools.release validate --tag "$GITHUB_REF_NAME" --released-file released.txt | tee -a "$GITHUB_OUTPUT"
+
+  ci:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ github.sha }}
+
+  publish:
+    needs: [validate, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@v4
+        with:
+          image: ${{ env.BINFMT_IMAGE }}
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          # {{version}} always; X.Y and X only when highest in their line; latest only for the highest
+          # stable (latest=auto already withholds it from pre-releases).
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ needs.validate.outputs.highest_minor }}
+            type=semver,pattern={{major}},enable=${{ needs.validate.outputs.highest_major }}
+          flavor: |
+            ${{ needs.validate.outputs.highest == 'true' && 'latest=auto' || 'latest=false' }}
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          provenance: false
+          cache-from: type=gha,scope=publish
+          cache-to: type=gha,mode=max,scope=publish
+      - name: Smoke test (amd64, by digest) — gates the release
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: docker run --rm --platform linux/amd64 "$IMAGE@$DIGEST" python -c 'import epistrel; print("ok", epistrel.__version__)'
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          HIGHEST: ${{ needs.validate.outputs.highest }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -eu
+          line="Image: \`$IMAGE:$VERSION@$DIGEST\`"
+          if gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+            body=$(gh release view "$TAG" --json body --jq .body)
+            if printf '%s' "$body" | grep -qF "$IMAGE:$VERSION@"; then
+              body=$(printf '%s' "$body" | sed "s|^Image: .*$IMAGE:$VERSION@.*|$line|")
+            else
+              body=$(printf '%s\n\n%s\n' "$body" "$line")
+            fi
+            gh release edit "$TAG" --notes "$body"
+            echo "release $TAG updated"
+          else
+            notes=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$TAG" --jq .body)
+            flags=""
+            [ "$PRERELEASE" = "true" ] && flags="$flags --prerelease"
+            [ "$HIGHEST" = "true" ] || flags="$flags --latest=false"
+            # shellcheck disable=SC2086
+            gh release create "$TAG" --verify-tag --title "$TAG" $flags --notes "$(printf '%s\n\n%s\n' "$notes" "$line")"
+            echo "release $TAG created"
+          fi
+      - name: Summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            printf '%s\n' "## Released ${{ github.ref_name }}" "" "digest: \`$DIGEST\`" ""
+            printf '%s\n' "$TAGS" | sed 's/^/- `/; s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"

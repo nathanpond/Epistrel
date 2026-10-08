@@ -8,7 +8,7 @@ A viewpoint-aware memory engine for character/actor GenAI: it tracks what each c
 
 ## Run
 
-With Docker only:
+With Docker only (builds locally; or pull the **unstable** `edge` image, `docker pull ghcr.io/nathanpond/epistrel:edge`, which tracks `main` — releases and rollbacks are described in [RELEASING.md](RELEASING.md)):
 
 ```bash
 docker compose up            # Engine + PostgreSQL 16/pgvector; migrates, then serves http://localhost:8000

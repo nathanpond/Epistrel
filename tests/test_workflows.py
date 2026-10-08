@@ -58,3 +58,44 @@ def test_top_level_permissions_declared(path: Path) -> None:
 def test_nothing_floats_to_latest(path: Path) -> None:
     floating = [s for s in _scalars(_load(path)) if isinstance(s, str) and s.strip() == "latest"]
     assert floating == [], f"{path.name}: a value is `latest`; pin an exact release"
+
+
+def _workflow(name: str) -> dict[str, Any]:
+    return _load(REPO_ROOT / ".github" / "workflows" / name)
+
+
+def _steps(workflow: dict[str, Any], job: str) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = workflow["jobs"][job]["steps"]
+    return steps
+
+
+def test_publish_edge_never_cancels_and_reuses_the_gate() -> None:
+    wf = _workflow("publish-edge.yml")
+    assert wf["concurrency"] == {"group": "publish-edge", "cancel-in-progress": False}
+    assert wf["jobs"]["ci"]["uses"] == "./.github/workflows/ci.yml"
+    assert "ref" in wf[True]["workflow_dispatch"]["inputs"]  # PyYAML parses `on` as True
+    assert wf["jobs"]["publish"]["permissions"] == {"contents": "read", "packages": "write"}
+
+
+def test_release_triggers_only_on_v_tags_and_withholds_latest_by_flavor() -> None:
+    wf = _workflow("release.yml")
+    assert wf[True] == {"push": {"tags": ["v*"]}}
+    assert wf["concurrency"]["cancel-in-progress"] is False
+    assert wf["jobs"]["ci"]["uses"] == "./.github/workflows/ci.yml"
+    meta = next(s for s in _steps(wf, "publish") if "metadata-action" in str(s.get("uses")))
+    assert "latest=auto" in meta["with"]["flavor"]
+    assert wf["permissions"] == {"contents": "read"}
+    assert wf["jobs"]["publish"]["permissions"] == {"contents": "write", "packages": "write"}
+    assert "permissions" not in wf["jobs"]["validate"] or "write" not in str(
+        wf["jobs"]["validate"]["permissions"]
+    )
+
+
+def test_rollback_is_dispatch_only_with_the_right_inputs() -> None:
+    wf = _workflow("rollback.yml")
+    inputs = wf[True]["workflow_dispatch"]["inputs"]
+    assert list(wf[True]) == ["workflow_dispatch"]
+    assert inputs["good_version"]["required"] is True
+    assert inputs["bad_version"]["required"] is False
+    assert wf["concurrency"] == {"group": "release-latest", "cancel-in-progress": False}
+    assert wf["jobs"]["rollback"]["if"] == "github.ref == 'refs/heads/main'"

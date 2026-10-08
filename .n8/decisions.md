@@ -53,3 +53,19 @@ Changes made outside the n8SDLC commands that deviate from what planned issues a
 - **Decision:** Seven project invariants recorded in CLAUDE.md (six test-enforced, one honor-system); guards planned into epics #2 (M1) and #8 (M2).
 - **Decision:** 508/accessibility audit excluded from M10.
   **Why:** The Engine has no UI.
+
+## /n8-plan M0,M1 — 2026-10-08
+
+- **Decision:** Python 3.14 is the single supported version (docs said 3.12+); docs/02 and an ADR are updated by #32.
+  **Why:** User's call; one CI target, and the dev environment is already 3.14.
+- **Decision:** Invariant 1 reworded from "Engine Core is model-free" to "Epistrel runs no model of its own", guarded by a dependency deny-list on inference runtimes (#41); the Core/Orchestrator layering stays as an import-linter architecture rule, not an invariant. Epic #2's AC amended to match.
+  **Why:** The user clarified the invariant's meaning in planning; the import guard was the wrong instrument for it.
+- **Decision:** No Ollama compose service; the local model server will be LM Studio on the host, reachable via `host.docker.internal` (#32).
+- **Decision:** Production = `v*` tag → versioned GHCR image (`X.Y.Z`, `X.Y`, `X`, `latest`) + GitHub release; `latest` and the floating tags move only to the highest stable version; tags must match pyproject's version and be reachable from main; multi-arch (amd64+arm64) on publishes only, single-arch build-only on PRs (#34–#36).
+- **Decision:** Rollback = re-point `latest` (and in-line floating tags) by `imagetools create` plus demoting the bad release (#36); no manual approval environment; no ruleset bypass for anyone.
+- **Decision:** `current_milestone` in `[tool.epistrel.gates]` = highest verified milestone, initial 0; bumped in each milestone's closing PR (added to every milestone's definition of done).
+- **Decision:** Gate machinery lives in `tools/gates/` (outside the shipped package), parses docs/03 §22 and docs/04 §13/§15 directly; §15 remains the plan of record (`--write` merges, never deletes). docs/04 gains M0/M1 lexicon rows but no M2 row (#39).
+- **Decision:** License policy: allow Apache-2.0/MIT/BSD/ISC/PSF/0BSD/Zlib/Unlicense/MPL-2.0; deny GPL/LGPL/AGPL/SSPL/EUPL and UNKNOWN; `OR` passes on any allowed branch; exceptions never admit a denied family (#42).
+- **Decision:** Invariant guards for 3 and 4 deferred to M2 (#8) and annotated in CLAUDE.md; honor-system invariant 6 has no guard.
+- **Decision:** Eval-model endpoint and secrets stay deferred to M4 (unchanged from roadmap).
+- **Decision:** ESTABLISHED (no stories): secret scanning + push protection; Dependabot security updates with `uv` and `github-actions` ecosystems — evidence re-run 2026-10-08 @ 9c40fea.

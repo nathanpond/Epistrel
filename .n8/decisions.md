@@ -218,3 +218,21 @@ Planner decisions of note (full text in each issue's Claude's Discretion):
 - Dependency cycles broken during drafting: the belief-holder `check()` moved into the partitions story (#159); testimony lands before exposures.
 
 Process: 24 fresh executor simulations, 6 re-runs after the fold (#159, #160, #161, #174, #177, #181); coverage check by a fresh subagent (N=64/K=1 confirmed; 64 covered after one weak fix; ten dependency gaps closed before filing).
+
+## /n8-plan M6 — 2026-10-10
+
+Milestone 7 "M6: The world" planned as 34 stories (#185–#218) under epics #22 and #23. Surface: docs/03 §22 M6 row at tier M, N=58, K=4 (FR-EXT-6, FR-STATE-7, FR-CLOCK-4, FR-CLOCK-14 are S-tier, pulled in by owner request alongside the M-tier set).
+
+Owner decisions (round one, 2026-10-10):
+- **External-data providers are declarative manifests, not model-driven tools or an MCP server.** Epistrel is never an MCP server (that is a separate, later product wrapping the Epistrel API for external models — not this milestone). The orchestrator plugs into other services as an MCP *client* at most, per ADR-092, but M6 ships only a declarative HTTP manifest adapter plus an in-process adapter (#204) — no MCP transport, no function-calling tool definitions handed to the generation model. Why: the spec needs the first read of a value pinned for the whole turn, every read recorded and replayed without a live call, and writes dispatched by a worker under an idempotency key — all mechanical with templates, and the wrong place for a model to decide when to spend a payment. A richer adapter (MCP transport, or model-driven tools) can layer onto the same port later if wanted.
+- **Providers own tracked values only** (not open-ended predicate domains like weather or lore lookups) in M6 (#204).
+- **Write-capable effects, the outbox, staged turns and late settlement stay in scope** as specified (#210, #212, #213, #215–#218) — not descoped, despite this being "not a core v1 use case" per the owner, because the read-only path alone still needs the same return-to-consumer contract and the whitepaper leans on the full effect lifecycle.
+- **Providers are registered deployment-wide; the binding is per story, per provider.** A `story_provider_bindings` table carries each story's external ids so a template call always resolves to that story's own value in the game (#204).
+- **State-tracker proposals come from an on-demand whole-history analysis, never the respond path.** The owner was explicit that scenario designers should manage State schemas at authorship time, and that in-play suggestion would add overhead; so `POST /stories/{id}/state-proposals/analyze` runs as a background job over already-recorded detection evidence, with zero per-turn cost (#192).
+- **Scheduled-event completion is a model judgement call, not an explicit action.** The owner gave the canonical case: a character mentions a lawyer meeting that night; the next scene can treat it as having happened with nothing explicitly stated. #196 now infers `surfaced → completed` through the normal claim/report classification (#198) rather than requiring a dedicated completion call.
+- **A turn may request more than one synchronous external effect.** #212 narrates every result in one combined outcome step rather than capping a turn to a single payment.
+- Round two (confirm_wait_max_seconds=10s default, time-estimation eval at 200 cases, seeded profile updated in place, scheduled-events API added now, all four S-tier items pulled in): all answered "ok"/"all as recommended" 2026-10-10.
+
+Process: 34 fresh executor simulations against a pre-implementation skeleton (M1–M5's own planned code is itself unbuilt in this checkout); five hit a provider rate limit mid-run and succeeded on retry. Every story returned substantial build-shape decisions, folded as `(planner)` discretion inline at drafting time rather than in a second pass. Coverage check: N=58/K=4 confirmed, every map line and outcome resolves to a story. Full map, outcomes, and executor-simulation summary are in the milestone (#7, "M6: The world") description.
+
+`/n8-plan M7`, `/n8-plan M8` remain unplanned — this run's whole-project analysis is provisional until they are planned; no specialized-audit or project-skill suggestions beyond the default suite were found warranted at this pass.

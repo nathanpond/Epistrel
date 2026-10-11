@@ -97,7 +97,8 @@ async def require_principal(request: Request) -> str | None:
     well-formed principal is carried; a malformed one is ignored.
     """
     raw = request.headers.get(PRINCIPAL_HEADER)
-    value = raw.strip() if raw is not None else None
+    # Only spaces and tabs (HTTP whitespace) are trimmed: any other control character refuses.
+    value = raw.strip(" \t") if raw is not None else None
     problem = "is required" if value is None else principal_problem(value)
     if problem is None and value == SYSTEM_PRINCIPAL:
         problem = f"`{SYSTEM_PRINCIPAL}` is reserved for background work"

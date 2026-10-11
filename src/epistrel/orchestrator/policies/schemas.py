@@ -42,6 +42,20 @@ class PolicyFields(PolicyContent):
     ``id`` is a client slug or, when omitted, a new ULID.
     """
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "No real addresses",
+                    "scope": "global",
+                    "applies_to": ["text_output"],
+                    "rule": {"type": "regex", "patterns": ["\\d+ [A-Z][a-z]+ (Street|Road)"]},
+                    "message": "Do not give real-looking street addresses.",
+                }
+            ]
+        }
+    )
+
     id: PolicyId | None = None
     scope: Literal["global", "rating"]
     scope_id: str | None = None
@@ -50,6 +64,20 @@ class PolicyFields(PolicyContent):
 class PolicyReplacement(PolicyContent):
     """``PUT /admin/policies/{id}``: a full replacement. Scope and id never change, and
     ``applies_to`` and ``age_condition`` are required so a forgotten field cannot clear them."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "No real addresses",
+                    "applies_to": ["text_output"],
+                    "rule": {"type": "regex", "patterns": ["\\d+ [A-Z][a-z]+ (Street|Road)"]},
+                    "age_condition": "minor_involved_or_present",
+                    "message": "Do not give real-looking street addresses.",
+                }
+            ]
+        }
+    )
 
     applies_to: Targets
     age_condition: AgeCondition | None
@@ -61,6 +89,19 @@ class StoryPolicyItem(PolicyContent):
     A ``story`` policy's ``scope_id`` is the story; a ``character`` policy names its character.
     An item with the id of an existing policy of this story edits it; any other id creates.
     """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "No talk of the war",
+                    "scope": "story",
+                    "rule": {"type": "wordlist", "words": ["the war"]},
+                    "message": "The war is never mentioned.",
+                }
+            ]
+        }
+    )
 
     id: PolicyId | None = None
     scope: Literal["story", "character"] = "story"

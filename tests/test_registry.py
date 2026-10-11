@@ -81,7 +81,10 @@ def test_registry_enumerates_every_named_purpose() -> None:
 def test_reserved_and_unknown_purposes_are_refused() -> None:
     with pytest.raises(UnknownPurpose) as reserved:
         get_delivered("entailment")
-    assert reserved.value.details == {
+    details = dict(reserved.value.details)
+    assert len(details.pop("errors")) == 1
+    assert details == {
+        "field": "body",
         "purpose": "entailment",
         "reason": "reserved",
         "milestone": "M4",

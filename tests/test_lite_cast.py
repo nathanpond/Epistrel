@@ -66,14 +66,22 @@ def test_unknown_actor_and_renders_are_reported_together() -> None:
     )
     with pytest.raises(InvalidRequest) as refused:
         resolve_cast(story, request)
-    assert refused.value.details == {
+    details = dict(refused.value.details)
+    assert [e["field"] for e in details.pop("errors")] == [
+        "body.actor_character_id",
+        "body.render_character_ids",
+        "body.scene_context.characters_present",
+    ]
+    assert details == {
+        "field": "body.actor_character_id",
         "unknown_actor": STRANGER,
         "unknown_render_ids": [BO.id],
         "unknown_present_ids": [BO.id],
     }
     with pytest.raises(InvalidRequest) as render_only:
         resolve_cast(story, _request(WREN.id, render_character_ids=[BO.id]))
-    assert render_only.value.details == {"unknown_render_ids": [BO.id]}
+    assert render_only.value.details["unknown_render_ids"] == [BO.id]
+    assert render_only.value.details["field"] == "body.render_character_ids"
 
 
 def test_malformed_ids_and_empty_renders_are_refused_by_the_model() -> None:

@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, Request, Response
+from fastapi import Depends, Path, Request, Response
 
 from epistrel.api.auth import MUTATING_METHODS, require_principal
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, validate_key
-from epistrel.core.ids import new_ulid
+from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.engine import Engine
+from epistrel.orchestrator.policies.schemas import POLICY_ID_PATTERN
 
 EXPECTED_REVISION_HEADER = "X-Epistrel-Expected-Revision"
 
@@ -78,3 +79,46 @@ def prefers_async(request: Request) -> bool:
 EngineDep = Annotated[Engine, Depends(get_engine)]
 ContextDep = Annotated[RequestContext, Depends(get_request_context)]
 RespondAsyncDep = Annotated[bool, Depends(prefers_async)]
+
+
+# -- path parameters: a malformed id is 422 at ``path.<name>`` before anything runs (FR-API-4) --
+
+StoryId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The story's id (a ULID).",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"],
+    ),
+]
+OperationId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The operation's id (a ULID).",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"],
+    ),
+]
+RatingId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The content rating's id (a ULID).",
+        examples=["00000000000000000000RAT002"],
+    ),
+]
+PolicyIdPath = Annotated[
+    str,
+    Path(
+        pattern=POLICY_ID_PATTERN,
+        description="The policy's id: a client slug or a ULID.",
+        examples=["minors_no_sexual_content"],
+    ),
+]
+Purpose = Annotated[
+    str,
+    Path(
+        description="A model purpose (`default`, `generation`, `guardrail_check`, …).",
+        examples=["generation"],
+    ),
+]

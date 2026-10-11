@@ -29,6 +29,8 @@ PROMPT_MAX = 4_000
 
 
 class Scope(StrEnum):
+    """Where a policy applies: the deployment, a rating, a story, or one character."""
+
     GLOBAL = "global"
     RATING = "rating"
     STORY = "story"
@@ -58,6 +60,9 @@ def default_targets(scope: Scope) -> tuple[Target, ...]:
 
 
 class PolicyKind(StrEnum):
+    """``deterministic`` rules cost nothing; ``model_assisted`` ones cost a ``guardrail_check``
+    model call per check (FR-GUARD-9)."""
+
     DETERMINISTIC = "deterministic"
     MODEL_ASSISTED = "model_assisted"
 

@@ -94,7 +94,20 @@ class PinnedItemIn(BaseModel):
 class PinnedMemoriesRequest(BaseModel):
     """The story's pinned memories, in order, replacing the current set."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "items": [
+                        {"text": "Ada owes Brann a favour."},
+                        {"text": "The bridge to the north is out."},
+                    ]
+                }
+            ]
+        },
+    )
 
     items: list[PinnedItemIn]
 
@@ -102,7 +115,11 @@ class PinnedMemoriesRequest(BaseModel):
 class CustomInstructionsRequest(BaseModel):
     """The story's custom instructions, replacing the current text; ``""`` clears them."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={"examples": [{"text": "Keep replies under three sentences."}]},
+    )
 
     text: str
 
@@ -125,6 +142,11 @@ class PinnedMemories:
     operation_id: str | None = None
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+    model_calls: tuple[dict[str, Any], ...] = ()
+    """An edit's input-gate model calls, as a turn's ``model_calls`` reports them (the Engine
+    fills them, #73; empty for a read)."""
+    elapsed_ms: int = 0
+    """How long an edit took, from the request's arrival (the Engine fills it, #73)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +158,11 @@ class CustomInstructions:
     operation_id: str | None = None
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+    model_calls: tuple[dict[str, Any], ...] = ()
+    """An edit's input-gate model calls, as a turn's ``model_calls`` reports them (the Engine
+    fills them, #73; empty for a read)."""
+    elapsed_ms: int = 0
+    """How long an edit took, from the request's arrival (the Engine fills it, #73)."""
 
 
 @dataclass(frozen=True, slots=True)

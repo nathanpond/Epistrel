@@ -3,13 +3,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Query, Response
 from pydantic import ConfigDict
 
-from epistrel.api.config_changes import ConfigChangesBody
+from epistrel.api.config_changes import ConfigChangesBody, IsoDateTime
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import DeploymentMutationResponse
@@ -32,12 +31,28 @@ class SettingsBody(DeploymentMutationResponse, DeploymentSettings):
         )
 
 
-@router.get("/settings", response_model=SettingsBody)
+@router.get(
+    "/settings",
+    response_model=SettingsBody,
+    operation_id="deployment_settings",
+    summary="Read every deployment setting",
+)
 async def read_settings(ctx: ContextDep, engine: EngineDep) -> SettingsBody:
     return SettingsBody.of(await engine.deployment_settings(ctx))
 
 
-@router.put("/settings", response_model=SettingsBody)
+@router.put(
+    "/settings",
+    response_model=SettingsBody,
+    operation_id="update_deployment_settings",
+    summary="Change deployment settings",
+    description=(
+        "Change any of the deployment settings; omitted keys keep their values. Every change "
+        "is recorded as a configuration change and moves `config_revision`; a write that "
+        "changes nothing writes nothing. `max_model_calls_per_turn` accepts `null` (the Lite "
+        "formula `9 + G`); no other key does."
+    ),
+)
 async def update_settings(
     body: SettingsPatch, response: Response, ctx: ContextDep, engine: EngineDep
 ) -> SettingsBody:
@@ -45,13 +60,18 @@ async def update_settings(
     return answered(SettingsBody.of(updated), ctx, response, replayed=updated.replayed)
 
 
-@router.get("/config-changes", response_model=ConfigChangesBody)
+@router.get(
+    "/config-changes",
+    response_model=ConfigChangesBody,
+    operation_id="config_changes_deployment",
+    summary="List the deployment's configuration changes",
+)
 async def config_changes(
     ctx: ContextDep,
     engine: EngineDep,
     setting: Annotated[list[str] | None, Query()] = None,
     change_class: Annotated[ConfigClass | None, Query(alias="class")] = None,
-    since: datetime | None = None,
+    since: IsoDateTime | None = None,
     after: str | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ConfigChangesBody:

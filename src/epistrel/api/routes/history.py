@@ -8,7 +8,7 @@ from typing import Any, Literal
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.core.history import DEFAULT_LIMIT, History, HistoryItem, SummaryItem, TurnSummary
 from epistrel.core.variants import ChainRef
 
@@ -39,6 +39,9 @@ HISTORY_DESCRIPTION = (
 
 
 class HistoryItemModel(BaseModel):
+    """One history item: a beat, a narration, a reply message or an audit record, with its
+    position (turn, variant, beat), channel, text and the operation that recorded it."""
+
     turn: int | None
     variant: int | None
     beat: int | None
@@ -68,6 +71,8 @@ def item_model(item: HistoryItem) -> ItemModel:
 
 
 class TurnMessageModel(BaseModel):
+    """A turn's reply: its transcript row id and text."""
+
     message_id: str
     text: str
 
@@ -99,6 +104,9 @@ class SummarySegmentModel(BaseModel):
 
 
 class HistoryResponse(BaseModel):
+    """A page of the story's corrected history for one output viewpoint, with the turns on the
+    page, the revision it was read at and the cursor to the previous page."""
+
     items: list[ItemModel]
     audit: list[ItemModel] | None = None
     summary: list[SummarySegmentModel] | None = None
@@ -132,11 +140,12 @@ class HistoryResponse(BaseModel):
     "/stories/{story_id}/history",
     response_model=HistoryResponse,
     response_model_exclude_unset=True,
+    operation_id="history",
     summary="Read the story's history for one output viewpoint",
     description=HISTORY_DESCRIPTION,
 )
 async def history(
-    story_id: str,
+    story_id: StoryId,
     ctx: ContextDep,
     engine: EngineDep,
     as_of: int | None = None,

@@ -196,7 +196,10 @@ class ForkRequest(BaseModel):
     """``POST /stories/{id}/fork``: copy the history through ``at_turn`` (default the head, or
     the chain's tip) along ``variant_chain`` (default the active chain) into a new story."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"at_turn": 4, "name": "What if she stayed"}]},
+    )
 
     at_turn: int | None = Field(
         default=None, ge=0, description="The last turn to copy (0: only the story's setup)."

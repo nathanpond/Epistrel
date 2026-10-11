@@ -260,4 +260,6 @@ def test_rating_policy_ids_must_be_live_rating_policies(client: TestClient) -> N
     for bad in (global_policy["id"], retired["id"], "no-such-policy"):
         response = rating([rating_policy["id"], bad])
         assert response.status_code == 422, bad
-        assert _error(response)["details"] == {"field": "body.policy_ids", "unknown": [bad]}
+        details = _error(response)["details"]
+        assert details.pop("errors")[0]["field"] == "body.policy_ids"
+        assert details == {"field": "body.policy_ids", "unknown": [bad]}

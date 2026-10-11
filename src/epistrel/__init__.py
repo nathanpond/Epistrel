@@ -1,7 +1,18 @@
-"""Epistrel: a viewpoint-aware memory engine for character/actor GenAI."""
+"""Epistrel: a viewpoint-aware memory engine for character/actor GenAI.
+
+The in-process library (FR-API-3): ``Engine`` with its ``Settings`` and ``RequestContext``, the
+request models its operations take, the results they return, and the errors they raise. The
+REST API serves the same operations with the same models (``docs/openapi.json``).
+
+Every name is imported on first use, so ``import epistrel`` (and importing any subpackage) does
+not pull in the database stack. Coverage's start-up resolves ``epistrel.core`` by importing this
+package, and SQLAlchemy's compiled cache-key module breaks when it is first imported at that
+moment.
+"""
 
 from __future__ import annotations
 
+import importlib
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
@@ -11,18 +22,217 @@ except PackageNotFoundError:  # pragma: no cover - only outside an installed env
     __version__ = "0.0.0+unknown"
 
 if TYPE_CHECKING:
+    from epistrel.config import Settings
+    from epistrel.core.context import RequestContext
+    from epistrel.core.deployment import SettingsPatch
+    from epistrel.core.errors import (
+        BudgetBelowSafetyMinimum,
+        CannotRelax,
+        ClientEventConflict,
+        ConfigConflict,
+        DatabaseUnavailable,
+        EpistrelError,
+        GuardrailViolation,
+        IdempotencyConflict,
+        InheritanceCycle,
+        InvalidRequest,
+        NothingToRegenerate,
+        NothingToUndo,
+        OmniscientRequired,
+        OriginalInFlightTimeout,
+        PolicyNotFound,
+        PrincipalRequired,
+        RatingNotFound,
+        RatingRetired,
+        RevisionConflict,
+        StoryArchived,
+        StoryBusy,
+        StoryNotFound,
+        TimelineChanged,
+        UnknownChain,
+        ViewpointUnresolved,
+    )
+    from epistrel.core.fork import Forked, ForkRequest
+    from epistrel.core.history import History
+    from epistrel.core.idempotency import ReferenceReplay
+    from epistrel.core.ingest import IngestEvent, IngestRequest, IngestResult
+    from epistrel.core.ratings import RatingFields, RatingReplacement
+    from epistrel.core.stories import CharacterSpec, CreatedStory, StorySpec, StoryView
+    from epistrel.core.story_texts import (
+        CustomInstructions,
+        CustomInstructionsRequest,
+        PinnedMemories,
+        PinnedMemoriesRequest,
+    )
+    from epistrel.core.timeline import (
+        Swapped,
+        TruncateRequest,
+        Truncation,
+        UntruncateRequest,
+        Untruncation,
+    )
+    from epistrel.core.turn_gate import TurnAccepted
+    from epistrel.core.variants import ChainRef, SwapRequest
     from epistrel.engine import Engine
+    from epistrel.orchestrator.lite.schemas import (
+        RegenerateRequest,
+        RegenerateResult,
+        RespondRequest,
+        RespondResult,
+    )
+    from epistrel.orchestrator.models.config import ApiKeyBody, ConfigReplacement
+    from epistrel.orchestrator.models.errors import BudgetExhausted, ModelUnavailable
+    from epistrel.orchestrator.policies.schemas import (
+        PolicyFields,
+        PolicyReplacement,
+        StoryPolicyItem,
+    )
 
-__all__ = ["Engine", "__version__"]
+_EXPORTS: dict[str, str] = {
+    "Engine": "epistrel.engine",
+    "Settings": "epistrel.config",
+    "RequestContext": "epistrel.core.context",
+    # request models
+    "StorySpec": "epistrel.core.stories",
+    "CharacterSpec": "epistrel.core.stories",
+    "RespondRequest": "epistrel.orchestrator.lite.schemas",
+    "RegenerateRequest": "epistrel.orchestrator.lite.schemas",
+    "IngestRequest": "epistrel.core.ingest",
+    "IngestEvent": "epistrel.core.ingest",
+    "TruncateRequest": "epistrel.core.timeline",
+    "UntruncateRequest": "epistrel.core.timeline",
+    "SwapRequest": "epistrel.core.variants",
+    "ChainRef": "epistrel.core.variants",
+    "ForkRequest": "epistrel.core.fork",
+    "PinnedMemoriesRequest": "epistrel.core.story_texts",
+    "CustomInstructionsRequest": "epistrel.core.story_texts",
+    "RatingFields": "epistrel.core.ratings",
+    "RatingReplacement": "epistrel.core.ratings",
+    "SettingsPatch": "epistrel.core.deployment",
+    "PolicyFields": "epistrel.orchestrator.policies.schemas",
+    "PolicyReplacement": "epistrel.orchestrator.policies.schemas",
+    "StoryPolicyItem": "epistrel.orchestrator.policies.schemas",
+    "ConfigReplacement": "epistrel.orchestrator.models.config",
+    "ApiKeyBody": "epistrel.orchestrator.models.config",
+    # results
+    "RespondResult": "epistrel.orchestrator.lite.schemas",
+    "RegenerateResult": "epistrel.orchestrator.lite.schemas",
+    "IngestResult": "epistrel.core.ingest",
+    "History": "epistrel.core.history",
+    "CreatedStory": "epistrel.core.stories",
+    "StoryView": "epistrel.core.stories",
+    "PinnedMemories": "epistrel.core.story_texts",
+    "CustomInstructions": "epistrel.core.story_texts",
+    "Truncation": "epistrel.core.timeline",
+    "Untruncation": "epistrel.core.timeline",
+    "Swapped": "epistrel.core.timeline",
+    "Forked": "epistrel.core.fork",
+    # errors (REST answers each as ``{"error": {code, message, details}}``)
+    "EpistrelError": "epistrel.core.errors",
+    "BudgetBelowSafetyMinimum": "epistrel.core.errors",
+    "CannotRelax": "epistrel.core.errors",
+    "ClientEventConflict": "epistrel.core.errors",
+    "ConfigConflict": "epistrel.core.errors",
+    "DatabaseUnavailable": "epistrel.core.errors",
+    "GuardrailViolation": "epistrel.core.errors",
+    "IdempotencyConflict": "epistrel.core.errors",
+    "InheritanceCycle": "epistrel.core.errors",
+    "InvalidRequest": "epistrel.core.errors",
+    "NothingToRegenerate": "epistrel.core.errors",
+    "NothingToUndo": "epistrel.core.errors",
+    "OmniscientRequired": "epistrel.core.errors",
+    "OriginalInFlightTimeout": "epistrel.core.errors",
+    "PolicyNotFound": "epistrel.core.errors",
+    "PrincipalRequired": "epistrel.core.errors",
+    "RatingNotFound": "epistrel.core.errors",
+    "RatingRetired": "epistrel.core.errors",
+    "RevisionConflict": "epistrel.core.errors",
+    "StoryArchived": "epistrel.core.errors",
+    "StoryBusy": "epistrel.core.errors",
+    "StoryNotFound": "epistrel.core.errors",
+    "TimelineChanged": "epistrel.core.errors",
+    "UnknownChain": "epistrel.core.errors",
+    "ViewpointUnresolved": "epistrel.core.errors",
+    "ModelUnavailable": "epistrel.orchestrator.models.errors",
+    "BudgetExhausted": "epistrel.orchestrator.models.errors",
+    # control flow the library raises instead of REST's 200 reference / 202
+    "ReferenceReplay": "epistrel.core.idempotency",
+    "TurnAccepted": "epistrel.core.turn_gate",
+}
+"""Each public name and the module that defines it."""
+
+__all__ = [
+    "ApiKeyBody",
+    "BudgetBelowSafetyMinimum",
+    "BudgetExhausted",
+    "CannotRelax",
+    "ChainRef",
+    "CharacterSpec",
+    "ClientEventConflict",
+    "ConfigConflict",
+    "ConfigReplacement",
+    "CreatedStory",
+    "CustomInstructions",
+    "CustomInstructionsRequest",
+    "DatabaseUnavailable",
+    "Engine",
+    "EpistrelError",
+    "ForkRequest",
+    "Forked",
+    "GuardrailViolation",
+    "History",
+    "IdempotencyConflict",
+    "IngestEvent",
+    "IngestRequest",
+    "IngestResult",
+    "InheritanceCycle",
+    "InvalidRequest",
+    "ModelUnavailable",
+    "NothingToRegenerate",
+    "NothingToUndo",
+    "OmniscientRequired",
+    "OriginalInFlightTimeout",
+    "PinnedMemories",
+    "PinnedMemoriesRequest",
+    "PolicyFields",
+    "PolicyNotFound",
+    "PolicyReplacement",
+    "PrincipalRequired",
+    "RatingFields",
+    "RatingNotFound",
+    "RatingReplacement",
+    "RatingRetired",
+    "ReferenceReplay",
+    "RegenerateRequest",
+    "RegenerateResult",
+    "RequestContext",
+    "RespondRequest",
+    "RespondResult",
+    "RevisionConflict",
+    "Settings",
+    "SettingsPatch",
+    "StoryArchived",
+    "StoryBusy",
+    "StoryNotFound",
+    "StoryPolicyItem",
+    "StorySpec",
+    "StoryView",
+    "SwapRequest",
+    "Swapped",
+    "TimelineChanged",
+    "TruncateRequest",
+    "Truncation",
+    "TurnAccepted",
+    "UnknownChain",
+    "UntruncateRequest",
+    "Untruncation",
+    "ViewpointUnresolved",
+    "__version__",
+]
 
 
 def __getattr__(name: str) -> Any:
-    """``epistrel.Engine`` is imported on first use, so ``import epistrel`` (and importing any
-    subpackage) does not pull in the database stack. Coverage's start-up resolves
-    ``epistrel.core`` by importing this package, and SQLAlchemy's compiled cache-key module
-    breaks when it is first imported at that moment."""
-    if name == "Engine":
-        from epistrel.engine import Engine
-
-        return Engine
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(module), name)

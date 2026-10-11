@@ -11,10 +11,12 @@ import asyncio
 import contextlib
 import dataclasses
 import hashlib
+import inspect
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import SecretStr, TypeAdapter, ValidationError
 from sqlalchemy import func, select
@@ -40,7 +42,7 @@ from epistrel.core import story_settings as settings_store
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import StoryStatus
-from epistrel.core.errors import InvalidRequest, PrincipalRequired
+from epistrel.core.errors import InvalidRequest, PrincipalRequired, refuse_nul
 from epistrel.core.history import DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT
 from epistrel.core.history import History, read_history
 from epistrel.core.idempotency import (
@@ -89,6 +91,7 @@ from epistrel.orchestrator.lite.schemas import (
 )
 from epistrel.orchestrator.models import ModelAccessLayer
 from epistrel.orchestrator.models import config as model_config
+from epistrel.orchestrator.models import metrics as model_metrics
 from epistrel.orchestrator.policies import admin as policy_admin
 from epistrel.orchestrator.policies import input_gate, output_gate
 from epistrel.orchestrator.policies import store as policy_store
@@ -192,13 +195,73 @@ def _policy_items(raw: Any) -> list[StoryPolicyItem]:
     try:
         return _POLICY_ITEMS.validate_python(raw)
     except ValidationError as exc:
-        first = exc.errors()[0]
-        where = "".join(
-            f"[{part}]" if isinstance(part, int) else f".{part}" for part in first["loc"]
-        )
-        raise InvalidRequest(
-            str(first["msg"]), {"field": f"body.policies{where}", "errors": exc.error_count()}
-        ) from None
+        raise InvalidRequest.from_errors(exc.errors(), prefix=("body", "policies")) from None
+
+
+LIBRARY_ONLY_ATTRIBUTE = "__epistrel_library_only__"
+
+
+def library_only[F: Callable[..., Any]](reason: str) -> Callable[[F], F]:
+    """Mark an ``Engine`` coroutine method that has no REST route of its own, and say why.
+
+    Every other public coroutine method of ``Engine`` is an *operation*: the REST route that
+    serves it carries ``operation_id`` = the method's name (``<name>_<suffix>`` when several
+    routes serve it), and C-03's parity test runs it over both surfaces (FR-API-3; #73)."""
+
+    def mark(method: F) -> F:
+        setattr(method, LIBRARY_ONLY_ATTRIBUTE, reason)
+        return method
+
+    return mark
+
+
+def operations(engine_class: type[Engine] | None = None) -> list[str]:
+    """The public operations of ``engine_class`` (``Engine``): every public coroutine method not
+    marked ``library_only``, sorted by name."""
+    cls = engine_class or Engine
+    found: list[str] = []
+    for name in dir(cls):
+        if name.startswith("_"):
+            continue
+        method = inspect.getattr_static(cls, name)
+        if isinstance(method, staticmethod | classmethod):
+            continue
+        if inspect.iscoroutinefunction(method) and not hasattr(method, LIBRARY_ONLY_ATTRIBUTE):
+            found.append(name)
+    return sorted(found)
+
+
+def library_only_methods(engine_class: type[Engine] | None = None) -> dict[str, str]:
+    """``{method: reason}`` for every ``library_only`` coroutine method of ``engine_class``."""
+    cls = engine_class or Engine
+    marked: dict[str, str] = {}
+    for name in dir(cls):
+        reason = getattr(inspect.getattr_static(cls, name), LIBRARY_ONLY_ATTRIBUTE, None)
+        if isinstance(reason, str):
+            marked[name] = reason
+    return marked
+
+
+class _Metered(Protocol):
+    @property
+    def model_calls(self) -> tuple[dict[str, Any], ...]: ...
+
+    @property
+    def elapsed_ms(self) -> int: ...
+
+
+async def _metered[R: _Metered](ctx: RequestContext, run: Callable[[], Awaitable[R]]) -> R:
+    """``run``'s result with the model calls made inside it and the time since the request
+    arrived (``ctx.received_at``, else now): ingest and the story-text edits report what their
+    input gate spent, as a turn does (#69's hand-off; #73)."""
+    started = ctx.received_at if ctx.received_at is not None else time.monotonic()
+    with model_metrics.recording() as log:
+        value = await run()
+    return dataclasses.replace(
+        value,  # type: ignore[type-var]
+        model_calls=tuple(call.model_dump(mode="json") for call in log.calls),
+        elapsed_ms=round((time.monotonic() - started) * 1000),
+    )
 
 
 TURN_QUEUE_HOOK = "turn_queue"
@@ -247,6 +310,7 @@ class Engine:
         self._db = db
         self.models.bind(db)
 
+    @library_only("lifecycle: the REST app starts it at start-up")
     async def start_workers(self, mode: ProcessMode | None = None) -> None:
         """Start the in-process background work (the app's start-up; NFR-REL-5, #71).
 
@@ -275,6 +339,7 @@ class Engine:
         except Exception as exc:
             logger.warning("queued turns were not recovered at start-up: %s", type(exc).__name__)
 
+    @library_only("lifecycle: the REST app stops it at shutdown")
     async def stop_workers(self) -> None:
         """Stop the background work: the worker lets running jobs finish (up to its
         ``DRAIN_S``, within the lease), then the drainer stops; a queued turn stopped mid-run
@@ -336,6 +401,8 @@ class Engine:
             codec=codec,
             wait_s=IDEMPOTENCY_WAIT_S,
         )
+        if material is not None:
+            refuse_nul(material)
         with idempotency.calling(call):
             try:
                 if material is not None:
@@ -510,6 +577,7 @@ class Engine:
             ),
         )
 
+    @library_only("the trust boundary's stand-in; served only by test-registered routes")
     async def noop(self, ctx: RequestContext) -> str:
         """A mutating call that changes nothing and returns the recorded principal.
 
@@ -551,6 +619,7 @@ class Engine:
             ctx, "rebuild_projections", run, story_id=story_id, material={"story_id": story_id}
         )
 
+    @library_only("a precondition every story mutation runs (`X-Epistrel-Expected-Revision`)")
     async def check_expected_revision(self, ctx: RequestContext, story_id: str) -> int:
         """Every story-scoped mutation starts here: a stale ``ctx.expected_revision`` is 409
         ``revision_conflict`` with ``current_revision`` before anything is written (FR-RESP-6).
@@ -651,6 +720,7 @@ class Engine:
         )
         return await stories.create_story_from(self.db, spec, principal=principal)
 
+    @library_only("the input gate inside respond, ingest, the story-text edits and story creation")
     async def gate_input(
         self,
         ctx: RequestContext,
@@ -719,6 +789,7 @@ class Engine:
         raises ``turn_gate.TurnAccepted`` (REST 202) with the turn still queued. An idle story
         always plays the turn at once."""
         principal = self.require_principal(ctx)
+        refuse_nul({"story_id": story_id, "body": request.model_dump(mode="json")})
         ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
 
         async def gate(budget: TurnBudget, text: str, actor: str, renders: list[str]) -> InputPass:
@@ -815,15 +886,18 @@ class Engine:
                     respond_async=respond_async,
                 )
 
-            return await ingest.ingest(
-                self.db,
-                story_id,
-                request,
-                principal=principal,
-                gate=gate,
-                idempotency_key=ctx.idempotency_key,
-                expected_revision=ctx.expected_revision,
-                queue_batch=queue_batch,
+            return await _metered(
+                ctx,
+                lambda: ingest.ingest(
+                    self.db,
+                    story_id,
+                    request,
+                    principal=principal,
+                    gate=gate,
+                    idempotency_key=ctx.idempotency_key,
+                    expected_revision=ctx.expected_revision,
+                    queue_batch=queue_batch,
+                ),
             )
 
         return await self._keyed(
@@ -852,14 +926,17 @@ class Engine:
         principal = self.require_principal(ctx)
 
         async def run(ctx: RequestContext) -> story_texts.PinnedMemories:
-            return await story_texts.set_pinned_memories(
-                self.db,
-                story_id,
-                request,
-                principal=principal,
-                gate=self._text_gate(ctx, story_id, EntryPoint.PINNED_MEMORIES),
-                idempotency_key=ctx.idempotency_key,
-                expected_revision=ctx.expected_revision,
+            return await _metered(
+                ctx,
+                lambda: story_texts.set_pinned_memories(
+                    self.db,
+                    story_id,
+                    request,
+                    principal=principal,
+                    gate=self._text_gate(ctx, story_id, EntryPoint.PINNED_MEMORIES),
+                    idempotency_key=ctx.idempotency_key,
+                    expected_revision=ctx.expected_revision,
+                ),
             )
 
         return await self._keyed(
@@ -884,14 +961,17 @@ class Engine:
         principal = self.require_principal(ctx)
 
         async def run(ctx: RequestContext) -> story_texts.CustomInstructions:
-            return await story_texts.set_custom_instructions(
-                self.db,
-                story_id,
-                request,
-                principal=principal,
-                gate=self._text_gate(ctx, story_id, EntryPoint.CUSTOM_INSTRUCTIONS),
-                idempotency_key=ctx.idempotency_key,
-                expected_revision=ctx.expected_revision,
+            return await _metered(
+                ctx,
+                lambda: story_texts.set_custom_instructions(
+                    self.db,
+                    story_id,
+                    request,
+                    principal=principal,
+                    gate=self._text_gate(ctx, story_id, EntryPoint.CUSTOM_INSTRUCTIONS),
+                    idempotency_key=ctx.idempotency_key,
+                    expected_revision=ctx.expected_revision,
+                ),
             )
 
         return await self._keyed(
@@ -921,6 +1001,7 @@ class Engine:
         guardrails = await policy_store.story_guardrails(self.db, story_id)
         return StorySettings.from_row(story.settings), guardrails
 
+    @library_only("served as `effective_budget` in `GET`/`PATCH /stories/{id}/settings`")
     async def effective_budget(self, ctx: RequestContext, story_id: str) -> EffectiveBudget:
         """The turn budget the story's next turn would plan with (#69): the call cap and where
         it comes from (``story``, ``deployment`` or ``formula``), ``turn_deadline``, the
@@ -1008,6 +1089,7 @@ class Engine:
             return story
         return await stories.get_story(self.db, story_id, omniscient=True)
 
+    @library_only("served as `undo_available`/`dormant_chains` in `GET /stories/{id}`")
     async def undo_state(self, ctx: RequestContext, story_id: str) -> timeline.UndoState:
         """Whether the story's latest truncation can be undone, and the discarded tails that
         have newer turns over them (``GET /stories/{id}``, #65)."""
@@ -1314,6 +1396,7 @@ class Engine:
     async def policies_get(self, ctx: RequestContext, policy_id: str) -> Policy:
         return await policy_store.get_policy(self.db, policy_id)
 
+    @library_only("served as `effective_policies` in `GET /stories/{id}/settings`")
     async def policies_effective(self, ctx: RequestContext, story_id: str) -> tuple[Policy, ...]:
         """The story's effective policies: global, the rating closure, story, character."""
         return await policy_store.effective_policies(self.db, story_id)
@@ -1353,6 +1436,7 @@ class Engine:
             material={"policy_id": policy_id},
         )
 
+    @library_only("served as `policies` in `PATCH /stories/{id}/settings`")
     async def policies_set_story(
         self, ctx: RequestContext, story_id: str, items: list[StoryPolicyItem]
     ) -> policy_admin.StoryPoliciesWrite:

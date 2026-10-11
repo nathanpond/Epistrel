@@ -230,7 +230,7 @@ OMNISCIENT = "omniscient"
 class StorySettings(BaseModel):
     """A story's settings. Unknown keys are kept so later stories' settings survive a read."""
 
-    model_config = ConfigDict(extra="allow", frozen=True)
+    model_config = ConfigDict(extra="allow", frozen=True, use_attribute_docstrings=True)
 
     regenerate_retry_budget: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_REGENERATE_RETRY_BUDGET, ge=0, le=10

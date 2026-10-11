@@ -44,11 +44,17 @@ _last_warning: float | None = None
 
 
 class WorkersCheck(BaseModel):
+    """Worker loops with a heartbeat within `worker_heartbeat_timeout`, and the newest
+    heartbeat's age in seconds (`null`: none)."""
+
     alive: int | None = None
     last_heartbeat_s: float | None = None
 
 
 class HealthChecks(BaseModel):
+    """Each check: the database, the workers, and the oldest overdue timer and job (seconds;
+    `null`: nothing overdue)."""
+
     database: Literal["ok", "error", "skipped"]
     workers: WorkersCheck = WorkersCheck()
     oldest_overdue_timer_s: float | None = None
@@ -56,6 +62,8 @@ class HealthChecks(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    """`ok`, `degraded` (still 200) or `unavailable` (503), and the checks behind it."""
+
     status: Literal["ok", "degraded", "unavailable"]
     checks: HealthChecks
 
@@ -99,6 +107,8 @@ async def check(engine: AsyncEngine) -> HealthResponse:
 @router.get(
     "/health",
     response_model=HealthResponse,
+    operation_id="health",
+    summary="Liveness and readiness",
     responses={status.HTTP_503_SERVICE_UNAVAILABLE: {"model": HealthResponse}},
 )
 async def health(request: Request, response: Response) -> HealthResponse:

@@ -69,7 +69,19 @@ class RatingFields(BaseModel):
     keeping the first occurrence.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "Teen",
+                    "description": "Mild violence and language.",
+                    "prompt_guidance": "Keep it suitable for 13+.",
+                    "inherits_from": ["00000000000000000000RAT001"],
+                }
+            ]
+        },
+    )
 
     name: Name
     description: str = Field(default="", max_length=DESCRIPTION_MAX)
@@ -82,6 +94,22 @@ class RatingFields(BaseModel):
 
 class RatingReplacement(RatingFields):
     """A full replacement (``PUT /admin/content-ratings/{id}``): every field is required."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "Teen",
+                    "description": "Mild violence and language.",
+                    "display_order": 20,
+                    "prompt_guidance": "Keep it suitable for 13+.",
+                    "image_guidance": "",
+                    "policy_ids": [],
+                    "inherits_from": ["00000000000000000000RAT001"],
+                }
+            ]
+        }
+    )
 
     description: str = Field(max_length=DESCRIPTION_MAX)
     display_order: int

@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from epistrel.orchestrator.models.errors import ModelError
 
-type Outcome = Literal["ok", "timeout", "http_error", "invalid_output", "cancelled"]
+Outcome = Literal["ok", "timeout", "http_error", "invalid_output", "cancelled"]
 OUTCOMES: tuple[Outcome, ...] = ("ok", "timeout", "http_error", "invalid_output", "cancelled")
 TOKEN_KINDS = ("input", "output")
 MAX_LABEL_CHARS = 100

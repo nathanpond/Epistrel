@@ -10,13 +10,16 @@ Python types.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
 import httpx2 as httpx
 import pytest
+from alembic import command
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.api.errors import field_path
@@ -24,11 +27,13 @@ from epistrel.api.routes.history import HistoryResponse
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
+from epistrel.core.db import make_sync_engine
 from epistrel.core.errors import EpistrelError
 from epistrel.core.stories import StorySpec
 from epistrel.engine import Engine
 from epistrel.orchestrator.lite.schemas import RespondRequest
 from tests.auth_support import auth_settings, bearer
+from tests.conftest import alembic_config
 from tests.respond_support import respond_client
 
 SURFACES = ("rest", "library")
@@ -197,3 +202,22 @@ async def both(stub_settings: Settings, engine: AsyncEngine) -> AsyncIterator[di
     """Both surfaces over one app, for tests that compare them directly."""
     async with respond_client(stub_settings, engine) as (client, lib):
         yield {name: Surface(name, client, lib) for name in SURFACES}
+
+
+@contextmanager
+def migrated_database(pg_url: str, name: str) -> Iterator[str]:
+    """A fresh database on the session's server, migrated to head, dropped afterwards (#73:
+    C-01 and C-03 write deployment-wide state that must not reach the shared database)."""
+    admin = make_sync_engine(pg_url, isolation_level="AUTOCOMMIT")
+    drop = text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    try:
+        with admin.connect() as conn:
+            conn.execute(drop)
+            conn.execute(text(f'CREATE DATABASE "{name}"'))
+        url = pg_url.rsplit("/", 1)[0] + f"/{name}"
+        command.upgrade(alembic_config(url), "head")
+        yield url
+    finally:
+        with admin.connect() as conn:
+            conn.execute(drop)
+        admin.dispose()

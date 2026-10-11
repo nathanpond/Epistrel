@@ -8,7 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
-from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep
+from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.history import ItemModel, item_model
@@ -159,11 +159,12 @@ class RespondResponse(MutationResponse):
 @router.post(
     "/stories/{story_id}/respond",
     response_model=RespondResponse,
+    operation_id="respond",
     summary="Play one turn and return the finished reply",
     description=RESPOND_DESCRIPTION,
 )
 async def respond(
-    story_id: str,
+    story_id: StoryId,
     body: RespondRequest,
     response: Response,
     ctx: ContextDep,

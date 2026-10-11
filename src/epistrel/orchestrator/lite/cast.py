@@ -77,8 +77,24 @@ def resolve_cast(story: StoryCast, request: RespondRequest) -> ResolvedCast:
         if absent:
             problems["unknown_present_ids"] = absent
     if problems or actor is None:
-        raise InvalidRequest("the request names characters that are not in the story", problems)
+        message = "the request names characters that are not in the story"
+        fields = [CAST_FIELDS[key] for key in CAST_FIELDS if key in problems]
+        raise InvalidRequest(
+            message,
+            {
+                **problems,
+                "field": fields[0] if fields else "body",
+                "errors": [{"field": f, "message": message, "type": "value_error"} for f in fields],
+            },
+        )
     return ResolvedCast(actor=actor, render=tuple(members[i] for i in ids))
 
 
-__all__ = ["ResolvedCast", "default_render_ids", "resolve_cast"]
+CAST_FIELDS = {
+    "unknown_actor": "body.actor_character_id",
+    "unknown_render_ids": "body.render_character_ids",
+    "unknown_present_ids": "body.scene_context.characters_present",
+}
+"""Each cast problem and the request field it names (``details.field`` is the first)."""
+
+__all__ = ["CAST_FIELDS", "ResolvedCast", "default_render_ids", "resolve_cast"]

@@ -82,7 +82,9 @@ def test_payloads_are_frozen_and_closed() -> None:
         payload.text = "changed"  # type: ignore[misc]
     with pytest.raises(InvalidEventPayload) as caught:
         validate("player_input", {"text": "hi", "extra": 1})
-    assert caught.value.details == {"type": "player_input", "fields": ["extra"]}
+    details = dict(caught.value.details)
+    assert details.pop("errors")[0]["field"] == details.pop("field") == "body"
+    assert details == {"type": "player_input", "fields": ["extra"]}
     assert caught.value.code == "validation_error"
 
 

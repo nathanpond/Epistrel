@@ -71,11 +71,7 @@ def _validated(document: Mapping[str, Any]) -> StorySettings:
     try:
         return StorySettings.model_validate(document)
     except ValidationError as exc:
-        first = exc.errors()[0]
-        location = ".".join(str(part) for part in first["loc"])
-        raise InvalidRequest(
-            str(first["msg"]), {"field": f"body.{location}", "errors": exc.error_count()}
-        ) from None
+        raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
 
 
 def _dump(settings: StorySettings) -> dict[str, Any]:

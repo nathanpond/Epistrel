@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.deps import ContextDep, EngineDep, OperationId
 from epistrel.core.operation_view import OperationView
 
 router = APIRouter(prefix="/operations", tags=["operations"])
@@ -31,11 +31,16 @@ OPERATION_DESCRIPTION = (
 
 
 class StoredResultBody(BaseModel):
+    """The stored response of the operation's ``Idempotency-Key``: its status and body."""
+
     status: int
     body: Any
 
 
 class OperationBody(BaseModel):
+    """One operation: kind, status, position, revision, attribution, timestamps, attempts,
+    configuration revisions, origin and, within the result window, its stored result."""
+
     id: str
     story_id: str | None
     kind: str
@@ -85,8 +90,11 @@ class OperationBody(BaseModel):
     "/{operation_id}",
     response_model=OperationBody,
     response_model_exclude_none=False,
+    operation_id="get_operation",
     summary="Read one operation (the reference of an idempotent retry)",
     description=OPERATION_DESCRIPTION,
 )
-async def get_operation(operation_id: str, ctx: ContextDep, engine: EngineDep) -> OperationBody:
+async def get_operation(
+    operation_id: OperationId, ctx: ContextDep, engine: EngineDep
+) -> OperationBody:
     return OperationBody.of(await engine.get_operation(ctx, operation_id))

@@ -28,13 +28,19 @@ from fastapi import APIRouter, Body, Response
 from fastapi import status as http_status
 from pydantic import BaseModel
 
-from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.core.enums import Membership
-from epistrel.core.fork import ForkRequest
-from epistrel.core.timeline import TruncateRequest, UntruncateRequest
+from epistrel.core.fork import Forked, ForkRequest
+from epistrel.core.timeline import (
+    Swapped,
+    TruncateRequest,
+    Truncation,
+    UntruncateRequest,
+    Untruncation,
+)
 from epistrel.core.variants import Chain, ChainRef, SwapRequest
 from epistrel.orchestrator.lite.schemas import RegenerateRequest, RegenerateResult
 
@@ -48,11 +54,24 @@ CONTROL_RULES = (
 
 
 class TruncatedBody(MutationResponse):
+    """A committed truncation: its operation, the story's revision and next turn index after
+    it, and how many operations it discarded."""
+
     operation_id: str
     next_turn_index: int
     to_turn: int
     discarded_operations: int
     """How many operations the truncation discarded."""
+
+    @classmethod
+    def of(cls, done: Truncation) -> TruncatedBody:
+        return cls(
+            operation_id=done.operation_id,
+            timeline_revision=done.timeline_revision,
+            next_turn_index=done.next_turn_index,
+            to_turn=done.to_turn,
+            discarded_operations=done.discarded_operations,
+        )
 
 
 class ChainRefBody(BaseModel):
@@ -67,6 +86,9 @@ class ChainRefBody(BaseModel):
 
 
 class UntruncatedBody(MutationResponse):
+    """A committed untruncation: the truncation it reverted and how many operations it
+    reactivated, or, when newer turns made it a swap, the chain it activated."""
+
     operation_id: str
     next_turn_index: int
     truncate_operation_id: str
@@ -78,14 +100,41 @@ class UntruncatedBody(MutationResponse):
     active_chain: ChainRefBody | None
     dormant_operations: int
 
+    @classmethod
+    def of(cls, done: Untruncation) -> UntruncatedBody:
+        return cls(
+            operation_id=done.operation_id,
+            timeline_revision=done.timeline_revision,
+            next_turn_index=done.next_turn_index,
+            truncate_operation_id=done.truncate_operation_id,
+            restored_operations=done.restored_operations,
+            swapped=done.swapped,
+            active_chain=None if done.active_chain is None else ChainRefBody.of(done.active_chain),
+            dormant_operations=done.dormant_operations,
+        )
+
 
 class SwappedBody(MutationResponse):
+    """A swap: the chain now active, how many operations it activated and made dormant, and
+    the story's revision."""
+
     operation_id: str | None
     """``null`` when the chain was already active and nothing was written."""
     next_turn_index: int
     active_chain: ChainRefBody
     activated_operations: int
     dormant_operations: int
+
+    @classmethod
+    def of(cls, done: Swapped) -> SwappedBody:
+        return cls(
+            operation_id=done.operation_id,
+            timeline_revision=done.timeline_revision,
+            next_turn_index=done.next_turn_index,
+            active_chain=ChainRefBody.of(done.active_chain),
+            activated_operations=done.activated_operations,
+            dormant_operations=done.dormant_operations,
+        )
 
 
 class RegeneratedBody(RespondResponse):
@@ -128,7 +177,13 @@ class VariantChainBody(BaseModel):
 
 
 class VariantsBody(BaseModel):
+    """Every chain of the story's variant tree."""
+
     items: list[VariantChainBody]
+
+    @classmethod
+    def of(cls, found: list[Chain]) -> VariantsBody:
+        return cls(items=[VariantChainBody.of(c) for c in found])
 
 
 class ForkedFromBody(BaseModel):
@@ -161,10 +216,35 @@ class ForkedBody(MutationResponse):
     characters: list[ForkCharacterBody]
     counts: dict[str, int]
 
+    @classmethod
+    def of(cls, done: Forked) -> ForkedBody:
+        origin = done.forked_from
+        return cls(
+            story_id=done.story_id,
+            operation_id=done.operation_id,
+            timeline_revision=done.timeline_revision,
+            next_turn_index=done.next_turn_index,
+            name=done.name,
+            forked_from=ForkedFromBody(
+                story_id=origin.story_id,
+                revision=origin.revision,
+                at_turn=origin.at_turn,
+                variant_chain=(
+                    None if origin.variant_chain is None else ChainRefBody.of(origin.variant_chain)
+                ),
+            ),
+            characters=[
+                ForkCharacterBody(id=c.id, name=c.name, source_id=c.source_id)
+                for c in done.characters
+            ],
+            counts=dict(done.counts),
+        )
+
 
 @router.post(
     "/{story_id}/truncate",
     response_model=TruncatedBody,
+    operation_id="truncate",
     summary="Truncate the story to a turn",
     description=(
         "Delete a message and everything after it, without destroying anything: every "
@@ -176,26 +256,21 @@ class ForkedBody(MutationResponse):
     ),
 )
 async def truncate(
-    story_id: str,
+    story_id: StoryId,
     body: TruncateRequest,
     response: Response,
     ctx: ContextDep,
     engine: EngineDep,
 ) -> TruncatedBody:
     done = await engine.truncate(ctx, story_id, body)
-    answer = TruncatedBody(
-        operation_id=done.operation_id,
-        timeline_revision=done.timeline_revision,
-        next_turn_index=done.next_turn_index,
-        to_turn=done.to_turn,
-        discarded_operations=done.discarded_operations,
-    )
+    answer = TruncatedBody.of(done)
     return answered(answer, ctx, response, replayed=done.replayed)
 
 
 @router.post(
     "/{story_id}/untruncate",
     response_model=UntruncatedBody,
+    operation_id="untruncate",
     summary="Undo the most recent truncation",
     description=(
         "Reactivate exactly what the most recent truncation discarded (undo is last in, first "
@@ -208,29 +283,21 @@ async def truncate(
     ),
 )
 async def untruncate(
-    story_id: str,
+    story_id: StoryId,
     response: Response,
     ctx: ContextDep,
     engine: EngineDep,
     body: Annotated[UntruncateRequest | None, Body()] = None,
 ) -> UntruncatedBody:
     done = await engine.untruncate(ctx, story_id, body)
-    answer = UntruncatedBody(
-        operation_id=done.operation_id,
-        timeline_revision=done.timeline_revision,
-        next_turn_index=done.next_turn_index,
-        truncate_operation_id=done.truncate_operation_id,
-        restored_operations=done.restored_operations,
-        swapped=done.swapped,
-        active_chain=None if done.active_chain is None else ChainRefBody.of(done.active_chain),
-        dormant_operations=done.dormant_operations,
-    )
+    answer = UntruncatedBody.of(done)
     return answered(answer, ctx, response, replayed=done.replayed)
 
 
 @router.post(
     "/{story_id}/swap",
     response_model=SwappedBody,
+    operation_id="swap",
     summary="Make another continuation the active one",
     description=(
         "Make the chain `to_variant_chain` (`{turn, variant}` of its first turn, as "
@@ -244,27 +311,21 @@ async def untruncate(
     ),
 )
 async def swap(
-    story_id: str,
+    story_id: StoryId,
     body: SwapRequest,
     response: Response,
     ctx: ContextDep,
     engine: EngineDep,
 ) -> SwappedBody:
     done = await engine.swap(ctx, story_id, body)
-    answer = SwappedBody(
-        operation_id=done.operation_id,
-        timeline_revision=done.timeline_revision,
-        next_turn_index=done.next_turn_index,
-        active_chain=ChainRefBody.of(done.active_chain),
-        activated_operations=done.activated_operations,
-        dormant_operations=done.dormant_operations,
-    )
+    answer = SwappedBody.of(done)
     return answered(answer, ctx, response, replayed=done.replayed)
 
 
 @router.post(
     "/{story_id}/regenerate",
     response_model=RegeneratedBody,
+    operation_id="regenerate",
     summary="Regenerate the latest reply",
     description=(
         "Play the latest turn again: its recorded input (never re-sent by you, and checked by "
@@ -280,7 +341,7 @@ async def swap(
     ),
 )
 async def regenerate(
-    story_id: str,
+    story_id: StoryId,
     response: Response,
     ctx: ContextDep,
     engine: EngineDep,
@@ -293,6 +354,7 @@ async def regenerate(
 @router.get(
     "/{story_id}/variants",
     response_model=VariantsBody,
+    operation_id="variants",
     summary="List the story's variant chains",
     description=(
         "Every chain of the story's variant tree: each turn variant continues the active "
@@ -303,15 +365,15 @@ async def regenerate(
         "`discarded` ones are rewound tails `untruncate` can reactivate."
     ),
 )
-async def variants(story_id: str, ctx: ContextDep, engine: EngineDep) -> VariantsBody:
-    found = await engine.variants(ctx, story_id)
-    return VariantsBody(items=[VariantChainBody.of(c) for c in found])
+async def variants(story_id: StoryId, ctx: ContextDep, engine: EngineDep) -> VariantsBody:
+    return VariantsBody.of(await engine.variants(ctx, story_id))
 
 
 @router.post(
     "/{story_id}/fork",
     status_code=http_status.HTTP_201_CREATED,
     response_model=ForkedBody,
+    operation_id="fork",
     summary="Fork the story at a turn",
     description=(
         "Copy the story's corrected history through `at_turn` (default the head) into a new "
@@ -329,7 +391,7 @@ async def variants(story_id: str, ctx: ContextDep, engine: EngineDep) -> Variant
     ),
 )
 async def fork(
-    story_id: str,
+    story_id: StoryId,
     response: Response,
     ctx: ContextDep,
     engine: EngineDep,
@@ -337,24 +399,5 @@ async def fork(
 ) -> ForkedBody:
     done = await engine.fork(ctx, story_id, body or ForkRequest())
     response.headers["Location"] = f"/stories/{done.story_id}"
-    origin = done.forked_from
-    answer = ForkedBody(
-        story_id=done.story_id,
-        operation_id=done.operation_id,
-        timeline_revision=done.timeline_revision,
-        next_turn_index=done.next_turn_index,
-        name=done.name,
-        forked_from=ForkedFromBody(
-            story_id=origin.story_id,
-            revision=origin.revision,
-            at_turn=origin.at_turn,
-            variant_chain=(
-                None if origin.variant_chain is None else ChainRefBody.of(origin.variant_chain)
-            ),
-        ),
-        characters=[
-            ForkCharacterBody(id=c.id, name=c.name, source_id=c.source_id) for c in done.characters
-        ],
-        counts=dict(done.counts),
-    )
+    answer = ForkedBody.of(done)
     return answered(answer, ctx, response, replayed=done.replayed)

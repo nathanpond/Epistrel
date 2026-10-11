@@ -71,6 +71,10 @@ jobs:
       - name: check-licenses
         run: uv run python -m tools.gates check-licenses
         if: always()
+      # OpenAPI (#73, FR-API-1, NFR-MAINT-2): docs/openapi.json is exactly what the app serves at /openapi.json.
+      - name: openapi
+        run: uv run python -m epistrel.tools.openapi --check
+        if: always()
 
   types:
     runs-on: ubuntu-latest

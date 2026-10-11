@@ -121,12 +121,20 @@ async def test_c_13(surface: Surface, engine: AsyncEngine) -> None:
         story, body(player, render_character_ids=[jenni, stranger])
     )
     assert (unknown_render.status, unknown_render.code) == (422, "validation_error")
-    assert unknown_render.details == {"unknown_render_ids": [stranger]}
+    assert unknown_render.details is not None
+    assert unknown_render.details["field"] == "body.render_character_ids"
+    assert unknown_render.details["unknown_render_ids"] == [stranger]
     outsider = await surface.respond(story, body(stranger))
     assert (outsider.status, outsider.code) == (422, "validation_error")
-    assert outsider.details == {"unknown_actor": stranger}
+    assert outsider.details is not None
+    assert outsider.details["field"] == "body.actor_character_id"
+    assert outsider.details["unknown_actor"] == stranger
     together = await surface.respond(story, body(stranger, render_character_ids=[stranger]))
-    assert together.details == {"unknown_actor": stranger, "unknown_render_ids": [stranger]}
+    assert together.details is not None
+    assert {k: v for k, v in together.details.items() if k not in {"field", "errors"}} == {
+        "unknown_actor": stranger,
+        "unknown_render_ids": [stranger],
+    }
     malformed = await surface.respond(story, body("jenni"))
     assert (malformed.status, malformed.code) == (422, "validation_error")
     assert malformed.details is not None

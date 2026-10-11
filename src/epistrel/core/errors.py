@@ -7,7 +7,22 @@ REST maps them to the envelope ``{"error": {"code", "message", "details"}}`` wit
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, ClassVar
+
+ValidationLoc = Sequence[int | str]
+
+
+def field_path(loc: ValidationLoc) -> str:
+    """A validation error's location as a dotted path with list indexes in brackets, matching
+    the paths the Engine's own errors use: ``body.characters[0].true_age``."""
+    path = ""
+    for part in loc:
+        if isinstance(part, int):
+            path += f"[{part}]"
+        else:
+            path += f".{part}" if path else str(part)
+    return path
 
 
 class EpistrelError(Exception):
@@ -46,11 +61,85 @@ class PrincipalRequired(EpistrelError):
     http_status = 400
 
 
+NON_FIELD_ERRORS = frozenset({"json_invalid", "json_type", "model_attributes_type"})
+"""Pydantic error types that describe the document as a whole, never one field: reported at
+``body`` (a JSON syntax error's ``loc`` carries a character offset, not a field)."""
+
+
 class InvalidRequest(EpistrelError):
-    """A request field failed validation; ``details.field`` is its dotted path."""
+    """A request field failed validation (FR-API-4).
+
+    ``details.field`` is the dotted path of the first failure (``body.<field>``,
+    ``query.<name>``, ``path.<name>`` or ``headers.<name>``; ``body`` when the document as a whole
+    is malformed) and ``details.errors`` lists every failure as ``{field, message, type}``.
+    """
 
     code = "validation_error"
     http_status = 422
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        details = dict(details or {})
+        if type(self).code == InvalidRequest.code:
+            details.setdefault("field", "body")
+            details.setdefault(
+                "errors", [{"field": details["field"], "message": message, "type": "value_error"}]
+            )
+        super().__init__(message, details)
+
+    @classmethod
+    def from_errors(cls, errors: Sequence[Any], *, prefix: ValidationLoc = ()) -> InvalidRequest:
+        """The error for pydantic's ``errors()`` list; each ``loc`` is put under ``prefix``."""
+        items = [
+            {
+                "field": _error_field(error, prefix),
+                "message": str(error.get("msg", "invalid value")),
+                "type": str(error.get("type", "value_error")),
+            }
+            for error in errors
+        ]
+        first = items[0] if items else {"field": field_path(prefix) or "body", "message": ""}
+        return cls(
+            first["message"] or "invalid request",
+            details={"field": first["field"], "errors": items},
+        )
+
+
+NUL = "\x00"
+"""PostgreSQL cannot store it in text; an input holding one is refused at its field."""
+
+
+def nul_location(value: Any, loc: tuple[int | str, ...] = ()) -> tuple[int | str, ...] | None:
+    """Where the first NUL character in ``value`` (a JSON-like document: its keys and strings)
+    sits, or ``None``."""
+    if isinstance(value, str):
+        return loc if NUL in value else None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found = nul_location(key, (*loc, key)) or nul_location(item, (*loc, key))
+            if found is not None:
+                return found
+    if isinstance(value, list | tuple):
+        for index, item in enumerate(value):
+            found = nul_location(item, (*loc, index))
+            if found is not None:
+                return found
+    return None
+
+
+def refuse_nul(value: Any, loc: tuple[int | str, ...] = ()) -> None:
+    """422 ``validation_error`` (type ``string_nul``) at the first NUL character in ``value``."""
+    found = nul_location(value, loc)
+    if found is not None:
+        raise InvalidRequest.from_errors(
+            [{"type": "string_nul", "loc": found, "msg": "Text must not contain NUL characters"}]
+        )
+
+
+def _error_field(error: Any, prefix: ValidationLoc) -> str:
+    loc = (*prefix, *tuple(error.get("loc", ())))
+    if error.get("type") in NON_FIELD_ERRORS:
+        loc = tuple(part for part in loc if isinstance(part, str))[:1] or ("body",)
+    return field_path(loc) or "body"
 
 
 class StoryNotFound(EpistrelError):

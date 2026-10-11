@@ -30,6 +30,7 @@ dev = [
     "pytest-cov>=6",
     "pyyaml>=6",
     "ruff>=0.8",
+    "schemathesis>=4.28.0",
     "testcontainers[postgres]>=4",
     "types-pyyaml>=6.0.12.20260906",
 ]

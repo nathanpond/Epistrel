@@ -357,3 +357,48 @@ async def test_audit_log_is_append_only(engine: AsyncEngine) -> None:
         await conn.execute(text("SELECT set_config('epistrel.allow_audit_expiry', 'on', true)"))
         await conn.execute(text("DELETE FROM audit_log WHERE id = :i"), {"i": row_id})
     assert await count(engine, "SELECT count(*) FROM audit_log WHERE id = :i", i=row_id) == 0
+
+
+async def test_passing_gates_report_their_calls(settings_stub: Any, engine: AsyncEngine) -> None:
+    """Ingest, pinned memories and custom instructions report what their input gate spent
+    (#69's hand-off, #73): ``model_calls`` (one ``guardrail_check`` per model-assisted input
+    policy per text) and ``elapsed_ms``; a key replay answers the same report. Complement
+    asserted: a story without model-assisted policies reports no calls."""
+    lib = library(settings_stub, engine)
+    marker = f"Is it unkind {new_ulid()}?"
+    async with guarded_client(settings_stub, engine) as (client, _):
+        story = (await create(client, story_body("Ada", "Bo")))["story_id"]
+        plain = (await create(client, story_body("Ada")))["story_id"]
+        await add_input_policies(lib, story, {"rule": _assisted(marker)})
+        events = {
+            "events": [
+                {"client_event_id": "e-1", "kind": "narration", "text": "Wind."},
+                {"client_event_id": "e-2", "kind": "narration", "text": "Rain."},
+            ]
+        }
+        calls: dict[str, list[dict[str, Any]]] = {}
+        for name, method, path, body, expected in (
+            ("ingest", "POST", "ingest", events, 2),
+            ("pins", "PUT", "pinned-memories", {"items": [{"text": "a"}, {"text": "b"}]}, 2),
+            ("instructions", "PUT", "custom-instructions", {"text": "Be brief."}, 1),
+        ):
+            headers = {**WRITE, "Idempotency-Key": f"cost-{name}"}
+            sent = await client.request(
+                method, f"/stories/{story}/{path}", json=body, headers=headers
+            )
+            assert sent.is_success, sent.text
+            answer = sent.json()
+            assert [c["purpose"] for c in answer["model_calls"]] == ["guardrail_check"] * expected
+            assert answer["elapsed_ms"] >= 0
+            calls[name] = answer["model_calls"]
+            again = await client.request(
+                method, f"/stories/{story}/{path}", json=body, headers=headers
+            )
+            assert again.headers.get("Idempotent-Replay") == "true"
+            assert again.json()["model_calls"] == answer["model_calls"]
+            other = await client.request(
+                method, f"/stories/{plain}/{path}", json=body, headers=WRITE
+            )
+            assert other.is_success, other.text
+            assert other.json()["model_calls"] == []
+        assert all(call["outcome"] == "ok" for found in calls.values() for call in found)

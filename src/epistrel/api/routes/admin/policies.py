@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Response, status
 from pydantic import BaseModel
 
-from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.deps import ContextDep, EngineDep, PolicyIdPath
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
@@ -26,6 +26,9 @@ router = APIRouter(prefix="/policies")
 
 
 class PolicyBody(BaseModel):
+    """A policy at its current version: scope, targets, kind, effect, rule, age condition,
+    message and attribution."""
+
     id: str
     scope: Scope
     scope_id: str | None
@@ -68,7 +71,13 @@ class PolicyBody(BaseModel):
 
 
 class PolicyList(BaseModel):
+    """Policies, filtered as the request asked."""
+
     items: list[PolicyBody]
+
+    @classmethod
+    def of(cls, found: list[Policy]) -> PolicyList:
+        return cls(items=[PolicyBody.of(policy) for policy in found])
 
 
 class PolicyMutation(PolicyBody, DeploymentMutationResponse):
@@ -79,7 +88,13 @@ class PolicyMutation(PolicyBody, DeploymentMutationResponse):
         return cls(**PolicyBody.of(policy).model_dump(), config_revision=config_revision)
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, response_model=PolicyMutation)
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PolicyMutation,
+    operation_id="policies_create",
+    summary="Create a global or rating policy",
+)
 async def create_policy(
     body: PolicyFields, response: Response, ctx: ContextDep, engine: EngineDep
 ) -> PolicyMutation:
@@ -88,7 +103,7 @@ async def create_policy(
     return answered(answer, ctx, response, replayed=write.replayed)
 
 
-@router.get("", response_model=PolicyList)
+@router.get("", response_model=PolicyList, operation_id="policies_list", summary="List policies")
 async def list_policies(
     ctx: ContextDep,
     engine: EngineDep,
@@ -99,17 +114,24 @@ async def list_policies(
     found = await engine.policies_list(
         ctx, scope=scope, story_id=story_id, include_retired=include_retired
     )
-    return PolicyList(items=[PolicyBody.of(policy) for policy in found])
+    return PolicyList.of(found)
 
 
-@router.get("/{policy_id}", response_model=PolicyBody)
-async def get_policy(policy_id: str, ctx: ContextDep, engine: EngineDep) -> PolicyBody:
+@router.get(
+    "/{policy_id}", response_model=PolicyBody, operation_id="policies_get", summary="Read a policy"
+)
+async def get_policy(policy_id: PolicyIdPath, ctx: ContextDep, engine: EngineDep) -> PolicyBody:
     return PolicyBody.of(await engine.policies_get(ctx, policy_id))
 
 
-@router.put("/{policy_id}", response_model=PolicyMutation)
+@router.put(
+    "/{policy_id}",
+    response_model=PolicyMutation,
+    operation_id="policies_update",
+    summary="Replace a policy",
+)
 async def update_policy(
-    policy_id: str,
+    policy_id: PolicyIdPath,
     body: PolicyReplacement,
     response: Response,
     ctx: ContextDep,
@@ -124,9 +146,11 @@ async def update_policy(
     "/{policy_id}",
     response_model=PolicyMutation,
     responses={status.HTTP_204_NO_CONTENT: {"description": "Already retired; nothing changed."}},
+    operation_id="policies_retire",
+    summary="Retire a policy",
 )
 async def retire_policy(
-    policy_id: str, response: Response, ctx: ContextDep, engine: EngineDep
+    policy_id: PolicyIdPath, response: Response, ctx: ContextDep, engine: EngineDep
 ) -> PolicyMutation | Response:
     """Retire the policy (200); 204 when it was already retired."""
     write = await engine.policies_retire(ctx, policy_id)

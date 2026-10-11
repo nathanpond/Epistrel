@@ -4,12 +4,29 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 from epistrel.core.config_changes import ConfigChangePage
 from epistrel.core.settings_schema import ConfigClass
+
+
+def _iso_only(value: Any) -> Any:
+    """``since`` is an RFC 3339 date-time, as documented: pydantic would also take a number of
+    seconds since the epoch, which the schema does not promise (FR-API-4)."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            float(value)
+        except ValueError:
+            return value
+    raise ValueError("must be an RFC 3339 date-time, e.g. 2026-10-11T12:00:00Z")
+
+
+IsoDateTime = Annotated[datetime, BeforeValidator(_iso_only)]
+"""A query ``date-time``: only the RFC 3339 form is accepted."""
 
 
 class ConfigChangeItem(BaseModel):
@@ -28,6 +45,8 @@ class ConfigChangeItem(BaseModel):
 
 
 class ConfigChangesBody(BaseModel):
+    """A page of configuration changes, newest first, and the cursor to the next page."""
+
     items: list[ConfigChangeItem]
     next: str | None
     """Pass as ``after`` for the next page; ``null`` on the last."""

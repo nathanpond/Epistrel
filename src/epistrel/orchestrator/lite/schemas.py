@@ -110,7 +110,21 @@ class RespondRequest(BaseModel):
     - ``budget``: this turn's ``max_calls``/``deadline_s``, within the story's (#69).
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "actor_character_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3",
+                    "player_input": {"say": "Who goes there?", "do": "raises the lantern"},
+                    "render_character_ids": ["01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"],
+                    "prompt_params": {"length": "short", "temperature": 0.7},
+                    "budget": {"max_calls": 9, "deadline_s": 30},
+                }
+            ]
+        },
+    )
 
     actor_character_id: Ulid
     player_input: PlayerInputBody
@@ -132,7 +146,18 @@ class RegenerateRequest(BaseModel):
     omitted, the recorded (resolved) ones are reused. ``budget`` is this call's own (#69).
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "output_viewpoint": "character:01J9Z8Q4N5V6W7X8Y9Z0A1B2C3",
+                    "prompt_params": {"temperature": 0.9},
+                }
+            ]
+        },
+    )
 
     turn: int | None = Field(default=None, ge=1)
     render_character_ids: list[Ulid] | None = Field(

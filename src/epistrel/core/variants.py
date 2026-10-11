@@ -93,7 +93,10 @@ ChainSelector = Annotated[ChainRef, BeforeValidator(_chain_ref)]
 class SwapRequest(BaseModel):
     """``POST /stories/{id}/swap``: make the chain ``to_variant_chain`` the active one."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"to_variant_chain": {"turn": 3, "variant": 2}}]},
+    )
 
     to_variant_chain: ChainSelector = Field(
         description="The chain to activate: the `{turn, variant}` of its first turn."

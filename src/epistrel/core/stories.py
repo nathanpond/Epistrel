@@ -169,7 +169,31 @@ class CreationSettings(StorySettings):
 class StorySpec(BaseModel):
     """``POST /stories``: a blank story with its cast, rating and settings."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "The Lantern Road",
+                    "characters": [
+                        {
+                            "name": "Wren",
+                            "definition": "A traveller, the player's character.",
+                            "true_age": 24,
+                            "is_player": True,
+                        },
+                        {
+                            "name": "Ada",
+                            "definition": "An innkeeper who trusts no one.",
+                            "true_age": 41,
+                        },
+                    ],
+                    "settings": {"turn_concurrency": "queue", "default_output_viewpoint": "Wren"},
+                }
+            ]
+        },
+    )
 
     name: str | None = Field(default=None, max_length=STORY_NAME_MAX)
     characters: list[CharacterSpec] = Field(min_length=CAST_MIN, max_length=CAST_MAX)

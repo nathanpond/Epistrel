@@ -103,7 +103,7 @@ fork)."""
 class TruncateRequest(BaseModel):
     """``POST /stories/{id}/truncate``: keep turns 1..``to_turn``; ``0`` keeps only genesis."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{"to_turn": 2}]})
 
     to_turn: int = Field(description="The last turn to keep (0 to the head - 1).")
 
@@ -112,7 +112,10 @@ class UntruncateRequest(BaseModel):
     """``POST /stories/{id}/untruncate``: optionally name the truncation being reverted; it
     must be the most recent one."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"truncate_operation_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"}]},
+    )
 
     truncate_operation_id: str | None = None
 

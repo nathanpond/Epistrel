@@ -6,12 +6,13 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from epistrel import __version__
-from epistrel.api import errors, routes
+from epistrel.api import errors, openapi, routes
 from epistrel.api.auth import PROTECTED_DEPENDENCIES, TRUST_BOUNDARY_STATEMENT
+from epistrel.api.validation import strict_json_body
 from epistrel.config import ConfigError, Settings, load_settings
 from epistrel.core.db import make_engine
 from epistrel.engine import Engine
@@ -63,8 +64,9 @@ class ReceiptStamp:
 
 
 def include_protected(app: FastAPI, router: APIRouter) -> None:
-    """Include ``router`` behind the service credential and the principal rule (invariant 4)."""
-    app.include_router(router, dependencies=PROTECTED_DEPENDENCIES)
+    """Include ``router`` behind the service credential and the principal rule (invariant 4),
+    then the strict body check (FR-API-4): a call is authenticated before its body is judged."""
+    app.include_router(router, dependencies=[*PROTECTED_DEPENDENCIES, Depends(strict_json_body)])
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -94,4 +96,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes.public_router)
     if settings.mode != "worker":
         include_protected(app, routes.router)
+    openapi.install(app)
     return app

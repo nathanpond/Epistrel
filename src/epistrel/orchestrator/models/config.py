@@ -367,7 +367,19 @@ class ConfigReplacement(BaseModel):
     ``params``, replaced in full. An omitted or ``null`` field inherits from ``default``
     (``params`` per key). The API key is never part of this body (``extra=forbid``)."""
 
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "base_url": "http://localhost:11434/v1",
+                    "model": "llama3.1:8b",
+                    "params": {"temperature": 0.8, "max_tokens": 600},
+                }
+            ]
+        },
+    )
 
     base_url: str | None = Field(default=None, max_length=MAX_BASE_URL_CHARS)
     model: str | None = Field(default=None, min_length=1, max_length=MAX_MODEL_CHARS)
@@ -382,7 +394,11 @@ class ConfigReplacement(BaseModel):
 class ApiKeyBody(BaseModel):
     """``PUT /admin/model-config/{purpose}/api-key``: the key, trimmed, 1..512 characters."""
 
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+        json_schema_extra={"examples": [{"api_key": "sk-example-not-a-real-key"}]},
+    )
 
     api_key: SecretStr = Field(min_length=1, max_length=MAX_API_KEY_CHARS)
 

@@ -163,7 +163,29 @@ class IngestEvent(BaseModel):
 class IngestRequest(BaseModel):
     """``POST /stories/{id}/ingest`` and ``Engine.ingest``: 1..50 events, IDs distinct."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "events": [
+                        {
+                            "client_event_id": "evt-0001",
+                            "kind": "player_turn",
+                            "actor_character_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3",
+                            "say": "I open the door.",
+                        },
+                        {
+                            "client_event_id": "evt-0002",
+                            "kind": "narration",
+                            "text": "Rain hammers the roof.",
+                        },
+                    ]
+                }
+            ]
+        },
+    )
 
     events: list[IngestEvent] = Field(min_length=1, max_length=MAX_EVENTS)
 
@@ -197,6 +219,11 @@ class IngestResult:
     timeline_revision: int
     key_replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+    model_calls: tuple[dict[str, Any], ...] = ()
+    """The model calls this request's input gate made, each as a turn's ``model_calls`` entry
+    reports it (filled by the Engine, #73)."""
+    elapsed_ms: int = 0
+    """How long the request took, from its arrival (filled by the Engine, #73)."""
 
     @property
     def replayed(self) -> bool:

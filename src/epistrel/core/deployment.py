@@ -81,7 +81,10 @@ class SettingsPatch(BaseModel):
     are ``DeploymentSettings``'s, checked on the merged settings (422 ``validation_error`` at
     ``body.<field>``)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"lite_window_messages": 40, "turn_queue_max": 10}]},
+    )
 
     default_content_rating_id: str | None = None
     minor_age_threshold: int | None = None
@@ -123,11 +126,7 @@ def _validated(document: Mapping[str, Any]) -> DeploymentSettings:
     try:
         return DeploymentSettings.model_validate(document)
     except ValidationError as exc:
-        first = exc.errors()[0]
-        location = ".".join(str(part) for part in first["loc"])
-        raise InvalidRequest(
-            str(first["msg"]), {"field": f"body.{location}", "errors": exc.error_count()}
-        ) from None
+        raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
 
 
 async def apply_settings(

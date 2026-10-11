@@ -30,7 +30,9 @@ def test_key_rule() -> None:
     for bad in ("", "k" * 256, "white space", "comma,key", "ä"):
         with pytest.raises(InvalidRequest) as refused:
             validate_key(bad)
-        assert refused.value.details == {"field": "headers.Idempotency-Key"}
+        details = dict(refused.value.details)
+        assert [e["field"] for e in details.pop("errors")] == ["headers.Idempotency-Key"]
+        assert details == {"field": "headers.Idempotency-Key"}
 
 
 def test_request_hash_is_canonical() -> None:

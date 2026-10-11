@@ -73,7 +73,9 @@ async def test_unknown_characters_are_refused_with_nothing_written(
         refused = await respond(client, story, bad)
         assert refused.status_code == 422
         details = _error(refused)["details"]
+        assert len(details.pop("errors")) == 3
         assert details == {
+            "field": "body.actor_character_id",
             "unknown_actor": "0" * 26,
             "unknown_render_ids": ["1" * 26],
             "unknown_present_ids": ["2" * 26],

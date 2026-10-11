@@ -22,7 +22,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Response, status
 from pydantic import BaseModel
 
-from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.deps import ContextDep, EngineDep, Purpose
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse
 from epistrel.core.context import RequestContext
@@ -38,7 +38,7 @@ router = APIRouter(prefix="/model-config")
 
 MASK = "***"
 
-type Source = Literal["own", "default"]
+Source = Literal["own", "default"]
 
 
 class Sources(BaseModel):
@@ -51,6 +51,9 @@ class Sources(BaseModel):
 
 
 class ModelConfigEntry(BaseModel):
+    """A purpose's effective configuration: endpoint, model, params, whether an API key applies
+    (never the key) and where each value came from."""
+
     base_url: str | None
     model: str | None
     params: dict[str, Any]
@@ -75,9 +78,22 @@ class ModelConfigEntry(BaseModel):
 
 
 class ModelConfigBody(BaseModel):
+    """The model adapter, the deployment's ``config_revision`` and every configurable
+    purpose's effective configuration (``default`` included)."""
+
     adapter: Literal["openai", "stub"]
     config_revision: int
     purposes: dict[str, ModelConfigEntry]
+
+    @classmethod
+    def of(
+        cls, adapter: Literal["openai", "stub"], revision: int, entries: dict[str, ConfigEntry]
+    ) -> ModelConfigBody:
+        return cls(
+            adapter=adapter,
+            config_revision=revision,
+            purposes={name: ModelConfigEntry.of(entry) for name, entry in entries.items()},
+        )
 
 
 class ModelConfigItem(ModelConfigEntry):
@@ -93,18 +109,26 @@ class ModelConfigMutation(ModelConfigEntry, DeploymentMutationResponse):
     purpose: str
 
 
-@router.get("", response_model=ModelConfigBody)
+@router.get(
+    "",
+    response_model=ModelConfigBody,
+    operation_id="model_configuration",
+    summary="Read the model configuration",
+)
 async def read_model_config(ctx: ContextDep, engine: EngineDep) -> ModelConfigBody:
     revision, entries = await engine.model_configuration(ctx)
-    return ModelConfigBody(
-        adapter=engine.settings.model_adapter,
-        config_revision=revision,
-        purposes={name: ModelConfigEntry.of(entry) for name, entry in entries.items()},
-    )
+    return ModelConfigBody.of(engine.settings.model_adapter, revision, entries)
 
 
-@router.get("/{purpose}", response_model=ModelConfigItem)
-async def read_purpose_config(purpose: str, ctx: ContextDep, engine: EngineDep) -> ModelConfigItem:
+@router.get(
+    "/{purpose}",
+    response_model=ModelConfigItem,
+    operation_id="model_config_entry",
+    summary="Read one purpose's model configuration",
+)
+async def read_purpose_config(
+    purpose: Purpose, ctx: ContextDep, engine: EngineDep
+) -> ModelConfigItem:
     revision, entry = await engine.model_config_entry(ctx, purpose)
     return ModelConfigItem(
         purpose=purpose, config_revision=revision, **ModelConfigEntry.fields_of(entry)
@@ -112,7 +136,7 @@ async def read_purpose_config(purpose: str, ctx: ContextDep, engine: EngineDep) 
 
 
 async def _mutation(
-    engine: Engine, ctx: RequestContext, purpose: str, write: ConfigWrite, response: Response
+    engine: Engine, ctx: RequestContext, purpose: Purpose, write: ConfigWrite, response: Response
 ) -> ModelConfigMutation:
     """The purpose's entry after a write (read back, so a replay shows the current entry with
     the stored write's revision)."""
@@ -123,9 +147,18 @@ async def _mutation(
     return answered(answer, ctx, response, replayed=write.replayed)
 
 
-@router.put("/{purpose}", response_model=ModelConfigMutation)
+@router.put(
+    "/{purpose}",
+    response_model=ModelConfigMutation,
+    operation_id="replace_model_config",
+    summary="Replace a purpose's model configuration",
+)
 async def replace_purpose_config(
-    purpose: str, body: ConfigReplacement, response: Response, ctx: ContextDep, engine: EngineDep
+    purpose: Purpose,
+    body: ConfigReplacement,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
 ) -> ModelConfigMutation:
     """Replace the purpose's own configuration; a PUT that changes nothing writes nothing."""
     write = await engine.replace_model_config(ctx, purpose, body)
@@ -136,9 +169,11 @@ async def replace_purpose_config(
     "/{purpose}",
     response_model=ModelConfigMutation,
     responses={status.HTTP_204_NO_CONTENT: {"description": "No override; nothing changed."}},
+    operation_id="remove_model_override",
+    summary="Drop a purpose's override",
 )
 async def remove_purpose_override(
-    purpose: str, response: Response, ctx: ContextDep, engine: EngineDep
+    purpose: Purpose, response: Response, ctx: ContextDep, engine: EngineDep
 ) -> ModelConfigMutation | Response:
     """Drop the override (200 with the now-inherited entry); 204 when there was none; 409 for
     ``default``."""
@@ -148,9 +183,14 @@ async def remove_purpose_override(
     return await _mutation(engine, ctx, purpose, write, response)
 
 
-@router.put("/{purpose}/api-key", status_code=status.HTTP_204_NO_CONTENT)
+@router.put(
+    "/{purpose}/api-key",
+    status_code=status.HTTP_204_NO_CONTENT,
+    operation_id="set_model_api_key",
+    summary="Store a purpose's API key",
+)
 async def set_purpose_api_key(
-    purpose: str, body: ApiKeyBody, ctx: ContextDep, engine: EngineDep
+    purpose: Purpose, body: ApiKeyBody, ctx: ContextDep, engine: EngineDep
 ) -> Response:
     """Store the purpose's API key (encrypted at rest; never returned). 503
     ``config_key_missing`` without ``EPISTREL_CONFIG_KEY``."""
@@ -158,8 +198,13 @@ async def set_purpose_api_key(
     return no_content(ctx, replayed=write.replayed)
 
 
-@router.delete("/{purpose}/api-key", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_purpose_api_key(purpose: str, ctx: ContextDep, engine: EngineDep) -> Response:
+@router.delete(
+    "/{purpose}/api-key",
+    status_code=status.HTTP_204_NO_CONTENT,
+    operation_id="remove_model_api_key",
+    summary="Remove a purpose's API key",
+)
+async def remove_purpose_api_key(purpose: Purpose, ctx: ContextDep, engine: EngineDep) -> Response:
     """Remove the purpose's own API key; it then inherits ``default``'s, if any."""
     write = await engine.remove_model_api_key(ctx, purpose)
     return no_content(ctx, replayed=write.replayed)

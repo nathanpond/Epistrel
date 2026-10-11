@@ -95,6 +95,7 @@ from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import events, operations, stories, turn_queue
 from epistrel.observability import context as telemetry
 from epistrel.observability import tracing
+from epistrel.testing import crash
 
 logger = logging.getLogger(__name__)
 
@@ -537,6 +538,8 @@ class Operation:
     # -- the commit transaction --------------------------------------------------------------
 
     async def _write(self, conn: AsyncConnection, decide: Decide | None) -> None:
+        kind = self.kind.value
+        crash.hit("before_lock", kind)
         advance = False
         current_revision = 0
         if self.story_id is not None:
@@ -604,9 +607,10 @@ class Operation:
                     for event_id, seq, staged in zip(ids, self.seqs, self._staged, strict=True)
                 ],
             )
+        crash.hit("after_events", kind)
         if self.story_id is not None:
             await projections.apply_events(
-                conn, self.story_id, self._log_events(self.story_id, ids)
+                conn, self.story_id, self._log_events(self.story_id, ids), kind=kind
             )
         for step in self._commit_steps:
             await step(conn)
@@ -619,6 +623,7 @@ class Operation:
         if call is not None:
             # The key's operation commits with it (a late original is refused here, #61).
             await call.bind(conn, self)
+        crash.hit("before_commit", kind)
 
     async def _revalidate(self, conn: AsyncConnection, locked: Any, decide: Decide) -> None:
         """Run ``decide`` under the lock; raise ``RevalidationRequired`` unless it commits."""

@@ -191,6 +191,19 @@ class ConcLinear(RuleBasedStateMachine):
             self.changed("turn", bumps=True)
         self.in_flight.remove(flight)
 
+    @precondition(lambda self: len(self.in_flight) < MAX_IN_FLIGHT)
+    @rule(chance=st.integers(0, 7))
+    def turn_over_an_outside_change(self, chance: int) -> None:
+        """A turn whose base moved only outside its read set rebases. Drawn as one step (on
+        one draw in eight, so it does not crowd out the other outcomes), so the run covers the
+        rebase outcome reliably: as a chance interleaving it was rare enough (2 in 115
+        releases) to vanish when the draw stream shifted (#75)."""
+        if chance:
+            return
+        self.begin_turn()
+        self.change_outside_read_set()
+        self.release(self.in_flight[-1])
+
     def expected_outcome(self, flight: InFlight) -> str:
         since = self.log[flight.since :]
         kinds = {kind for kind, _ in since}

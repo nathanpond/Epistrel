@@ -106,3 +106,29 @@ def test_rollback_is_dispatch_only_with_the_right_inputs() -> None:
     assert inputs["bad_version"]["required"] is False
     assert wf["concurrency"] == {"group": "release-latest", "cancel-in-progress": False}
     assert wf["jobs"]["rollback"]["if"] == "github.ref == 'refs/heads/main'"
+
+
+def test_chaos_runs_weekly_and_on_dispatch_and_reports_a_red_run() -> None:
+    """#75: the whole `chaos` suite weekly (Monday 04:00 UTC) and on dispatch with a seed and an
+    iteration count; 60 minutes; a red run files or comments on an issue."""
+    wf = _workflow("chaos.yml")
+    triggers = _on(wf)
+    assert triggers["schedule"] == [{"cron": "0 4 * * 1"}]
+    assert set(triggers["workflow_dispatch"]["inputs"]) == {"seed", "iterations"}
+    assert wf["permissions"] == {"contents": "read"}
+    job = wf["jobs"]["chaos"]
+    assert job["timeout-minutes"] == 60
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    run = next(s for s in _steps(wf, "chaos") if s.get("id") == "chaos")
+    assert "-m chaos" in run["run"]
+    assert run["env"]["EPISTREL_CHAOS_ITERATIONS"] == "${{ inputs.iterations || '500' }}"
+    report = next(s for s in _steps(wf, "chaos") if s.get("name") == "Report a red run")
+    assert "Weekly chaos run failed" in report["run"]
+
+
+def test_pr_ci_runs_only_the_quick_chaos_tests() -> None:
+    """Complement of the weekly run: the gate deselects `chaos` tests not marked `chaos_quick`."""
+    (pytest_step,) = [
+        s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
+    ]
+    assert '-m "not live_model and (not chaos or chaos_quick)"' in pytest_step["run"]

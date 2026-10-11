@@ -261,6 +261,7 @@ async def registry(engine: AsyncEngine) -> AsyncIterator[jt.Probe]:
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.part("M2", "NFR-REL-5")
 async def test_x_07__jobs(engine: AsyncEngine, registry: jt.Probe, moved: MovableClock) -> None:
     """Notifications suppressed, a job is still claimed within one poll interval. A worker
@@ -341,6 +342,7 @@ async def test_x_07__jobs(engine: AsyncEngine, registry: jt.Probe, moved: Movabl
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.part("M2", "NFR-REL-5")
 async def test_x_07__timers(engine: AsyncEngine, quiet: Probe) -> None:
     """A due timer is fired by a polling worker with no notification, within one interval of
@@ -402,6 +404,7 @@ async def _ran(probe: Probe, target: str) -> bool:
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.part("M2", "NFR-REL-5")
 async def test_x_07__recurring(engine: AsyncEngine, quiet: Probe, moved: MovableClock) -> None:
     """A task that missed three intervals runs once, and its next run is one interval after
@@ -466,6 +469,7 @@ async def test_x_07__recurring(engine: AsyncEngine, quiet: Probe, moved: Movable
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.part("M2", "NFR-REL-5")
 async def test_x_07__restart(engine: AsyncEngine, quiet: Probe, moved: MovableClock) -> None:
     """Every worker is killed while a job holds a lease; while none runs, the job's lease and
@@ -544,6 +548,7 @@ async def _enqueue(engine: AsyncEngine, kind: str, payload: dict[str, Any]) -> s
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.part("M2", "NFR-REL-5")
 async def test_x_07__sweep_rerun(
     engine: AsyncEngine, quiet: Probe, monkeypatch: pytest.MonkeyPatch
@@ -628,6 +633,7 @@ async def _health(settings: Settings, engine: AsyncEngine) -> tuple[int, dict[st
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.part("M2", "NFR-REL-5; NFR-OPS-1")
 async def test_x_07__health(engine: AsyncEngine, settings: Settings, quiet: Probe) -> None:
     """With no worker, ``/health`` is ``degraded`` (200) with no heartbeat and the oldest
@@ -704,6 +710,7 @@ async def test_x_07__health(engine: AsyncEngine, settings: Settings, quiet: Prob
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.part("M2", "NFR-REL-5; NFR-OPS-1")
 async def test_x_07__all_mode(pg_url: str, engine: AsyncEngine, quiet: Probe) -> None:
     """``all`` mode runs the worker in the server process: once started, ``/health`` counts its
@@ -749,6 +756,7 @@ def _bearer() -> dict[str, str]:
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.part("M2", "NFR-REL-5")
 async def test_x_07__turn_queue(engine: AsyncEngine, settings: Settings, quiet: Probe) -> None:
     """A worker-mode process drains turn queues: its recovery pass runs the Engine's drain
@@ -827,6 +835,7 @@ def _spawn(pg_url: str, port: int) -> subprocess.Popen[str]:
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.part("M2", "NFR-REL-5; NFR-OPS-1")
 async def test_x_07__processes(pg_url: str, engine: AsyncEngine, quiet: Probe) -> None:
     """Two ``epistrel worker`` processes start together after the hourly purge missed three
@@ -882,6 +891,7 @@ async def test_x_07__processes(pg_url: str, engine: AsyncEngine, quiet: Probe) -
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.part("M2", "NFR-OPS-1,2")
 def test_x_07__compose(tmp_path: Path) -> None:
     """The default compose file starts the engine in ``all`` mode (the workers run in it) and

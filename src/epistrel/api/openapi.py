@@ -241,7 +241,7 @@ that documents it."""
 
 
 def _rule_errors(method: str, path: str) -> list[str]:
-    codes = ["unauthenticated", "validation_error"]
+    codes = ["unauthenticated", "validation_error", "database_unavailable"]
     if "{" in path:
         codes.append("not_found")
     if method in MUTATING_METHODS:

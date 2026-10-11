@@ -366,8 +366,9 @@ class NothingToRegenerate(EpistrelError):
 
 class DatabaseUnavailable(EpistrelError):
     """The database kept refusing a transaction that cannot be retried by the caller: a fork's
-    snapshot copy hit a serialization failure on every attempt (#67). Nothing was written.
-    ``details``: ``attempts``."""
+    snapshot copy hit a serialization failure on every attempt (#67; ``details``: ``attempts``),
+    or the connection to it was lost (#75; ``details``: ``reason`` ``connection``, REST only).
+    Nothing was written."""
 
     code = "database_unavailable"
     http_status = 503

@@ -24,12 +24,13 @@ every ``poll_interval`` (``health.beat``) and deletes them when it stops, so ``/
 process sees how many workers are alive.
 
 **Recovery pass.** ``recovery_pass()`` runs once when a worker starts: it reclaims every job
-whose lease lapsed (each exactly once, with fencing), writes the registered recurring tasks
-into rows (``timers.reconcile``), fires every overdue timer and recurring task (late, never
-skipped; a task that missed several runs runs once), and then runs the registered recovery
-hooks (``register_recovery_hook``, ``async (conn) -> None``, in registration order, each in its
-own transaction; the Engine registers its turn-queue drain as ``turn_queue``). Running it again
-changes nothing.
+whose lease lapsed (each exactly once, with fencing), fails every operation a crash left
+``in_flight`` that nothing alive still claims (``core.orphans``, #75), writes the registered
+recurring tasks into rows (``timers.reconcile``), fires every overdue timer and recurring task
+(late, never skipped; a task that missed several runs runs once), and then runs the registered
+recovery hooks (``register_recovery_hook``, ``async (conn) -> None``, in registration order,
+each in its own transaction; the Engine registers its turn-queue drain as ``turn_queue``).
+Running it again changes nothing.
 
 **Stopping.** ``stop()`` (SIGTERM/SIGINT under ``epistrel worker``) lets running jobs finish for
 up to ``DRAIN_S`` seconds, then cancels them; a cancelled job keeps its lease, which lapses, and
@@ -52,7 +53,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core import clock
+from epistrel.core import clock, orphans
 from epistrel.observability import instrument
 from epistrel.orchestrator.jobs import handlers, health, queue, timers
 from epistrel.orchestrator.jobs.types import ClaimedJob, JobContext, JobHandler, JobOutput
@@ -87,12 +88,15 @@ class RecoveryReport:
     hooks: tuple[str, ...]
     failed_hooks: tuple[str, ...] = ()
     fired: tuple[str, ...] = ()
+    orphaned: tuple[str, ...] = ()
+    """Operations a crash left ``in_flight``, now ``failed`` (or requeued turns; #75)."""
 
 
 async def recovery_pass(db: AsyncEngine) -> RecoveryReport:
     """Reclaim every lapsed lease (fenced, each once), reconcile and fire every overdue timer
     and recurring task, and run the recovery hooks; idempotent."""
     reclaimed = await queue.reap(db)
+    orphaned = await orphans.fail_orphans(db)
     await timers.reconcile(db)
     due = await timers.fire_due(db)
     ran: list[str] = []
@@ -106,7 +110,11 @@ async def recovery_pass(db: AsyncEngine) -> RecoveryReport:
             logger.warning("recovery hook %s failed: %s", name, type(exc).__name__)
             failed.append(name)
     return RecoveryReport(
-        tuple(reclaimed), tuple(ran), tuple(failed), tuple(due.timers + due.recurring)
+        tuple(reclaimed),
+        tuple(ran),
+        tuple(failed),
+        tuple(due.timers + due.recurring),
+        tuple(orphaned),
     )
 
 

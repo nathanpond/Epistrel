@@ -320,6 +320,12 @@ async def _reclaim(conn: AsyncConnection, story_id: str, holder: str) -> None:
     await release(conn, story_id, holder)
 
 
+async def reclaim(conn: AsyncConnection, story_id: str, holder: str) -> None:
+    """Reclaim ``holder``'s expired slot (the caller holds the story row lock; #75's
+    start-up sweep, ``core.orphans``)."""
+    await _reclaim(conn, story_id, holder)
+
+
 class TurnInterrupted(EpistrelError):
     """A turn's engine stopped while it ran (its lease ran out); nothing of it was recorded."""
 
@@ -709,6 +715,7 @@ __all__ = [
     "queue_owner",
     "queued_stories",
     "read_concurrency",
+    "reclaim",
     "release",
     "release_now",
     "renewing",

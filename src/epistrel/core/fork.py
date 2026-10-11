@@ -110,9 +110,12 @@ from epistrel.core.tables import (
     transcript_messages,
 )
 from epistrel.core.variants import ChainRef, ChainSelection, ChainSelector, fork_selection
+from epistrel.testing import crash
 
 logger = logging.getLogger(__name__)
 
+CRASH_KIND = "fork"
+"""What the fork's crash points (#75) count its hits as."""
 SNAPSHOT_ATTEMPTS = 3
 """How many times the snapshot copy is tried before 503 ``database_unavailable``."""
 
@@ -287,6 +290,7 @@ async def fork(
             "the fork's snapshot could not be read consistently; retry",
             {"attempts": SNAPSHOT_ATTEMPTS},
         )
+    crash.hit("after_commit_before_response", CRASH_KIND)
     await _record_on_source(db, story_id, forked, principal)
     for old, ids in moved.items():
         await timeline.run_post_commit_hooks(
@@ -370,6 +374,7 @@ async def _copy(
     call = idempotency.current_call()
     if call is not None:
         await call.bind(conn, _Genesis(genesis))
+    crash.hit("before_commit", CRASH_KIND)
     return Forked(
         story_id=fork_id,
         operation_id=genesis,
@@ -705,7 +710,8 @@ async def _genesis(
     await projections.apply_events(
         conn,
         fork_id,
-        [
+        kind=CRASH_KIND,
+        new_events=[
             projections.LogEvent(
                 id=event_id,
                 story_id=fork_id,

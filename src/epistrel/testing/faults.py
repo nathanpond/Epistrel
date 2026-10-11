@@ -7,10 +7,17 @@ port. Options the child applies to itself before serving:
 
 - ``lease_s``: the idempotency claim lease (``core.idempotency.LEASE_S``) and the turn slot's
   lease (``core.turn_gate.lease_override_s``, #63), short so a retry takes over a crashed
-  original, and the next turn the story's slot, quickly;
+  original, and the next turn the story's slot, quickly (and ``core.orphans.GRACE_S``, so a
+  restarted worker's recovery pass fails what the crash left ``in_flight``);
 - ``pause_before_commit``: every ``turn`` operation prints ``EPISTREL-FAULT before-commit
   <operation id>`` and then waits forever instead of committing, so a test can kill the engine
-  *between generation and commit* (S-DOUBLE-SUBMIT (c)).
+  *between generation and commit* (S-DOUBLE-SUBMIT (c));
+- ``crash`` (#75): a ``crash_at(point, nth, kind)`` plan. The child is started with
+  ``EPISTREL_TEST_FAULTS=1`` and ``EPISTREL_TEST_CRASH_AT``, and its ``nth`` hit of the named
+  crash point (``epistrel.testing.crash``) ends it with ``os._exit(137)`` after printing
+  ``EPISTREL-FAULT crash <point> <kind>``. ``crash`` may be changed between restarts;
+- ``mode``: ``EPISTREL_MODE`` (``all`` by default; ``api`` runs no job worker, so a harness
+  drains jobs itself).
 
 Nothing in ``create_app`` or the Engine imports this module.
 """
@@ -25,6 +32,8 @@ import signal
 import socket
 import sys
 from typing import Any
+
+from epistrel.testing.crash import POINTS, CrashPlan, crash_at, hit
 
 FAULT_MARKER = "EPISTREL-FAULT"
 BEFORE_COMMIT = "before-commit"
@@ -52,6 +61,8 @@ class EngineProcess:
         lease_s: float = 1.0,
         pause_before_commit: bool = False,
         stub_latency_s: float = 0.0,
+        crash: CrashPlan | None = None,
+        mode: str = "all",
     ) -> None:
         self.database_url = database_url
         self.credential = credential
@@ -59,6 +70,8 @@ class EngineProcess:
         self.lease_s = lease_s
         self.pause_before_commit = pause_before_commit
         self.stub_latency_s = stub_latency_s
+        self.crash = crash
+        self.mode = mode
         self.process: asyncio.subprocess.Process | None = None
         self.markers: asyncio.Queue[str] = asyncio.Queue()
         self.starts = 0
@@ -79,6 +92,8 @@ class EngineProcess:
             "EPISTREL_MODEL_ADAPTER": "stub",
             "EPISTREL_STUB_LATENCY_S": str(self.stub_latency_s),
             "EPISTREL_LOG_LEVEL": "WARNING",
+            "EPISTREL_MODE": self.mode,
+            **(self.crash.env() if self.crash is not None else {}),
         }
         args = [
             sys.executable,
@@ -145,6 +160,20 @@ class EngineProcess:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(self._reader, 5.0)
 
+    @property
+    def exited(self) -> int | None:
+        """The child's exit status once it ended (137 after a crash point fired), else ``None``."""
+        return None if self.process is None else self.process.returncode
+
+    async def wait_exit(self, timeout_s: float = 5.0) -> int | None:
+        """Wait up to ``timeout_s`` for the child to end; its exit status, or ``None``."""
+        process = self.process
+        if process is None:
+            return None
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(process.wait(), timeout_s)
+        return process.returncode
+
     async def restart(self) -> None:
         await self.kill()
         await self.start()
@@ -186,10 +215,11 @@ def serve(argv: list[str] | None = None) -> int:
     import uvicorn
 
     from epistrel.api import create_app
-    from epistrel.core import idempotency, turn_gate
+    from epistrel.core import idempotency, orphans, turn_gate
 
     idempotency.LEASE_S = args.lease_s
     turn_gate.lease_override_s = args.lease_s
+    orphans.GRACE_S = args.lease_s
     if args.pause_before_commit:
         _pause_turn_commits()
     uvicorn.run(create_app(), host=HOST, port=args.port, log_level="warning")
@@ -208,4 +238,15 @@ if __name__ == "__main__":  # pragma: no cover - the child process entry point
     sys.exit(main())
 
 
-__all__ = ["BEFORE_COMMIT", "FAULT_MARKER", "EngineProcess", "free_port", "main", "serve"]
+__all__ = [
+    "BEFORE_COMMIT",
+    "FAULT_MARKER",
+    "POINTS",
+    "CrashPlan",
+    "EngineProcess",
+    "crash_at",
+    "free_port",
+    "hit",
+    "main",
+    "serve",
+]

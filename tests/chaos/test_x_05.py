@@ -51,6 +51,7 @@ async def release_after(latch: StubLatch, delay: float) -> None:
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.integration
 @pytest.mark.part("M2", "NFR-REL-3; FR-MODEL-6")
 async def test_x_05(pg_url: str, engine: AsyncEngine) -> None:

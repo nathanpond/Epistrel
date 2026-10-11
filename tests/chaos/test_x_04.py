@@ -103,6 +103,7 @@ async def _crashes(child: EngineProcess, rng: random.Random, stop: asyncio.Event
 
 
 @pytest.mark.chaos
+@pytest.mark.chaos_quick
 @pytest.mark.integration
 @pytest.mark.part("M2", "NFR-REL-4; FR-CONC-6")
 async def test_x_04(pg_url: str, engine: AsyncEngine) -> None:

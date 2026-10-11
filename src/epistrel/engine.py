@@ -103,6 +103,7 @@ from epistrel.orchestrator.policies.schemas import (
     PolicyReplacement,
     StoryPolicyItem,
 )
+from epistrel.testing import crash
 
 logger = logging.getLogger(__name__)
 
@@ -425,6 +426,8 @@ class Engine:
             except BaseException:
                 await call.release()
                 raise
+            # Committed, not yet answered (#75): a crash here leaves the key for the retry.
+            crash.hit("after_commit_before_response", operation)
             finished: T = await call.finish(value)
             return finished
 

@@ -110,8 +110,10 @@ jobs:
       # Coverage is gated on epistrel.core only (the deterministic layer); the flags live here and in
       # the README, not in pytest's addopts, so a plain `uv run pytest` stays fast locally.
       # `live_model` tests (E-06, P-08) need a real endpoint; the model matrix tool runs them
-      # locally and records the result, reported not gated (#54).
-      - run: uv run pytest -m "not live_model" --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90
+      # locally and records the result, reported not gated (#54). Of the chaos suite only the
+      # `chaos_quick` tests run here, at their quick defaults, inside the one coverage gate; the
+      # weekly chaos.yml runs every `chaos` test at full strength (#75).
+      - run: uv run pytest -m "not live_model and (not chaos or chaos_quick)" --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90
 
   docker:
     runs-on: ubuntu-latest

@@ -35,6 +35,7 @@ from epistrel.core.projections.base import (
     registered_projections,
 )
 from epistrel.core.tables import events, operations, stories
+from epistrel.testing import crash
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,12 +51,20 @@ class RebuildResult:
 
 
 async def apply_events(
-    conn: AsyncConnection, story_id: str, new_events: Sequence[LogEvent]
+    conn: AsyncConnection,
+    story_id: str,
+    new_events: Sequence[LogEvent],
+    *,
+    kind: str | None = None,
 ) -> None:
-    """Maintain every projection for ``new_events`` inside the caller's transaction."""
+    """Maintain every projection for ``new_events`` inside the caller's transaction.
+    ``kind`` (the committing operation's) only names the ``during_projection`` crash point's
+    hits (#75)."""
     if not new_events:
         return
-    for projection in registered_projections():
+    for index, projection in enumerate(registered_projections()):
+        if index:
+            crash.hit("during_projection", kind)
         rows = await projection.load(conn, story_id, new_events)
         before = rows.snapshot()
         for event in new_events:

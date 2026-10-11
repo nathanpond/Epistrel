@@ -140,7 +140,8 @@ markers = [
     "integration: needs PostgreSQL (Docker via testcontainers, or EPISTREL_TEST_DATABASE_URL)",
     "redteam: red-team suite (docs/04 §10, R-xx); runs in PR CI with everything else",
     "live_model: needs a real OpenAI-compatible endpoint (EPISTREL_LIVE_BASE_URL/_MODEL/_API_KEY); deselected unless -m names it, and fails when those are unset (#54)",
-    "chaos: chaos suite (docs/04 §12, X-xx); the quick form (EPISTREL_CHAOS_ITERATIONS, default 50) runs in PR CI with everything else",
+    "chaos: chaos suite (docs/04 §12, X-xx); every test under tests/chaos/ (auto-marked). PR CI runs only the chaos_quick ones, at their default EPISTREL_CHAOS_ITERATIONS; the weekly chaos.yml runs them all at 500 (#75)",
+    "chaos_quick: the chaos tests PR CI runs (quick at their default iteration count; #75)",
     "part(milestone, requirements, interim_until=None): milestone part (docs/04 §13) — gates from <milestone>, covers <requirements>; see tests/README.md",
 ]
 # tests/gates/fixtures holds deliberately broken test trees for the gate checks; pytest must not collect them.

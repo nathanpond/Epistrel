@@ -28,6 +28,8 @@ if os.environ.get("CI"):
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 INTEGRATION_DIR = Path(__file__).resolve().parent / "integration"
+CHAOS_DIR = Path(__file__).resolve().parent / "chaos"
+DETERMINISM_DIR = Path(__file__).resolve().parent / "determinism"
 SCENARIO_DIR = Path(__file__).resolve().parent / "scenario"
 P05_FILE = "test_p_05.py"
 PG_IMAGE = "pgvector/pgvector:pg16"
@@ -43,12 +45,16 @@ NO_DOCKER_MESSAGE = (
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Everything under tests/integration/ is an integration test. ``live_model`` tests run
-    only when ``-m`` names that marker: they need a real endpoint (#54). P-05 runs last, over
-    the turn census of everything before it (#69)."""
+    """Everything under tests/integration/, tests/chaos/ and tests/determinism/ is an
+    integration test, and everything under tests/chaos/ a ``chaos`` test (#75). ``live_model``
+    tests run only when ``-m`` names that marker: they need a real endpoint (#54). P-05 runs
+    last, over the turn census of everything before it (#69)."""
     for item in items:
-        if INTEGRATION_DIR in Path(str(item.fspath)).parents:
+        parents = Path(str(item.fspath)).parents
+        if INTEGRATION_DIR in parents or CHAOS_DIR in parents or DETERMINISM_DIR in parents:
             item.add_marker(pytest.mark.integration)
+        if CHAOS_DIR in parents:
+            item.add_marker(pytest.mark.chaos)
     census = [item for item in items if Path(str(item.fspath)).name == P05_FILE]
     if census:
         items[:] = [item for item in items if item not in census] + census

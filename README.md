@@ -67,6 +67,8 @@ uv run python -m tools.gates check-assignment   # docs/03 §22: every requiremen
 
 Every pull request runs the same five checks in CI (lint, types, tests with core coverage ≥ 90 %, Docker build); the `gate` check is required by the `main` ruleset, so a red gate blocks the merge for everyone.
 
+The chaos suite (`tests/chaos/`, marker `chaos`) kills the engine at named crash points (X-03), cuts its database (X-06, which needs Docker even when `EPISTREL_TEST_DATABASE_URL` is set) and storms it with retries. Pull requests run its `chaos_quick` tests at their quick defaults; the weekly `chaos.yml` workflow runs all of it with `EPISTREL_CHAOS_ITERATIONS=500` (`EPISTREL_CHAOS_SEED`, printed by each test, replays a run). `tests/determinism/` replays a committed script twice on fresh databases and compares the Engine Core state (NFR-DETERM-1).
+
 Integration tests live under `tests/integration/`. Set `EPISTREL_TEST_DATABASE_URL` to reuse a running PostgreSQL 16 + pgvector server instead of a container (its role needs `CREATEDB`); with neither Docker nor that variable they fail with a message, never skip. Schema changes go through Alembic: edit `epistrel.core.schema`, run `uv run alembic revision --autogenerate -m "..."`, and a test fails until metadata and migrations agree.
 
 ## License

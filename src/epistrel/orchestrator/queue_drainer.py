@@ -37,6 +37,7 @@ from epistrel.core.errors import StoryNotFound
 from epistrel.core.idempotency import KeyStatus, ReferenceReplay, Scope, StoredResult
 from epistrel.core.tables import idempotency_keys
 from epistrel.core.turn_gate import Concurrency, Outcome, QueueItem, TurnAccepted
+from epistrel.testing import crash
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,7 @@ class QueueDrainer:
                     return
                 try:
                     concurrency = await turn_gate.read_concurrency(db, story_id)
+                    crash.hit("before_lock", item.kind)
                     held = await turn_gate.acquire(
                         db,
                         story_id,

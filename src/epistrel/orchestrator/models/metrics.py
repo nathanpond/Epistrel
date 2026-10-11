@@ -8,6 +8,8 @@ Every model call attempt the Model Access Layer makes is recorded once, by
   ``epistrel_model_tokens_total{purpose,kind}`` (``kind`` is ``input`` or ``output``, 0 when
   the endpoint reports no usage), ``epistrel_model_cost_total{purpose,model}`` (USD, only when
   the endpoint reports ``usage.cost``), and ``epistrel_model_latency_seconds{purpose}``.
+- **A ``model_call`` span** (#74), a child of the current span, with purpose, model, attempt and
+  outcome.
 - **The call log of the operation in progress** (``recording()``): a list of ``ModelCall``
   entries the turn's response returns as ``model_calls``. #57's ``respond`` and #69's turn
   report read the same log.
@@ -30,6 +32,7 @@ from typing import Literal
 from prometheus_client import REGISTRY, Counter, Histogram
 from pydantic import BaseModel, ConfigDict, Field
 
+from epistrel.observability import tracing
 from epistrel.orchestrator.models.errors import ModelError
 
 Outcome = Literal["ok", "timeout", "http_error", "invalid_output", "cancelled"]
@@ -138,6 +141,17 @@ def record(call: ModelCall) -> None:
     if call.cost is not None and call.cost >= 0:
         MODEL_COST.labels(call.purpose, model).inc(call.cost)
     MODEL_LATENCY.labels(call.purpose).observe(call.latency_ms / 1000)
+    # A child span of whatever is current (the turn, the job): identifiers only (#74).
+    tracing.finished_span(
+        "model_call",
+        call.latency_ms / 1000,
+        {
+            "epistrel.purpose": call.purpose,
+            "epistrel.model": model,
+            "epistrel.attempt": call.attempt,
+            "epistrel.outcome": call.outcome,
+        },
+    )
     log = CALL_LOG.get()
     if log is not None:
         log.calls.append(call)

@@ -1,8 +1,9 @@
 """Routers aggregated for `create_app`.
 
-``public_router`` holds the routes invariant 4 exempts from the service credential (``/health``
-now, ``/metrics`` with #74). Everything else goes on ``router``, which ``create_app`` includes with
-the credential and principal dependencies; that includes the ``/admin`` operator router.
+``public_router`` holds the routes invariant 4 exempts from the service credential: ``/health``
+and ``/metrics`` (#74), which a ``worker``-mode process serves too (#71). Everything else goes on
+``router``, which ``create_app`` includes with the credential and principal dependencies; that
+includes the ``/admin`` operator router.
 """
 
 from fastapi import APIRouter
@@ -17,9 +18,11 @@ from epistrel.api.routes import (
     story_texts,
     timeline,
 )
+from epistrel.observability import metrics
 
 public_router = APIRouter()
 public_router.include_router(health.router)
+public_router.include_router(metrics.router)
 
 router = APIRouter()
 router.include_router(stories.router)

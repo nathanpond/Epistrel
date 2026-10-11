@@ -11,10 +11,13 @@ dependencies = [
     "fastapi>=0.115",
     "jinja2>=3.1.6",
     "openai>=3.28.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
     "prometheus-client>=0.26.0",
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.7",
     "sqlalchemy[asyncio]>=2.0",
+    "structlog>=26.1.0",
     "uvicorn[standard]>=0.30",
 ]
 
@@ -79,6 +82,14 @@ name = "core-does-not-import-orchestrator-or-api"
 type = "forbidden"
 source_modules = ["epistrel.core"]
 forbidden_modules = ["epistrel.orchestrator", "epistrel.api"]
+
+[[tool.importlinter.contracts]]
+# #74: `epistrel.core` imports `epistrel.observability` (the telemetry scope and spans), so
+# observability must not reach the orchestrator, the API or the Engine, or core would through it.
+name = "observability-is-below-orchestrator-and-api"
+type = "forbidden"
+source_modules = ["epistrel.observability"]
+forbidden_modules = ["epistrel.orchestrator", "epistrel.api", "epistrel.engine"]
 
 [[tool.importlinter.contracts]]
 # FR-GUARD-1, NFR-SEC-1 (#49): nothing on the turn path or the event store reaches the policy

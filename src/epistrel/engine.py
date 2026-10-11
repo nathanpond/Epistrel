@@ -59,6 +59,7 @@ from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.tables import events
 from epistrel.core.turn_gate import Concurrency, QueueItem
 from epistrel.core.viewpoint import is_omniscient, resolve_viewpoint, with_requested
+from epistrel.observability import instrument
 from epistrel.orchestrator import queue_drainer
 from epistrel.orchestrator.budget import (
     DEFAULT_TURN_DEADLINE_S,
@@ -514,7 +515,19 @@ class Engine:
         self, item: QueueItem, operation: str, run: Callable[[], Awaitable[Any]]
     ) -> None:
         """Run a queued turn under the ``Idempotency-Key`` its request handed to the queue:
-        the turn's commit binds it and its result is stored there for the waiting requests."""
+        the turn's commit binds it and its result is stored there for the waiting requests.
+        It is a unit of background work of its own (``<operation>_queued``; #74)."""
+        with instrument.background(
+            f"{operation}_queued",
+            story_id=item.story_id,
+            operation_id=item.operation_id,
+            principal=item.principal,
+        ):
+            await self._run_queued(item, operation, run)
+
+    async def _run_queued(
+        self, item: QueueItem, operation: str, run: Callable[[], Awaitable[Any]]
+    ) -> None:
         if item.idempotency_key is None:  # pragma: no cover - every call is keyed (#61)
             await run()
             return
@@ -1525,3 +1538,7 @@ class Engine:
             ),
             material={"purpose": purpose},
         )
+
+
+# One span, summary line and count per outermost call of every public coroutine method (#74).
+instrument.instrument_engine(Engine)

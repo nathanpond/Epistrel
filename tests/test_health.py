@@ -21,6 +21,7 @@ def test_health_reports_ok(client: TestClient) -> None:
             "oldest_overdue_timer_s": None,
             "oldest_overdue_job_s": None,
         },
+        "content_logging": False,
     }
 
 

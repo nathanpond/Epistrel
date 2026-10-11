@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import clock
 from epistrel.core.ids import new_ulid
 from epistrel.core.tables import recurring_tasks, timers
+from epistrel.observability import instrument
 from epistrel.orchestrator.jobs import handlers, queue
 from epistrel.orchestrator.jobs.recurring import registered_tasks
 
@@ -149,7 +150,15 @@ async def _fire_recurring(db: AsyncEngine, now: datetime, names: list[str], fire
 
 
 async def fire_due(db: AsyncEngine, now: datetime | None = None) -> Fired:
-    """Fire every due timer and registered recurring task (see the module docstring)."""
+    """Fire every due timer and registered recurring task (see the module docstring), as one
+    unit of background work (``fire_timers``; a DEBUG line when nothing was due; #74)."""
+    with instrument.background("fire_timers") as run:
+        fired = await _fire_due(db, now)
+        run.quiet = not (fired.timers or fired.recurring)
+        return fired
+
+
+async def _fire_due(db: AsyncEngine, now: datetime | None) -> Fired:
     moment = now or clock.now()
     fired = Fired()
     for _ in range(FIRE_LIMIT):

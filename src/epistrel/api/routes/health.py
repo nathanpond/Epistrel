@@ -13,6 +13,9 @@ queued job (``null``: nothing overdue). Status:
 - ``unavailable`` (503): the database does not answer within ``CHECK_TIMEOUT_SECONDS``; the
   background fields are ``null``.
 
+``content_logging`` is ``true`` while operator-only content debug logging is on in this process
+(``EPISTREL_CONTENT_DEBUG_LOGGING``, NFR-SEC-4; #74), so turning it on is visible.
+
 Ages use the database's own ``now()``. An app that was never started (no engine) reports ``ok``
 with the database ``skipped``.
 """
@@ -31,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.config_changes import read_section
 from epistrel.core.settings_schema import WorkerHealthSettings
+from epistrel.observability.logging import content_logging_active
 from epistrel.orchestrator.jobs import health as worker_health
 from epistrel.orchestrator.jobs.recurring import registered_tasks
 
@@ -62,10 +66,12 @@ class HealthChecks(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """`ok`, `degraded` (still 200) or `unavailable` (503), and the checks behind it."""
+    """`ok`, `degraded` (still 200) or `unavailable` (503), the checks behind it, and whether
+    operator-only content debug logging is on in this process (`content_logging`, NFR-SEC-4)."""
 
     status: Literal["ok", "degraded", "unavailable"]
     checks: HealthChecks
+    content_logging: bool = False
 
 
 def _warn(what: str, exc: BaseException) -> None:
@@ -114,8 +120,9 @@ async def check(engine: AsyncEngine) -> HealthResponse:
 async def health(request: Request, response: Response) -> HealthResponse:
     engine: AsyncEngine | None = getattr(request.app.state, "engine", None)
     if engine is None:
-        return HealthResponse(status="ok", checks=HealthChecks(database="skipped"))
-    result = await check(engine)
+        result = HealthResponse(status="ok", checks=HealthChecks(database="skipped"))
+    else:
+        result = await check(engine)
     if result.status == "unavailable":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-    return result
+    return result.model_copy(update={"content_logging": content_logging_active()})

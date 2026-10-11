@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     # worker loops in one process (the image's default); ``api`` serves the API only; ``worker``
     # runs the worker loops and serves only ``/health``. ``epistrel serve --mode`` overrides it.
     mode: ProcessMode = "all"
+    # Operator-only content debug logging (NFR-SEC-4, invariant 3; #74): log lines may carry
+    # story content. Refused unless ``debug`` is on; switches itself off after 24 hours; keep
+    # such logs at most 7 days.
+    content_debug_logging: bool = False
+    # OpenTelemetry traces over OTLP/HTTP (FR-OBS-1; #74), e.g. ``http://collector:4318``; unset
+    # (the default) leaves tracing off. ``OTEL_EXPORTER_OTLP_*`` variables tune the exporter.
+    otlp_endpoint: str | None = None
 
     @field_validator("database_url")
     @classmethod
@@ -117,6 +124,24 @@ class Settings(BaseSettings):
                     f"credential #{index + 1} is shorter than {MIN_CREDENTIAL_LENGTH} characters"
                 )
         return value
+
+    @field_validator("otlp_endpoint")
+    @classmethod
+    def _otlp_endpoint_is_http(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            return None
+        if value is not None and not value.startswith(("http://", "https://")):
+            raise ValueError("must be an http:// or https:// URL")
+        return value
+
+    @model_validator(mode="after")
+    def _content_logging_needs_debug(self) -> Self:
+        if self.content_debug_logging and not self.debug:
+            raise ValueError(
+                f"{_env_name('content_debug_logging')}: is refused unless "
+                f"{_env_name('debug')} is on (content debug logging is operator-only, NFR-SEC-4)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _authentication_configured(self) -> Self:

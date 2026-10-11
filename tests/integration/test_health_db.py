@@ -43,6 +43,7 @@ def test_health_reports_database_error_and_keeps_serving() -> None:
             "oldest_overdue_timer_s": None,
             "oldest_overdue_job_s": None,
         },
+        "content_logging": False,
     }
     assert second.status_code == 503
     assert second.json()["checks"]["database"] == "error"

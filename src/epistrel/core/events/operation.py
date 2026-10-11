@@ -93,6 +93,8 @@ from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import events, operations, stories, turn_queue
+from epistrel.observability import context as telemetry
+from epistrel.observability import tracing
 
 logger = logging.getLogger(__name__)
 
@@ -291,6 +293,7 @@ class Operation:
                 if self.queued:
                     await self._start_queued(conn)
                     self.status = OperationStatus.IN_FLIGHT
+                    telemetry.operation_opened(self.operation_id, self.story_id)
                     return result
                 await conn.execute(
                     insert(operations).values(
@@ -308,7 +311,15 @@ class Operation:
                     )
                 )
         self.status = OperationStatus.IN_FLIGHT
+        telemetry.operation_opened(self.operation_id, self.story_id)
         return result
+
+    def _span_attributes(self) -> dict[str, str]:
+        """The commit span's identifiers (#74): never a payload."""
+        found = {"epistrel.operation_id": self.operation_id, "epistrel.kind": self.kind.value}
+        if self.story_id is not None:
+            found["epistrel.story_id"] = self.story_id
+        return found
 
     async def _start_queued(self, conn: AsyncConnection) -> None:
         """``queued`` → ``in_flight`` with the base just read (the row was inserted at enqueue
@@ -453,9 +464,10 @@ class Operation:
         if decide is not None and (self.story_id is None or self.base_revision is None):
             raise InvalidRequest("only a story operation with a base revision revalidates")
         try:
-            async with self._connection() as conn, conn.begin():
-                await conn.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
-                await self._write(conn, decide)
+            with tracing.span("commit", self._span_attributes()):
+                async with self._connection() as conn, conn.begin():
+                    await conn.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
+                    await self._write(conn, decide)
         except RevalidationRequired:
             self._reset_position()
             await self._record_attempts()
@@ -497,7 +509,8 @@ class Operation:
         self._require_in_flight("commit")
         if decide is not None and (self.story_id is None or self.base_revision is None):
             raise InvalidRequest("only a story operation with a base revision revalidates")
-        await self._write(conn, decide)
+        with tracing.span("commit", self._span_attributes()):
+            await self._write(conn, decide)
 
     async def settle(self, error: BaseException | None) -> None:
         """Record the outcome of a ``write_in`` whose transaction has ended: ``committed``

@@ -14,8 +14,10 @@ from epistrel.api import errors, openapi, routes
 from epistrel.api.auth import PROTECTED_DEPENDENCIES, TRUST_BOUNDARY_STATEMENT
 from epistrel.api.validation import strict_json_body
 from epistrel.config import ConfigError, Settings, load_settings
-from epistrel.core.db import make_engine
+from epistrel.core.db import database_url, make_engine
 from epistrel.engine import Engine
+from epistrel.observability import metrics
+from epistrel.observability.instrument import TelemetryMiddleware
 from epistrel.orchestrator.models.config import config_key_problem
 
 
@@ -36,9 +38,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ``all``/``worker``: the job worker runs here as an asyncio task (#71); ``api``: queued turns
     # left by a stopped process are drained once (#63).
     await app.state.epistrel.start_workers()
+    # ``/metrics`` reads the job, timer and worker gauges from this database at scrape (#74).
+    metrics.GAUGES.bind(database_url(app.state.settings))
     try:
         yield
     finally:
+        metrics.GAUGES.unbind()
         await app.state.epistrel.stop_workers()
         app.state.epistrel.bind(None)
         await app.state.epistrel.models.aclose()
@@ -76,7 +81,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     `TestClient(app)` without `with`) has no engine and `/health` reports `skipped`.
 
     ``settings.mode`` decides the routes: ``all`` and ``api`` serve every route; ``worker``
-    serves only the public operational routes (``/health``), since it takes no API calls (#71).
+    serves only the public operational routes (``/health``, ``/metrics``), since it takes no API
+    calls (#71). Process-wide logging and tracing are ``epistrel serve``'s
+    (``observability.configure_process``), not the app's: an embedder keeps its own.
     """
     if settings is None:
         settings = load_settings()
@@ -92,6 +99,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = None
     app.state.epistrel = Engine.from_settings(settings)
     errors.install(app)
+    # Added first, so it runs inside ``ReceiptStamp`` (which stays the outermost): one scope,
+    # server span, latency sample and ``request`` line per request (#74).
+    app.add_middleware(TelemetryMiddleware)
     app.add_middleware(ReceiptStamp)
     app.include_router(routes.public_router)
     if settings.mode != "worker":

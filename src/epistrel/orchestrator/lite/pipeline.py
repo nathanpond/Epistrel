@@ -101,6 +101,7 @@ from epistrel.core.turns import (
     stage_turn,
 )
 from epistrel.core.viewpoint import resolve_viewpoint, try_resolve
+from epistrel.observability.logging import get_logger
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, plan_lite_budget
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
@@ -139,6 +140,9 @@ from epistrel.orchestrator.policies.store import guard_context
 
 GENERATION = "generation"
 INPUT_LOCATOR = "player_input"
+
+content_log = get_logger("epistrel.lite.content")
+"""DEBUG lines carrying the prompt and draft, which only content debug logging lets through."""
 
 Gate = Callable[[TurnBudget, str, str, list[str]], Awaitable[Any]]
 """``gate(budget, text, actor_character_id, render_character_ids)``: the input gate (#56),
@@ -448,6 +452,14 @@ async def _play(
             )
             _, _, messages = models.prepare(GENERATION, payload)
             result = await _generate(models, payload, model_params(settings, cast), budget)
+            # Content: the ContentFilter drops ``prompt`` and ``text`` unless operator-only
+            # content debug logging is on (NFR-SEC-4; #74).
+            content_log.debug(
+                "generation draft",
+                attempt=attempt,
+                prompt=[message.content for message in messages],
+                text=result.text,
+            )
             return Draft(
                 text=result.text,
                 model=result.model,

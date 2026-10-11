@@ -5,13 +5,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 import os
 import sys
+from typing import TYPE_CHECKING
 
 import uvicorn
 
 from epistrel.config import PROCESS_MODES, ConfigError, ProcessMode, Settings, load_settings
+from epistrel.observability import configure_process
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 EX_CONFIG = 78
 
@@ -52,9 +56,18 @@ def _load() -> Settings | None:
     except ConfigError as exc:
         print("\n".join(exc.lines), file=sys.stderr)
         return None
-    level = "DEBUG" if settings.debug else settings.log_level
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     return settings
+
+
+def app_factory() -> FastAPI:
+    """uvicorn's factory: this process's logging and tracing (JSON logs through the content
+    filter, OTLP when configured; #74), then the app. A ``--reload`` child runs it too. Logging
+    is configured here, after the pre-flight checks, so a refused start changes nothing."""
+    from epistrel.api.app import create_app
+
+    settings = load_settings()
+    configure_process(settings)
+    return create_app(settings)
 
 
 async def _preflight(settings: Settings) -> str | None:
@@ -97,11 +110,15 @@ def serve(
         print(problem, file=sys.stderr)
         return EX_CONFIG
     uvicorn.run(
-        "epistrel.api.app:create_app",
+        "epistrel.cli:app_factory",
         factory=True,
         host=settings.host,
         port=settings.port,
         log_level=level.lower(),
+        # Our handler renders every logger (uvicorn's included); the telemetry middleware writes
+        # the one line per request, so uvicorn's access log stays off (#74).
+        log_config=None,
+        access_log=False,
         reload=settings.debug,
         reload_dirs=["src"] if settings.debug else None,
         workers=1,

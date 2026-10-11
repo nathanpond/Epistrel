@@ -1210,10 +1210,15 @@
         "type": "object"
       },
       "HealthResponse": {
-        "description": "`ok`, `degraded` (still 200) or `unavailable` (503), and the checks behind it.",
+        "description": "`ok`, `degraded` (still 200) or `unavailable` (503), the checks behind it, and whether\noperator-only content debug logging is on in this process (`content_logging`, NFR-SEC-4).",
         "properties": {
           "checks": {
             "$ref": "#/components/schemas/HealthChecks"
+          },
+          "content_logging": {
+            "default": false,
+            "title": "Content Logging",
+            "type": "boolean"
           },
           "status": {
             "enum": [
@@ -8637,6 +8642,28 @@
           }
         },
         "summary": "Liveness and readiness",
+        "tags": [
+          "ops"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "The Prometheus text exposition of the engine's metrics: identifiers and counts only, never story content (invariant 3). Served without a credential (invariant 4).",
+        "operationId": "metrics",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Prometheus metrics",
         "tags": [
           "ops"
         ]

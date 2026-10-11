@@ -133,6 +133,14 @@ def test_classifier_spellings_normalise() -> None:
     assert parse_expression("A; B") == [["A"], ["B"]]
 
 
+def test_parenthesised_classifier_is_looked_up_whole() -> None:
+    """certifi's metadata reads `Mozilla Public License 2.0 (MPL 2.0)`: a known whole value is
+    its id (#74). Complement: other parentheses are still UNKNOWN."""
+    assert parse_expression("Mozilla Public License 2.0 (MPL 2.0)") == [["MPL-2.0"]]
+    assert judge("certifi", "Mozilla Public License 2.0 (MPL 2.0)", CONFIG).status == "ok"
+    assert parse_expression("(MIT OR GPL-3.0)") == [["UNKNOWN"]]
+
+
 @pytest.mark.parametrize(("spelling", "spdx"), sorted(NORMALISATION.items()))
 def test_every_normalisation_entry_round_trips(spelling: str, spdx: str) -> None:
     assert normalise_id(spelling) == spdx

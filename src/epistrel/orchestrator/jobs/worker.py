@@ -53,6 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core import clock
+from epistrel.observability import instrument
 from epistrel.orchestrator.jobs import handlers, health, queue, timers
 from epistrel.orchestrator.jobs.types import ClaimedJob, JobContext, JobHandler, JobOutput
 
@@ -292,7 +293,17 @@ class Worker:
     async def execute(self, job: ClaimedJob) -> queue.CommitOutcome | str | None:
         """Run a claimed job: its handler under heartbeat and the runtime cap, then the commit.
         Returns the commit outcome, the status a failure left (``queued``/``failed``), or
-        ``None`` when the claim was fenced."""
+        ``None`` when the claim was fenced. One span, summary line and count per run (kind =
+        the job's kind, outcome ``error`` for a failed attempt, ``rejected`` when fenced; #74)."""
+        with instrument.background(job.kind, story_id=job.story_id, job_id=job.id) as run:
+            result = await self._execute(job)
+            if result is None:
+                run.outcome = "rejected"
+            elif isinstance(result, str):
+                run.outcome = "error"
+            return result
+
+    async def _execute(self, job: ClaimedJob) -> queue.CommitOutcome | str | None:
         handler = handlers.lookup(job.kind)
         if handler is None:
             return await self._fail(job, queue.UnknownJobKind.__name__, terminal=True)

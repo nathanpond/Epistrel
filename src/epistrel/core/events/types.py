@@ -22,6 +22,17 @@ class CastMember(EventPayload):
     is_player: bool
 
 
+class ForkedFrom(EventPayload):
+    """Where a fork came from (#67): the source story, the source revision the copy is equal
+    to, the turn it runs through and the chain it followed (``None``: the active one). The one
+    place a story names another, as provenance only: nothing resolves it."""
+
+    story_id: str
+    revision: int = Field(ge=0)
+    at_turn: int = Field(ge=0)
+    variant_chain: dict[str, int] | None = None
+
+
 @register("story_created", category=EventCategory.CONTROL)
 class StoryCreated(EventPayload):
     """The genesis event of every story (#50): its name, cast, settings and rating version.
@@ -35,6 +46,8 @@ class StoryCreated(EventPayload):
     settings: dict[str, JsonValue] = Field(default_factory=dict)
     content_rating_id: str | None = None
     rating_version_id: str | None = None
+    forked_from: ForkedFrom | None = None
+    """Set on a fork's own genesis (#67): the story, revision and turn it was copied from."""
 
 
 @register("story_archived", category=EventCategory.CONTROL)
@@ -159,10 +172,14 @@ class Swap(EventPayload):
 
 @register("fork", category=EventCategory.CONTROL)
 class Fork(EventPayload):
-    """Copy the history through ``through_turn`` into a new story (shell; #67 extends)."""
+    """The source side of a fork (#67): the history through ``at_turn`` (along
+    ``variant_chain``, ``None`` for the active chain) at source revision ``revision`` was copied
+    into ``fork_story_id``. Written after the copy commits; it bumps no revision."""
 
-    new_story_id: str
-    through_turn: int
+    fork_story_id: str
+    at_turn: int = Field(ge=0)
+    revision: int = Field(ge=0)
+    variant_chain: dict[str, int] | None = None
 
 
 class PinnedItem(EventPayload):

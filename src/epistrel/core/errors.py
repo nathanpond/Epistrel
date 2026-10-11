@@ -273,3 +273,12 @@ class NothingToRegenerate(EpistrelError):
 
     code = "nothing_to_regenerate"
     http_status = 422
+
+
+class DatabaseUnavailable(EpistrelError):
+    """The database kept refusing a transaction that cannot be retried by the caller: a fork's
+    snapshot copy hit a serialization failure on every attempt (#67). Nothing was written.
+    ``details``: ``attempts``."""
+
+    code = "database_unavailable"
+    http_status = 503

@@ -10,6 +10,8 @@ regenerate the latest reply, and swap continuations.
 - ``POST /stories/{id}/swap`` with ``{to_variant_chain: {turn, variant}}`` makes that chain
   active and the current continuation dormant.
 - ``GET /stories/{id}/variants`` lists the story's chains.
+- ``POST /stories/{id}/fork`` with ``{at_turn?, variant_chain?, name?}`` copies the corrected
+  history through a turn (along a chain) into a new, independent story (#67).
 
 The edits answer ``{operation_id, timeline_revision, next_turn_index, …}``. ``GET
 /stories/{id}`` reports ``undo_available``, ``dormant_chains`` and ``variant_chains``;
@@ -23,6 +25,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Response
+from fastapi import status as http_status
 from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep
@@ -30,6 +33,7 @@ from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.core.enums import Membership
+from epistrel.core.fork import ForkRequest
 from epistrel.core.timeline import TruncateRequest, UntruncateRequest
 from epistrel.core.variants import Chain, ChainRef, SwapRequest
 from epistrel.orchestrator.lite.schemas import RegenerateRequest, RegenerateResult
@@ -125,6 +129,37 @@ class VariantChainBody(BaseModel):
 
 class VariantsBody(BaseModel):
     items: list[VariantChainBody]
+
+
+class ForkedFromBody(BaseModel):
+    """The source story, the source revision the fork equals, the last turn copied, and the
+    chain followed (``null``: the active one)."""
+
+    story_id: str
+    revision: int
+    at_turn: int
+    variant_chain: ChainRefBody | None
+
+
+class ForkCharacterBody(BaseModel):
+    """A character of the fork and the source character it copies."""
+
+    id: str
+    name: str
+    source_id: str
+
+
+class ForkedBody(MutationResponse):
+    """The new story (``timeline_revision`` is the fork's: 1), its genesis operation, where it
+    came from, its cast, and how many rows were copied per table."""
+
+    story_id: str
+    operation_id: str
+    next_turn_index: int
+    name: str | None
+    forked_from: ForkedFromBody
+    characters: list[ForkCharacterBody]
+    counts: dict[str, int]
 
 
 @router.post(
@@ -271,3 +306,55 @@ async def regenerate(
 async def variants(story_id: str, ctx: ContextDep, engine: EngineDep) -> VariantsBody:
     found = await engine.variants(ctx, story_id)
     return VariantsBody(items=[VariantChainBody.of(c) for c in found])
+
+
+@router.post(
+    "/{story_id}/fork",
+    status_code=http_status.HTTP_201_CREATED,
+    response_model=ForkedBody,
+    summary="Fork the story at a turn",
+    description=(
+        "Copy the story's corrected history through `at_turn` (default the head) into a new "
+        "story: every active record positioned at or before it, the cast, settings, rating, "
+        "pinned memories, custom instructions and story policies, under new ids. The copy reads "
+        "one snapshot of the source, so it equals the source at exactly one timeline revision "
+        "(`forked_from.revision`), and the two stories are independent from then on. "
+        '`variant_chain` (`{turn, variant}` or `"turn:variant"`) copies another chain, e.g. a '
+        "dormant continuation, as the fork's active history; `at_turn` must then lie on it "
+        "(422 otherwise), and a chain that names no variant or continues in more than one way "
+        "is 409 `unknown_chain`. `at_turn` above the head is 422. An archived story can be "
+        "forked; the fork is active. Answers 201 with `Location`. The source records a `fork` "
+        "event and keeps its revision. `Idempotency-Key` (per deployment, like story creation) "
+        "and `X-Epistrel-Expected-Revision` (the source's) are optional."
+    ),
+)
+async def fork(
+    story_id: str,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+    body: Annotated[ForkRequest | None, Body()] = None,
+) -> ForkedBody:
+    done = await engine.fork(ctx, story_id, body or ForkRequest())
+    response.headers["Location"] = f"/stories/{done.story_id}"
+    origin = done.forked_from
+    answer = ForkedBody(
+        story_id=done.story_id,
+        operation_id=done.operation_id,
+        timeline_revision=done.timeline_revision,
+        next_turn_index=done.next_turn_index,
+        name=done.name,
+        forked_from=ForkedFromBody(
+            story_id=origin.story_id,
+            revision=origin.revision,
+            at_turn=origin.at_turn,
+            variant_chain=(
+                None if origin.variant_chain is None else ChainRefBody.of(origin.variant_chain)
+            ),
+        ),
+        characters=[
+            ForkCharacterBody(id=c.id, name=c.name, source_id=c.source_id) for c in done.characters
+        ],
+        counts=dict(done.counts),
+    )
+    return answered(answer, ctx, response, replayed=done.replayed)

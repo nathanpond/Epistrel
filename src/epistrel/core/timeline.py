@@ -200,7 +200,8 @@ class MembershipChange:
     old: Membership
     new: Membership
     cause: str
-    """The control operation's event type (``truncate``, ``untruncate``)."""
+    """The control operation's event type (``truncate``, ``untruncate``, ``swap``; ``fork`` for
+    the copied operations joining a fork's timeline, #67)."""
     control_operation_id: str
 
 
@@ -244,6 +245,11 @@ async def _run_post_commit(db: AsyncEngine, change: MembershipChange) -> None:
                 change.control_operation_id,
                 type(exc).__name__,
             )
+
+
+async def run_post_commit_hooks(db: AsyncEngine, change: MembershipChange) -> None:
+    """Run the ``post_commit`` hooks for a change another module committed (#67's fork)."""
+    await _run_post_commit(db, change)
 
 
 # -- reads ------------------------------------------------------------------------------------
@@ -877,6 +883,7 @@ __all__ = [
     "Untruncation",
     "on_membership_change",
     "remove_membership_hook",
+    "run_post_commit_hooks",
     "swap",
     "truncate",
     "undo_state",

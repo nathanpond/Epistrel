@@ -23,6 +23,7 @@ from epistrel.config import Settings
 from epistrel.core import config_changes as config_log
 from epistrel.core import (
     deployment,
+    fork,
     idempotency,
     ingest,
     operation_view,
@@ -102,6 +103,7 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "truncate": ResultCodec.of(timeline.Truncation),
     "untruncate": ResultCodec.of(timeline.Untruncation),
     "swap": ResultCodec.of(timeline.Swapped),
+    "fork": ResultCodec.of(fork.Forked, status=201),
     "regenerate": ResultCodec.of(RegenerateResult),
     "archive_story": ResultCodec.of(stories.StatusChange),
     "unarchive_story": ResultCodec.of(stories.StatusChange),
@@ -962,6 +964,27 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def fork(
+        self, ctx: RequestContext, story_id: str, request: fork.ForkRequest
+    ) -> fork.Forked:
+        """Copy the story's corrected history through ``request.at_turn`` (along
+        ``request.variant_chain``) into a new, independent story (FR-STORE-15, FR-CONC-10; #67).
+        Keyed per deployment, like story creation; the expected revision is the source's."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> fork.Forked:
+            return await fork.fork(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx, "fork", run, material={"story_id": story_id, "body": _body(request)}
         )
 
     async def variants(self, ctx: RequestContext, story_id: str) -> list[variants.Chain]:

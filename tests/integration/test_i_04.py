@@ -1,7 +1,8 @@
-"""docs/04 I-04, M2 truncate parts (FR-STORE-10,11,18; #65, #66): truncation marks records after
-N discarded without deleting rows or touching valid-time, the view through N is right, and
-untruncation restores them (by a swap when newer turns exist); the REST surface, its refusals
-and the membership hooks."""
+"""docs/04 I-04, M2 truncate and fork parts (FR-STORE-10,11,15,18; #65, #66, #67): truncation
+marks records after N discarded without deleting rows or touching valid-time, the view through N
+is right, and untruncation restores them (by a swap when newer turns exist); a fork is a full,
+independent copy of the history through N (no shared rows, no cross-story references) that
+diverges freely; the REST surfaces, their refusals and the membership hooks."""
 
 from __future__ import annotations
 
@@ -12,14 +13,24 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core import timeline, turn_gate
-from epistrel.core.errors import InvalidRequest, NothingToUndo
+from epistrel.core import projections, timeline, turn_gate
+from epistrel.core.errors import InvalidRequest, NothingToUndo, StoryNotFound, UnknownChain
 from epistrel.core.ids import new_ulid
+from epistrel.core.stories import delete_story
 from epistrel.core.variants import ChainRef
 from epistrel.core.views import corrected_history
 from tests.auth_support import auth_settings
-from tests.concurrency_support import assert_single_chain, chain, regenerate
+from tests.concurrency_support import (
+    assert_single_chain,
+    chain,
+    regenerate,
+    reject_render,
+    set_instructions,
+    set_pins,
+    summarise,
+)
 from tests.event_support import new_story, play_turn, rows, scalar, story_row
+from tests.fork_support import content, fork, mentions, owned_ids, owned_rows
 from tests.projection_support import snapshot
 from tests.respond_support import PLAYER, body, played, respond_client
 from tests.respond_support import new_story as new_rest_story
@@ -401,3 +412,275 @@ async def test_i_04__timeline_moved(engine: AsyncEngine, monkeypatch: pytest.Mon
     )
     assert membership == "discarded"
     assert await chain(engine, story) == [(1, 1)]
+
+
+# -- fork (#67) -------------------------------------------------------------------------------
+
+
+async def _forkable(engine: AsyncEngine) -> str:
+    """Five turns with everything a fork must handle: an audit event inside a turn, pinned
+    memories and instructions, a summary segment, maintenance work, a regenerated turn (its old
+    variant dormant) and a truncated, rewritten tail (a dormant continuation)."""
+    story = await new_story(engine)
+    await play_turn(engine, story, "turn 1")
+    await play_turn(engine, story, "turn 2", rejected="a rejected reply")
+    await set_pins(engine, story, "the key is under the mat")
+    await set_instructions(engine, story, "keep it short")
+    await play_turn(engine, story, "turn 3")
+    await summarise(engine, story, 3)
+    await reject_render(engine, story, 3)
+    await play_turn(engine, story, "turn 4")
+    await regenerate(engine, story)  # 4:2 active, 4:1 dormant
+    await play_turn(engine, story, "turn 5")
+    await _truncate(engine, story, 4)
+    await play_turn(engine, story, "turn 5, again")  # 5:2 active, 5:1 dormant
+    return story
+
+
+@pytest.mark.part("M2", "FR-STORE-15")
+async def test_i_04__fork(engine: AsyncEngine) -> None:
+    """A fork through N is a full copy of the corrected history through N under new ids: the
+    same history, cast (with true ages), pins, instructions, settings and summary segments, a
+    fresh head at N + 1 and revision 1, its own first event naming where it came from, projections
+    equal to a rebuild, and no row naming the source. The source records a ``fork`` event and
+    keeps its revision. Complement: what is not in the history through N (audit events,
+    maintenance work, turns after N, dormant variants, the timeline edits) is not copied."""
+    story = await _forkable(engine)
+    revision = (await story_row(engine, story))[0]
+    for at_turn, cut in ((None, 5), (3, 3), (0, 0)):
+        done = await fork(engine, story, at_turn)
+        assert done.forked_from.story_id == story
+        assert (done.forked_from.revision, done.forked_from.at_turn) == (revision, cut)
+        assert (done.timeline_revision, done.next_turn_index) == (1, cut + 1)
+        assert done.name == "a test story (fork)"
+        new = done.story_id
+        assert await story_row(engine, new) == (1, 0, cut + 1, "active")
+        mine = await content(engine, new, skip_operation=done.operation_id)
+        theirs = await content(engine, story, cut)
+        assert mine.history == theirs.history
+        assert (mine.texts, mine.settings) == (theirs.texts, theirs.settings)
+        assert mine.cast == theirs.cast
+        assert mine.heads["active_variants"] == {
+            str(t): v for t, v in await chain(engine, story) if t <= cut
+        }
+        assert await chain(engine, new) == [c for c in await chain(engine, story) if c[0] <= cut]
+        await assert_single_chain(engine, new)
+        types = [r.type for r in await _events(engine, new)]
+        assert types[-1] == "story_created"
+        assert not {"truncate", "untruncate", "swap", "fork"} & set(types)
+        assert "guardrail_output_rejected" not in types
+        assert ("lite_summary_segment" in types) == (cut >= 3)
+        kinds = await rows(
+            engine,
+            "SELECT DISTINCT kind::text, membership::text, status::text FROM operations "
+            "WHERE story_id = :s",
+            s=new,
+        )
+        assert "maintenance" not in {k for k, _, _ in kinds}
+        assert {(m, st) for _, m, st in kinds} == {("active", "committed")}
+        before = await snapshot(engine, new)
+        await projections.rebuild(engine, new)  # a maintenance operation, written after
+        assert await snapshot(engine, new) == before
+        origin = await scalar(
+            engine,
+            "SELECT payload FROM events WHERE operation_id = :o",
+            o=done.operation_id,
+        )
+        assert origin["forked_from"] == {
+            "story_id": story,
+            "revision": revision,
+            "at_turn": cut,
+            "variant_chain": None,
+        }
+        assert [c["id"] for c in origin["characters"]] == [c.id for c in done.characters]
+
+        # No shared rows, and nothing in the fork names the source, except the provenance
+        # the fork's own story_created event records.
+        source_ids = await owned_ids(engine, story)
+        assert not source_ids & await owned_ids(engine, new)
+        copied = await owned_rows(engine, new)
+        provenance = {r for r in copied["events"] if done.operation_id in r}
+        assert len(provenance) == 1
+        copied["events"] -= provenance
+        assert mentions(copied, source_ids) == {}
+        assert mentions({"events": provenance}, source_ids - {story}) == {}
+
+    assert (await story_row(engine, story))[0] == revision
+    recorded = await rows(
+        engine,
+        "SELECT payload FROM events WHERE story_id = :s AND type = 'fork' ORDER BY seq",
+        s=story,
+    )
+    assert [(p["at_turn"], p["revision"]) for (p,) in recorded] == [
+        (5, revision),
+        (3, revision),
+        (0, revision),
+    ]
+    with pytest.raises(InvalidRequest):
+        await fork(engine, story, 6)
+    with pytest.raises(UnknownChain):
+        await fork(engine, story, None, ChainRef(turn=2, variant=7))
+    with pytest.raises(StoryNotFound):
+        await fork(engine, new_ulid())
+
+
+@pytest.mark.part("M2", "FR-STORE-15")
+async def test_i_04__fork_isolation(engine: AsyncEngine) -> None:
+    """After forking, a turn, an edit and a truncation on either story change nothing in the
+    other (row-level diff), each story keeps one chain and the fork diverges freely; deleting
+    the source leaves the fork whole. Complement: the change did land on its own story."""
+    story = await _forkable(engine)
+    done = await fork(engine, story, 4)
+    new = done.story_id
+
+    source_before = await owned_rows(engine, story)
+    await play_turn(engine, new, "turn 5 of the fork")
+    await play_turn(engine, new, "turn 6 of the fork")
+    await set_pins(engine, new, "only in the fork")
+    await _truncate(engine, new, 5)
+    assert await owned_rows(engine, story) == source_before
+    assert await chain(engine, new) == [(1, 1), (2, 1), (3, 1), (4, 2), (5, 1)]
+    await assert_single_chain(engine, new)
+
+    fork_before = await owned_rows(engine, new)
+    await play_turn(engine, story, "turn 6 of the source")
+    await set_instructions(engine, story, "only in the source")
+    await _truncate(engine, story, 2)
+    assert await owned_rows(engine, new) == fork_before
+    assert await chain(engine, story) == [(1, 1), (2, 1)]
+    await assert_single_chain(engine, story)
+
+    await delete_story(engine, story, principal=PRINCIPAL)
+    assert await owned_rows(engine, new) == fork_before
+    await play_turn(engine, new, "turn 6 of the fork, again")
+    await assert_single_chain(engine, new)
+
+
+@pytest.mark.part("M2", "FR-STORE-15")
+async def test_i_04__fork_rest(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """``POST /stories/{id}/fork`` over REST: 201 with ``Location``, the new story readable
+    with the source's history through N, story policies and ingested dedupe rows copied and
+    remapped, an idempotent retry, the post-commit hook with cause ``fork``, an archived source
+    forked into an active story, and the refusals. Complement: the source's revision is
+    unchanged by every fork."""
+    seen: list[tuple[str, str, int]] = []
+
+    async def after(conn: AsyncConnection, change: timeline.MembershipChange) -> None:
+        seen.append((change.cause, change.story_id, len(change.operation_ids)))
+
+    timeline.on_membership_change(after, phase=timeline.HookPhase.POST_COMMIT)
+    try:
+        async with respond_client(stub_settings, engine) as (client, _):
+            story, ids = await new_rest_story(client)
+            for n in range(1, 4):
+                await played(client, story, body(ids[PLAYER], f"line {n}"))
+            ingested = await client.post(
+                f"/stories/{story}/ingest",
+                json={"events": [{"client_event_id": "e-1", "kind": "narration", "text": "Rain."}]},
+                headers=WRITE,
+            )
+            assert ingested.status_code == 201, ingested.text
+            own = {"name": "Mine", "rule": {"type": "wordlist", "words": ["y"]}, "message": "No."}
+            mine = {**own, "name": "Theirs", "scope": "character", "scope_id": ids[PLAYER]}
+            patched = await client.patch(
+                f"/stories/{story}/settings", json={"policies": [own, mine]}, headers=WRITE
+            )
+            assert patched.status_code == 200, patched.text
+            read = await client.get(f"/stories/{story}", headers=READ)
+            revision = read.json()["timeline_revision"]
+            history = await client.get(f"/stories/{story}/history?as_of=3", headers=READ)
+
+            key = {**WRITE, "Idempotency-Key": new_ulid()}
+            made = await client.post(
+                f"/stories/{story}/fork", json={"at_turn": 3, "name": "Branch"}, headers=key
+            )
+            assert made.status_code == 201, made.text
+            answer = made.json()
+            new = answer["story_id"]
+            assert made.headers["Location"] == f"/stories/{new}"
+            assert answer["timeline_revision"] == 1
+            assert answer["next_turn_index"] == 4
+            assert answer["name"] == "Branch"
+            assert answer["forked_from"] == {
+                "story_id": story,
+                "revision": revision,
+                "at_turn": 3,
+                "variant_chain": None,
+            }
+            assert [c["source_id"] for c in answer["characters"]] == list(ids.values())
+            assert answer["counts"]["characters"] == 3
+            assert answer["counts"]["client_events"] == 0  # the narration is turn 4
+            again = await client.post(
+                f"/stories/{story}/fork", json={"at_turn": 3, "name": "Branch"}, headers=key
+            )
+            assert (again.status_code, again.json()) == (201, answer)
+            assert again.headers.get("Idempotent-Replay") == "true"
+            assert seen == [("fork", new, answer["counts"]["operations"])]
+
+            copy = await client.get(f"/stories/{new}", headers=READ)
+            assert copy.status_code == 200
+            assert copy.json()["name"] == "Branch"
+            assert copy.json()["next_turn_index"] == 4
+            fork_history = await client.get(f"/stories/{new}/history", headers=READ)
+            renamed = {c["source_id"]: c["id"] for c in answer["characters"]}
+            assert [(i["turn"], i["channel"], i["text"]) for i in fork_history.json()["items"]] == [
+                (i["turn"], i["channel"], i["text"]) for i in history.json()["items"]
+            ]
+            assert [i["actor_character_id"] for i in fork_history.json()["items"]] == [
+                renamed.get(i["actor_character_id"], i["actor_character_id"])
+                for i in history.json()["items"]
+            ]
+            copied = await rows(
+                engine,
+                "SELECT scope, scope_id, name FROM policies WHERE story_id = :s ORDER BY name",
+                s=new,
+            )
+            assert [tuple(r) for r in copied] == [
+                ("story", new, "Mine"),
+                ("character", renamed[ids[PLAYER]], "Theirs"),
+            ]
+
+            whole = await client.post(f"/stories/{story}/fork", headers=WRITE)
+            assert whole.status_code == 201, whole.text
+            dedupe = await rows(
+                engine,
+                "SELECT client_event_id, operation_id, result FROM client_events "
+                "WHERE story_id = :s",
+                s=whole.json()["story_id"],
+            )
+            assert [d.client_event_id for d in dedupe] == ["e-1"]
+            (only,) = dedupe
+            assert only.result["operation_id"] == only.operation_id
+            assert (
+                await scalar(
+                    engine,
+                    "SELECT story_id FROM operations WHERE operation_id = :o",
+                    o=only.operation_id,
+                )
+                == whole.json()["story_id"]
+            )
+
+            for bad in ({"at_turn": 9}, {"at_turn": -1}, {"extra": 1}, {"variant_chain": "x"}):
+                refused = await client.post(f"/stories/{story}/fork", json=bad, headers=WRITE)
+                assert refused.status_code == 422, bad
+            unknown = await client.post(
+                f"/stories/{story}/fork", json={"variant_chain": "2:9"}, headers=WRITE
+            )
+            assert (unknown.status_code, _code(unknown)) == (409, "unknown_chain")
+            stale = await client.post(
+                f"/stories/{story}/fork",
+                headers={**WRITE, "X-Epistrel-Expected-Revision": str(revision - 1)},
+            )
+            assert (stale.status_code, _code(stale)) == (409, "revision_conflict")
+            missing = await client.post(f"/stories/{new_ulid()}/fork", headers=WRITE)
+            assert missing.status_code == 404
+
+            await client.post(f"/stories/{story}/archive", headers=WRITE)
+            frozen = await client.post(f"/stories/{story}/fork", headers=WRITE)
+            assert frozen.status_code == 201, frozen.text
+            thawed = await client.get(f"/stories/{frozen.json()['story_id']}", headers=READ)
+            assert thawed.json()["status"] == "active"
+            read = await client.get(f"/stories/{story}", headers=READ)
+            assert read.json()["timeline_revision"] == revision
+    finally:
+        timeline.remove_membership_hook(after)

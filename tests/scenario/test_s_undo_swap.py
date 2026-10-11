@@ -15,6 +15,7 @@ from epistrel.core.events import Operation
 from epistrel.core.variants import ChainRef, SwapRequest
 from tests.concurrency_support import assert_single_chain, chain
 from tests.event_support import new_story, rows
+from tests.fork_support import fork, owned_rows
 from tests.projection_support import snapshot
 
 MESSAGES = 1_000
@@ -57,6 +58,17 @@ async def _memberships(engine: AsyncEngine, story: str, variant: int) -> set[str
     return {r.membership for r in found}
 
 
+async def _said(engine: AsyncEngine, story: str) -> list[str]:
+    """The story's player lines along its active chain, in turn order."""
+    found = await rows(
+        engine,
+        "SELECT text FROM transcript_messages WHERE story_id = :s AND membership = 'active' "
+        "ORDER BY narrative_turn, seq",
+        s=story,
+    )
+    return [r.text for r in found]
+
+
 async def _swap(engine: AsyncEngine, story: str, turn: int, variant: int) -> timeline.Swapped:
     return await timeline.swap(
         engine,
@@ -71,7 +83,8 @@ async def test_s_undo_swap(engine: AsyncEngine) -> None:
     """Play to 1,000, truncate to 800, write 801'-850'; undoing the truncation defaults to a
     swap: 801-1,000 active, 801'-850' dormant, one active variant per position in one chain.
     Swapping back restores the exact prior state (row diff of operations and projections),
-    and either chain can be selected for a fork. Complement: an undo with no new turns written
+    and either chain can be forked into a complete story independent of the source and of
+    each other (#66 AC3). Complement: an undo with no new turns written
     is a plain reactivation, not a swap."""
     story = await new_story(engine)
     for n in range(1, MESSAGES + 1):
@@ -128,6 +141,41 @@ async def test_s_undo_swap(engine: AsyncEngine) -> None:
             await variants.fork_selection(
                 engine, story, ChainRef(turn=CHECKPOINT + 1, variant=1), wrong
             )
+
+    # ...and both forks are complete and independent (#66 AC3, through #67's fork).
+    source_before = await owned_rows(engine, story)
+    promoted = await fork(engine, story, variant_chain=ChainRef(turn=CHECKPOINT + 1, variant=1))
+    current = await fork(engine, story)
+    partial = await fork(
+        engine, story, CHECKPOINT + 20, variant_chain=ChainRef(turn=CHECKPOINT + 1, variant=1)
+    )
+    assert promoted.forked_from.variant_chain == ChainRef(turn=CHECKPOINT + 1, variant=1)
+    assert (promoted.next_turn_index, current.next_turn_index, partial.next_turn_index) == (
+        MESSAGES + 1,
+        CHECKPOINT + PRIMES + 1,
+        CHECKPOINT + 21,
+    )
+    originals = [f"message {n}" for n in range(1, MESSAGES + 1)]
+    primes = [f"message {n}'" for n in range(CHECKPOINT + 1, CHECKPOINT + PRIMES + 1)]
+    assert await _said(engine, promoted.story_id) == originals
+    assert await _said(engine, current.story_id) == originals[:CHECKPOINT] + primes
+    assert await _said(engine, partial.story_id) == originals[: CHECKPOINT + 20]
+    assert await chain(engine, promoted.story_id) == [(n, 1) for n in range(1, MESSAGES + 1)]
+    assert await chain(engine, current.story_id) == await chain(engine, story)
+    for forked in (promoted, current, partial):
+        await assert_single_chain(engine, forked.story_id)
+    after = await owned_rows(engine, story)  # the source gained only its fork records
+    added = {table: after[table] - source_before[table] for table in after}
+    assert {t for t, new in added.items() if new} == {"events", "operations"}
+    assert len(added["events"]) == 3
+    assert all(",fork," in row for row in added["events"])
+    assert {t: source_before[t] - after[t] for t in after} == {t: set() for t in after}
+    others = {f.story_id: await owned_rows(engine, f.story_id) for f in (current, partial)}
+    others[story] = after
+    await _message(engine, promoted.story_id, "message 1001, only in the promoted fork")
+    assert (await chain(engine, promoted.story_id))[-1] == (MESSAGES + 1, 1)
+    for other, before in others.items():
+        assert await owned_rows(engine, other) == before
 
     # Complement: no new turns over the tail, so undoing the truncation reactivates it.
     await timeline.truncate(

@@ -1199,3 +1199,32 @@ Process:
   No pre-fix guard run was planned.
   **Why:** The test plan, and the part-uniqueness gate.
   **Issue:** #66
+- **Decision:** Fork lives in `core/fork.py`. One connection runs `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` as its first statement, and the copy happens inside that transaction. A temp table maps old ids to new ULIDs: new ids are sorted so the source's relative order holds, and events get a dense new `seq`. Two temp plpgsql functions remap values: every `*_id`/`id` column, and every jsonb string (and object key) that is a mapped id, alone or as `prefix:<id>` (`character:<id>`, `policy:<id>`). Unmapped values (ratings, `client_event_id`) are kept. Every id is mapped before any row is copied. Each table in `STORY_TABLES` minus `STORY_TABLES_NOT_COPIED` is copied with one `INSERT … SELECT`. A row follows its operation when the table has `operation_id`; otherwise the row belongs to the story. Exceptions are declared in `fork.OVERRIDES`/`ROW_FILTERS`. `story_heads` is rebuilt from the copied turns, and story-scoped `config_changes` are copied.
+  **Why:** Discretion (temp mapping table, ULIDs regenerated, `*_id` convention plus jsonb paths, generic enumeration). Value-based jsonb remapping replaces an explicit per-event-type path list: a new event type with an id in its payload is remapped without a code change.
+  **Issue:** #67
+- **Decision:** What is copied is the corrected history through N, as `views.corrected_history(through_turn=N)` reads it (the #65 hand-off): position-less active operations, plus operations positioned before N or at N with no slot, on the selected chain (`variants.fork_selection`, the #66 hand-off), committed only, and flattened to `active`. `membership_tx` is re-stamped only on rows that were not active. Left out: `audit` events, `maintenance` operations, and operations holding `truncate`/`untruncate`/`swap`/`fork`/`story_archived`/`story_unarchived` events. `story_archived`/`story_unarchived` were added to the planner's skip list because the fork is always active. Operations' and policies' `idempotency_key` are nulled, since keys stay with the source.
+  **Why:** Discretion, plus FR-STORE-15 "current corrected history through N".
+  **Issue:** #67
+- **Decision:** The fork's `config_revision` is the source's, not 0. Its story-scoped `config_changes` rows keep their revisions.
+  **Why:** This deviates from Discretion ("fork `config_revision` 0 + copied rows"). With 0, the copied rows would sit at revisions the story has not reached, and the next change would reuse their numbers in `GET /stories/{id}/config-changes`, which is ordered by revision.
+  **Issue:** #67
+- **Decision:** An unknown or ambiguous `variant_chain` is 409 `unknown_chain` (from `fork_selection`), not 422.
+  **Why:** This deviates from Discretion pass 1. #66 fixed `unknown_chain` at 409 for every chain selector (swap, history), and fork reuses that selector.
+  **Issue:** #67
+- **Decision:** The fork's own genesis is written directly in the snapshot transaction: one committed `genesis` operation (`timeline_revision` 1) with one `story_created` event carrying `forked_from {story_id, revision, at_turn, variant_chain}`, appended after the copied events, with projections applied. The deployment-scoped idempotency key is bound to it (`IdempotentCall.bind`). It does not go through `Operation`, because the story row only exists inside this transaction. `forked_from.story_id` in the fork, and `fork_story_id` in the source's `fork` event, are the only cross-story names. They are provenance only, and the I-04 test excludes exactly those from its no-cross-reference check.
+  **Why:** Discretion (fork keeps the copied genesis and adds its own; payload shapes). The `Fork` shell payload `{new_story_id, through_turn}` became `{fork_story_id, at_turn, revision, variant_chain}`.
+  **Issue:** #67
+- **Decision:** The source-side `fork` event is a non-bumping `control` `Operation` written after the copy commits. If it fails, a warning (ids only) is logged and the fork is still returned; this is the crash window Discretion accepted. Post-commit membership hooks fire on the fork with cause `fork`, one change per source membership of the copied operations, now `active`. Active→active is included so #72 can build the fork's summary. A serialization failure retries the whole copy 3× and then raises the new 503 `DatabaseUnavailable` (`database_unavailable`).
+  **Why:** Discretion pass 2.
+  **Issue:** #67
+- **Decision:** `POST /stories/{id}/fork {at_turn?, variant_chain?, name?}` (body optional) → `Engine.fork`: deployment-scoped key, expected revision checked against the source inside the snapshot. The answer is 201 with `Location` and `{story_id, operation_id, timeline_revision: 1, next_turn_index, name, forked_from, characters [{id, name, source_id}], counts}`. `counts` gives copied rows per table and excludes the fork's own genesis. The default name is `"<source name> (fork)"`, or `null` when the source has no name. `at_turn` above the head, or below 0, is 422.
+  **Why:** Discretion.
+  **Issue:** #67
+- **Decision:** Tests:
+  - `test_i_04__fork`, `__fork_isolation` and `__fork_rest` (`part("M2","FR-STORE-15")`) check: a full copy through N equal to the source's corrected history through N (id-normalised); a rebuild equal to the copied projections; no shared ids and no row naming the source; a row-level diff of each story unchanged by turns, edits, truncations and deletion on the other; REST, idempotent replay, the hook, policies and `client_events` remapped (the #58 hand-off), and the refusals.
+  - `tests/scenario/test_s_fork_snapshot.py` (`part("M2","FR-CONC-10")`) has three tests. The first interleaves a turn, a pin edit and a truncation inside the fork's transaction. The second forks concurrently with 30 turns and pin edits, and each fork equals the snapshot taken at its revision. The third covers the serialization retry and the 503.
+  - Guard run against the pre-fix state: with `SET TRANSACTION … REPEATABLE READ` removed, both snapshot tests fail with a mixed copy (3 of 3 runs). With it restored, they pass.
+  - `epistrel.testing.normalize` (`Normalizer`, `history`) is the shared id-free normaliser, for #75.
+  - `test_s_undo_swap` now forks the promoted dormant chain, the active chain, and a partial chain. All three are complete and independent, and the source gained only its `fork` records (#66 AC3).
+  **Why:** The test plan and the #66 hand-off.
+  **Issue:** #67

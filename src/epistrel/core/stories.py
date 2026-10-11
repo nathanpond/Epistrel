@@ -104,6 +104,15 @@ last; story-scoped ``config_changes`` and ``idempotency_keys`` rows (``scope = '
 ``scope_id``, and a deployment-scoped key bound to one of the story's operations (its creation)
 goes with that operation."""
 
+STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
+    {"jobs", turn_queue.name, audit_log.name, idempotency_keys.name, "worker_heartbeats"}
+)
+"""Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
+worker heartbeats; ``jobs`` and ``worker_heartbeats`` arrive later), deployment-level audit
+records, and idempotency keys (a fork answers its own requests). Every other table in
+``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it is
+named here."""
+
 STORY_ID_EXCEPTIONS: frozenset[str] = frozenset({audit_log.name})
 """Deployment-level tables that carry a ``story_id`` but outlive the story: deletion nulls the
 column instead of removing the row. ``audit_log`` (#56) is the one member."""

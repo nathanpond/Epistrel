@@ -94,15 +94,19 @@ class MessageRendered(EventPayload):
 
 @register("think", category=EventCategory.NARRATIVE_STATE)
 class Think(EventPayload):
-    """A character's private thought (shell)."""
+    """A character's private thought (shell). ``character_id`` names whose it is (#59); a
+    character viewpoint never receives it (FR-RESP-12)."""
 
+    character_id: str | None = None
     text: str
 
 
 @register("latent", category=EventCategory.NARRATIVE_STATE)
 class Latent(EventPayload):
-    """Unrendered narrative state (shell)."""
+    """Unrendered narrative state (shell). ``character_id`` names whose it is (#59); a
+    character viewpoint never receives it (FR-RESP-12)."""
 
+    character_id: str | None = None
     text: str
 
 

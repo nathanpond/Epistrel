@@ -77,7 +77,6 @@ CHARACTER_NAME_MAX = 80
 DEFINITION_MAX = 20_000
 STORY_NAME_MAX = 200
 SAFE_FALLBACK_MAX = 500
-OMNISCIENT = "omniscient"
 
 STORY_TABLES: tuple[Table, ...] = (
     client_events,
@@ -338,12 +337,7 @@ def _stored_settings(spec: StorySpec, cast: Sequence[tuple[str, CharacterSpec]])
     if named is None:
         players = [character_id for character_id, c in cast if c.is_player]
         viewpoint = f"{CHARACTER_VIEWPOINT_PREFIX}{players[0]}" if len(players) == 1 else None
-    elif named.strip().casefold() == OMNISCIENT:
-        raise ViewpointUnresolved(
-            "a story's default output viewpoint must be a character, never omniscient",
-            {"field": field, "reason": "omniscient"},
-        )
-    else:
+    else:  # ``omniscient`` was refused by ``StorySettings`` (422 ``validation_error``)
         matches = [cid for cid, c in cast if c.name.casefold() == named.strip().casefold()]
         if not matches:
             raise ViewpointUnresolved(

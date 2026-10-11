@@ -50,13 +50,18 @@ async def test_s_input_ingest__respond(stub_settings: Settings, engine: AsyncEng
             body(ids[PLAYER], "Open the gate.", do="pushes", scene_context=scene),
             headers={"Idempotency-Key": "turn-key-1"},
         )
-        first, reply = result["beats"]
-        assert (first["beat"], first["kind"], first["actor_character_id"]) == (
-            1,
-            "player_input",
-            ids[PLAYER],
-        )
-        assert first["text"] == "Open the gate.\npushes"
+        said, done, reply = result["beats"]
+        for first in (said, done):
+            assert (first["beat"], first["kind"], first["actor_character_id"]) == (
+                1,
+                "player_input",
+                ids[PLAYER],
+            )
+        assert said["message_id"] == done["message_id"]
+        assert [(said["channel"], said["text"]), (done["channel"], done["text"])] == [
+            ("say", "Open the gate."),
+            ("do", "pushes"),
+        ]
         assert (reply["beat"], reply["kind"]) == (2, "message_rendered")
 
         events = await rows(

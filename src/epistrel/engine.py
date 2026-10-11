@@ -18,9 +18,11 @@ from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import PrincipalRequired
+from epistrel.core.history import DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT
 from epistrel.core.history import History, read_history
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.settings_schema import StorySettings
+from epistrel.core.viewpoint import is_omniscient, resolve_viewpoint, with_requested
 from epistrel.orchestrator.budget import DEFAULT_TURN_DEADLINE_S, TurnBudget
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
@@ -105,9 +107,35 @@ class Engine:
         """
         return await check_expected_revision(self.db, story_id, ctx.expected_revision)
 
-    async def history(self, ctx: RequestContext, story_id: str) -> History:
-        """The story's active transcript, read from the projection (#59 adds viewpoints)."""
-        return await read_history(self.db, story_id)
+    async def history(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        actor_character_id: str | None = None,
+        as_of: int | None = None,
+        limit: int = DEFAULT_HISTORY_LIMIT,
+        before_turn: int | None = None,
+        include_audit: bool = False,
+    ) -> History:
+        """The story's corrected history through ``as_of`` (default the head), produced for one
+        output viewpoint (FR-RESP-12): ``viewpoint`` (or ``ctx.viewpoint``) when named, else
+        ``actor_character_id``, else the story's default; 422 ``viewpoint_unresolved`` when none
+        resolves. A character viewpoint never gets ``think``/``latent`` beats; audit records
+        (``include_audit``) need ``omniscient`` by name (403 ``omniscient_required``). Pages of
+        whole turns, newest first, up to ``limit`` items; ``before_turn`` pages backwards."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        return await read_history(
+            self.db,
+            story_id,
+            viewpoint=ctx.viewpoint,
+            actor_character_id=actor_character_id,
+            as_of=as_of,
+            limit=limit,
+            before_turn=before_turn,
+            include_audit=include_audit,
+        )
 
     # -- story lifecycle (FR-ADMIN-1, FR-STORE-14,16, FR-CAT-12) ----------------------------
 
@@ -174,7 +202,12 @@ class Engine:
         )
 
     async def respond(
-        self, ctx: RequestContext, story_id: str, request: RespondRequest
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: RespondRequest,
+        *,
+        output_viewpoint: str | None = None,
     ) -> RespondResult:
         """Play one Lite turn: the actor's input in, one finished reply out (FR-RESP-1).
 
@@ -182,8 +215,13 @@ class Engine:
         the story's own records, never from ``scene_context`` (FR-RESP-4). The input is the
         turn's first beat (FR-RESP-9) and goes through the input gate before anything is
         recorded; the turn makes one ``generation`` call (FR-LITE-7). The message is
-        *finished*: under ``lite`` none of its claims is checked."""
+        *finished*: under ``lite`` none of its claims is checked.
+
+        The output viewpoint (FR-RESP-12) is ``output_viewpoint``, the request's
+        ``output_viewpoint`` or ``ctx.viewpoint`` (one value; two different ones are 422), else
+        the actor; the result echoes it and the turn records it."""
         principal = self.require_principal(ctx)
+        ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
 
         async def gate(budget: TurnBudget, text: str, actor: str) -> InputPass:
             return await self.gate_input(
@@ -241,10 +279,26 @@ class Engine:
         guardrails = await policy_store.story_guardrails(self.db, story_id)
         return StorySettings.from_row(story.settings), guardrails
 
-    async def get_story(self, ctx: RequestContext, story_id: str) -> stories.StoryView:
-        """The story and its cast; true ages only when ``ctx.viewpoint`` is ``omniscient``."""
-        omniscient = ctx.viewpoint == stories.OMNISCIENT
-        return await stories.get_story(self.db, story_id, omniscient=omniscient)
+    async def get_story(
+        self, ctx: RequestContext, story_id: str, *, viewpoint: str | None = None
+    ) -> stories.StoryView:
+        """The story and its cast. True ages only when the read names ``omniscient``
+        (FR-CAT-12); a named viewpoint that is not ``omniscient`` or ``character:<id>`` of the
+        cast is 422 ``viewpoint_unresolved``. With none named the read is character-safe."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        story = await stories.get_story(self.db, story_id, omniscient=False)
+        if ctx.viewpoint is None:
+            return story
+        resolved = resolve_viewpoint(
+            ctx.viewpoint,
+            actor_character_id=None,
+            story_default=None,
+            cast_ids={c.id for c in story.characters},
+            field="query.viewpoint",
+        )
+        if not is_omniscient(resolved):
+            return story
+        return await stories.get_story(self.db, story_id, omniscient=True)
 
     async def list_stories(
         self, ctx: RequestContext, *, status: StoryStatus | None = None

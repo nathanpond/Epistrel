@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DEFAULT_REGENERATE_RETRY_BUDGET = 2
 
@@ -90,6 +90,7 @@ class LiteDefaults(BaseModel):
 
 TurnConcurrency = Literal["reject", "queue"]
 CHARACTER_VIEWPOINT_PREFIX = "character:"
+OMNISCIENT = "omniscient"
 
 
 class StorySettings(BaseModel):
@@ -114,6 +115,14 @@ class StorySettings(BaseModel):
 
     lite_window_messages: int | None = Field(default=None, ge=1, le=MAX_LITE_WINDOW_MESSAGES)
     """The story's override of how many transcript rows a Lite prompt carries verbatim."""
+
+    @field_validator("default_output_viewpoint")
+    @classmethod
+    def _never_omniscient(cls, value: str | None) -> str | None:
+        """``omniscient`` is never a default (FR-RESP-12): every settings write refuses it."""
+        if value is not None and value.strip().casefold() == OMNISCIENT:
+            raise ValueError("a story's default output viewpoint must be a character")
+        return value
 
     @classmethod
     def from_row(cls, value: dict[str, Any] | None) -> StorySettings:

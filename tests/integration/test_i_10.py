@@ -204,7 +204,7 @@ async def test_create_refuses_bad_requests(engine: AsyncEngine, settings: Settin
         cases.append(
             (
                 story_body("Ada", settings={"default_output_viewpoint": "omniscient"}),
-                "viewpoint_unresolved",
+                "validation_error",
                 "body.settings.default_output_viewpoint",
             )
         )

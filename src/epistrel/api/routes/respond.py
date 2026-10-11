@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.api.responses import MutationResponse
-from epistrel.api.routes.history import HistoryItemModel
-from epistrel.orchestrator.lite.schemas import RespondRequest
+from epistrel.api.routes.history import ItemModel, item_model
+from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
 from epistrel.orchestrator.models.metrics import ModelCall
 
 router = APIRouter(tags=["stories"])
@@ -19,7 +19,9 @@ router = APIRouter(tags=["stories"])
 RESPOND_DESCRIPTION = (
     "Play one turn of a story. The request names the acting character, what they say and/or do "
     "(`player_input`, the turn's first beat), who answers (`render_character_ids`), the output "
-    "viewpoint, prompt parameters (`length`, `temperature`, `top_p`) and optional scene context."
+    "viewpoint (`character:<id>` or `omniscient`; default the actor, then the story's default; "
+    "echoed as `output_viewpoint`, and `beats` are produced for it), prompt parameters "
+    "(`length`, `temperature`, `top_p`) and optional scene context."
     "\n\nThe consumer does no retrieval or memory work: the prompt is assembled from the story's "
     "own records. Scene context is checked against the cast and then ignored: it is never "
     "stored and never placed in the model's context.\n\nThe response is the **finished** reply: "
@@ -40,7 +42,7 @@ class RespondResponse(MutationResponse):
     the story's new revision, and the model calls it made."""
 
     message: MessageBody
-    beats: list[HistoryItemModel]
+    beats: list[ItemModel]
     turn: int
     variant: int
     output_viewpoint: str
@@ -48,6 +50,21 @@ class RespondResponse(MutationResponse):
     model_calls: list[ModelCall]
     elapsed_ms: int = Field(ge=0)
     degradation: list[str]
+
+    @classmethod
+    def of(cls, result: RespondResult) -> RespondResponse:
+        return cls(
+            message=MessageBody(message_id=result.message.message_id, text=result.message.text),
+            beats=[item_model(b) for b in result.beats],
+            turn=result.turn,
+            variant=result.variant,
+            timeline_revision=result.timeline_revision,
+            output_viewpoint=result.output_viewpoint,
+            audience_filter=result.audience_filter,
+            model_calls=result.model_calls,
+            elapsed_ms=result.elapsed_ms,
+            degradation=result.degradation,
+        )
 
 
 @router.post(
@@ -59,16 +76,4 @@ class RespondResponse(MutationResponse):
 async def respond(
     story_id: str, body: RespondRequest, ctx: ContextDep, engine: EngineDep
 ) -> RespondResponse:
-    result = await engine.respond(ctx, story_id, body)
-    return RespondResponse(
-        message=MessageBody(message_id=result.message.message_id, text=result.message.text),
-        beats=[HistoryItemModel.model_validate(b, from_attributes=True) for b in result.beats],
-        turn=result.turn,
-        variant=result.variant,
-        timeline_revision=result.timeline_revision,
-        output_viewpoint=result.output_viewpoint,
-        audience_filter=result.audience_filter,
-        model_calls=result.model_calls,
-        elapsed_ms=result.elapsed_ms,
-        degradation=result.degradation,
-    )
+    return RespondResponse.of(await engine.respond(ctx, story_id, body))

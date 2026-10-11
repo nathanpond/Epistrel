@@ -4,8 +4,12 @@
 
 1. **Prechecks**, in #44's canonical order, before anything is written: the story exists and
    the request's characters are its cast (422 ``validation_error`` with ``unknown_actor`` /
-   ``unknown_render_ids`` / ``unknown_present_ids``), the story is not archived, the expected
-   revision holds (409), and the output viewpoint resolves (422 ``viewpoint_unresolved``).
+   ``unknown_render_ids`` / ``unknown_present_ids``), the story is not archived, an
+   ``Idempotency-Key`` already used is not reused for another viewpoint (409
+   ``idempotency_conflict``, #59's interim lookup until #61), the expected revision holds (409),
+   and the output viewpoint resolves (422 ``viewpoint_unresolved``). The requested viewpoint
+   arrives on ``ctx.viewpoint``, the single carrier (``Engine.respond`` folds the body field and
+   the keyword argument into it).
 2. **The input gate** (#56) over the actor's ``say``/``do`` joined with a newline, reserving the
    generation call in the turn's budget. A violation is 422 with only the audit row written.
 3. **One ``turn`` operation** under #47's revision protocol (``run_with_revalidation``): the
@@ -26,8 +30,9 @@ the gate in as ``gate``.
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -37,7 +42,7 @@ from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
 from epistrel.core.errors import InvalidRequest, StoryArchived
 from epistrel.core.events import Operation
-from epistrel.core.history import HistoryItem, read_history
+from epistrel.core.history import turn_beats
 from epistrel.core.settings_schema import ResolvedGeneration, resolve_generation
 from epistrel.core.turns import (
     REPLY_BEAT,
@@ -49,7 +54,7 @@ from epistrel.core.turns import (
     read_turn_inputs,
     stage_turn,
 )
-from epistrel.core.viewpoint import OMNISCIENT, resolve_viewpoint
+from epistrel.core.viewpoint import check_key_viewpoint, resolve_viewpoint, try_resolve
 from epistrel.orchestrator.budget import DEFAULT_TURN_DEADLINE_S, TurnBudget
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
 from epistrel.orchestrator.lite.schemas import FinishedMessage, RespondRequest, RespondResult
@@ -60,7 +65,6 @@ from epistrel.orchestrator.models.metrics import recording
 
 GENERATION = "generation"
 INPUT_LOCATOR = "player_input"
-PRIVATE_CHANNELS = frozenset({"think", "latent"})
 
 Gate = Callable[[TurnBudget, str, str], Awaitable[Any]]
 """``gate(budget, text, actor_character_id)``: the input gate (#56), raising on a violation."""
@@ -101,13 +105,6 @@ def resolve_cast(story: StoryCast, request: RespondRequest) -> ResolvedCast:
     return ResolvedCast(actor=actor, render=tuple(members[i] for i in ids))
 
 
-def for_viewpoint(beats: Sequence[HistoryItem], viewpoint: str) -> list[HistoryItem]:
-    """The beats a viewpoint may see: a character viewpoint never gets private channels."""
-    if viewpoint == OMNISCIENT:
-        return list(beats)
-    return [b for b in beats if b.channel not in PRIVATE_CHANNELS]
-
-
 async def respond(
     db: AsyncEngine,
     models: ModelAccessLayer,
@@ -126,13 +123,16 @@ async def respond(
         raise StoryArchived(
             f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
         )
-    await check_expected_revision(db, story_id, ctx.expected_revision)
-    viewpoint = resolve_viewpoint(
-        request.output_viewpoint or ctx.viewpoint,
+    resolution = partial(
+        resolve_viewpoint,
+        ctx.viewpoint,
         actor_character_id=cast.actor.id,
         story_default=story.settings.default_output_viewpoint,
         cast_ids=story.ids,
     )
+    await check_key_viewpoint(db, story_id, ctx.idempotency_key, try_resolve(resolution))
+    await check_expected_revision(db, story_id, ctx.expected_revision)
+    viewpoint = resolution()
     say, do = request.player_input.say_text, request.player_input.do_text
     budget = TurnBudget(deadline_s=DEFAULT_TURN_DEADLINE_S)
     with recording() as calls:
@@ -177,14 +177,14 @@ async def respond(
             )
 
         await run_with_revalidation(op, begin=begin, generate=generate, read_set=LiteReadSet())
-    history = await read_history(db, story_id, operation_id=op.operation_id)
-    reply = next(item for item in history.items if item.beat == REPLY_BEAT)
+    beats = await turn_beats(db, story_id, op.operation_id, viewpoint)
+    reply = next(item for item in beats if item.beat == REPLY_BEAT)
     assert op.narrative_turn is not None  # noqa: S101 - a committed turn has a position
     assert op.turn_variant is not None  # noqa: S101
     assert op.timeline_revision is not None  # noqa: S101
     return RespondResult(
         message=FinishedMessage(message_id=reply.message_id, text=reply.text),
-        beats=for_viewpoint(history.items, viewpoint),
+        beats=beats,
         turn=op.narrative_turn,
         variant=op.turn_variant,
         timeline_revision=op.timeline_revision,
@@ -204,4 +204,4 @@ async def _generate(
         return await models.call(GENERATION, payload, params, budget=budget)
 
 
-__all__ = ["Gate", "ResolvedCast", "for_viewpoint", "resolve_cast", "respond"]
+__all__ = ["Gate", "ResolvedCast", "resolve_cast", "respond"]

@@ -284,9 +284,10 @@ async def test_history_and_prompt_window(stub_settings: Settings, engine: AsyncE
         history = (await client.get(f"/stories/{story}/history", headers=READ)).json()
         tail = [
             (i["turn"], i["beat"], i["kind"], i["channel"], i["origin"]) for i in history["items"]
-        ][-2:]
+        ][-3:]
         assert tail == [
-            (2, 1, "player_input", "message", "ingested"),
+            (2, 1, "player_input", "say", "ingested"),
+            (2, 1, "player_input", "do", "ingested"),
             (3, 1, "message_rendered", "narration", "ingested"),
         ]
         assert history["items"][0]["origin"] == "generated"

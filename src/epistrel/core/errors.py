@@ -184,6 +184,23 @@ class ViewpointUnresolved(EpistrelError):
     http_status = 422
 
 
+class OmniscientRequired(EpistrelError):
+    """A private read (audit records, FR-RESP-12) asked for by a request that did not name the
+    ``omniscient`` viewpoint. ``details``: ``field`` and ``output_viewpoint``."""
+
+    code = "omniscient_required"
+    http_status = 403
+
+
+class IdempotencyConflict(EpistrelError):
+    """An ``Idempotency-Key`` already used for a different request: a stored result is never
+    handed out for another request, or another viewpoint (FR-CONC-6, FR-RESP-12). Nothing is
+    written. ``details``: ``reason``."""
+
+    code = "idempotency_conflict"
+    http_status = 409
+
+
 class GuardrailViolation(EpistrelError):
     """Text breaks one or more policies that apply to it (FR-GUARD-10,11): the request is
     refused with no side effects.

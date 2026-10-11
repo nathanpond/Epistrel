@@ -2,8 +2,10 @@
 
 Two phases. ``begin()`` inserts the ``operations`` row (``in_flight``) without taking a lock,
 in one REPEATABLE READ read phase that also captures the story's ``timeline_revision`` as
-``base_revision`` (and, given a read-set source, the read set, #47). ``append()`` validates each
-payload and buffers it, so model calls between them hold no lock (FR-CONC-2). ``commit()`` runs
+``base_revision`` (and, given a read-set source, the read set, #47) and the configuration it
+runs under (``config_revisions``: the story rating's current version, FR-CONC-14, #48).
+``append()`` validates each payload and buffers it, so model calls between them hold no lock
+(FR-CONC-2). ``commit()`` runs
 one transaction that does all of the following:
 
 1. takes ``SELECT … FOR UPDATE`` on the story row, with ``lock_timeout`` 5 s;
@@ -65,7 +67,7 @@ from epistrel.core.errors import ChainBroken, InvalidRequest, PrincipalRequired,
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import StorySettings
-from epistrel.core.tables import events, operations, stories
+from epistrel.core.tables import content_ratings, events, operations, stories
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +175,8 @@ class Operation:
         self.base_revision: int | None = None
         self.read_set: ReadSet | None = None
         self.read_set_source: ReadSetSource | None = None
+        self.config_revisions: dict[str, Any] | None = None
+        """The configuration versions the operation runs under (``rating_version``, #48)."""
         self.story_settings = StorySettings()
         self.attempts: list[dict[str, Any]] = []
         self.timeline_revision: int | None = None
@@ -208,7 +212,8 @@ class Operation:
         """Insert the ``in_flight`` operations row and capture the base. Takes no story lock.
 
         One REPEATABLE READ transaction reads ``base_revision``, the story settings, the read
-        set (when ``read_set_source`` is set) and whatever ``read(conn)`` reads, all from the
+        set (when ``read_set_source`` is set), the story rating's current version and whatever
+        ``read(conn)`` reads, all from the
         same snapshot (FR-CONC-2); ``read``'s result is returned. The row is inserted after it.
         """
         if self.status is not None:
@@ -228,6 +233,7 @@ class Operation:
                         principal=self.principal,
                         base_revision=self.base_revision,
                         read_set=self.read_set,
+                        config_revisions=self.config_revisions,
                     )
                 )
         self.status = OperationStatus.IN_FLIGHT
@@ -249,7 +255,11 @@ class Operation:
                 await conn.execute(
                     update(operations)
                     .where(operations.c.operation_id == self.operation_id)
-                    .values(base_revision=self.base_revision, read_set=self.read_set)
+                    .values(
+                        base_revision=self.base_revision,
+                        read_set=self.read_set,
+                        config_revisions=self.config_revisions,
+                    )
                 )
         return result
 
@@ -261,14 +271,19 @@ class Operation:
         await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
         found = (
             await conn.execute(
-                select(stories.c.timeline_revision, stories.c.settings).where(
-                    stories.c.id == self.story_id
+                select(
+                    stories.c.timeline_revision,
+                    stories.c.settings,
+                    content_ratings.c.current_version_id,
                 )
+                .outerjoin(content_ratings, content_ratings.c.id == stories.c.content_rating_id)
+                .where(stories.c.id == self.story_id)
             )
         ).one_or_none()
         if found is not None:
             self.base_revision = int(found.timeline_revision)
             self.story_settings = StorySettings.from_row(found.settings)
+            self.config_revisions = {"rating_version": found.current_version_id}
             if self.read_set_source is not None:
                 self.read_set = await self.read_set_source.hashes(conn, self.story_id)
         return await read(conn) if read is not None else None

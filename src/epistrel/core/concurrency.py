@@ -30,7 +30,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.errors import RevisionConflict, StoryNotFound, TimelineChanged
-from epistrel.core.tables import events, operations, stories
+from epistrel.core.tables import (
+    content_rating_versions,
+    content_ratings,
+    events,
+    operations,
+    stories,
+)
 
 if TYPE_CHECKING:
     from epistrel.core.events.operation import Operation
@@ -283,8 +289,24 @@ async def _definitions(conn: AsyncConnection, story_id: str, spec: LiteReadSet) 
     return await _payloads(conn, story_id, "character_defined")
 
 
+async def _guidance_text(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
+    """The prompt guidance of the story's rating at its current version (FR-RATE-4, #48).
+
+    The rating's own guidance only: guidance is never inherited (FR-RATE-2).
+    """
+    return await conn.scalar(
+        select(content_rating_versions.c.prompt_guidance)
+        .join(
+            content_ratings,
+            content_ratings.c.current_version_id == content_rating_versions.c.version_id,
+        )
+        .join(stories, stories.c.content_rating_id == content_ratings.c.id)
+        .where(stories.c.id == story_id)
+    )
+
+
 async def _not_yet_recorded(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
-    """Rating guidance text (#48) and generation-settings versions (#52/#57) arrive later."""
+    """Generation-settings versions arrive with #52/#57."""
     return None
 
 
@@ -294,7 +316,7 @@ for _name, _loader in (
     ("pins", _pins),
     ("instructions", _instructions),
     ("definitions", _definitions),
-    ("guidance_text", _not_yet_recorded),
+    ("guidance_text", _guidance_text),
     ("generation_settings", _not_yet_recorded),
 ):
     register_read_set_member(_name, _loader)

@@ -84,3 +84,39 @@ class ChainBroken(EpistrelError):
 
     code = "chain_broken"
     http_status = 500
+
+
+class ConfigConflict(EpistrelError):
+    """A configuration write the current state refuses (``details.reason``), e.g. retiring the
+    deployment's default rating (``is_default``) or editing a retired one (``retired``)."""
+
+    code = "validation_error"
+    http_status = 409
+
+
+class RatingNotFound(EpistrelError):
+    """The content rating named by a call does not exist."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class RatingRetired(EpistrelError):
+    """A rating that is retired (or unknown) cannot be newly assigned (FR-RATE-1).
+
+    ``details``: ``rating_id``, ``field`` and ``reason`` (``retired`` or ``unknown``).
+    """
+
+    code = "rating_retired"
+    http_status = 422
+
+
+class InheritanceCycle(EpistrelError):
+    """Saving the rating would make its inheritance cyclic (FR-RATE-2).
+
+    ``details``: ``field`` (``body.inherits_from``) and ``cycle``, the rating ids around the loop,
+    starting and ending with the rating being saved.
+    """
+
+    code = "inheritance_cycle"
+    http_status = 422

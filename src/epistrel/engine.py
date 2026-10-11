@@ -10,7 +10,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core import projections
+from epistrel.core import deployment, projections, ratings
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import PrincipalRequired
@@ -77,3 +77,45 @@ class Engine:
     async def history(self, ctx: RequestContext, story_id: str) -> History:
         """The story's active transcript, read from the projection (#59 adds viewpoints)."""
         return await read_history(self.db, story_id)
+
+    # -- content ratings and deployment settings (FR-RATE-1,2; deployment-scoped) --------------
+
+    async def list_content_ratings(
+        self, ctx: RequestContext, *, include_retired: bool = False
+    ) -> list[ratings.Rating]:
+        return await ratings.list_ratings(self.db, include_retired=include_retired)
+
+    async def get_content_rating(self, ctx: RequestContext, rating_id: str) -> ratings.RatingDetail:
+        return await ratings.get_rating(self.db, rating_id)
+
+    async def content_rating_versions(
+        self, ctx: RequestContext, rating_id: str
+    ) -> list[ratings.Rating]:
+        return await ratings.rating_versions(self.db, rating_id)
+
+    async def create_content_rating(
+        self, ctx: RequestContext, fields: ratings.RatingFields
+    ) -> ratings.RatingWrite:
+        principal = self.require_principal(ctx)
+        return await ratings.create_rating(self.db, fields, principal=principal)
+
+    async def update_content_rating(
+        self, ctx: RequestContext, rating_id: str, fields: ratings.RatingReplacement
+    ) -> ratings.RatingWrite:
+        principal = self.require_principal(ctx)
+        return await ratings.update_rating(self.db, rating_id, fields, principal=principal)
+
+    async def retire_content_rating(
+        self, ctx: RequestContext, rating_id: str
+    ) -> ratings.RatingWrite:
+        principal = self.require_principal(ctx)
+        return await ratings.retire_rating(self.db, rating_id, principal=principal)
+
+    async def deployment_settings(self, ctx: RequestContext) -> deployment.DeploymentSettings:
+        return await deployment.read_settings(self.db)
+
+    async def update_deployment_settings(
+        self, ctx: RequestContext, patch: deployment.SettingsPatch
+    ) -> deployment.DeploymentSettings:
+        principal = self.require_principal(ctx)
+        return await deployment.update_settings(self.db, patch, principal=principal)

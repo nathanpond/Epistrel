@@ -96,13 +96,16 @@ class MessageRendered(EventPayload):
     """The finished reply of a turn (#57): stored verbatim, with the characters it voices, the
     model that wrote it, the SHA-256 of the prompt it answered (the rendered chat messages'
     canonical JSON) and the provider's finish reason. ``character_id`` is null for a combined
-    reply of several characters."""
+    reply of several characters. ``fallback_used`` marks the safe fallback (#68)."""
 
     text: str
     render_character_ids: tuple[str, ...] = ()
     model: str | None = None
     prompt_hash: str | None = None
     finish_reason: str | None = None
+    fallback_used: bool = False
+    """The reply is the safe fallback line (#68): every generated draft broke an output policy
+    (``model``/``prompt_hash`` null, ``finish_reason`` ``fallback``)."""
 
 
 @register("think", category=EventCategory.NARRATIVE_STATE)
@@ -216,12 +219,30 @@ class ConfigChanged(EventPayload):
     new: JsonValue = None
 
 
+class RejectedViolation(EventPayload):
+    """One output policy a rejected text broke (#68)."""
+
+    policy_id: str
+    name: str
+    message: str
+    kind: str
+
+
 @register("guardrail_output_rejected", category=EventCategory.AUDIT)
 class GuardrailOutputRejected(EventPayload):
-    """A generated output a guardrail rejected; audit only (shell; #68 extends)."""
+    """A text an output policy rejected (FR-GUARD-6, FR-STORE-25; #68): a generated draft
+    (``reason`` ``output_policy``, ``attempt`` 0 for the first generation) or a safe fallback
+    line that itself broke a policy (``reason`` ``fallback_policy``). Audit only: it holds the
+    text, but no story view and no prompt reads it; it is written with its turn, so it follows
+    the turn's membership (discarded with it on truncation). ``confidence`` is the guardrail
+    model's, when a model-assisted check decided."""
 
     text: str
     reason: str
+    attempt: int | None = Field(default=None, ge=0)
+    policy_ids: tuple[str, ...] = ()
+    violations: tuple[RejectedViolation, ...] = ()
+    confidence: float | None = None
 
 
 @register("lite_summary_segment", category=EventCategory.DERIVED)

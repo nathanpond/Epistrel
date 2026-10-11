@@ -1228,3 +1228,35 @@ Process:
   - `test_s_undo_swap` now forks the promoted dormant chain, the active chain, and a partial chain. All three are complete and independent, and the source gained only its `fork` records (#66 AC3).
   **Why:** The test plan and the #66 hand-off.
   **Issue:** #67
+- **Decision:** The output gate is `orchestrator/policies/output_gate.py`. `check_output` runs every deterministic output policy, then one `guardrail_check` per model-assisted output policy through `check_text`, sequentially. Every policy is checked, so a regeneration hears about each one the draft broke. A check the budget cannot pay for resolves by `on_uncertain`. `gate_output` drives the regeneration loop and the fallback chain. Character-scoped output policies apply only to the render characters. `CheckOutcome` gained `confidence`.
+  **Why:** Discretion (checks sequential, all policies checked, character policies on render characters).
+  **Issue:** #68
+- **Decision:** The gate checks every draft under the output policies read when the turn's generate step starts (`guard_context`, which is about when the operation captures its configuration). A change that lands while the model is generating reaches the turn through #64's re-check at commit. That way no draft is checked twice under the same configuration. #64's `test_i_22__in_flight` complement ("relaxed mid-turn, the reply commits as is") now starts the turn with no guardrails and tightens mid-turn with a policy the reply passes. Under the old setup, the gate would have caught the dragon reply under the guardrails in force at its start, before any relaxing edit.
+  **Why:** Assumption. A gate reading the configuration at check time would also be correct, but every change mid-generation would then cost a second, duplicate check at commit.
+  **Issue:** #68
+- **Decision:** The #64 hand-off. `rebase.output_passes` and the re-check now call `output_gate.check_output`, with the render set taken from the staged reply. The step in `run_with_revalidation` that verified the regenerated reply after a failed re-check (`verify_next`) is removed: every regenerated reply passes the output gate inside `generate`. Rebase-triggered violations still regenerate and then return 409; they never fall back. In #64's Hypothesis test, the stand-in model now replies through `gate_output`, as a Lite turn does. The gate catches its stubborn repeat (`gate_caught` > 0 is asserted), and the outcome prediction skips a call that the gate itself regenerated. Mutation check: with the gate's check forced to pass, `test_config_revalidation` fails.
+  **Why:** The #64 → #68 hand-off ("route that path through your output gate rather than keeping duplicate checks").
+  **Issue:** #68
+- **Decision:** These follow Discretion:
+  - Constraint lines are `Your previous reply violated: <message>. Reply again without it.` (the message's trailing period is stripped). There is one line per policy; lines accumulate over the turn and go in `GenerationInputs.policy_constraints` (category `policy_text`). The generation purpose no longer lists `policy_text` under `never_receives`, so the model guide, docs/02's data-flow row and the category description were updated.
+  - Each regeneration's temperature is +0.1 per attempt, capped at 2.
+  - `guardrail_retry_budget` is a `StorySettings` field (0–5, default 2, prospective) and spans the turn. `default_safe_fallback` is a new prospective deployment section, `GuardrailSettings` (`{name} changes the subject.`), and is exposed through `/admin/settings`.
+  - The fallback chain is: the first render character's `safe_fallback_text`, then the deployment line, then the hard-coded `{name} says nothing.`. `{name}` is substituted in every line. Each line is checked deterministically only, and a failing line is recorded as rejected. The last resort is released whatever it breaks, with its violations reported.
+  - A regeneration is attempted only when the budget can afford 1 generation plus one re-check per model-assisted output policy. Running out of budget or deadline mid-regeneration leads to the fallback; any other `ModelUnavailable` is a 503.
+  **Why:** Discretion passes 1 and 2.
+  **Issue:** #68
+- **Decision:** Rejected texts are buffered and staged with the turn as `guardrail_output_rejected` events (category `audit`, beat 2) between `player_input` and `message_rendered`, so they commit with the turn and follow its membership. The payload extends #45's shell with `attempt`, `policy_ids`, `violations [{policy_id, name, message, kind}]` and `confidence`. `reason` is `output_policy` or `fallback_policy`. `message_rendered` gains `fallback_used` (default false). A fallback reply has `model`/`prompt_hash` null and `finish_reason` `fallback`. The respond and regenerate results always carry `guardrail: {violations, fallback_used}`, where `violations` covers the released text only, and `degradation` is `["safe_fallback"]` when the fallback was used. A new counter, `epistrel_guardrail_rejections_total{policy_id,stage}`, has `stage` set to `output` or `fallback`, and output violations also count in `epistrel_guardrail_violations_total{stage="output"}`.
+  **Why:** Discretion (payload, flag, fallback `message_rendered`, violations of the released text, metric).
+  **Issue:** #68
+- **Decision:** Reservation. The input gate now reserves 1 generation plus G_out, one call per model-assisted output policy, through `Engine.gate_input(reserve_output_for=render_ids)`. Deterministic-only stories reserve no guardrail call. `Gate` now takes the render ids. `TurnBudget.max_calls` is still unbounded on respond until #69, so `test_i_18__call_count` asserts the reservation through `gate_input` with an explicit `max_calls`.
+  **Why:** FR-LITE-7 / docs/02 §per-turn budget (G includes the first output checkpoint) and the AC's "none reserved".
+  **Issue:** #68
+- **Decision:** Tests:
+  - `tests/scenario/test_s_selfpolice.py`: `test_s_selfpolice` covers violate twice then comply, violate always then the character fallback, a budget of 0, a pin and instructions that try to lift the rule, and policy rows unchanged. `test_s_selfpolice__deployment_fallback` covers the deployment line.
+  - `tests/scenario/test_s_audit_category.py`: the full scenario plus #45's prerequisite slice, moved from `tests/integration/` because `check-traceability` refuses a part split over two files.
+  - `test_i_18__call_count`, with its no-policy complement.
+  - `test_minor_output_regenerates_then_falls_back`, for #55 AC3.
+  - Pure tests in `tests/test_output_gate.py`.
+  - The changed assertions in other tests follow from the new shape: `guardrail` in I-07's response fields, `fallback_used` in ingest's narration payload, and 2 checks per turn in the model-matrix minors row.
+  **Why:** The test plan and the hand-offs.
+  **Issue:** #68

@@ -21,15 +21,22 @@
 3. **One ``turn`` operation** under #47's revision protocol (``run_with_revalidation``): the
    read phase reads the prompt inputs in the snapshot the read set hashes (so the read set *is*
    the prompt's inputs) and resolves the generation settings, deployment → story → request
-   (FR-LITE-4); the generate step makes exactly one ``generation`` call (FR-LITE-7) — an empty
-   reply is asked once more, then 503 ``model_unavailable`` ``reason=empty`` — and stages the
-   input as beat 1 and the reply as beat 2. A touched read set regenerates the same operation;
+   (FR-LITE-4); the generate step makes one ``generation`` call (FR-LITE-7) — an empty
+   reply is asked once more, then 503 ``model_unavailable`` ``reason=empty`` — and passes the
+   reply through **the output gate** (#68, ``policies.output_gate``): the story's output
+   policies, deterministic first, then one ``guardrail_check`` per model-assisted policy; a
+   violation generates again with the policy's message as a constraint, within the story's
+   ``guardrail_retry_budget`` and the turn budget, then releases the safe fallback line. It
+   stages the input as beat 1, every rejected text as a ``guardrail_output_rejected`` audit
+   event, and the released reply as beat 2. A touched read set regenerates the same operation;
    an interpretive configuration change the turn depends on (a rating's guardrails, a policy,
    ``minor_age_threshold``, the default output viewpoint) re-checks the reply under the new
    configuration before it commits (``policies.rebase``, #64).
 4. **The result**: the finished message (never "verified": under ``lite`` no claim is
    checked), the turn's beats for the resolved viewpoint, the new revision, and the model calls
-   the turn made (``model_calls``, #54) with its ``elapsed_ms`` (fixed at the commit). Under an
+   the turn made (``model_calls``, #54) with its ``elapsed_ms`` (fixed at the commit), and the
+   output gate's ``guardrail`` report (``degradation`` ``["safe_fallback"]`` when the reply is
+   the fallback). Under an
    idempotent call it is built and stored ``done`` inside the turn's commit transaction, so a
    committed turn always has its result for a retry.
 
@@ -62,6 +69,7 @@ from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
 from epistrel.core.errors import StoryArchived, TimelineChanged
 from epistrel.core.events import Operation
+from epistrel.core.events.types import GuardrailOutputRejected, RejectedViolation
 from epistrel.core.history import turn_beats
 from epistrel.core.settings_schema import (
     GenerationSettings,
@@ -84,7 +92,10 @@ from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
 from epistrel.orchestrator.lite.schemas import (
+    SAFE_FALLBACK,
     FinishedMessage,
+    GuardrailReport,
+    GuardrailViolationItem,
     PlayerInputBody,
     RegenerateRequest,
     RegenerateResult,
@@ -95,13 +106,24 @@ from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelResult
 from epistrel.orchestrator.models.errors import EmptyCompletion
 from epistrel.orchestrator.models.metrics import CallLog, recording
+from epistrel.orchestrator.policies.output_gate import (
+    Draft,
+    FallbackLines,
+    Gated,
+    Rejected,
+    gate_output,
+    output_policies,
+    raised_temperature,
+)
 from epistrel.orchestrator.policies.rebase import output_recheck
+from epistrel.orchestrator.policies.store import guard_context
 
 GENERATION = "generation"
 INPUT_LOCATOR = "player_input"
 
-Gate = Callable[[TurnBudget, str, str], Awaitable[Any]]
-"""``gate(budget, text, actor_character_id)``: the input gate (#56), raising on a violation."""
+Gate = Callable[[TurnBudget, str, str, list[str]], Awaitable[Any]]
+"""``gate(budget, text, actor_character_id, render_character_ids)``: the input gate (#56),
+raising on a violation; it reserves the generation call and the first output check (#68)."""
 
 
 QueueTurn = Callable[[str, dict[str, Any], str, Concurrency], Awaitable[RespondResult]]
@@ -156,6 +178,7 @@ async def respond(
             budget,
             joined_input(request.player_input.say_text, request.player_input.do_text),
             cast.actor.id,
+            cast.render_ids,
         )
         op = Operation(
             db,
@@ -252,7 +275,7 @@ async def regenerate(
     concurrency = await turn_gate.read_concurrency(db, story_id)
     budget = TurnBudget(deadline_s=concurrency.turn_deadline)
     with recording() as calls:
-        await gate(budget, joined_input(recorded.say, recorded.do), cast.actor.id)
+        await gate(budget, joined_input(recorded.say, recorded.do), cast.actor.id, cast.render_ids)
         op = Operation(
             db,
             story_id=story_id,
@@ -340,22 +363,51 @@ async def _play(
         }
         return inputs, resolved
 
+    gated: list[Gated] = []
+
     async def generate(op: Operation, read: tuple[TurnInputs, ResolvedGeneration]) -> None:
         inputs, resolved = read
-        payload = assemble(inputs, cast, say=say, do=do)
-        params = model_params(resolved, cast)
-        _, _, messages = models.prepare(GENERATION, payload)
-        result = await _generate(models, payload, params, budget)
+        # The output policies as they are now; a change after this read reaches the turn
+        # through #64's re-check at commit.
+        context = await guard_context(db, story_id)
+        policies = output_policies(context, cast.render_ids)
+
+        async def produce(constraints: tuple[str, ...], attempt: int) -> Draft:
+            payload = assemble(inputs, cast, say=say, do=do, constraints=constraints)
+            settings = resolved.model_copy(
+                update={"temperature": raised_temperature(resolved.temperature, attempt)}
+            )
+            _, _, messages = models.prepare(GENERATION, payload)
+            result = await _generate(models, payload, model_params(settings, cast), budget)
+            return Draft(
+                text=result.text,
+                model=result.model,
+                prompt_hash=prompt_hash(messages),
+                finish_reason=result.finish_reason,
+            )
+
+        outcome = await gate_output(
+            models,
+            context,
+            policies,
+            produce,
+            budget=budget,
+            retry_budget=op.story_settings.guardrail_retry_budget,
+            fallback=_fallback_lines(inputs, cast),
+        )
+        gated[:] = [outcome]
         stage_turn(
             op,
             actor_character_id=cast.actor.id,
             say=say,
             do=do,
-            reply=result.text,
+            reply=outcome.draft.text,
             render_character_ids=cast.render_ids,
-            model=result.model,
-            prompt_hash=prompt_hash(messages),
-            finish_reason=result.finish_reason,
+            model=outcome.draft.model,
+            prompt_hash=outcome.draft.prompt_hash,
+            finish_reason=outcome.draft.finish_reason,
+            fallback_used=outcome.fallback_used,
+            rejected=[_audit_record(r) for r in outcome.rejected],
         )
         if regenerating is not None:
             op.add_commit_step(fail_queue)
@@ -391,6 +443,7 @@ async def _play(
             "output_viewpoint": viewpoint,
             "model_calls": list(calls.calls),
             "elapsed_ms": round((time.monotonic() - started) * 1000),
+            **_guardrail_fields(gated[0] if gated else None),
         }
         if regenerating is not None:
             return RegenerateResult(**fields, previous_variant=regenerating.variant)
@@ -413,6 +466,55 @@ async def _play(
         stored: RespondResult = call.committed_value
         return stored
     return await result(db, op)
+
+
+def _fallback_lines(inputs: TurnInputs, cast: ResolvedCast) -> FallbackLines:
+    """The turn's fallback candidates: the first render character's own line (as read in the
+    turn's snapshot) and the deployment's line in force at its start."""
+    first = cast.render[0]
+    current = next((c for c in inputs.cast if c.id == first.id), first)
+    return FallbackLines(
+        name=current.name,
+        character_text=current.safe_fallback_text,
+        deployment_text=inputs.default_safe_fallback,
+    )
+
+
+def _audit_record(rejected: Rejected) -> GuardrailOutputRejected:
+    """A rejected text as its ``guardrail_output_rejected`` audit event."""
+    violations = rejected.check.violations
+    return GuardrailOutputRejected(
+        text=rejected.text,
+        reason=rejected.reason,
+        attempt=rejected.attempt,
+        policy_ids=tuple(v.policy_id for v in violations),
+        violations=tuple(
+            RejectedViolation(
+                policy_id=v.policy_id, name=v.name, message=v.message, kind=v.kind.value
+            )
+            for v in violations
+        ),
+        confidence=rejected.check.confidence,
+    )
+
+
+def _guardrail_fields(outcome: Gated | None) -> dict[str, Any]:
+    """The result's ``guardrail`` report and ``degradation`` for the released reply."""
+    if outcome is None:  # pragma: no cover - a committed turn always went through the gate
+        return {}
+    report = GuardrailReport(
+        violations=[
+            GuardrailViolationItem(
+                policy_id=v.policy_id, name=v.name, message=v.message, kind=v.kind.value
+            )
+            for v in outcome.violations
+        ],
+        fallback_used=outcome.fallback_used,
+    )
+    return {
+        "guardrail": report,
+        "degradation": [SAFE_FALLBACK] if outcome.fallback_used else [],
+    }
 
 
 async def _generate(

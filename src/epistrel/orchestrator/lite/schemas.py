@@ -132,6 +132,27 @@ class FinishedMessage:
 
 
 AudienceFilter = Literal["none", "co_location", "full"]
+SAFE_FALLBACK = "safe_fallback"
+"""The ``degradation`` entry of a turn whose reply is the safe fallback (#68)."""
+
+
+@dataclass(frozen=True, slots=True)
+class GuardrailViolationItem:
+    """An output policy the released reply breaks (#68)."""
+
+    policy_id: str
+    name: str
+    message: str
+    kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class GuardrailReport:
+    """The output gate's outcome for the released reply (#68): its violations (empty unless the
+    last-resort fallback line broke a policy) and whether it is the safe fallback."""
+
+    violations: list[GuardrailViolationItem] = field(default_factory=list)
+    fallback_used: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +170,8 @@ class RespondResult:
     elapsed_ms: int
     audience_filter: AudienceFilter = "none"
     degradation: list[str] = field(default_factory=list)
+    guardrail: GuardrailReport = field(default_factory=GuardrailReport)
+    """The output gate's outcome (#68): always present."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
@@ -163,7 +186,10 @@ class RegenerateResult(RespondResult):
 
 __all__ = [
     "MAX_INPUT_CHARS",
+    "SAFE_FALLBACK",
     "FinishedMessage",
+    "GuardrailReport",
+    "GuardrailViolationItem",
     "PlayerInputBody",
     "RecentMessage",
     "RegenerateRequest",

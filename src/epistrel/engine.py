@@ -67,7 +67,7 @@ from epistrel.orchestrator.lite.schemas import (
 from epistrel.orchestrator.models import ModelAccessLayer
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.policies import admin as policy_admin
-from epistrel.orchestrator.policies import input_gate
+from epistrel.orchestrator.policies import input_gate, output_gate
 from epistrel.orchestrator.policies import store as policy_store
 from epistrel.orchestrator.policies.age import CastMember
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText, InputPass
@@ -569,13 +569,19 @@ class Engine:
         actor: str | None = None,
         budget: TurnBudget | None = None,
         reserved: int = 0,
+        reserve_output_for: Sequence[str] | None = None,
     ) -> InputPass:
         """The input gate of a truth-changing path that accepts text (FR-GUARD-9,10): run it
         after the call's other prechecks (#44's order) and before its ``Operation`` opens. A
         violation writes the ``audit_log`` row and raises 422 ``guardrail_violation``; nothing
-        else is written. Respond (#57), ingest (#58) and pins/instructions (#60) call it."""
+        else is written. Respond (#57), ingest (#58) and pins/instructions (#60) call it.
+
+        ``reserve_output_for`` (a turn's render characters) adds the turn's first output check
+        to the reservation: one call per model-assisted output policy (#68)."""
         principal = self.require_principal(ctx)
         context = await policy_store.guard_context(self.db, story_id)
+        if reserve_output_for is not None:
+            reserved += output_gate.output_reservation(context, reserve_output_for)
         return await input_gate.enforce_input(
             self.db,
             self.models,
@@ -618,7 +624,7 @@ class Engine:
         principal = self.require_principal(ctx)
         ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
 
-        async def gate(budget: TurnBudget, text: str, actor: str) -> InputPass:
+        async def gate(budget: TurnBudget, text: str, actor: str, renders: list[str]) -> InputPass:
             return await self.gate_input(
                 ctx,
                 story_id,
@@ -627,6 +633,7 @@ class Engine:
                 actor=actor,
                 budget=budget,
                 reserved=1,
+                reserve_output_for=renders,
             )
 
         async def run(ctx: RequestContext) -> RespondResult:
@@ -1008,7 +1015,7 @@ class Engine:
         request = request or RegenerateRequest()
         ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
 
-        async def gate(budget: TurnBudget, text: str, actor: str) -> InputPass:
+        async def gate(budget: TurnBudget, text: str, actor: str, renders: list[str]) -> InputPass:
             return await self.gate_input(
                 ctx,
                 story_id,
@@ -1017,6 +1024,7 @@ class Engine:
                 actor=actor,
                 budget=budget,
                 reserved=1,
+                reserve_output_for=renders,
             )
 
         async def run(ctx: RequestContext) -> RegenerateResult:

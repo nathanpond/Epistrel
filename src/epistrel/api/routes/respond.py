@@ -29,8 +29,14 @@ RESPOND_DESCRIPTION = (
     "\n\nThe consumer does no retrieval or memory work: the prompt is assembled from the story's "
     "own records. Scene context is checked against the cast and then ignored: it is never "
     "stored and never placed in the model's context.\n\nThe response is the **finished** reply: "
-    "under the `lite` profile it is generated in one model call and none of its claims is "
-    "checked against the story's facts. Several characters are voiced in one generation, and "
+    "under the `lite` profile it is generated in one model call (plus one `guardrail_check` "
+    "per model-assisted output policy) and none of its claims is checked against the story's "
+    "facts. Before it is released the reply is checked against the "
+    "story's output policies: a reply that breaks one is generated again with the policy's "
+    "message as a constraint, up to the story's `guardrail_retry_budget`, and then the "
+    "character's safe fallback line is returned instead (`guardrail.fallback_used`, "
+    '`degradation: ["safe_fallback"]`). Rejected drafts are audit records only. '
+    "Several characters are voiced in one generation, and "
     "their knowledge is kept apart only by instructions in that shared prompt."
     "\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and "
     "`X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written)."
@@ -51,6 +57,23 @@ class MessageBody(BaseModel):
     text: str
 
 
+class GuardrailViolationBody(BaseModel):
+    """An output policy the released reply breaks."""
+
+    policy_id: str
+    name: str
+    message: str
+    kind: str
+
+
+class GuardrailBody(BaseModel):
+    """The output gate's outcome: the released reply's violations (empty unless even the
+    last-resort fallback line broke a policy) and whether the reply is the safe fallback."""
+
+    violations: list[GuardrailViolationBody]
+    fallback_used: bool
+
+
 class RespondResponse(MutationResponse):
     """One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,
     the story's new revision, and the model calls it made."""
@@ -64,6 +87,7 @@ class RespondResponse(MutationResponse):
     model_calls: list[ModelCall]
     elapsed_ms: int = Field(ge=0)
     degradation: list[str]
+    guardrail: GuardrailBody
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -78,6 +102,15 @@ class RespondResponse(MutationResponse):
             model_calls=result.model_calls,
             elapsed_ms=result.elapsed_ms,
             degradation=result.degradation,
+            guardrail=GuardrailBody(
+                violations=[
+                    GuardrailViolationBody(
+                        policy_id=v.policy_id, name=v.name, message=v.message, kind=v.kind
+                    )
+                    for v in result.guardrail.violations
+                ],
+                fallback_used=result.guardrail.fallback_used,
+            ),
         )
 
 

@@ -8,7 +8,8 @@ phrases, and only in checks of the seeded age-conditioned policy.
 
 The turn path is #53's test-only guarded reply with the story's own policies; the ingest path
 is the real ``POST /stories/{id}/ingest`` (#58), each narration event gated on its own.
-#68 adds regeneration then the safe fallback.
+On the real respond path an output violation regenerates, then falls back (#68:
+``tests/integration/test_minors_policy.py::test_minor_output_regenerates_then_falls_back``).
 """
 
 from __future__ import annotations

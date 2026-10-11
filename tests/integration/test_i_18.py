@@ -3,7 +3,8 @@ prompt, one generation call per turn, input and reply stored with positions, sev
 characters in one combined generation, and generation settings by precedence (FR-LITE-1,4,5,
 FR-PROF-11); #60's slice edits pinned memories and custom instructions mid-turn (FR-LITE-3).
 #64's slice (``test_i_18__no_bypass``) shows no story setting turns guardrails off
-(FR-PROF-14). #68, #69 and #72 add their slices here."""
+(FR-PROF-14). #68's slice (``test_i_18__call_count``) counts the calls guardrails add
+(FR-LITE-7, FR-GUARD-9). #69 and #72 add their slices here."""
 
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.db import make_engine
-from epistrel.core.errors import GuardrailViolation
+from epistrel.core.errors import BudgetBelowSafetyMinimum, GuardrailViolation
 from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import story_guidance
 from epistrel.core.settings_schema import GenerationSettings
@@ -25,14 +26,16 @@ from epistrel.core.stories import StorySpec
 from epistrel.core.story_settings import update_story_settings
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.lite.pipeline import INPUT_LOCATOR
 from epistrel.orchestrator.lite.schemas import RespondRequest
+from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.rebase import output_passes
 from epistrel.orchestrator.policies.store import guard_context
 from tests.auth_support import auth_settings
 from tests.concurrency_support import set_instructions, set_pins, summarise
 from tests.event_support import rows, scalar
 from tests.gate_support import input_policies
-from tests.policy_support import OPERATOR, global_policy, words
+from tests.policy_support import AUTHOR, OPERATOR, global_policy, story_item, words
 from tests.respond_support import (
     FIRST,
     PLAYER,
@@ -357,3 +360,88 @@ def test_i_18__no_bypass(pg_url: str) -> None:
 
     asyncio.run(retire())
     asyncio.run(_guardrails_hold(pg_url, story, cast[0], seen[-1], word, expect_caught=False))
+
+
+OWLS = {"type": "model_assisted", "prompt": "Is this text about OWLS?", "on_uncertain": "pass"}
+FLAGGED = '{"violation": true, "confidence": 0.9}'
+
+
+@pytest.mark.part("M2", "FR-LITE-7; FR-GUARD-9")
+async def test_i_18__call_count(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """Call accounting with guardrails (#68): with only deterministic policies every turn
+    makes exactly one model call (the generation) and reserves none beyond it; one
+    model-assisted output policy adds exactly one ``guardrail_check`` (and reserves it); one
+    on both input and output adds two; a regeneration adds one ``generation`` and its
+    re-check. Every call is in the turn's ``model_calls``.
+
+    Complement asserted: with no story policy defined, no ``guardrail_check`` is made and none
+    is reserved."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        story, ids = await new_story(client, PLAYER, FIRST)
+        actor, renders = ids[PLAYER], [ids[FIRST]]
+
+        async def purposes(say: str) -> list[str]:
+            stub.reset()
+            turn = await played(client, story, body(actor, say))
+            assert [c.purpose for c in stub.calls] == [c["purpose"] for c in turn["model_calls"]]
+            return [c["purpose"] for c in turn["model_calls"]]
+
+        async def reserves(max_calls: int) -> int | None:
+            """The gate with ``max_calls``: ``None`` when it fits, else ``minimum_required``."""
+            try:
+                await lib.gate_input(
+                    AUTHOR,
+                    story,
+                    EntryPoint.RESPOND,
+                    [GateText(INPUT_LOCATOR, "Hello.")],
+                    actor=actor,
+                    budget=TurnBudget(max_calls=max_calls),
+                    reserved=1,
+                    reserve_output_for=renders,
+                )
+            except BudgetBelowSafetyMinimum as refused:
+                return int(refused.details["minimum_required"])
+            return None
+
+        # No story policy: one generation, nothing reserved beyond it.
+        assert await purposes("Hello.") == ["generation"]
+        assert await reserves(1) is None
+
+        # Deterministic policies on input and output: still exactly one call, none reserved.
+        await lib.policies_set_story(
+            AUTHOR,
+            story,
+            [
+                story_item(words("zzinputword"), applies_to=["text_input"]),
+                story_item(words("zzoutputword")),
+            ],
+        )
+        assert await purposes("Hello.") == ["generation"]
+        assert await reserves(1) is None
+
+        # One model-assisted output policy: +1 check per turn, reserved up front.
+        (owls,) = (await lib.policies_set_story(AUTHOR, story, [story_item(OWLS)])).policies
+        assert await purposes("Hello.") == ["generation", "guardrail_check"]
+        assert await reserves(1) == 2
+
+        # A regeneration: + one generation and its re-check.
+        stub.reset()
+        stub.when(("OWL DRAFT", "OWLS?"), FLAGGED, purpose="guardrail_check")
+        stub.script("generation", ["An OWL DRAFT hoots.", "A quiet night."])
+        turn = await played(client, story, body(actor, "Listen."))
+        assert turn["message"]["text"] == "A quiet night."
+        assert [c["purpose"] for c in turn["model_calls"]] == [
+            "generation",
+            "guardrail_check",
+            "generation",
+            "guardrail_check",
+        ]
+
+        # The same policy on input and output: +2 per turn.
+        both = story_item(
+            OWLS, id=owls.id, name=owls.name, applies_to=["text_input", "text_output"]
+        )
+        await lib.policies_set_story(AUTHOR, story, [both])
+        assert sorted(await purposes("Hello.")) == ["generation", *["guardrail_check"] * 2]
+        assert await reserves(2) == 3

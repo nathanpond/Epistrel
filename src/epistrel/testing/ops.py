@@ -13,8 +13,9 @@ With ``story_policies`` (#55) the checks use the story's effective policies, its
 live ``minor_age_threshold`` (``store.guard_context``), and the input check is #56's input gate
 (``Engine.gate_input``): it runs before the operation opens, and a violation raises 422
 ``guardrail_violation`` with only the ``audit_log`` row written. An output violation withholds
-the reply; #68 adds regeneration and the safe fallback. (#55's ``ingest-check`` route is
-retired: the ingest path is the real ``POST /stories/{id}/ingest``, #58.)
+the reply here; the real turn (``respond``) regenerates and then uses the safe fallback (#68).
+(#55's ``ingest-check`` route is retired: the ingest path is the real
+``POST /stories/{id}/ingest``, #58.)
 
 ``POST /_test/stories/{id}/gated-input`` is #56's fixture caller: a truth-changing write that
 accepts text through any entry point (respond, ingest, pinned memories, custom instructions),

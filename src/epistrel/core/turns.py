@@ -20,19 +20,24 @@ and final message is in the transcript with its position (FR-PROF-11).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from sqlalchemy import and_, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.config_changes import read_lite_defaults
+from epistrel.core.config_changes import read_guardrail_settings, read_lite_defaults
 from epistrel.core.enums import Authority, Membership, OperationKind, OperationStatus, Provenance
 from epistrel.core.errors import InvalidRequest, NothingToRegenerate, StoryNotFound
 from epistrel.core.events import Operation
-from epistrel.core.events.types import MessageRendered, PlayerInput
+from epistrel.core.events.types import GuardrailOutputRejected, MessageRendered, PlayerInput
 from epistrel.core.ratings import story_guidance
-from epistrel.core.settings_schema import GenerationSettings, StorySettings
+from epistrel.core.settings_schema import (
+    DEFAULT_SAFE_FALLBACK,
+    GenerationSettings,
+    StorySettings,
+)
 from epistrel.core.tables import (
     characters,
     events,
@@ -56,6 +61,8 @@ class CastEntry:
     name: str
     definition: str
     is_player: bool
+    safe_fallback_text: str | None = None
+    """The character's own safe fallback line (#50, #68); never part of a prompt."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,11 +109,19 @@ class TurnInputs:
     story_generation: GenerationSettings | None
     """The story's override; the request's own ``prompt_params`` go on top, per request."""
     window_messages: int
+    default_safe_fallback: str = DEFAULT_SAFE_FALLBACK
+    """The deployment's safe fallback line in force when the turn started (#68)."""
 
 
 def _cast_query(story_id: str) -> Any:
     return (
-        select(characters.c.id, characters.c.name, characters.c.definition, characters.c.is_player)
+        select(
+            characters.c.id,
+            characters.c.name,
+            characters.c.definition,
+            characters.c.is_player,
+            characters.c.safe_fallback_text,
+        )
         .where(characters.c.story_id == story_id)
         .order_by(characters.c.ordinal)
     )
@@ -114,7 +129,13 @@ def _cast_query(story_id: str) -> Any:
 
 def _cast(rows: Any) -> tuple[CastEntry, ...]:
     return tuple(
-        CastEntry(id=r.id, name=r.name, definition=r.definition, is_player=bool(r.is_player))
+        CastEntry(
+            id=r.id,
+            name=r.name,
+            definition=r.definition,
+            is_player=bool(r.is_player),
+            safe_fallback_text=r.safe_fallback_text,
+        )
         for r in rows
     )
 
@@ -223,6 +244,7 @@ async def read_turn_inputs(
     """The prompt inputs of the next turn of ``story_id`` (call inside the read snapshot), or
     of a regenerated turn ``before_turn`` (only what is positioned before it)."""
     defaults = await read_lite_defaults(conn)
+    guardrails = await read_guardrail_settings(conn)
     raw_settings = await conn.scalar(select(stories.c.settings).where(stories.c.id == story_id))
     settings = StorySettings.from_row(raw_settings)
     window_messages = settings.lite_window_messages or defaults.lite_window_messages
@@ -246,6 +268,7 @@ async def read_turn_inputs(
         deployment_generation=defaults.lite_generation_defaults,
         story_generation=settings.generation_settings,
         window_messages=window_messages,
+        default_safe_fallback=guardrails.default_safe_fallback,
     )
 
 
@@ -349,10 +372,13 @@ def stage_turn(
     reply: str,
     render_character_ids: list[str],
     model: str | None,
-    prompt_hash: str,
+    prompt_hash: str | None,
     finish_reason: str | None,
+    fallback_used: bool = False,
+    rejected: Sequence[GuardrailOutputRejected] = (),
 ) -> None:
-    """Stage the input beat (1) and the reply beat (2) on the turn operation."""
+    """Stage the input beat (1) and the reply beat (2) on the turn operation; the texts an
+    output policy rejected on the way (#68) go between them, as audit records of beat 2."""
     op.append(
         "player_input",
         PlayerInput(text=joined_input(say, do), say=say, do=do),
@@ -360,6 +386,14 @@ def stage_turn(
         character_id=actor_character_id,
         beat=INPUT_BEAT,
     )
+    for record in rejected:
+        op.append(
+            "guardrail_output_rejected",
+            record,
+            provenance=Provenance.ENGINE,
+            character_id=None,
+            beat=REPLY_BEAT,
+        )
     op.append(
         "message_rendered",
         MessageRendered(
@@ -368,6 +402,7 @@ def stage_turn(
             model=model,
             prompt_hash=prompt_hash,
             finish_reason=finish_reason,
+            fallback_used=fallback_used,
         ),
         provenance=Provenance.ENGINE,
         authority=Authority.AUTHORITATIVE,

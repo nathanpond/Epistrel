@@ -441,9 +441,10 @@ async def run_with_revalidation(
 
     A ``ConfigRecheck`` (FR-CONC-16) re-captures the configuration and runs ``config_recheck``
     on the staged output with no lock held (none given: nothing to re-check, it passes); a
-    pass commits again without generating, a failure regenerates — and the regenerated output
-    is re-checked before its commit too, so no reply produced after a tightening commits
-    unchecked. Up to ``budget + 1`` re-check rounds run (one always may) and regenerations
+    pass commits again without generating, a failure regenerates. The regenerated output is
+    checked by ``generate`` itself, which reads the configuration as it then is (the Lite turn's
+    output gate, #68), so no reply produced after a tightening commits unchecked and none is
+    checked twice. Up to ``budget + 1`` re-check rounds run (one always may) and regenerations
     spend ``budget``; past either bound the call is 409 ``revision_conflict``.
     """
     op.read_set_source = read_set if read_set is not None else LiteReadSet()
@@ -452,7 +453,6 @@ async def run_with_revalidation(
     regenerations = 0
     rechecks = 0
     generate_next = True
-    verify_next = False  # the next output follows a failed re-check: check it first
 
     async def conflict(current_revision: int, reason: str) -> RevisionConflict:
         await op.abandon()
@@ -466,24 +466,6 @@ async def run_with_revalidation(
             if generate_next:
                 await generate(op, inputs)
             generate_next = True
-            if verify_next and config_recheck is not None and not await config_recheck(op, ()):
-                base = op.base_revision or 0
-                op.attempts.append(
-                    {
-                        "attempt": len(op.attempts) + 1,
-                        "base_revision": base,
-                        "current_revision": base,
-                        "outcome": "regenerate",
-                        "reason": "rebase_failed",
-                        "touched": [],
-                    }
-                )
-                if regenerations >= limit:
-                    raise await conflict(base, "rebase_failed")
-                regenerations += 1
-                inputs = await op.restart(read=begin)
-                continue
-            verify_next = False
             try:
                 await op.commit(decide=decide)
             except RevalidationRequired as signal:
@@ -511,7 +493,6 @@ async def run_with_revalidation(
                     if passed:
                         generate_next = False
                         continue
-                    verify_next = True
                     reason = "rebase_failed"
                 else:
                     reason = outcome.reason

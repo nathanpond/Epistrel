@@ -43,7 +43,10 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
     ContentCategory.ROLLING_SUMMARY: "The story's rolling summary segments.",
     ContentCategory.RECENT_MESSAGE: "Earlier messages of the story (who, what was said and done).",
     ContentCategory.PLAYER_INPUT: "The player's input for this turn.",
-    ContentCategory.POLICY_TEXT: "A policy's prompt text and opaque subject labels.",
+    ContentCategory.POLICY_TEXT: (
+        "A policy's prompt text and opaque subject labels; for generation, only the messages "
+        "of output policies an earlier draft broke."
+    ),
     ContentCategory.SUBJECT_TRUE_AGE: "A resolved subject's true age.",
     ContentCategory.CHECKED_TEXT: "The text a guardrail check is judging (input or output).",
 }

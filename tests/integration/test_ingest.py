@@ -205,6 +205,7 @@ async def test_batch_is_all_or_nothing(stub_settings: Settings, engine: AsyncEng
             "model": None,
             "prompt_hash": None,
             "finish_reason": "consumer",
+            "fallback_used": False,
         }
 
 

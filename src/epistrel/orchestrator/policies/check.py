@@ -46,10 +46,12 @@ type DecidedBy = Literal["none", "deterministic", "model", "uncertain"]
 
 @dataclass(frozen=True, slots=True)
 class CheckOutcome:
-    """The violations found (empty when the text passed) and what decided the outcome."""
+    """The violations found (empty when the text passed), what decided the outcome, and the
+    guardrail model's confidence when a model verdict decided it (#68 records it)."""
 
     violations: tuple[Violation, ...]
     decided_by: DecidedBy
+    confidence: float | None = None
 
     @property
     def violated(self) -> bool:
@@ -104,7 +106,7 @@ async def check_text(
             if uncertain_verdict(rule.on_uncertain).violation:
                 return CheckOutcome((_model_violation(policy),), "uncertain")
         elif result.violation:
-            return CheckOutcome((_model_violation(policy),), "model")
+            return CheckOutcome((_model_violation(policy),), "model", result.confidence)
     if step() is not None:
         return by_rules()
     return CheckOutcome((), "model" if len(deterministic) < len(applicable) else "none")

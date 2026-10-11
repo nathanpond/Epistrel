@@ -48,6 +48,7 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "turn_deadline": ConfigClass.prospective,
         "generation_settings.temperature": ConfigClass.prospective,
         "lite_window_messages": ConfigClass.prospective,
+        "guardrail_retry_budget": ConfigClass.prospective,
     },
     DeploymentSettings: {
         "default_content_rating_id": ConfigClass.interpretive,
@@ -60,6 +61,7 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "max_custom_instructions_chars": ConfigClass.prospective,
         "lite_generation_defaults.length": ConfigClass.prospective,
         "lite_window_messages": ConfigClass.prospective,
+        "default_safe_fallback": ConfigClass.prospective,
     },
 }
 

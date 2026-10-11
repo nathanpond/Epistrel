@@ -1,6 +1,6 @@
 """The seeded minors policy (#55; FR-GUARD-11, FR-CAT-12): the seed row, redaction of the
-violation, no model call without a minor, the live threshold, and the policy as ordinary
-editable, audited data."""
+violation, no model call without a minor, the live threshold, the policy as ordinary
+editable, audited data, and (#68) an output violation regenerating then falling back."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from epistrel.core.policies.model import Target
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models import metrics
 from epistrel.orchestrator.policies.check import check_text
+from epistrel.orchestrator.policies.output_gate import CONSTRAINT
 from epistrel.orchestrator.policies.seeds.policies import (
     MINORS_POLICY,
     MINORS_POLICY_ID,
@@ -23,7 +24,9 @@ from epistrel.orchestrator.policies.seeds.policies import (
 )
 from epistrel.orchestrator.policies.store import get_policy, guard_context
 from tests.auth_support import auth_settings, bearer
+from tests.event_support import rows
 from tests.minors_support import (
+    ADULT_NAME,
     MINOR_AGE,
     MINOR_NAME,
     explicit_story,
@@ -31,6 +34,7 @@ from tests.minors_support import (
     recognise,
     subject_checks,
 )
+from tests.respond_support import body, generation_calls, played, respond_client, system_of
 from tests.story_support import WRITE, rest
 
 PHRASE = "a very private night together"
@@ -230,3 +234,70 @@ async def test_age_condition_values(settings: Settings, engine: AsyncEngine) -> 
         assert created.json()["age_condition"] == "minor_involved_or_present"
         retired = await client.delete(f"/admin/policies/{created.json()['id']}", headers=WRITE)
         assert retired.status_code == 200
+
+
+async def test_minor_output_regenerates_then_falls_back(pg_url: str, engine: AsyncEngine) -> None:
+    """On output (#55 AC3 through #68): a reply the seeded minors policy flags is regenerated
+    with the policy's message as the constraint, up to ``guardrail_retry_budget``, then the
+    safe fallback is released. What the turn says about it — the response's ``guardrail``
+    report, the constraint sent to the model, and the rejected-output audit records' policy
+    fields — names neither the minor nor their age nor their label.
+
+    Complement asserted: the same reply in the same story with the second character an adult
+    is released as generated, with no regeneration."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    story = await explicit_story(engine, minor=True)
+    adults = await explicit_story(engine, minor=False)
+    reply = "Back in the cabin they undress each other slowly by the fire."
+    async with respond_client(settings, engine) as (client, lib):
+        stub = lib.models.stub
+
+        async def turn(story_id: str) -> dict[str, Any]:
+            cast = await rows(
+                engine,
+                "SELECT id FROM characters WHERE story_id = :s ORDER BY ordinal",
+                s=story_id,
+            )
+            player = cast[0].id
+            stub.reset()
+            recognise(stub, "undress each other")
+            stub.when("go on", reply, purpose="generation")
+            payload = body(player, "and then, picking up from before, go on")
+            return await played(client, story_id, {**payload, "render_character_ids": [player]})
+
+        played_turn = await turn(story)
+        assert played_turn["message"]["text"] == f"{ADULT_NAME} changes the subject."
+        assert played_turn["guardrail"] == {"violations": [], "fallback_used": True}
+        assert played_turn["degradation"] == ["safe_fallback"]
+        generations = generation_calls(stub)
+        assert len(generations) == 3
+        constraint = CONSTRAINT.format(message=MINORS_POLICY["message"].rstrip("."))
+        assert all(constraint in system_of(call) for call in generations[1:])
+        rejected = await rows(
+            engine,
+            "SELECT payload FROM events WHERE story_id = :s "
+            "AND type = 'guardrail_output_rejected' ORDER BY seq",
+            s=story,
+        )
+        assert [r.payload["policy_ids"] for r in rejected] == [[MINORS_POLICY_ID]] * 3
+        said = json.dumps(
+            {
+                "guardrail": played_turn["guardrail"],
+                "constraints": [
+                    line
+                    for call in generations
+                    for line in system_of(call).splitlines()
+                    if line.startswith("Your previous reply violated")
+                ],
+                "audit": [{k: v for k, v in r.payload.items() if k != "text"} for r in rejected],
+            }
+        )
+        assert MINORS_POLICY["message"].rstrip(".") in said
+        for leak in (MINOR_NAME, *MINOR_NAME.split(), str(MINOR_AGE), "character_"):
+            assert leak not in said, leak
+        assert MINOR_NAME not in json.dumps(played_turn)
+
+        released = await turn(adults)
+        assert released["message"]["text"] == reply
+        assert released["guardrail"] == {"violations": [], "fallback_used": False}
+        assert len(generation_calls(stub)) == 1

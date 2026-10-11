@@ -49,6 +49,7 @@ from epistrel.core.settings_schema import (
     DEPLOYMENT_COLUMNS,
     ConfigClass,
     DeploymentSettings,
+    GuardrailSettings,
     IdempotencySettings,
     LiteDefaults,
     StoryTextCaps,
@@ -198,8 +199,9 @@ SECTIONS: tuple[type[BaseModel], ...] = (
     IdempotencySettings,
     TurnQueueDefaults,
     StructuredSettings,
+    GuardrailSettings,
 )
-"""The views of ``deployment_state.settings`` earlier stories read (#53/#57/#60/#61/#63)."""
+"""The views of ``deployment_state.settings`` earlier stories read (#53/#57/#60/#61/#63/#68)."""
 
 
 def section[M: BaseModel](view: type[M], document: Mapping[str, Any] | None) -> M:
@@ -310,6 +312,15 @@ async def read_lite_defaults(db: AsyncEngine | AsyncConnection) -> LiteDefaults:
         return lite_defaults(await db.scalar(query))
     async with db.connect() as conn:
         return lite_defaults(await conn.scalar(query))
+
+
+async def read_guardrail_settings(db: AsyncEngine | AsyncConnection) -> GuardrailSettings:
+    """The deployment's safe fallback line (#68; defaults if invalid)."""
+    query = select(deployment_state.c.settings).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+    if isinstance(db, AsyncConnection):
+        return section(GuardrailSettings, await db.scalar(query))
+    async with db.connect() as conn:
+        return section(GuardrailSettings, await conn.scalar(query))
 
 
 # -- the deployment's story-level text caps (FR-LITE-3; #60) ----------------------------------

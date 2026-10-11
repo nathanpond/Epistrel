@@ -47,11 +47,12 @@ Writes the reply of a Lite turn from the story's prompt sections.
 | `recent_messages.text` | `recent_message` |
 | `recent_messages.role` | `recent_message` |
 | `voiced_characters` | `character_definition` |
+| `policy_constraints` | `policy_text` |
 | `player_input.name` | `player_input` |
 | `player_input.say` | `player_input` |
 | `player_input.do` | `player_input` |
 
-**Never receives:** `policy_text`, `subject_true_age`, `checked_text`
+**Never receives:** `subject_true_age`, `checked_text`
 
 ### `guardrail_check`
 
@@ -131,7 +132,7 @@ its floor and data-flow row, in the milestone that delivers it.
 | `rolling_summary` | The story's rolling summary segments. |
 | `recent_message` | Earlier messages of the story (who, what was said and done). |
 | `player_input` | The player's input for this turn. |
-| `policy_text` | A policy's prompt text and opaque subject labels. |
+| `policy_text` | A policy's prompt text and opaque subject labels; for generation, only the messages of output policies an earlier draft broke. |
 | `subject_true_age` | A resolved subject's true age. |
 | `checked_text` | The text a guardrail check is judging (input or output). |
 

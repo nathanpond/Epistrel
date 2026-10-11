@@ -50,9 +50,16 @@ from epistrel.core.errors import RevisionConflict
 from epistrel.core.events import Operation
 from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import RatingFields, RatingReplacement, create_rating, update_rating
+from epistrel.core.settings_schema import DEFAULT_GUARDRAIL_RETRY_BUDGET
 from epistrel.core.story_settings import update_story_settings
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.policies.output_gate import (
+    Draft,
+    FallbackLines,
+    gate_output,
+    output_policies,
+)
 from epistrel.orchestrator.policies.rebase import output_passes, output_recheck, staged_replies
 from epistrel.orchestrator.policies.schemas import PolicyFields, PolicyReplacement
 from epistrel.orchestrator.policies.store import guard_context
@@ -74,13 +81,18 @@ AUTHOR = RequestContext(principal="p-author")
 class CompliantModel(HeldModel):
     """Writes its reply when the call starts, with a word the rules then in force allow —
     except that every other time it is asked again after a failed re-check it repeats its
-    refused word, as a model that ignores the new rule would (the re-check must catch that
-    too: no first-pass output gate exists before #68)."""
+    refused word, as a model that ignores the new rule would. Every reply goes through the
+    output gate (#68) under the rules read when the generate step starts, as a Lite turn's
+    does: the gate catches the repeated word and asks again (``retrying``), so the re-check's
+    regenerated reply is never checked twice."""
 
     machine: ConfigRevalidation | None = None
     word: str = SAFE
+    retrying: bool = False
+    """The current call is the output gate's regeneration (its configuration was captured
+    before the previous call)."""
 
-    async def __call__(self, op: Operation, inputs: Any) -> None:
+    async def write(self, op: Operation) -> str:
         assert self.machine is not None
         refused = bool(op.attempts) and op.attempts[-1].get("recheck") == "failed"
         if not (refused and self.machine.stubborn()):
@@ -91,8 +103,29 @@ class CompliantModel(HeldModel):
         self._gate = gate
         self._arrived.set()
         await gate.wait()
+        return f"reply {self.calls} says {word}"
+
+    async def __call__(self, op: Operation, inputs: Any) -> None:
+        machine = self.machine
+        assert machine is not None
+        context = await guard_context(machine.engine, machine.story)
+
+        async def produce(constraints: tuple[str, ...], attempt: int) -> Draft:
+            self.retrying = attempt > 0
+            return Draft(text=await self.write(op))
+
+        gated = await gate_output(
+            machine.lib.models,
+            context,
+            output_policies(context),
+            produce,
+            budget=TurnBudget(),
+            retry_budget=DEFAULT_GUARDRAIL_RETRY_BUDGET,
+            fallback=FallbackLines(name="Narrator"),
+        )
+        ConfigRevalidation.tally["gate_caught"] += len(gated.rejected)
         op.append("player_input", {"text": self.said}, provenance=Provenance.PLAYER)
-        op.append("message_rendered", {"text": f"reply {self.calls} says {word}"})
+        op.append("message_rendered", {"text": gated.draft.text})
 
 
 @dataclass
@@ -103,7 +136,8 @@ class InFlight:
     key: tuple[Any, ...]
     """The dependency state the current attempt captured (``ConfigRevalidation.key``)."""
     verify: bool = False
-    """The attempt follows a failed re-check (its output is checked before committing)."""
+    """The attempt follows a failed re-check, or the held call is the output gate's
+    regeneration: its configuration was captured before ``since``."""
 
 
 class ConfigRevalidation(RuleBasedStateMachine):
@@ -255,8 +289,10 @@ class ConfigRevalidation(RuleBasedStateMachine):
         if not flight.held.done:
             flight.since = len(self.log)
             flight.key = self.key()
-            flight.verify = any(a.get("recheck") == "failed" for a in op.attempts[first:]) or any(
-                a.get("reason") == "rebase_failed" for a in op.attempts[first:]
+            flight.verify = (
+                any(a.get("recheck") == "failed" for a in op.attempts[first:])
+                or any(a.get("reason") == "rebase_failed" for a in op.attempts[first:])
+                or getattr(flight.held.model, "retrying", False)
             )
             return
         self.in_flight.remove(flight)
@@ -430,6 +466,7 @@ def test_config_revalidation(pg_url: str) -> None:
         "recheck_failed",
         "quiet_prospective",
         "stubborn",
+        "gate_caught",
     ):
         assert seen[name] > 0, (name, seen)
     assert sum(n for k, n in seen.items() if k.startswith("quiet_") and "elsewhere" in k), seen

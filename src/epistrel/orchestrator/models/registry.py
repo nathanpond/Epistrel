@@ -107,7 +107,8 @@ class GenerationInputs(InputSchema):
 
     ``recent_messages`` is the story's own verbatim window, sent as alternating ``user`` /
     ``assistant`` chat messages; ``voiced_characters`` names the render characters the reply
-    voices, in request order (FR-LITE-5)."""
+    voices, in request order (FR-LITE-5); ``policy_constraints`` is empty except when the turn
+    regenerates after an output-policy violation (#68)."""
 
     rating_guidance: Annotated[str, C.RATING_GUIDANCE] = ""
     custom_instructions: Annotated[str, C.CUSTOM_INSTRUCTIONS] = ""
@@ -116,6 +117,9 @@ class GenerationInputs(InputSchema):
     summary_segments: Annotated[list[str], C.ROLLING_SUMMARY] = Field(default_factory=list)
     recent_messages: list[TranscriptLine] = Field(default_factory=list)
     voiced_characters: Annotated[list[str], C.CHARACTER_DEFINITION] = Field(default_factory=list)
+    policy_constraints: Annotated[list[str], C.POLICY_TEXT] = Field(default_factory=list)
+    """On a guardrail regeneration (FR-GUARD-6; #68): one line per output policy an earlier
+    draft of this turn broke, naming the policy's message — never a subject or an age."""
     player_input: PlayerInput
 
 
@@ -208,7 +212,9 @@ GENERATION = Purpose(
     input_schema=GenerationInputs,
     template="lite_generation.j2",
     hot_path=True,
-    never_receives=frozenset({C.POLICY_TEXT, C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT}),
+    # Policy text arrives only as a regeneration's constraints (#68): the violated policies'
+    # messages, never a policy prompt, subject label or age.
+    never_receives=frozenset({C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT}),
     history_field="recent_messages",
 )
 

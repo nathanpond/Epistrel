@@ -14,6 +14,9 @@ separated only by instruction: each one's notes are labelled with its name and t
 each character knows only what its notes and the scene show. The notes all sit in one shared
 prompt, so a secret in one character's notes is in the context the others are voiced from.
 
+On a guardrail regeneration (#68) the system block ends with the output gate's constraint
+lines, one per output policy an earlier draft broke.
+
 ``model_params`` maps the resolved generation settings onto the call: ``length`` →
 ``max_tokens``, ``temperature``/``top_p`` as given, and the stop sequence ``"\\n<Actor>:"`` so
 the model does not speak for the actor (omitted when the actor is itself rendered).
@@ -52,12 +55,18 @@ def _line(row: WindowRow, names: Mapping[str, str]) -> TranscriptLine:
 
 
 def assemble(
-    inputs: TurnInputs, cast: ResolvedCast, *, say: str | None, do: str | None
+    inputs: TurnInputs,
+    cast: ResolvedCast,
+    *,
+    say: str | None,
+    do: str | None,
+    constraints: Sequence[str] = (),
 ) -> GenerationInputs:
     """The ``generation`` inputs of one Lite turn, every section from the Engine's records.
 
     The author notes are the actor's and the render characters', in request order; the
-    definitions are the ones read in the turn's snapshot (``inputs.cast``)."""
+    definitions are the ones read in the turn's snapshot (``inputs.cast``). ``constraints``
+    are the output gate's lines on a guardrail regeneration (#68)."""
     names = {c.id: c.name for c in inputs.cast}
     current = {c.id: c for c in inputs.cast}
     return GenerationInputs(
@@ -71,6 +80,7 @@ def assemble(
         summary_segments=list(inputs.segments),
         recent_messages=[_line(row, names) for row in inputs.window],
         voiced_characters=[c.name for c in cast.render],
+        policy_constraints=list(constraints),
         player_input=PlayerInput(name=cast.actor.name, say=say, do=do),
     )
 

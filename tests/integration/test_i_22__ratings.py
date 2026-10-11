@@ -320,9 +320,10 @@ async def test_i_22__in_flight(pg_url: str, engine: AsyncEngine) -> None:
     and the configuration it committed under (#64, FR-CONC-16).
 
     Complements asserted: an edit whose new guardrails the reply passes re-checks once and
-    commits that reply without a second generation; a prospective change mid-turn (a story's
-    ``turn_deadline``) re-checks nothing and the turn commits as generated; the committed
-    history is not re-checked by a later edit."""
+    commits that reply without a second generation (the output gate, #68, checks every reply
+    under the guardrails in force when its generation started; the re-check covers the rest);
+    a prospective change mid-turn (a story's ``turn_deadline``) re-checks nothing and the turn
+    commits as generated; the committed history is not re-checked by a later edit."""
     settings = auth_settings(pg_url, model_adapter="stub")
     name = f"I22F {new_ulid()}"
     rating = (await create_rating(engine, RatingFields(name=name), principal=OPERATOR)).rating
@@ -394,8 +395,25 @@ async def test_i_22__in_flight(pg_url: str, engine: AsyncEngine) -> None:
         )
         assert [r[0] for r in replies] == ["A cat purrs."]  # the refused draft never committed
 
-        # Complement: relaxed mid-turn, the reply passes the re-check and commits as is.
-        turn, relaxed = await held_turn("A dragon naps.", during=lambda: guardrails())
+        # Complement: an edit mid-turn whose new guardrails the reply passes: re-checked once,
+        # committed as is. (The turn starts with no guardrails: since #68 a reply that breaks the
+        # guardrails in force when the turn started is caught by the output gate first.)
+        cats = (
+            await lib.policies_create(
+                RequestContext(principal=OPERATOR),
+                PolicyFields.model_validate(
+                    {
+                        "scope": "rating",
+                        "scope_id": rating.id,
+                        "name": f"no-cats-{new_ulid().lower()}",
+                        "rule": {"type": "wordlist", "words": ["cat"]},
+                        "message": "No cats here.",
+                    }
+                ),
+            )
+        ).policy
+        await guardrails()
+        turn, relaxed = await held_turn("A dragon naps.", during=lambda: guardrails(cats.id))
         assert turn["message"]["text"] == "A dragon naps."
         assert len(generation_calls(stub)) == 1
         row = await _turn_row(engine, story)

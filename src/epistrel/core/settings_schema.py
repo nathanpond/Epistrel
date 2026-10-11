@@ -39,6 +39,8 @@ INTERPRETIVE = ConfigClass.interpretive
 PROSPECTIVE = ConfigClass.prospective
 
 DEFAULT_REGENERATE_RETRY_BUDGET = 2
+DEFAULT_GUARDRAIL_RETRY_BUDGET = 2
+MAX_GUARDRAIL_RETRY_BUDGET = 5
 
 # -- Lite generation settings (FR-LITE-4, FR-RESP-3; #57) -------------------------------------
 
@@ -226,6 +228,13 @@ class StorySettings(BaseModel):
     )
     """The story's override of how many transcript rows a Lite prompt carries verbatim."""
 
+    guardrail_retry_budget: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_GUARDRAIL_RETRY_BUDGET, ge=0, le=MAX_GUARDRAIL_RETRY_BUDGET
+    )
+    """How many times a turn whose reply broke an output policy is generated again before the
+    safe fallback is used (FR-GUARD-6; #68), over the whole turn; ``0`` goes straight to the
+    fallback. Prospective."""
+
     @field_validator("default_output_viewpoint")
     @classmethod
     def _never_omniscient(cls, value: str | None) -> str | None:
@@ -265,6 +274,26 @@ class StructuredSettings(BaseModel):
     )
 
 
+# -- the safe fallback (FR-GUARD-6; #68) --------------------------------------------------------
+
+NAME_PLACEHOLDER = "{name}"
+DEFAULT_SAFE_FALLBACK = "{name} changes the subject."
+SAFE_FALLBACK_MAX_CHARS = 500
+
+
+class GuardrailSettings(BaseModel):
+    """The deployment's safe fallback line, stored under ``deployment_state.settings`` (#68):
+    what a character says when every regenerated reply broke an output policy and it has no
+    ``safe_fallback_text`` of its own. ``{name}`` becomes the first render character's name.
+    Prospective: a turn uses the line in force when it started."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    default_safe_fallback: Annotated[str, PROSPECTIVE] = Field(
+        default=DEFAULT_SAFE_FALLBACK, min_length=1, max_length=SAFE_FALLBACK_MAX_CHARS
+    )
+
+
 # -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
 
 DEFAULT_MINOR_AGE_THRESHOLD = 18
@@ -276,7 +305,12 @@ DEPLOYMENT_COLUMNS = ("default_content_rating_id", "minor_age_threshold")
 
 
 class DeploymentSettings(
-    LiteDefaults, StoryTextCaps, IdempotencySettings, TurnQueueDefaults, StructuredSettings
+    LiteDefaults,
+    StoryTextCaps,
+    IdempotencySettings,
+    TurnQueueDefaults,
+    StructuredSettings,
+    GuardrailSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the two
     ``deployment_state`` columns and the ``settings`` document's sections, each of which earlier

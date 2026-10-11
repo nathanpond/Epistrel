@@ -21,8 +21,8 @@ async def test_matrix_run_against_a_local_server(
     pg_url: str, engine: AsyncEngine, tmp_path: Path
 ) -> None:
     """Two rows of ``respond`` turns (#57): one ``generation`` call per turn with policies off,
-    and two with the minors row, where the seeded minors policy applies to the cast's
-    12-year-old and checks the input (#68 adds the output check).
+    and three with the minors row, where the seeded minors policy applies to the cast's
+    12-year-old and checks the input and the output (#68).
 
     Complement asserted: the endpoint saw ``GET /v1/models`` (the protocol probe) as well as
     completions, so protocol was measured rather than assumed."""
@@ -55,7 +55,7 @@ async def test_matrix_run_against_a_local_server(
         assert r.e06["passed"]
         assert r.turn_path == mm.TURN_PATH
     assert rows[0].calls_per_turn == {"generation": 1.0}
-    assert rows[1].calls_per_turn == {"generation": 1.0, "guardrail_check": 1.0}
+    assert rows[1].calls_per_turn == {"generation": 1.0, "guardrail_check": 2.0}
     checks = [
         r.body["messages"][0]["content"]
         for r in mock.requests

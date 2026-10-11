@@ -25,12 +25,13 @@ own rows and keeps every other tier's. The matrix is **reported, not gated**: CI
 it, and the owner commits the files after a local run. Percentiles are nearest-rank.
 
 **Turn path.** A Lite turn is a real ``Engine.respond`` turn (``RespondDriver``, #57): the
-input gate for every model-assisted input policy, then one ``generation`` call. The *minors
-policy on* row casts a 12-year-old, so the deployment's seeded ``minors_no_sexual_content``
-policy (#55) applies through the story's own guard context: one ``guardrail_check`` on the input
-per turn until #68 adds the output check. Rows measured before #57 went through #53's guarded
-reply (``GuardedReplyDriver``, an in-memory unconditioned policy checked on input and output);
-each row records the turn path it measured, so those rows stand until the next live run.
+input gate for every model-assisted input policy, one ``generation`` call, then the output gate
+(#68) for every model-assisted output policy. The *minors policy on* row casts a 12-year-old, so
+the deployment's seeded ``minors_no_sexual_content`` policy (#55) applies through the story's
+own guard context: one ``guardrail_check`` on the input and one on the output per turn. Rows
+measured before #57 went through #53's guarded reply (``GuardedReplyDriver``, an in-memory
+unconditioned policy checked on input and output); each row records the turn path it
+measured, so those rows stand until the next live run.
 """
 
 from __future__ import annotations

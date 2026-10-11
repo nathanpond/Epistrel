@@ -205,7 +205,7 @@ async def test_operations_guard_allows_only_listed_columns(engine: AsyncEngine) 
     await execute_in_tx(
         engine,
         (
-            "UPDATE operations SET attempts = attempts + 1, viewpoint = 'v' "
+            "UPDATE operations SET attempts = attempts || '[{}]'::jsonb, viewpoint = 'v' "
             "WHERE operation_id = :o",
             {"o": op.operation_id},
         ),

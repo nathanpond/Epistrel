@@ -51,3 +51,36 @@ class StoryNotFound(EpistrelError):
 
     code = "not_found"
     http_status = 404
+
+
+class RevisionConflict(EpistrelError):
+    """The story moved under the call and it could not be reconciled (FR-CONC-4c, FR-RESP-6).
+
+    ``details``: ``current_revision``, ``attempts`` (generations tried) and ``reason``
+    (``expected_revision`` for a stale ``X-Epistrel-Expected-Revision``, ``read_set_touched`` or
+    ``rebase_failed`` when the regeneration budget ran out).
+    """
+
+    code = "revision_conflict"
+    http_status = 409
+
+
+class TimelineChanged(EpistrelError):
+    """A control action edited the timeline while the operation ran (FR-CONC-4d).
+
+    ``details``: ``current_revision`` and ``control_operation_id``. Distinct from
+    ``revision_conflict`` so a consumer can tell "history was edited" from "someone else played".
+    """
+
+    code = "timeline_changed"
+    http_status = 409
+
+
+class ChainBroken(EpistrelError):
+    """A commit would leave the active turn variants other than one chain (FR-STORE-28).
+
+    An engine bug, never a caller error: the commit is rolled back.
+    """
+
+    code = "chain_broken"
+    http_status = 500

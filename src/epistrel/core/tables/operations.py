@@ -40,6 +40,9 @@ MUTABLE_OPERATION_COLUMNS: tuple[str, ...] = (
 )
 """The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list)."""
 
+ACTIVE_TURN_PREDICATE = "kind = 'turn' AND membership = 'active' AND status = 'committed'"
+"""The rows ``uq_operations_active_turn`` covers: a story's active committed turn variants."""
+
 operations = Table(
     "operations",
     metadata,
@@ -67,7 +70,7 @@ operations = Table(
         server_default=text("'active'"),
     ),
     Column("membership_tx", TIMESTAMP(timezone=True), nullable=True),
-    Column("attempts", Integer, nullable=False, server_default=text("0")),
+    Column("attempts", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     Column("turn_report", JSONB, nullable=True),
     Column("viewpoint", Text, nullable=True),
     Column(
@@ -82,4 +85,12 @@ operations = Table(
         name="turn_has_position",
     ),
     Index("ix_operations_story_position", "story_id", "narrative_turn", "turn_variant"),
+    # TIME (f) / FR-STORE-28: exactly one active committed variant per turn index (#47).
+    Index(
+        "uq_operations_active_turn",
+        "story_id",
+        "narrative_turn",
+        unique=True,
+        postgresql_where=text(ACTIVE_TURN_PREDICATE),
+    ),
 )

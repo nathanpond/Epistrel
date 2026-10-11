@@ -1,12 +1,18 @@
-"""docs/04 TIME, M2 slice (e): narrative position comes from turn operations only."""
+"""docs/04 TIME, M2 slices: (e) narrative position comes from turn operations only; (f) one
+active variant per position, forming a single chain."""
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.views import audit_view, corrected_history
+from tests.concurrency_support import assert_single_chain, chain, regenerate
 from tests.event_support import interleave, narrative, new_story, play_turn, story_row
+from tests.projection_support import swap, truncate, untruncate
 
 TURNS = 3
 
@@ -47,3 +53,41 @@ async def test_time__e(engine: AsyncEngine) -> None:
     assert (await story_row(engine, quiet))[2] == (await story_row(engine, busy))[2] == TURNS + 1
     extra = {e.type for e in busy_all} - {e.type for e in quiet_all}
     assert extra == {"config_changed", "guardrail_output_rejected", "lite_summary_segment"}
+
+
+@pytest.mark.part("M2", "FR-STORE-28")
+async def test_time__f(engine: AsyncEngine) -> None:
+    """After every turn, regeneration, truncation, untruncation and swap, exactly one variant
+    per position is active and the active variants form a single chain (turns 1..k, next
+    index k+1). Complement: the inactive variants are still there, dormant or discarded."""
+    story = await new_story(engine)
+    steps: list[Callable[[], Awaitable[object]]] = [
+        lambda: play_turn(engine, story, "one"),
+        lambda: play_turn(engine, story, "two"),
+        lambda: regenerate(engine, story),
+        lambda: play_turn(engine, story, "three"),
+        lambda: truncate(engine, story, 1),
+        lambda: untruncate(engine, story),
+        lambda: truncate(engine, story, 1),
+        lambda: play_turn(engine, story, "two, played differently"),
+        lambda: regenerate(engine, story),
+        lambda: swap(engine, story),
+        lambda: regenerate(engine, story),
+    ]
+    for step in steps:
+        await step()
+        await assert_single_chain(engine, story)
+
+    assert [t for t, _ in await chain(engine, story)] == [1, 2, 3]
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT narrative_turn, membership, count(*) FROM operations "
+                "WHERE story_id = :s AND kind = 'turn' AND status = 'committed' "
+                "GROUP BY 1, 2 ORDER BY 1, 2"
+            ),
+            {"s": story},
+        )
+        by_position = {(t, m): int(n) for t, m, n in found}
+    assert all(by_position[(t, "active")] == 1 for t in (1, 2, 3))
+    assert sum(n for (t, m), n in by_position.items() if m != "active") == 4

@@ -25,7 +25,10 @@ def get_request_context(
 ) -> RequestContext:
     """Build the ``RequestContext`` a handler passes to its one ``Engine`` call.
 
-    Key and revision semantics arrive with #61 and #47; here they are only carried.
+    ``X-Epistrel-Expected-Revision`` must be an integer (422 otherwise). It is enforced by the
+    Engine at the start of every story-scoped mutation (``Engine.check_expected_revision``,
+    409 ``revision_conflict``) so the library gets the same rule; deployment-scoped calls ignore
+    it. Idempotency-key semantics arrive with #61.
     """
     revision_raw = request.headers.get(EXPECTED_REVISION_HEADER)
     expected_revision: int | None = None

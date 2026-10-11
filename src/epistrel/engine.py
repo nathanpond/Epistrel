@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core import projections
+from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import PrincipalRequired
 from epistrel.core.history import History, read_history
@@ -61,7 +62,17 @@ class Engine:
         ``settings.rebuild_async_threshold`` events to a background job.
         """
         principal = self.require_principal(ctx)
+        await self.check_expected_revision(ctx, story_id)
         return await projections.rebuild(self.db, story_id, principal=principal)
+
+    async def check_expected_revision(self, ctx: RequestContext, story_id: str) -> int:
+        """Every story-scoped mutation starts here: a stale ``ctx.expected_revision`` is 409
+        ``revision_conflict`` with ``current_revision`` before anything is written (FR-RESP-6).
+
+        A start-time precondition only; the commit itself revalidates under FR-CONC-4.
+        Deployment-scoped calls never call it, so the header is ignored there.
+        """
+        return await check_expected_revision(self.db, story_id, ctx.expected_revision)
 
     async def history(self, ctx: RequestContext, story_id: str) -> History:
         """The story's active transcript, read from the projection (#59 adds viewpoints)."""

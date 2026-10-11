@@ -1,16 +1,23 @@
 """``Operation``: one unit of work whose events commit atomically (FR-STORE-5, NFR-REL-1).
 
 Two phases. ``begin()`` inserts the ``operations`` row (``in_flight``) without taking a lock,
-and ``append()`` validates each payload and buffers it, so model calls between them hold no
-lock (FR-CONC-2). ``commit()`` runs one transaction that does all of the following:
+in one REPEATABLE READ read phase that also captures the story's ``timeline_revision`` as
+``base_revision`` (and, given a read-set source, the read set, #47). ``append()`` validates each
+payload and buffers it, so model calls between them hold no lock (FR-CONC-2). ``commit()`` runs
+one transaction that does all of the following:
 
 1. takes ``SELECT … FOR UPDATE`` on the story row, with ``lock_timeout`` 5 s;
-2. positions the operation: only ``turn`` operations allocate a turn index (FR-STORE-8,24);
-3. assigns dense per-story ``seq`` values (``max(seq)+1`` under the lock), writes the events,
+2. with ``decide``, revalidates against the base (``epistrel.core.concurrency``): ``Regenerate``
+   and ``Abandon`` roll back and raise ``RevalidationRequired``;
+3. positions the operation: only ``turn`` operations allocate a turn index (FR-STORE-8,24); a
+   ``turn`` at an existing index (regenerate) makes the old variant ``dormant``;
+4. assigns dense per-story ``seq`` values (``max(seq)+1`` under the lock), writes the events,
    and maintains every projection for them (``projections.apply_events``, FR-STORE-4), then
    runs any commit steps the caller added;
-4. finalises the operation (``committed``, ``membership_tx`` = the commit's ``tx_time``) and
-   bumps ``stories.timeline_revision`` for ``turn`` and ``genesis`` operations (#47 generalises).
+5. finalises the operation (``committed``, ``membership_tx`` = the commit's ``tx_time``), bumps
+   ``stories.timeline_revision`` by one when the operation ``bumps_revision`` (FR-CONC-1),
+   records a control action on the story, and checks the active variants are one chain
+   (FR-STORE-28, ``ChainBroken``).
 
 Any failure rolls the transaction back, so no event row survives, and the operation is then
 marked ``failed`` in a separate transaction. Leaving the ``async with`` block without
@@ -35,6 +42,17 @@ from sqlalchemy import and_, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import projections
+from epistrel.core.concurrency import (
+    Abandon,
+    Decide,
+    ReadSet,
+    ReadSetSource,
+    Regenerate,
+    RevalidationRequired,
+    RevalidationState,
+    attempt_record,
+    touched_members,
+)
 from epistrel.core.enums import (
     Authority,
     EventCategory,
@@ -43,9 +61,10 @@ from epistrel.core.enums import (
     OperationStatus,
     Provenance,
 )
-from epistrel.core.errors import InvalidRequest, PrincipalRequired, StoryNotFound
+from epistrel.core.errors import ChainBroken, InvalidRequest, PrincipalRequired, StoryNotFound
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
+from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import events, operations, stories
 
 logger = logging.getLogger(__name__)
@@ -62,8 +81,15 @@ DEPLOYMENT_LOCK_KEY = 0x45_5049_5354  # "EPIST": serialises story-less operation
 """``pg_advisory_xact_lock`` key that stands in for the story row lock when ``story_id`` is
 ``None``."""
 
-REVISION_BUMPING_KINDS = frozenset({OperationKind.TURN, OperationKind.GENESIS})
-"""Kinds whose commit increments ``stories.timeline_revision`` in #45 (#47 generalises)."""
+DEFAULT_BUMPING_KINDS = frozenset({OperationKind.TURN, OperationKind.GENESIS})
+"""Kinds that bump ``timeline_revision`` when the caller does not say (``bumps_revision=None``).
+
+Every other truth change (truncate, untruncate, swap, a pinned-memory or custom-instruction
+edit, ingest, …) declares ``bumps_revision=True`` explicitly; settings and archive do not."""
+
+NEVER_BUMPING_KINDS = frozenset({OperationKind.CONSOLIDATION, OperationKind.MAINTENANCE})
+"""Derived and maintenance work never bumps the revision (FR-CONC-1), so background work never
+invalidates in-flight turns. Audit-only records are written by such operations."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +111,12 @@ class Operation:
     ``op.append(...)`` stages events; ``await op.commit()`` writes them. ``turn=`` positions a
     ``turn`` operation at an existing turn as a new variant (regenerate), or a non-turn
     operation at an existing turn's active variant; non-turn operations never allocate one.
+
+    ``bumps_revision`` declares whether the commit changes story truth (``None``: only ``turn``
+    and ``genesis`` do, plus any control action). ``control_action`` marks a timeline edit
+    (truncate, untruncate, swap, regenerate — a ``turn`` with ``turn=`` is one by default):
+    its commit records itself as the story's latest control action, so revalidating operations
+    begun before it abandon (FR-CONC-4d). Control actions commit against current state.
     """
 
     def __init__(
@@ -97,6 +129,8 @@ class Operation:
         turn: int | None = None,
         provenance: Provenance = Provenance.ENGINE,
         authority: Authority = Authority.AUTHORITATIVE,
+        bumps_revision: bool | None = None,
+        control_action: bool | None = None,
     ) -> None:
         if principal is None or not principal.strip():
             raise PrincipalRequired("an operation needs a requesting principal")
@@ -106,8 +140,25 @@ class Operation:
             raise InvalidRequest(
                 "turn must be a positive turn index of the operation's story", {"field": "turn"}
             )
+        if control_action is None:
+            control_action = kind is OperationKind.TURN and turn is not None
+        if bumps_revision is None:
+            bumps_revision = kind in DEFAULT_BUMPING_KINDS or control_action
+        if bumps_revision and kind in NEVER_BUMPING_KINDS:
+            raise InvalidRequest(
+                f"a {kind} operation never changes story truth", {"field": "bumps_revision"}
+            )
+        if control_action and not bumps_revision:
+            raise InvalidRequest(
+                "a control action changes the timeline, so it bumps the revision",
+                {"field": "bumps_revision"},
+            )
+        if (bumps_revision or control_action) and story_id is None:
+            raise InvalidRequest("only a story has a timeline revision", {"field": "story_id"})
         self.db = db
         self.operation_id = new_ulid()
+        self.bumps_revision = bumps_revision
+        self.control_action = control_action
         self.story_id = story_id
         self.kind = kind
         self.principal = principal
@@ -119,6 +170,13 @@ class Operation:
         self.turn_variant: int | None = None
         self.tx_time: datetime | None = None
         self.seqs: tuple[int, ...] = ()
+        self.base_revision: int | None = None
+        self.read_set: ReadSet | None = None
+        self.read_set_source: ReadSetSource | None = None
+        self.story_settings = StorySettings()
+        self.attempts: list[dict[str, Any]] = []
+        self.timeline_revision: int | None = None
+        """The story's revision after this operation committed."""
         self._staged: list[StagedEvent] = []
         self._commit_steps: list[CommitStep] = []
 
@@ -135,23 +193,85 @@ class Operation:
         tb: TracebackType | None,
     ) -> None:
         if self.status is OperationStatus.IN_FLIGHT:
-            final = OperationStatus.FAILED if exc_type is not None else OperationStatus.ABANDONED
+            final = (
+                OperationStatus.FAILED
+                if exc_type is not None and not isinstance(exc, RevalidationRequired)
+                else OperationStatus.ABANDONED
+            )
             await self._finish(final, exc)
 
-    async def begin(self) -> None:
-        """Insert the ``in_flight`` operations row. Takes no story lock."""
+    @property
+    def in_flight(self) -> bool:
+        return self.status is OperationStatus.IN_FLIGHT
+
+    async def begin(self, read: Callable[[AsyncConnection], Awaitable[Any]] | None = None) -> Any:
+        """Insert the ``in_flight`` operations row and capture the base. Takes no story lock.
+
+        One REPEATABLE READ transaction reads ``base_revision``, the story settings, the read
+        set (when ``read_set_source`` is set) and whatever ``read(conn)`` reads, all from the
+        same snapshot (FR-CONC-2); ``read``'s result is returned. The row is inserted after it.
+        """
         if self.status is not None:
             raise RuntimeError(f"operation {self.operation_id} has already begun")
-        async with self._connection() as conn, conn.begin():
+        async with self._connection() as conn:
+            async with conn.begin():
+                result = await self._read_phase(conn, read)
+            # The insert runs after the snapshot, read committed: its foreign-key check locks
+            # the story row, which a REPEATABLE READ transaction cannot do once a concurrent
+            # commit has updated it.
+            async with conn.begin():
+                await conn.execute(
+                    insert(operations).values(
+                        operation_id=self.operation_id,
+                        story_id=self.story_id,
+                        kind=self.kind.value,
+                        principal=self.principal,
+                        base_revision=self.base_revision,
+                        read_set=self.read_set,
+                    )
+                )
+        self.status = OperationStatus.IN_FLIGHT
+        return result
+
+    async def restart(self, read: Callable[[AsyncConnection], Awaitable[Any]] | None = None) -> Any:
+        """Start a regeneration attempt: the same operation with a new base (FR-CONC-4c).
+
+        Drops the staged events and commit steps, then re-runs the read phase and records the
+        new ``base_revision`` and read set on the operation row.
+        """
+        self._require_in_flight("restart")
+        self._staged.clear()
+        self._commit_steps.clear()
+        async with self._connection() as conn:
+            async with conn.begin():
+                result = await self._read_phase(conn, read)
+            async with conn.begin():
+                await conn.execute(
+                    update(operations)
+                    .where(operations.c.operation_id == self.operation_id)
+                    .values(base_revision=self.base_revision, read_set=self.read_set)
+                )
+        return result
+
+    async def _read_phase(
+        self, conn: AsyncConnection, read: Callable[[AsyncConnection], Awaitable[Any]] | None
+    ) -> Any:
+        if self.story_id is None:
+            return await read(conn) if read is not None else None
+        await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+        found = (
             await conn.execute(
-                insert(operations).values(
-                    operation_id=self.operation_id,
-                    story_id=self.story_id,
-                    kind=self.kind.value,
-                    principal=self.principal,
+                select(stories.c.timeline_revision, stories.c.settings).where(
+                    stories.c.id == self.story_id
                 )
             )
-        self.status = OperationStatus.IN_FLIGHT
+        ).one_or_none()
+        if found is not None:
+            self.base_revision = int(found.timeline_revision)
+            self.story_settings = StorySettings.from_row(found.settings)
+            if self.read_set_source is not None:
+                self.read_set = await self.read_set_source.hashes(conn, self.story_id)
+        return await read(conn) if read is not None else None
 
     def append(
         self,
@@ -191,16 +311,27 @@ class Operation:
     def staged(self) -> tuple[StagedEvent, ...]:
         return tuple(self._staged)
 
-    async def commit(self) -> None:
-        """Write every staged event in one transaction, or none of them."""
+    async def commit(self, decide: Decide | None = None) -> None:
+        """Write every staged event in one transaction, or none of them.
+
+        With ``decide``, the FR-CONC-4 decision runs under the same story lock first. Without
+        it the operation commits against current state (control actions, background work).
+        ``Regenerate`` and ``Abandon`` raise ``RevalidationRequired`` with nothing written and
+        the operation still ``in_flight`` (the attempt is recorded in its own transaction).
+        """
         self._require_in_flight("commit")
+        if decide is not None and (self.story_id is None or self.base_revision is None):
+            raise InvalidRequest("only a story operation with a base revision revalidates")
         try:
             async with self._connection() as conn, conn.begin():
                 await conn.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
-                await self._write(conn)
+                await self._write(conn, decide)
+        except RevalidationRequired:
+            self._reset_position()
+            await self._record_attempts()
+            raise
         except BaseException as exc:
-            self.narrative_turn = self.turn_variant = self.tx_time = None
-            self.seqs = ()
+            self._reset_position()
             await self._finish(OperationStatus.FAILED, exc)
             raise
         self.status = OperationStatus.COMMITTED
@@ -210,23 +341,44 @@ class Operation:
         self._require_in_flight("abandon")
         await self._finish(OperationStatus.ABANDONED, None)
 
+    async def fail(self, cause: BaseException | None = None) -> None:
+        """Give up after an error (status ``failed``)."""
+        self._require_in_flight("fail")
+        await self._finish(OperationStatus.FAILED, cause)
+
+    def _reset_position(self) -> None:
+        self.narrative_turn = self.turn_variant = self.tx_time = None
+        self.timeline_revision = None
+        self.seqs = ()
+
     # -- the commit transaction --------------------------------------------------------------
 
-    async def _write(self, conn: AsyncConnection) -> None:
+    async def _write(self, conn: AsyncConnection, decide: Decide | None) -> None:
         advance = False
+        current_revision = 0
         if self.story_id is not None:
             locked = (
                 await conn.execute(
-                    select(stories.c.next_turn_index)
+                    select(
+                        stories.c.next_turn_index,
+                        stories.c.timeline_revision,
+                        stories.c.last_control_revision,
+                        stories.c.last_control_operation_id,
+                    )
                     .where(stories.c.id == self.story_id)
                     .with_for_update()
                 )
             ).one_or_none()
             if locked is None:
                 raise StoryNotFound(f"story {self.story_id} does not exist")
+            current_revision = int(locked.timeline_revision)
+            if decide is not None:
+                await self._revalidate(conn, locked, decide)
             self.narrative_turn, self.turn_variant, advance = await self._position(
                 conn, locked.next_turn_index
             )
+            if self.kind is OperationKind.TURN and self.requested_turn is not None:
+                await self._retire_variant(conn)
         else:
             await conn.execute(select(func.pg_advisory_xact_lock(DEPLOYMENT_LOCK_KEY)))
 
@@ -269,7 +421,84 @@ class Operation:
             )
         for step in self._commit_steps:
             await step(conn)
-        await self._finalise(conn, advance)
+        await self._finalise(conn, advance, current_revision)
+        if self.story_id is not None and (
+            self.kind is OperationKind.TURN or self.control_action or self._commit_steps
+        ):
+            await self._check_chain(conn)
+
+    async def _revalidate(self, conn: AsyncConnection, locked: Any, decide: Decide) -> None:
+        """Run ``decide`` under the lock; raise ``RevalidationRequired`` unless it commits."""
+        assert self.story_id is not None  # noqa: S101 - checked by commit()
+        assert self.base_revision is not None  # noqa: S101
+        base = self.base_revision
+        current = int(locked.timeline_revision)
+        control = int(locked.last_control_revision) > base
+        touched: tuple[str, ...] = ()
+        if not control and current != base and self.read_set is not None:
+            assert self.read_set_source is not None  # noqa: S101 - set together
+            now = await self.read_set_source.hashes(conn, self.story_id)
+            touched = touched_members(self.read_set, now)
+        state = RevalidationState(
+            attempt=len(self.attempts) + 1,
+            base_revision=base,
+            current_revision=current,
+            control_since_base=control,
+            control_operation_id=locked.last_control_operation_id if control else None,
+            touched=touched,
+        )
+        outcome = decide(state)
+        self.attempts.append(attempt_record(state, outcome))
+        if isinstance(outcome, Regenerate | Abandon):
+            raise RevalidationRequired(outcome, state)
+
+    async def _retire_variant(self, conn: AsyncConnection) -> None:
+        """A regenerated turn replaces the active variant at its index: the old one goes
+        ``dormant`` (kept, swappable, FR-STORE-12/28) in the same transaction."""
+        await conn.execute(
+            update(operations)
+            .where(
+                operations.c.story_id == self.story_id,
+                operations.c.narrative_turn == self.narrative_turn,
+                operations.c.kind == OperationKind.TURN.value,
+                operations.c.status == OperationStatus.COMMITTED.value,
+                operations.c.membership == Membership.ACTIVE.value,
+            )
+            .values(membership=Membership.DORMANT.value, membership_tx=func.transaction_timestamp())
+        )
+
+    async def _check_chain(self, conn: AsyncConnection) -> None:
+        """The active turn variants must be one chain: turns 1..k, one variant each, and the
+        story's next turn index k+1 (FR-STORE-28, TIME (f)). Raises ``ChainBroken``."""
+        active = (
+            await conn.execute(
+                select(
+                    func.count(),
+                    func.count(func.distinct(operations.c.narrative_turn)),
+                    func.coalesce(func.min(operations.c.narrative_turn), 1),
+                    func.coalesce(func.max(operations.c.narrative_turn), 0),
+                ).where(
+                    operations.c.story_id == self.story_id,
+                    operations.c.kind == OperationKind.TURN.value,
+                    operations.c.status == OperationStatus.COMMITTED.value,
+                    operations.c.membership == Membership.ACTIVE.value,
+                )
+            )
+        ).one()
+        count, distinct, lowest, highest = (int(v) for v in active)
+        next_turn = await conn.scalar(
+            select(stories.c.next_turn_index).where(stories.c.id == self.story_id)
+        )
+        if not (count == distinct == highest and lowest == 1 and next_turn == highest + 1):
+            raise ChainBroken(
+                "the active turn variants would not form a single chain",
+                {
+                    "story_id": self.story_id,
+                    "active_turns": count,
+                    "highest_turn": highest,
+                    "next_turn_index": next_turn,
+                },
+            )
 
     def _log_events(self, story_id: str, ids: list[str]) -> list[projections.LogEvent]:
         """The staged events as projections see them (this operation is ``active``)."""
@@ -327,9 +556,13 @@ class Operation:
             raise InvalidRequest(f"turn {turn} has no active variant", {"field": "turn"})
         return turn, int(active), False
 
-    async def _finalise(self, conn: AsyncConnection, advance: bool) -> None:
+    async def _finalise(self, conn: AsyncConnection, advance: bool, current_revision: int) -> None:
         """Mark the operation committed and move the story's counters, in the same transaction."""
         now = func.transaction_timestamp()
+        if self.story_id is not None:
+            self.timeline_revision = current_revision + (1 if self.bumps_revision else 0)
+            if self.attempts:
+                self.attempts[-1]["committed_revision"] = self.timeline_revision
         result = await conn.execute(
             update(operations)
             .where(
@@ -342,6 +575,7 @@ class Operation:
                 turn_variant=self.turn_variant,
                 membership_tx=now,
                 committed_at=now,
+                attempts=self.attempts,
             )
             .returning(operations.c.membership_tx)
         )
@@ -354,8 +588,11 @@ class Operation:
         changes: dict[str, Any] = {}
         if advance:
             changes["next_turn_index"] = stories.c.next_turn_index + 1
-        if self.kind in REVISION_BUMPING_KINDS:
+        if self.bumps_revision:
             changes["timeline_revision"] = stories.c.timeline_revision + 1
+        if self.control_action:
+            changes["last_control_revision"] = self.timeline_revision
+            changes["last_control_operation_id"] = self.operation_id
         if changes:
             await conn.execute(
                 update(stories).where(stories.c.id == self.story_id).values(**changes)
@@ -377,6 +614,22 @@ class Operation:
         if self.status is not OperationStatus.IN_FLIGHT:
             state = self.status.value if self.status else "not begun"
             raise RuntimeError(f"cannot {action} operation {self.operation_id}: {state}")
+
+    async def _record_attempts(self) -> None:
+        """Persist ``attempts`` after a rolled-back commit (its own short transaction)."""
+        try:
+            async with self._connection() as conn, conn.begin():
+                await conn.execute(
+                    update(operations)
+                    .where(operations.c.operation_id == self.operation_id)
+                    .values(attempts=self.attempts)
+                )
+        except Exception as exc:
+            logger.warning(
+                "could not record attempts of operation %s: %s",
+                self.operation_id,
+                type(exc).__name__,
+            )
 
     async def _finish(self, status: OperationStatus, cause: BaseException | None) -> None:
         """Record a terminal non-committed status in its own transaction.

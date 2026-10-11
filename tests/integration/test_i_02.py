@@ -45,6 +45,7 @@ actions = st.lists(
                 "swap",
                 "rewind_and_restore",
                 "rewind_play_and_swap",
+                "regenerate",
             ]
         ),
         st.integers(min_value=0, max_value=20),
@@ -105,6 +106,10 @@ async def _perform(engine: AsyncEngine, story_id: str, action: Action, n: int) -
         elif name == "rewind_play_and_swap":
             await play_turn(engine, story_id, f"line {n}'")
             await _perform(engine, story_id, ("swap", number), n)
+    elif name == "regenerate" and head > 1:
+        # A new variant of the head turn; the old one goes dormant in the same commit (#47).
+        await play_turn(engine, story_id, f"line {n}, again", turn=head - 1)
+        OCCURRED["regenerate"] += 1
     elif name == "untruncate":
         OCCURRED["untruncate"] += await untruncate(engine, story_id) is not None
     elif name == "swap":
@@ -189,11 +194,13 @@ def _every_sequence(pg_url: str, steps: list[Action]) -> None:
 
 @pytest.mark.part("M2", "FR-STORE-4; FR-ADMIN-3")
 def test_i_02(pg_url: str) -> None:
-    """For any sequence of turns, background and control work, truncations, untruncations and
-    swaps, the projection rebuilt by folding the log equals the incrementally maintained one.
-    Complement: a projection corrupted before the rebuild differs from it, and the rebuild
-    replaces the corrupted rows rather than keeping them. The run must have exercised every
-    membership change, or the equality says nothing about them."""
+    """For any sequence of turns, background and control work, truncations, untruncations,
+    swaps and regenerations, the projection rebuilt by folding the log equals the
+    incrementally maintained one. Complement: a projection corrupted before the rebuild
+    differs from it, and the rebuild replaces the corrupted rows rather than keeping them. The
+    run must have exercised every membership change, or the equality says nothing about them."""
     OCCURRED.clear()
     _every_sequence(pg_url)
-    assert all(OCCURRED[kind] > 0 for kind in ("truncate", "untruncate", "swap")), OCCURRED
+    assert all(OCCURRED[kind] > 0 for kind in ("truncate", "untruncate", "swap", "regenerate")), (
+        OCCURRED
+    )

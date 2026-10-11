@@ -181,7 +181,7 @@ async def test_i_01(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> Non
     await _assert_rolled_back(engine, story, aborted.operation_id, before)
 
     # All or nothing mid-commit: the failure comes after the event rows were inserted.
-    async def explode(self: Operation, conn: AsyncConnection, advance: bool) -> None:
+    async def explode(self: Operation, conn: AsyncConnection, *_: object) -> None:
         # The rows are visible inside the commit transaction before it fails.
         inserted = await conn.scalar(COUNT_FOR_OPERATION, {"o": self.operation_id})
         assert inserted == 3

@@ -32,10 +32,12 @@ from epistrel.core.tables import events, operations, stories
 
 @dataclass(frozen=True, slots=True)
 class RebuildResult:
-    """What a rebuild wrote: the row count per projection table, and its operation."""
+    """What a rebuild wrote: the row count per projection table, its operation, and the story's
+    timeline revision (unchanged by the rebuild)."""
 
     operation_id: str
     counts: dict[str, int] = field(default_factory=dict)
+    timeline_revision: int = 0
 
 
 async def apply_events(
@@ -130,7 +132,9 @@ async def rebuild(
     ) as op:
         op.add_commit_step(step)
         await op.commit()
-    return RebuildResult(operation_id=op.operation_id, counts=counts)
+    return RebuildResult(
+        operation_id=op.operation_id, counts=counts, timeline_revision=op.timeline_revision or 0
+    )
 
 
 async def _require_story(db: AsyncEngine | AsyncConnection, story_id: str) -> None:

@@ -100,7 +100,9 @@ async def _control(
     next_turn_index: int,
 ) -> Operation:
     async def step(conn: AsyncConnection) -> None:
-        for membership in set(flips.values()):
+        # Retire before activating: one active variant per turn holds after every statement
+        # (`uq_operations_active_turn` is not deferrable).
+        for membership in sorted(set(flips.values()), key=lambda m: m == Membership.ACTIVE.value):
             ids = [op for op, m in flips.items() if m == membership]
             await conn.execute(
                 update(operations)
@@ -112,7 +114,12 @@ async def _control(
         )
 
     async with Operation(
-        engine, story_id=story_id, kind=OperationKind.CONTROL, principal=CONTROL_PRINCIPAL
+        engine,
+        story_id=story_id,
+        kind=OperationKind.CONTROL,
+        principal=CONTROL_PRINCIPAL,
+        bumps_revision=True,
+        control_action=True,
     ) as op:
         op.append(event_type, payload, provenance=Provenance.CONSUMER)
         op.add_commit_step(step)

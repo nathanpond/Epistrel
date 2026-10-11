@@ -3,7 +3,9 @@
 A beat is a ``player_input``, ``message_rendered``, ``think`` or ``latent`` event. Each becomes
 one row keyed by the event id (``message_id``); #57's ``say`` and ``do`` stay one row. The row
 carries its operation's membership, and ``truncate``, ``untruncate`` and ``swap`` flip the rows
-of the operations they name, so no row is re-read from the log.
+of the operations they name, so no row is re-read from the log. A regenerated turn (variant
+> 1, #47) makes the rows of every other active variant at its index ``dormant``, as its commit
+does to their operations.
 
 ``role`` comes from (provenance, character): ``player`` for the player's input, ``narration``
 for a consumer beat with no character, ``character`` otherwise (``actor_character_id`` is null
@@ -15,10 +17,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from epistrel.core.enums import Membership, Provenance
+from epistrel.core.enums import Membership, OperationKind, Provenance
 from epistrel.core.events.types import (
     Latent,
     MessageRendered,
@@ -81,10 +83,25 @@ def membership_changes(event: LogEvent) -> list[tuple[list[str], Membership]]:
     return []
 
 
+def regenerated_turn(event: LogEvent) -> int | None:
+    """The turn index a regenerated variant replaces, or ``None`` (variant 1 is never one)."""
+    if (
+        event.kind is OperationKind.TURN
+        and event.narrative_turn is not None
+        and event.turn_variant is not None
+        and event.turn_variant > 1
+    ):
+        return event.narrative_turn
+    return None
+
+
 class TranscriptProjection(Projection):
     table = transcript_messages
 
     def apply(self, rows: Rows, event: LogEvent) -> None:
+        turn = regenerated_turn(event)
+        if turn is not None:
+            _retire(rows, turn, event.turn_variant)
         if isinstance(event.payload, PlayerInput | MessageRendered | Think | Latent):
             rows.put(message_row(event, event.payload))
             return
@@ -93,15 +110,27 @@ class TranscriptProjection(Projection):
 
     async def load(self, conn: AsyncConnection, story_id: str, events: Sequence[LogEvent]) -> Rows:
         named = {op for e in events for ids, _ in membership_changes(e) for op in ids}
-        if not named:
+        turns = {turn for e in events if (turn := regenerated_turn(e)) is not None}
+        if not named and not turns:
             return Rows(self.table)
+        t = transcript_messages
         found = await conn.execute(
-            select(transcript_messages).where(
-                transcript_messages.c.story_id == story_id,
-                transcript_messages.c.operation_id.in_(sorted(named)),
+            select(t).where(
+                t.c.story_id == story_id,
+                or_(t.c.operation_id.in_(sorted(named)), t.c.narrative_turn.in_(sorted(turns))),
             )
         )
         return Rows(self.table, (dict(row._mapping) for row in found))
+
+
+def _retire(rows: Rows, turn: int, variant: int | None) -> None:
+    for row in rows:
+        if (
+            row["narrative_turn"] == turn
+            and row["turn_variant"] != variant
+            and row["membership"] == Membership.ACTIVE.value
+        ):
+            rows.put({**row, "membership": Membership.DORMANT.value})
 
 
 def _flip(rows: Rows, operation_ids: Iterable[str], membership: Membership) -> None:

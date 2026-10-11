@@ -61,6 +61,9 @@ def test_u_29() -> None:
     and Explicit's, each tagged with its source, in source display order; complement: Teen's
     set does not include Everyone's own policy. A policy reached by two paths appears once; an
     inheritance cycle is found on save (complement: an acyclic save finds none)."""
+    # The closure cache is keyed by rating and version ids, and this graph reuses the seeded
+    # ids: a closure computed from the real seeded rows earlier in the session would answer.
+    invalidate_closure_cache()
     graph = _seeded()
     assert effective_guardrails(EVERYONE_ID, graph) == (
         Guardrail("p-everyone", EVERYONE_ID),

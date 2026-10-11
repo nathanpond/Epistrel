@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.config_changes import read_settings
 from epistrel.core.errors import PolicyNotFound, StoryNotFound
-from epistrel.core.policies.model import SCOPE_RANK, Policy, Scope
+from epistrel.core.policies.model import SCOPE_RANK, ModelAssistedRule, Policy, Scope, Target
 from epistrel.core.policies.rows import policy_of, select_policies
 from epistrel.core.ratings import closure_versions, effective_guardrails, load_graph
 from epistrel.core.tables import characters, policies, stories
@@ -120,16 +120,16 @@ async def effective_policies(db: AsyncEngine, story_id: str) -> tuple[Policy, ..
 
 
 async def _live_for_story(
-    conn: AsyncConnection, story_id: str, rating_ids: Sequence[str]
+    conn: AsyncConnection, story_id: str | None, rating_ids: Sequence[str]
 ) -> list[Policy]:
-    query = select_policies().where(
-        policies.c.retired_at.is_(None),
-        or_(
-            policies.c.scope == Scope.GLOBAL.value,
-            (policies.c.scope == Scope.RATING.value) & policies.c.id.in_(list(rating_ids)),
-            policies.c.story_id == story_id,
-        ),
-    )
+    """Live global policies, the listed rating policies and (with ``story_id``) the story's own."""
+    scopes = [
+        policies.c.scope == Scope.GLOBAL.value,
+        (policies.c.scope == Scope.RATING.value) & policies.c.id.in_(list(rating_ids)),
+    ]
+    if story_id is not None:
+        scopes.append(policies.c.story_id == story_id)
+    query = select_policies().where(policies.c.retired_at.is_(None), or_(*scopes))
     return [policy_of(row) for row in (await conn.execute(query)).all()]
 
 
@@ -188,6 +188,82 @@ async def read_cast(conn: AsyncConnection, story_id: str) -> tuple[CastMember, .
         )
         for row in rows
     )
+
+
+@dataclass(frozen=True, slots=True)
+class StoryGuardrails:
+    """What ``GET /stories/{id}/settings`` shows of a story's guardrails (FR-GUARD-9): the
+    active and inactive effective policies, the source of each, and the model calls they add.
+
+    ``calls_input`` is per text checked with no character acting (a character-scoped input
+    policy adds one call when its character acts); ``calls_output`` per output checkpoint."""
+
+    active: tuple[Policy, ...]
+    inactive: tuple[Policy, ...]
+    sources: dict[str, str]
+    calls_input: int
+    calls_output: int
+
+    def source(self, policy: Policy) -> str:
+        """``global``, ``rating:<id>`` (the contributing rating), ``story`` or
+        ``character:<id>``."""
+        if policy.scope is Scope.RATING:
+            return f"rating:{self.sources.get(policy.id, policy.scope_id)}"
+        if policy.scope is Scope.CHARACTER:
+            return f"character:{policy.scope_id}"
+        return policy.scope.value
+
+
+def _assisted_count(found: Sequence[Policy], target: Target) -> int:
+    return sum(
+        1
+        for p in found
+        if isinstance(p.rule, ModelAssistedRule)
+        and target in p.applies_to
+        and not (target is Target.TEXT_INPUT and p.scope is Scope.CHARACTER)
+    )
+
+
+async def story_guardrails(db: AsyncEngine, story_id: str) -> StoryGuardrails:
+    context = await guard_context(db, story_id)
+    sources = await rating_sources(db, story_id)
+    active = context.active
+    return StoryGuardrails(
+        active=active,
+        inactive=context.inactive,
+        sources=sources,
+        calls_input=_assisted_count(active, Target.TEXT_INPUT),
+        calls_output=_assisted_count(active, Target.TEXT_OUTPUT),
+    )
+
+
+async def rating_sources(db: AsyncEngine, story_id: str) -> dict[str, str]:
+    """Per rating policy in the story's effective set, the rating that contributes it (the
+    nearest in the closure, #48)."""
+    async with db.connect() as conn, conn.begin():
+        rating_id = await conn.scalar(
+            select(stories.c.content_rating_id).where(stories.c.id == story_id)
+        )
+        if rating_id is None:
+            raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+        graph = await load_graph(conn)
+    return {g.policy_id: g.source_rating_id for g in effective_guardrails(rating_id, graph)}
+
+
+async def creation_context(
+    db: AsyncEngine, rating_id: str, cast: Sequence[CastMember]
+) -> GuardContext:
+    """The guard context of a story about to be created with ``rating_id`` and ``cast``: the
+    live global policies and the rating closure's (a new story has no policies of its own),
+    the cast as given, and the live threshold."""
+    async with db.connect() as conn:
+        conn = await conn.execution_options(isolation_level="REPEATABLE READ")
+        async with conn.begin():
+            graph = await load_graph(conn)
+            rating_ids = [g.policy_id for g in effective_guardrails(rating_id, graph)]
+            found = await _live_for_story(conn, None, rating_ids)
+            threshold = (await read_settings(conn)).minor_age_threshold
+    return GuardContext(policies=_arrange(found, rating_ids), cast=tuple(cast), threshold=threshold)
 
 
 async def guard_context(db: AsyncEngine, story_id: str) -> GuardContext:

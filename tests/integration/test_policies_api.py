@@ -147,6 +147,9 @@ def test_list_shows_kind_scope_and_hides_retired(client: TestClient) -> None:
     assert {p["scope"] for p in scoped} == {"rating"}
     everything = client.get(BASE, params={"include_retired": 1}, headers=bearer()).json()
     assert gone["id"] in {p["id"] for p in everything["items"]}
+    # The database is shared: a live global model-assisted policy gates every later story's
+    # input (#56), so a test without a configured guardrail model would get 503.
+    assert client.delete(f"{BASE}/{model['id']}", headers=WRITE).status_code == 200
 
 
 @pytest.mark.parametrize("effect", ["allow", "exempt", "permit"])

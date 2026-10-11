@@ -10,11 +10,17 @@
 4. one ``test_event`` recording the outcome, then commit.
 
 With ``story_policies`` (#55) the checks use the story's effective policies, its cast and the
-live ``minor_age_threshold`` (``store.guard_context``), and the input check becomes a gate: it
-runs before the operation opens, and a violation raises 422 ``guardrail_violation`` with
-nothing written (as #56's input gate will). An output violation withholds the reply; #68 adds
-regeneration and the safe fallback. ``POST /_test/stories/{id}/ingest-check`` gates a list of
-ingest-shaped texts the same way, each its own text, until #58's ingest route exists.
+live ``minor_age_threshold`` (``store.guard_context``), and the input check is #56's input gate
+(``Engine.gate_input``): it runs before the operation opens, and a violation raises 422
+``guardrail_violation`` with only the ``audit_log`` row written. An output violation withholds
+the reply; #68 adds regeneration and the safe fallback. ``POST /_test/stories/{id}/ingest-check``
+gates a list of ingest-shaped texts the same way, each its own text, until #58's ingest route
+exists.
+
+``POST /_test/stories/{id}/gated-input`` is #56's fixture caller: a truth-changing write that
+accepts text through any entry point (respond, ingest, pinned memories, custom instructions),
+with #44's prechecks in order (archived, expected revision), then the input gate, then one
+operation recording a ``test_gated_input`` event. #57/#58/#60 replace it with the real routes.
 
 The checks themselves are ``epistrel.orchestrator.policies.check.check_text``.
 
@@ -26,7 +32,7 @@ verdicts and the reply ``generation`` produced; a guardrail answer is never stor
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -35,6 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.api.responses import MutationResponse
+from epistrel.core.context import RequestContext
 from epistrel.core.enums import EventCategory, OperationKind, Provenance
 from epistrel.core.events import Operation
 from epistrel.core.events.registry import EventPayload, register, registered_types
@@ -47,6 +54,7 @@ from epistrel.core.policies.model import (
     Target,
     kind_of,
 )
+from epistrel.core.stories import require_writable
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.adapter import ModelParams
@@ -59,11 +67,21 @@ from epistrel.orchestrator.policies.check import (
     check_text,
     guardrail_violation,
 )
+from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText, InputPass
 from epistrel.orchestrator.policies.store import guard_context
 
 TEST_EVENT = "test_event"
+GATED_INPUT_EVENT = "test_gated_input"
 TEST_PREFIX = "/_test"
 PLAYER = "Player"
+
+
+class GatedInputEvent(EventPayload):
+    """What the fixture caller committed once its input passed: the entry point and how many
+    texts (not the texts)."""
+
+    entry_point: str
+    texts: int
 
 
 class GuardedReplyEvent(EventPayload):
@@ -79,6 +97,8 @@ class GuardedReplyEvent(EventPayload):
 
 if TEST_EVENT not in registered_types():
     register(TEST_EVENT, category=EventCategory.NARRATIVE_STATE)(GuardedReplyEvent)
+if GATED_INPUT_EVENT not in registered_types():
+    register(GATED_INPUT_EVENT, category=EventCategory.NARRATIVE_STATE)(GatedInputEvent)
 
 
 def make_policy(rule: Mapping[str, object], *, name: str) -> Policy:
@@ -160,25 +180,15 @@ async def guarded_reply(
     params: ModelParams | None = None,
     cast: Sequence[CastMember] = (),
     threshold: int = DEFAULT_MINOR_AGE_THRESHOLD,
-    gate_input: bool = False,
+    gate: Callable[[TurnBudget], Awaitable[InputPass]] | None = None,
 ) -> Operation:
-    """Run the guarded reply as one operation; see the module docstring. With ``gate_input``
-    an input violation raises before the operation opens."""
+    """Run the guarded reply as one operation; see the module docstring. With ``gate`` (the
+    input gate) an input violation raises before the operation opens."""
     budget = budget or TurnBudget()
     gated: tuple[bool, DecidedBy] | None = None
-    if gate_input:
-        outcome = await check_text(
-            engine.models,
-            said,
-            policies,
-            Target.TEXT_INPUT,
-            budget=budget,
-            cast=cast,
-            threshold=threshold,
-        )
-        if outcome.violated:
-            raise guardrail_violation(outcome.violations, policies)
-        gated = (False, outcome.decided_by)
+    if gate is not None:
+        passed = await gate(budget)
+        gated = (False, "model" if passed.model_calls else "deterministic")
     async with Operation(
         engine.db, story_id=story_id, kind=OperationKind.TURN, principal=principal
     ) as op:
@@ -251,6 +261,77 @@ class IngestCheckBody(BaseModel):
     texts: list[str] = Field(min_length=1, max_length=20)
 
 
+GatedEntryPoint = Literal["respond", "ingest", "pinned_memories", "custom_instructions"]
+LOCATOR_PREFIX = {
+    EntryPoint.INGEST: "events",
+    EntryPoint.PINNED_MEMORIES: "items",
+    EntryPoint.CUSTOM_INSTRUCTIONS: "custom_instructions",
+}
+PLAYER_INPUT = "player_input"
+
+
+class GatedInputBody(BaseModel):
+    """The fixture caller's request: texts entering through ``entry_point``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entry_point: GatedEntryPoint
+    texts: list[str] = Field(min_length=1, max_length=20)
+    actor: str | None = None
+    max_calls: int | None = Field(default=None, ge=0, le=50)
+
+
+class GatedInputResponse(MutationResponse):
+    operation_id: str
+
+
+def gate_texts(entry_point: EntryPoint, texts: Sequence[str]) -> list[GateText]:
+    """Respond's ``say`` and ``do`` are one text joined by a newline (#57); every other entry
+    point gates each item on its own."""
+    if entry_point is EntryPoint.RESPOND:
+        return [GateText(PLAYER_INPUT, "\n".join(texts))]
+    prefix = LOCATOR_PREFIX[entry_point]
+    return [GateText(f"{prefix}[{index}]", text) for index, text in enumerate(texts)]
+
+
+async def gated_write(
+    engine: Engine,
+    ctx: RequestContext,
+    story_id: str,
+    entry_point: str,
+    texts: Sequence[str],
+    *,
+    actor: str | None = None,
+    max_calls: int | None = None,
+) -> Operation:
+    """A truth-changing write that accepts text: #44's prechecks in order, the input gate,
+    then one operation (``turn`` for respond, ``inter_turn`` otherwise)."""
+    principal = engine.require_principal(ctx)
+    await require_writable(engine.db, story_id)
+    await engine.check_expected_revision(ctx, story_id)
+    point = EntryPoint(entry_point)
+    budget = None if max_calls is None else TurnBudget(max_calls=max_calls)
+    reserved = 1 if point is EntryPoint.RESPOND else 0
+    await engine.gate_input(
+        ctx,
+        story_id,
+        point,
+        gate_texts(point, texts),
+        actor=actor,
+        budget=budget,
+        reserved=reserved if budget is not None else 0,
+    )
+    kind = OperationKind.TURN if point is EntryPoint.RESPOND else OperationKind.INTER_TURN
+    async with Operation(engine.db, story_id=story_id, kind=kind, principal=principal) as op:
+        op.append(
+            GATED_INPUT_EVENT,
+            GatedInputEvent(entry_point=point.value, texts=len(texts)),
+            provenance=Provenance.PLAYER,
+        )
+        await op.commit()
+    return op
+
+
 class GuardedReplyResponse(MutationResponse):
     operation_id: str
     reply: str | None
@@ -276,7 +357,14 @@ def make_router() -> APIRouter:
         if body.story_policies:
             context = await guard_context(engine.db, story_id)
             policies = [*context.policies, *policies]
-            ages = {"cast": context.cast, "threshold": context.threshold, "gate_input": True}
+
+            async def gate(spent: TurnBudget) -> InputPass:
+                said = [GateText(PLAYER_INPUT, body.said)]
+                return await engine.gate_input(
+                    ctx, story_id, EntryPoint.RESPOND, said, budget=spent, reserved=1
+                )
+
+            ages = {"cast": context.cast, "threshold": context.threshold, "gate": gate}
         with recording() as calls:
             op = await guarded_reply(
                 engine,
@@ -304,27 +392,42 @@ def make_router() -> APIRouter:
     async def ingest_check(
         story_id: str, body: IngestCheckBody, ctx: ContextDep, engine: EngineDep
     ) -> Response:
-        engine.require_principal(ctx)
-        context = await guard_context(engine.db, story_id)
-        await gate(
-            engine,
-            body.texts,
-            context.policies,
-            TurnBudget(),
-            cast=context.cast,
-            threshold=context.threshold,
-        )
+        texts = [GateText(f"events[{i}]", text) for i, text in enumerate(body.texts)]
+        await engine.gate_input(ctx, story_id, EntryPoint.INGEST, texts)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.post("/stories/{story_id}/gated-input")
+    async def gated_input(
+        story_id: str, body: GatedInputBody, ctx: ContextDep, engine: EngineDep
+    ) -> GatedInputResponse:
+        op = await gated_write(
+            engine,
+            ctx,
+            story_id,
+            body.entry_point,
+            body.texts,
+            actor=body.actor,
+            max_calls=body.max_calls,
+        )
+        assert op.timeline_revision is not None  # noqa: S101 - set by commit()
+        return GatedInputResponse(
+            timeline_revision=op.timeline_revision, operation_id=op.operation_id
+        )
 
     return router
 
 
 __all__ = [
+    "GATED_INPUT_EVENT",
     "TEST_EVENT",
+    "GatedInputBody",
+    "GatedInputEvent",
     "GuardedReplyBody",
     "GuardedReplyEvent",
     "check",
     "gate",
+    "gate_texts",
+    "gated_write",
     "guarded_reply",
     "make_policy",
     "make_router",

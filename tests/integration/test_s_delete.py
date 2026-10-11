@@ -10,7 +10,9 @@ from epistrel import Engine
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind
+from epistrel.core.errors import GuardrailViolation
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
+from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
 from tests.event_support import interleave, play_turn, rows
 from tests.policy_support import unique, words
@@ -20,7 +22,8 @@ AUTHOR = RequestContext(principal="p-author")
 
 
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:
-    """Turns, background work between them, story and character policies, a rebuild."""
+    """Turns, background work between them, story and character policies, a rebuild, and a
+    rejected input (an ``audit_log`` row naming the story)."""
     for n in range(1, 3):
         await play_turn(engine, story_id, f"turn {n} of {story_id}")
         await interleave(engine, story_id, after_turn=n)
@@ -40,9 +43,21 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
                     "message": "Not them.",
                 }
             ),
+            StoryPolicyItem.model_validate(
+                {
+                    "name": unique("input"),
+                    "rule": words("unsayable"),
+                    "applies_to": ["text_input"],
+                    "message": "Not as input.",
+                }
+            ),
         ],
     )
     await lib.rebuild_projections(AUTHOR, story_id)
+    with pytest.raises(GuardrailViolation):
+        await lib.gate_input(
+            AUTHOR, story_id, EntryPoint.INGEST, [GateText("events[0]", "an unsayable thing")]
+        )
 
 
 async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
@@ -99,9 +114,26 @@ async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
 
     assert set(after) == set(before)
     removed = {table: before[table] - after[table] for table in before}
+    detached = removed.pop("audit_log")
     assert {t: r for t, r in removed.items() if r} == {t: r for t, r in owned.items() if r}
     added = {table: after[table] - before[table] for table in after}
-    assert {t for t, r in added.items() if r} == {"operations", "events"}
+    assert {t for t, r in added.items() if r} == {"operations", "events", "audit_log"}
+    # The audit_log exception (#56): the victim's rows stay with story_id nulled, and the
+    # deletion writes one story_deleted row; no other story's audit row changed.
+    audit = await rows(
+        engine,
+        "SELECT id, story_id, kind, principal, details->>'story_id' FROM audit_log "
+        "WHERE details->>'story_id' = :s OR id = ANY(:ids) ORDER BY kind",
+        s=victim,
+        ids=[r.split(",")[0].lstrip("(") for r in detached],
+    )
+    assert len(detached) == 1
+    assert [(r[1], r[2], r[3]) for r in audit] == [
+        (None, "guardrail_input_rejected", "p-author"),
+        (None, "story_deleted", "p-author"),
+    ]
+    assert audit[1][4] == victim
+    assert len(added["audit_log"]) == 2
     record = await rows(
         engine,
         "SELECT o.story_id, o.kind, e.type, e.payload->>'story_id' FROM events e "

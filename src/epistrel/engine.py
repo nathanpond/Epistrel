@@ -7,6 +7,8 @@ the database it was bound to (the REST app binds it for the life of the server).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -18,10 +20,15 @@ from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import PrincipalRequired
 from epistrel.core.history import History, read_history
 from epistrel.core.policies.model import Policy, Scope
+from epistrel.core.settings_schema import StorySettings
+from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models import ModelAccessLayer
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.policies import admin as policy_admin
+from epistrel.orchestrator.policies import input_gate
 from epistrel.orchestrator.policies import store as policy_store
+from epistrel.orchestrator.policies.age import CastMember
+from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText, InputPass
 from epistrel.orchestrator.policies.schemas import (
     PolicyFields,
     PolicyReplacement,
@@ -105,9 +112,73 @@ class Engine:
     async def create_story(
         self, ctx: RequestContext, spec: stories.StorySpec
     ) -> stories.CreatedStory:
-        """Create a blank story with its cast, rating and settings in one genesis operation."""
+        """Create a blank story with its cast, rating and settings in one genesis operation.
+
+        Every character ``definition`` goes through the input gate first (FR-GUARD-10), against
+        the global policies and the chosen rating's, with the cast's true ages: a violation is
+        422 ``guardrail_violation`` and no story exists."""
         principal = self.require_principal(ctx)
+        stories.validate_spec(spec)
+        async with self.db.connect() as conn, conn.begin():
+            rating_id = await stories.resolve_story_rating(conn, spec.content_rating_id)
+        cast = [
+            CastMember(character_id=f"new:{index}", ordinal=index, true_age=c.true_age)
+            for index, c in enumerate(spec.characters)
+        ]
+        context = await policy_store.creation_context(self.db, rating_id, cast)
+        texts = [
+            GateText(f"characters[{index}].definition", c.definition)
+            for index, c in enumerate(spec.characters)
+        ]
+        await input_gate.enforce_input(
+            self.db,
+            self.models,
+            context,
+            texts,
+            entry_point=EntryPoint.STORY_CREATE,
+            principal=principal,
+            story_id=None,
+        )
         return await stories.create_story_from(self.db, spec, principal=principal)
+
+    async def gate_input(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        entry_point: EntryPoint,
+        texts: Sequence[GateText],
+        *,
+        actor: str | None = None,
+        budget: TurnBudget | None = None,
+        reserved: int = 0,
+    ) -> InputPass:
+        """The input gate of a truth-changing path that accepts text (FR-GUARD-9,10): run it
+        after the call's other prechecks (#44's order) and before its ``Operation`` opens. A
+        violation writes the ``audit_log`` row and raises 422 ``guardrail_violation``; nothing
+        else is written. Respond (#57), ingest (#58) and pins/instructions (#60) call it."""
+        principal = self.require_principal(ctx)
+        context = await policy_store.guard_context(self.db, story_id)
+        return await input_gate.enforce_input(
+            self.db,
+            self.models,
+            context,
+            texts,
+            entry_point=entry_point,
+            principal=principal,
+            story_id=story_id,
+            budget=budget,
+            actor=actor,
+            reserved=reserved,
+        )
+
+    async def story_settings(
+        self, ctx: RequestContext, story_id: str
+    ) -> tuple[StorySettings, policy_store.StoryGuardrails]:
+        """The story's settings (defaults filled in) and its guardrails: effective policies
+        with their kind and source, inactive ones, and the model calls they add (FR-GUARD-9)."""
+        story = await stories.get_story(self.db, story_id)
+        guardrails = await policy_store.story_guardrails(self.db, story_id)
+        return StorySettings.from_row(story.settings), guardrails
 
     async def get_story(self, ctx: RequestContext, story_id: str) -> stories.StoryView:
         """The story and its cast; true ages only when ``ctx.viewpoint`` is ``omniscient``."""

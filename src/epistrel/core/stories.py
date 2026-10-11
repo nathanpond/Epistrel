@@ -13,7 +13,9 @@ Archive and unarchive are control operations that do not bump the timeline revis
 archived story is read-only (``Operation`` refuses revision-bumping work with
 ``story_archived``). Delete is one transaction of enumerated ``DELETE … WHERE story_id``
 statements over ``STORY_TABLES`` (FR-STORE-16): no foreign key cascades, no soft delete. It is
-recorded by a story-less operation, so the record outlives the story.
+recorded by a story-less operation, so the record outlives the story, and by a
+``story_deleted`` row in the deployment-level ``audit_log``, whose rows for the story are kept
+with ``story_id`` nulled (#56).
 
 Stories are self-contained (FR-STORE-14): no row of a story-scoped table names another story.
 """
@@ -30,8 +32,15 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, String
 from sqlalchemy import Table, delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import audit
 from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
-from epistrel.core.errors import InvalidRequest, StoryBusy, StoryNotFound, ViewpointUnresolved
+from epistrel.core.errors import (
+    InvalidRequest,
+    StoryArchived,
+    StoryBusy,
+    StoryNotFound,
+    ViewpointUnresolved,
+)
 from epistrel.core.events import Operation
 from epistrel.core.events.types import (
     CastMember,
@@ -44,6 +53,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import require_assignable
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, StorySettings
 from epistrel.core.tables import (
+    audit_log,
     characters,
     config_changes,
     content_ratings,
@@ -81,9 +91,9 @@ operations they belong to). ``tests/integration/test_s_delete.py`` checks it aga
 ``information_schema``, so a new story-scoped table cannot be missed. The ``stories`` row goes
 last; story-scoped ``config_changes`` rows (``scope = 'story'``) go by ``scope_id``."""
 
-STORY_ID_EXCEPTIONS: frozenset[str] = frozenset()
+STORY_ID_EXCEPTIONS: frozenset[str] = frozenset({audit_log.name})
 """Deployment-level tables that carry a ``story_id`` but outlive the story: deletion nulls the
-column instead of removing the row. Empty until #56 adds ``audit_log``, its one member."""
+column instead of removing the row. ``audit_log`` (#56) is the one member."""
 
 STORY_DELETE_SETTING = "epistrel.allow_story_delete"
 """The transaction setting the ``events`` trigger reads to let one story's events be deleted."""
@@ -372,6 +382,26 @@ async def _rating_ref(conn: AsyncConnection, rating_id: str) -> RatingRef:
     return RatingRef(id=rating_id, version_id=row.current_version_id, name=row.name)
 
 
+def validate_spec(spec: StorySpec) -> None:
+    """The request checks creation makes before anything else (names, default viewpoint), so a
+    caller can run them ahead of its own prechecks (#44's order: body validation first)."""
+    _check_unique_names(spec.characters)
+    _stored_settings(spec, [(new_ulid(), character) for character in spec.characters])
+
+
+async def require_writable(db: AsyncEngine, story_id: str) -> None:
+    """404 when the story does not exist, 409 ``story_archived`` when it is archived: the
+    read-only precheck of every truth-changing call, before its gate or operation (#56)."""
+    async with db.connect() as conn:
+        status = await conn.scalar(select(stories.c.status).where(stories.c.id == story_id))
+    if status is None:
+        raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+    if status == StoryStatus.ARCHIVED.value:
+        raise StoryArchived(
+            f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
+        )
+
+
 # -- archive --------------------------------------------------------------------------------
 
 
@@ -465,7 +495,8 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
     One transaction under the story row lock: 404 when the story does not exist, 423
     ``story_busy`` while any of its operations is in flight. Archived stories can be deleted.
     The deletion is recorded by a story-less ``control`` operation whose ``story_deleted``
-    audit event names the story and the acting principal.
+    audit event names the story and the acting principal, and by a ``story_deleted``
+    ``audit_log`` row (null ``story_id``; the story's earlier audit rows are detached).
     """
     async with db.connect() as conn:
         exists = await conn.scalar(select(stories.c.id).where(stories.c.id == story_id))
@@ -481,15 +512,22 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
         await _refuse_busy(conn, story_id, turns_only=False)
         removed.update(await _delete_story_rows(conn, story_id))
+        await audit.record(
+            conn,
+            audit.AuditKind.STORY_DELETED,
+            principal=principal,
+            details={"story_id": story_id, "operation_id": op.operation_id},
+        )
 
-    async with Operation(
+    op = Operation(
         db,
         story_id=None,
         kind=OperationKind.CONTROL,
         principal=principal,
         provenance=Provenance.CONSUMER,
         bumps_revision=False,
-    ) as op:
+    )
+    async with op:
         op.append("story_deleted", StoryDeletedEvent(story_id=story_id))
         op.add_commit_step(remove)
         await op.commit()
@@ -511,6 +549,7 @@ async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, 
         )
     )
     removed[config_changes.name] = result.rowcount
+    await audit.detach_story(conn, story_id)  # kept, no longer naming the story
     result = await conn.execute(delete(stories).where(stories.c.id == story_id))
     removed[stories.name] = result.rowcount
     return removed

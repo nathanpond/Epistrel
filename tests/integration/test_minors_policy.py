@@ -4,6 +4,7 @@ editable, audited data."""
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -79,7 +80,11 @@ async def test_minor_error_redaction(pg_url: str, engine: AsyncEngine) -> None:
             headers=WRITE,
         )
     assert refused.status_code == 422, refused.text
-    body = refused.text
+    # The gate's cost (#56: ``model_calls``, ``elapsed_ms``) is numeric and may contain "16".
+    redacted = refused.json()
+    for cost in ("model_calls", "elapsed_ms"):
+        assert isinstance(redacted["error"]["details"].pop(cost), int)
+    body = json.dumps(redacted)
     for leak in (MINOR_NAME, *MINOR_NAME.split(), str(MINOR_AGE), "character_"):
         assert leak not in body, leak
     assert not re.search(r"\bage\b", body)
@@ -90,6 +95,7 @@ async def test_minor_error_redaction(pg_url: str, engine: AsyncEngine) -> None:
             "policy_id": MINORS_POLICY_ID,
             "name": MINORS_POLICY["name"],
             "message": MINORS_POLICY["message"],
+            "locator": "player_input",
         }
     ]
 

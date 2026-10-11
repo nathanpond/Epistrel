@@ -12,6 +12,9 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+DEFAULT_TURN_DEADLINE_S = 45.0
+"""``turn_deadline``'s default (NFR-PERF-6); #63/#69 make it a story setting."""
+
 
 @dataclass
 class TurnBudget:
@@ -51,4 +54,4 @@ class TurnBudget:
         return remaining is not None and remaining <= 0
 
 
-__all__ = ["TurnBudget"]
+__all__ = ["DEFAULT_TURN_DEADLINE_S", "TurnBudget"]

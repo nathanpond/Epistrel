@@ -185,3 +185,14 @@ class GuardrailViolation(EpistrelError):
 
     code = "guardrail_violation"
     http_status = 422
+
+
+class BudgetBelowSafetyMinimum(EpistrelError):
+    """The call's model budget cannot cover the model calls it must reserve before anything
+    else (NFR-PERF-6): refused before any model call, with nothing recorded.
+
+    ``details``: ``minimum_required`` and ``max_calls``.
+    """
+
+    code = "budget_below_safety_minimum"
+    http_status = 422

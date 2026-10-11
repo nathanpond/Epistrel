@@ -6,6 +6,13 @@
   only under ``?viewpoint=omniscient`` (FR-CAT-12).
 - ``POST /stories/{id}/archive`` and ``…/unarchive``: control operations, idempotent (200).
 - ``DELETE /stories/{id}``: removes every row of the story and nothing else (204).
+- ``GET /stories/{id}/settings``: the settings with defaults filled in, and the story's
+  guardrails — ``effective_policies`` (scope, source, applies_to, age_condition, kind),
+  ``inactive_policies`` (age-conditioned ones whose condition is false for the cast) and
+  ``guardrail_calls`` — so the model-call cost of guardrails is predictable (FR-GUARD-9). #63
+  adds ``PATCH``.
+
+``POST /stories`` gates every character definition through the input gate first (#56).
 """
 
 from __future__ import annotations
@@ -20,7 +27,9 @@ from pydantic import BaseModel
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.api.responses import MutationResponse
 from epistrel.core.enums import StoryStatus
+from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
 from epistrel.core.stories import CharacterView, RatingRef, StorySpec, StoryView
+from epistrel.orchestrator.policies.store import StoryGuardrails
 
 router = APIRouter(prefix="/stories", tags=["stories"])
 
@@ -95,6 +104,45 @@ class StatusBody(MutationResponse):
     status: StoryStatus
 
 
+class EffectivePolicyBody(BaseModel):
+    id: str
+    name: str
+    scope: Scope
+    source: str
+    """``global``, ``rating:<id>`` (the rating that contributes it), ``story`` or
+    ``character:<id>``."""
+    applies_to: list[Target]
+    age_condition: str | None
+    kind: PolicyKind
+
+    @classmethod
+    def of(cls, policy: Policy, guardrails: StoryGuardrails) -> EffectivePolicyBody:
+        return cls(
+            id=policy.id,
+            name=policy.name,
+            scope=policy.scope,
+            source=guardrails.source(policy),
+            applies_to=list(policy.applies_to),
+            age_condition=policy.age_condition,
+            kind=policy.kind,
+        )
+
+
+class GuardrailCallsBody(BaseModel):
+    """Model calls the guardrails add: ``input`` per text checked (a character-scoped input
+    policy adds one when its character acts), ``output`` per output checkpoint."""
+
+    input: int
+    output: int
+
+
+class StorySettingsBody(BaseModel):
+    settings: dict[str, Any]
+    effective_policies: list[EffectivePolicyBody]
+    inactive_policies: list[EffectivePolicyBody]
+    guardrail_calls: GuardrailCallsBody
+
+
 def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterBody:
     if character.true_age is not None:
         return OmniscientCharacterBody(
@@ -135,6 +183,19 @@ async def get_story(story_id: str, ctx: ContextDep, engine: EngineDep) -> StoryB
         **StorySummaryBody.fields_of(story),
         characters=[_character(c) for c in story.characters],
         settings=story.settings,
+    )
+
+
+@router.get("/{story_id}/settings", response_model=StorySettingsBody)
+async def story_settings(story_id: str, ctx: ContextDep, engine: EngineDep) -> StorySettingsBody:
+    settings, guardrails = await engine.story_settings(ctx, story_id)
+    return StorySettingsBody(
+        settings=settings.model_dump(mode="json"),
+        effective_policies=[EffectivePolicyBody.of(p, guardrails) for p in guardrails.active],
+        inactive_policies=[EffectivePolicyBody.of(p, guardrails) for p in guardrails.inactive],
+        guardrail_calls=GuardrailCallsBody(
+            input=guardrails.calls_input, output=guardrails.calls_output
+        ),
     )
 
 

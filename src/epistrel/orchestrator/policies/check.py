@@ -1,8 +1,8 @@
 """One text against a set of policies (FR-GUARD-9,11): deterministic first, then one
 ``guardrail_check`` call per applicable model-assisted policy.
 
-#56's input gate and #68's output gate build on ``check_text``; until they land, #53's
-test-only guarded reply (``epistrel.testing.ops``) is its caller.
+#56's input gate (``input_gate``) and #68's output gate build on ``check_text``; #53's
+test-only guarded reply (``epistrel.testing.ops``) calls it too.
 
 - Policies that do not apply to ``target`` are skipped, and so are age-conditioned policies
   whose condition is false for the cast (``age.applies``): that is decided before any model
@@ -21,9 +21,9 @@ its id and its name — never a character's name, label or age.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from epistrel.core.errors import GuardrailViolation
 from epistrel.core.policies.evaluate import evaluate
@@ -111,22 +111,34 @@ async def check_text(
 
 
 def guardrail_violation(
-    violations: Sequence[Violation], policies: Sequence[Policy], *, what: str = "Input"
+    violations: Sequence[Violation],
+    policies: Sequence[Policy],
+    *,
+    what: str = "Input",
+    locators: Mapping[str, Sequence[str]] | None = None,
+    extra: Mapping[str, Any] | None = None,
 ) -> GuardrailViolation:
     """The 422 for ``violations``: each policy's id, name and message. When any is
-    age-conditioned, the message adds that a minor is involved or present — never who."""
+    age-conditioned, the message adds that a minor is involved or present — never who.
+
+    ``locators`` (#56) names, per policy id, where in the request each violation was found:
+    one as ``locator``, several as ``locators``. ``extra`` adds top-level details."""
     conditioned = {p.id for p in policies if p.age_condition is not None}
     count = len(violations)
     noun = "policy" if count == 1 else "policies"
     message = f"{what} violates {count} {noun}"
     if any(v.policy_id in conditioned for v in violations):
         message = f"{message}: {MINOR_INVOLVED}"
-    details = {
-        "violations": [
-            {"policy_id": v.policy_id, "name": v.name, "message": v.message} for v in violations
-        ]
-    }
-    return GuardrailViolation(f"{message}.", details)
+    found: list[dict[str, Any]] = []
+    for v in violations:
+        entry: dict[str, Any] = {"policy_id": v.policy_id, "name": v.name, "message": v.message}
+        where = list((locators or {}).get(v.policy_id, ()))
+        if len(where) == 1:
+            entry["locator"] = where[0]
+        elif where:
+            entry["locators"] = where
+        found.append(entry)
+    return GuardrailViolation(f"{message}.", {"violations": found, **(extra or {})})
 
 
 __all__ = [

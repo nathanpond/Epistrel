@@ -16,7 +16,10 @@ from tools.gates.licenses import (
 
 from tests.conftest import REPO_ROOT
 
-CONFIG = load_licenses_config(REPO_ROOT / "pyproject.toml")
+REPO_CONFIG = load_licenses_config(REPO_ROOT / "pyproject.toml")
+# The repo's allow and deny lists without its exceptions: the synthetic closures below never
+# contain the excepted packages, which would otherwise be reported as stale.
+CONFIG = LicensesConfig(REPO_CONFIG.allow, REPO_CONFIG.deny, {})
 PARENTS = {"fastapi": {"epistrel"}, "starlette": {"fastapi"}, "psycopg": {"epistrel"}}
 
 
@@ -128,6 +131,14 @@ def test_classifier_spellings_normalise() -> None:
     assert normalise_id("GNU Lesser General Public License v3 (LGPLv3)") == "LGPL-3.0-only"
     assert normalise_id("totally made up words") == "UNKNOWN"
     assert parse_expression("A; B") == [["A"], ["B"]]
+
+
+def test_parenthesised_classifier_is_looked_up_whole() -> None:
+    """certifi's metadata reads `Mozilla Public License 2.0 (MPL 2.0)`: a known whole value is
+    its id (#74). Complement: other parentheses are still UNKNOWN."""
+    assert parse_expression("Mozilla Public License 2.0 (MPL 2.0)") == [["MPL-2.0"]]
+    assert judge("certifi", "Mozilla Public License 2.0 (MPL 2.0)", CONFIG).status == "ok"
+    assert parse_expression("(MIT OR GPL-3.0)") == [["UNKNOWN"]]
 
 
 @pytest.mark.parametrize(("spelling", "spdx"), sorted(NORMALISATION.items()))

@@ -1,0 +1,368 @@
+{
+ "principal": "p-author",
+ "steps": [
+  {
+   "op": "create_story",
+   "alias": "s1",
+   "settings": {
+    "lite_window_messages": 6,
+    "lite_summary_chunk": 4
+   },
+   "key": "det-00"
+  },
+  {
+   "op": "instructions",
+   "story": "s1",
+   "text": "Keep replies short and salt-stained.",
+   "key": "det-01"
+  },
+  {
+   "op": "pins",
+   "story": "s1",
+   "items": [
+    "The lighthouse keeper owes Ada a favour.",
+    "Brann never lies about the sea."
+   ],
+   "key": "det-02"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Ada, what did you see last night?",
+   "key": "det-03"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "I walk to the harbour.",
+   "key": "det-04"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Brann, is the boat ready?",
+   "key": "det-05"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Tell me about the lighthouse.",
+   "key": "det-06"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "I light a lantern.",
+   "do": "raises the lantern high",
+   "key": "det-07"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Who left the door open?",
+   "key": "det-08"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "We should leave before dawn.",
+   "key": "det-09"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Ada, hand me the map.",
+   "key": "det-10"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "I check the tide tables.",
+   "key": "det-11"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Brann, row us out.",
+   "key": "det-12"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Is that a light on the water?",
+   "key": "det-13"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "I call out to the shore.",
+   "key": "det-14"
+  },
+  {
+   "op": "drain",
+   "key": "det-15"
+  },
+  {
+   "op": "regenerate",
+   "story": "s1",
+   "key": "det-16"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "The fog thickens.",
+   "key": "det-17"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Ada, can you hear the bell?",
+   "key": "det-18"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "I steer toward the bell.",
+   "key": "det-19"
+  },
+  {
+   "op": "truncate",
+   "story": "s1",
+   "to_turn": 10,
+   "key": "det-20"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "We turn back instead.",
+   "key": "det-21"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Brann, light the stove.",
+   "key": "det-22"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "I write in the log.",
+   "key": "det-23"
+  },
+  {
+   "op": "swap",
+   "story": "s1",
+   "chain": {
+    "turn": 12,
+    "variant": 1
+   },
+   "key": "det-24"
+  },
+  {
+   "op": "drain",
+   "key": "det-25"
+  },
+  {
+   "op": "fork",
+   "story": "s1",
+   "alias": "f1",
+   "at_turn": 8,
+   "key": "det-26"
+  },
+  {
+   "op": "respond",
+   "story": "f1",
+   "say": "In this telling, we stay ashore.",
+   "key": "det-27"
+  },
+  {
+   "op": "respond",
+   "story": "f1",
+   "say": "Ada, fetch the doctor.",
+   "key": "det-28"
+  },
+  {
+   "op": "respond",
+   "story": "f1",
+   "say": "I wait by the fire.",
+   "key": "det-29"
+  },
+  {
+   "op": "respond",
+   "story": "f1",
+   "say": "Brann, what news?",
+   "key": "det-30"
+  },
+  {
+   "op": "pins",
+   "story": "f1",
+   "items": [
+    "The doctor lives on the hill."
+   ],
+   "key": "det-31"
+  },
+  {
+   "op": "regenerate",
+   "story": "f1",
+   "key": "det-32"
+  },
+  {
+   "op": "truncate",
+   "story": "f1",
+   "to_turn": 9,
+   "key": "det-33"
+  },
+  {
+   "op": "respond",
+   "story": "f1",
+   "say": "The doctor arrives late.",
+   "key": "det-34"
+  },
+  {
+   "op": "respond",
+   "story": "f1",
+   "say": "I thank her.",
+   "key": "det-35"
+  },
+  {
+   "op": "respond",
+   "story": "f1",
+   "say": "Ada, is she well?",
+   "key": "det-36"
+  },
+  {
+   "op": "drain",
+   "key": "det-37"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "The bell stops.",
+   "key": "det-38"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Brann, did you hear that?",
+   "key": "det-39"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "I lower the sail.",
+   "key": "det-40"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "We drift.",
+   "key": "det-41"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Ada, the stars are out.",
+   "key": "det-42"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "I name the constellation.",
+   "key": "det-43"
+  },
+  {
+   "op": "regenerate",
+   "story": "s1",
+   "key": "det-44"
+  },
+  {
+   "op": "pins",
+   "story": "s1",
+   "items": [
+    "The bell belongs to a drowned church."
+   ],
+   "key": "det-45"
+  },
+  {
+   "op": "truncate",
+   "story": "s1",
+   "to_turn": 14,
+   "key": "det-46"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "We sail home by starlight.",
+   "key": "det-47"
+  },
+  {
+   "op": "fork",
+   "story": "f1",
+   "alias": "f2",
+   "at_turn": 5,
+   "key": "det-48"
+  },
+  {
+   "op": "respond",
+   "story": "f2",
+   "say": "A second fork, a second path.",
+   "key": "det-49"
+  },
+  {
+   "op": "respond",
+   "story": "f2",
+   "say": "I take the inland road.",
+   "key": "det-50"
+  },
+  {
+   "op": "respond",
+   "story": "f2",
+   "say": "Brann, keep watch.",
+   "key": "det-51"
+  },
+  {
+   "op": "drain",
+   "key": "det-52"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Morning comes.",
+   "key": "det-53"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "I count the catch.",
+   "key": "det-54"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "The harbour master waves.",
+   "key": "det-55"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "I tie up the boat.",
+   "key": "det-56"
+  },
+  {
+   "op": "respond",
+   "story": "s1",
+   "say": "Ada, home at last.",
+   "key": "det-57"
+  },
+  {
+   "op": "drain",
+   "key": "det-58"
+  },
+  {
+   "op": "respond",
+   "story": "f2",
+   "say": "The road ends at a well.",
+   "key": "det-59"
+  }
+ ]
+}

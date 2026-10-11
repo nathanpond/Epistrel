@@ -8,19 +8,39 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from hypothesis import settings as hypothesis_settings
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.db import make_engine, make_sync_engine, normalize_url
+from tests.auth_support import auth_settings
+from tests.perf.census import CENSUS, installed
 
 pytest_plugins = ("pytester",)
+
+# CI runs property tests derandomized: the same examples on every run, so a red build is
+# reproducible. Locally Hypothesis explores freely. Tests may set their own example counts.
+hypothesis_settings.register_profile("ci", derandomize=True, deadline=None, print_blob=True)
+if os.environ.get("CI"):
+    hypothesis_settings.load_profile("ci")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 INTEGRATION_DIR = Path(__file__).resolve().parent / "integration"
+CHAOS_DIR = Path(__file__).resolve().parent / "chaos"
+DETERMINISM_DIR = Path(__file__).resolve().parent / "determinism"
+SMOKE_DIR = Path(__file__).resolve().parent / "smoke"
+SCENARIO_DIR = Path(__file__).resolve().parent / "scenario"
+P05_FILE = "test_p_05.py"
 PG_IMAGE = "pgvector/pgvector:pg16"
 OVERRIDE_VAR = "EPISTREL_TEST_DATABASE_URL"
+LIVE_MODEL_MARKER = "live_model"
+PERF_LONG_MARKER = "perf_long"
+SMOKE_MARKER = "smoke"
+OPT_IN_MARKERS = (LIVE_MODEL_MARKER, PERF_LONG_MARKER, SMOKE_MARKER)
+"""Markers whose tests run only when ``-m`` names them: a real endpoint (#54), minutes of
+seeding and measuring (#76), or a live compose stack (C-10, #77)."""
 DUMMY_DSN = "postgresql+psycopg://u:p@localhost:5432/epistrel_test"
 
 NO_DOCKER_MESSAGE = (
@@ -30,11 +50,40 @@ NO_DOCKER_MESSAGE = (
 )
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Everything under tests/integration/ is an integration test."""
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Everything under tests/integration/, tests/chaos/ and tests/determinism/ is an
+    integration test, everything under tests/chaos/ a ``chaos`` test (#75), and everything
+    under tests/smoke/ a ``smoke`` test (#77). ``live_model``, ``perf_long`` and ``smoke`` tests
+    run only when ``-m`` names their marker: they need a real endpoint (#54), minutes (#76) or a
+    running compose stack (#77). P-05 runs last, over the turn census of everything before it
+    (#69)."""
     for item in items:
-        if INTEGRATION_DIR in Path(str(item.fspath)).parents:
+        parents = Path(str(item.fspath)).parents
+        if INTEGRATION_DIR in parents or CHAOS_DIR in parents or DETERMINISM_DIR in parents:
             item.add_marker(pytest.mark.integration)
+        if CHAOS_DIR in parents:
+            item.add_marker(pytest.mark.chaos)
+        if SMOKE_DIR in parents:
+            item.add_marker(pytest.mark.smoke)
+    census = [item for item in items if Path(str(item.fspath)).name == P05_FILE]
+    if census:
+        items[:] = [item for item in items if item not in census] + census
+    CENSUS.s_tests_collected = any(SCENARIO_DIR in Path(str(item.fspath)).parents for item in items)
+    named = config.getoption("markexpr", "") or ""
+    for marker in OPT_IN_MARKERS:
+        if marker in named:
+            continue
+        opt_in = [item for item in items if item.get_closest_marker(marker)]
+        if opt_in:
+            config.hook.pytest_deselected(items=opt_in)
+            items[:] = [item for item in items if not item.get_closest_marker(marker)]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _turn_census() -> Iterator[None]:
+    """Record every Lite turn of the session for P-05 (``tests/perf/census.py``)."""
+    with installed():
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -118,7 +167,7 @@ def scratch_database(pg_url: str) -> Iterator[str]:
 
 @pytest.fixture
 def settings(pg_url: str) -> Settings:
-    return Settings(database_url=pg_url)
+    return auth_settings(pg_url)
 
 
 @pytest.fixture

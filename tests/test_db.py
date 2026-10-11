@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.config import Settings
 from epistrel.core.db import CONNECT_TIMEOUT_SECONDS, make_engine, make_sync_engine, normalize_url
+from tests.auth_support import auth_settings
 
 
 def test_normalize_url_adds_the_psycopg_driver() -> None:
@@ -15,7 +15,7 @@ def test_normalize_url_leaves_a_driver_url_alone() -> None:
 
 
 async def test_make_engine_builds_an_async_psycopg_engine(dummy_dsn: str) -> None:
-    engine = make_engine(Settings(database_url=dummy_dsn))
+    engine = make_engine(auth_settings(dummy_dsn))
     try:
         assert isinstance(engine, AsyncEngine)
         assert engine.url.drivername == "postgresql+psycopg"

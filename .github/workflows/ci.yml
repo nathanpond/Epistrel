@@ -42,6 +42,10 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check --output-format=github .
       - run: uv run ruff format --check .
+      # Model guide (#54, FR-MODEL-13): docs/models.md is exactly what the purpose registry generates.
+      - name: model-guide
+        run: uv run python -m epistrel.tools.model_guide --check
+        if: always()
       # Milestone gate (#37): every requirement in docs/03 is assigned to exactly one milestone in §22.
       - run: uv run python -m tools.gates check-assignment
         if: always()
@@ -66,6 +70,10 @@ jobs:
       # env (.venv-runtime) itself and runs pip-licenses against it.
       - name: check-licenses
         run: uv run python -m tools.gates check-licenses
+        if: always()
+      # OpenAPI (#73, FR-API-1, NFR-MAINT-2): docs/openapi.json is exactly what the app serves at /openapi.json.
+      - name: openapi
+        run: uv run python -m epistrel.tools.openapi --check
         if: always()
 
   types:
@@ -101,7 +109,13 @@ jobs:
       # Integration tests start pgvector/pgvector:pg16 through testcontainers on the runner's Docker.
       # Coverage is gated on epistrel.core only (the deterministic layer); the flags live here and in
       # the README, not in pytest's addopts, so a plain `uv run pytest` stays fast locally.
-      - run: uv run pytest --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90
+      # `live_model` tests (E-06, P-08) need a real endpoint; the model matrix tool runs them
+      # locally and records the result, reported not gated (#54). Of the chaos suite only the
+      # `chaos_quick` tests run here, at their quick defaults, inside the one coverage gate; the
+      # weekly chaos.yml runs every `chaos` test at full strength (#75). Of the performance tests
+      # only the `perf_quick` ones run here (P-03's quick subset); the `perf_long` ones (P-03 on
+      # the 20,000-event story) run in the nightly perf.yml (#76).
+      - run: uv run pytest -m "not live_model and (not chaos or chaos_quick) and (not perf_long or perf_quick)" --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90
 
   docker:
     runs-on: ubuntu-latest

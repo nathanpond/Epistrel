@@ -2,18 +2,27 @@ import pytest
 from fastapi.testclient import TestClient
 
 from epistrel.api import create_app
-from epistrel.config import Settings
+from tests.auth_support import auth_settings
 
 
 @pytest.fixture
 def client(dummy_dsn: str) -> TestClient:
-    return TestClient(create_app(Settings(database_url=dummy_dsn)))
+    return TestClient(create_app(auth_settings(dummy_dsn)))
 
 
 def test_health_reports_ok(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "checks": {"database": "skipped"}}
+    assert response.json() == {
+        "status": "ok",
+        "checks": {
+            "database": "skipped",
+            "workers": {"alive": None, "last_heartbeat_s": None},
+            "oldest_overdue_timer_s": None,
+            "oldest_overdue_job_s": None,
+        },
+        "content_logging": False,
+    }
 
 
 def test_old_scaffold_routes_are_gone(client: TestClient) -> None:

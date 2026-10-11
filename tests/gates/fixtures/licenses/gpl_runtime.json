@@ -1,0 +1,4 @@
+[
+  {"Name": "fastapi", "Version": "0.0.0", "License": "GNU General Public License v3 (GPLv3)"},
+  {"Name": "starlette", "Version": "0.0.0", "License": "BSD License"}
+]

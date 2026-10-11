@@ -1,0 +1,199 @@
+{
+  "rows": [
+    {
+      "calls_per_turn": {
+        "generation": 1.0,
+        "guardrail_check": 2.0
+      },
+      "capability": {
+        "generation": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (3 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "not required by the floor",
+              "name": "structured_output"
+            }
+          ]
+        },
+        "guardrail_check": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "lite_summary": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (3 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "not required by the floor",
+              "name": "structured_output"
+            }
+          ]
+        }
+      },
+      "e06": {
+        "identical": 9,
+        "lengths": {
+          "128": 128,
+          "32": 32
+        },
+        "passed": true,
+        "samples": 10
+      },
+      "hardware": "Apple M3 Max, 128 GB; context 16,384",
+      "latencies_ms": [
+        12166,
+        14902,
+        9479,
+        11087,
+        8879,
+        17066,
+        16340,
+        16238,
+        19784,
+        14410,
+        18578,
+        13156,
+        9525,
+        19943,
+        19666,
+        11969,
+        9782,
+        12817,
+        12692,
+        11772
+      ],
+      "measured_at": "2026-10-11",
+      "model": "cydonia-24b-v4.3",
+      "p50_ms": 12817,
+      "p95_ms": 19784,
+      "policies": "minors",
+      "protocol": true,
+      "protocol_reason": null,
+      "server_version": "LM Studio 0.4.18",
+      "sha": "f0f4b98-dirty",
+      "tier": "local",
+      "turn_path": "guarded reply (#53), until respond (#57)",
+      "turns": 20
+    },
+    {
+      "calls_per_turn": {
+        "generation": 1.0
+      },
+      "capability": {
+        "generation": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (3 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "not required by the floor",
+              "name": "structured_output"
+            }
+          ]
+        },
+        "guardrail_check": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (16 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "20/20 valid (json_schema)",
+              "mode": "json_schema",
+              "name": "structured_output",
+              "passed": true,
+              "total": 20,
+              "valid": 20
+            }
+          ]
+        },
+        "lite_summary": {
+          "capable": true,
+          "checks": [
+            {
+              "detail": "~8000 tokens: answered (3 tokens out)",
+              "name": "context",
+              "passed": true
+            },
+            {
+              "detail": "not required by the floor",
+              "name": "structured_output"
+            }
+          ]
+        }
+      },
+      "e06": {
+        "identical": 9,
+        "lengths": {
+          "128": 128,
+          "32": 32
+        },
+        "passed": true,
+        "samples": 10
+      },
+      "hardware": "Apple M3 Max, 128 GB; context 16,384",
+      "latencies_ms": [
+        7256,
+        11050,
+        5399,
+        9718,
+        9110,
+        9151,
+        11524,
+        7344,
+        15058,
+        9279,
+        9868,
+        7690,
+        6486,
+        16020,
+        3314,
+        7208,
+        7995,
+        7743,
+        9472,
+        7036
+      ],
+      "measured_at": "2026-10-11",
+      "model": "cydonia-24b-v4.3",
+      "p50_ms": 7995,
+      "p95_ms": 15058,
+      "policies": "off",
+      "protocol": true,
+      "protocol_reason": null,
+      "server_version": "LM Studio 0.4.18",
+      "sha": "f0f4b98-dirty",
+      "tier": "local",
+      "turn_path": "guarded reply (#53), until respond (#57)",
+      "turns": 20
+    }
+  ]
+}

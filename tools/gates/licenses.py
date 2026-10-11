@@ -155,8 +155,12 @@ def normalise_id(token: str) -> str:
 def parse_expression(raw: str) -> list[list[str]]:
     """OR of ANDs: `GPL-2.0 OR MIT` → [[GPL-2.0], [MIT]]; `MIT AND PSF-2.0` → [[MIT, PSF-2.0]].
 
-    `;`-joined classifier values are OR. `WITH` keeps the left-hand id. Parentheses → UNKNOWN.
+    `;`-joined classifier values are OR. `WITH` keeps the left-hand id. A whole value found in
+    the normalisation table (a classifier name such as `Mozilla Public License 2.0 (MPL 2.0)`)
+    is that id; any other parentheses → UNKNOWN.
     """
+    if raw.strip().lower() in NORMALISATION:
+        return [[NORMALISATION[raw.strip().lower()]]]
     if "(" in raw or ")" in raw:
         return [[UNKNOWN]]
     alternatives: list[list[str]] = []

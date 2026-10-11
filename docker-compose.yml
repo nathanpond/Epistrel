@@ -1,5 +1,7 @@
-# Dev/hobby deployment (docs/02 §12, NFR-OPS-1): `docker compose up` brings up the Engine and
-# PostgreSQL 16 + pgvector with no prior configuration. Tear down with `docker compose down -v`.
+# Dev/hobby deployment (docs/02 §12, NFR-OPS-1,2): `docker compose up` brings up the Engine and
+# PostgreSQL 16 + pgvector with no prior configuration. The engine runs in `all` mode: the API and
+# the background workers that own every timer and sweep, in one process, so no scheduler, cron,
+# broker or cache service exists here. Tear down with `docker compose down -v`.
 name: epistrel
 
 services:
@@ -23,6 +25,7 @@ services:
   engine:
     build: .
     image: epistrel:dev
+    command: ["serve", "--mode", "all"]
     depends_on:
       db:
         condition: service_healthy
@@ -30,6 +33,8 @@ services:
       # Literal, not ${...}: a developer's .env with a localhost URL must never reach the container.
       EPISTREL_DATABASE_URL: postgresql+psycopg://epistrel:epistrel-dev@db:5432/epistrel
       EPISTREL_LOG_LEVEL: INFO
+      EPISTREL_SERVICE_CREDENTIALS: dev-only-credential-change-me-00000000  # dev-only default — override for anything but local use
+      EPISTREL_CONFIG_KEY: ZXBpc3RyZWwtZGV2LW9ubHktY29uZmlnLWtleS0wMDA=  # dev-only default — override for anything but local use
     ports:
       - "127.0.0.1:8000:8000"
     extra_hosts:

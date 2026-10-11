@@ -7,26 +7,39 @@ license = "Apache-2.0"
 requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.14",
+    "cryptography>=50.0.2",
     "fastapi>=0.115",
+    "jinja2>=3.1.6",
+    "openai>=3.28.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
+    "prometheus-client>=0.26.0",
     "psycopg[binary]>=3.2",
-    "pydantic-settings>=2.6",
+    "pydantic-settings>=2.7",
     "sqlalchemy[asyncio]>=2.0",
+    "structlog>=26.1.0",
     "uvicorn[standard]>=0.30",
 ]
 
 [dependency-groups]
 dev = [
     "httpx2>=2.13.1",
+    "hypothesis>=6.168.5",
     "import-linter>=2",
     "mypy>=1.13",
     "pip-licenses>=5.5",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pytest-benchmark>=5.3.0",
     "pytest-cov>=6",
     "pyyaml>=6",
     "ruff>=0.8",
+    "schemathesis>=4.28.0",
     "testcontainers[postgres]>=4",
     "types-pyyaml>=6.0.12.20260906",
+]
+perf = [
+    "locust>=2.46.7",
 ]
 
 [project.scripts]
@@ -62,7 +75,7 @@ allow = [
 # Families reported as "denied" rather than "not allowed"; an exception can never admit one of these.
 deny = ["GPL", "AGPL", "SSPL", "EUPL"]
 # package = "one-line rationale"; admits a not-allowed or UNKNOWN license, never a denied family.
-exceptions = {}
+exceptions = { cffi = "MIT-0 (MIT without the attribution clause; permissive like the allowed 0BSD and Unlicense); runtime dependency of cryptography, used unmodified (#51)" }
 
 [tool.importlinter]
 # docs/02 layering — Core is the deterministic layer; not a project invariant (an ordinary PR may relax it).
@@ -74,6 +87,26 @@ type = "forbidden"
 source_modules = ["epistrel.core"]
 forbidden_modules = ["epistrel.orchestrator", "epistrel.api"]
 
+[[tool.importlinter.contracts]]
+# #74: `epistrel.core` imports `epistrel.observability` (the telemetry scope and spans), so
+# observability must not reach the orchestrator, the API or the Engine, or core would through it.
+name = "observability-is-below-orchestrator-and-api"
+type = "forbidden"
+source_modules = ["epistrel.observability"]
+forbidden_modules = ["epistrel.orchestrator", "epistrel.api", "epistrel.engine"]
+
+[[tool.importlinter.contracts]]
+# FR-GUARD-1, NFR-SEC-1 (#49): nothing on the turn path or the event store reaches the policy
+# store's only write path; `tests/test_u_13.py` also checks that `epistrel.engine` is its only importer.
+name = "policy-store-written-only-by-admin"
+type = "forbidden"
+source_modules = [
+    "epistrel.orchestrator.lite",
+    "epistrel.core.events",
+    "epistrel.orchestrator.policies.store",
+]
+forbidden_modules = ["epistrel.orchestrator.policies.admin"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -84,7 +117,7 @@ packages = ["src/epistrel"]
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-src = ["src", "tests", "tools"]
+src = ["src", "tests", "tools", "perf"]
 extend-exclude = ["tests/gates/fixtures"]
 
 [tool.ruff.lint]
@@ -99,9 +132,21 @@ select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "RUF", "ASYNC", "PT"]
 [tool.mypy]
 strict = true
 python_version = "3.14"
-files = ["src", "tests", "migrations", "tools"]
+files = ["src", "tests", "migrations", "tools", "perf"]
 exclude = ["^tests/gates/fixtures/"]
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# The `perf` dependency group (#76: P-04's Locust driver) is installed only for the workload run,
+# so the gate's mypy may not see it.
+module = ["locust", "locust.*", "gevent", "gevent.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Without the `perf` group, Locust is `Any`: the driver still subclasses `User` and uses `@task`.
+module = ["perf.lite_smoke.locustfile"]
+disallow_subclassing_any = false
+disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -109,6 +154,13 @@ pythonpath = ["."]
 addopts = "-ra --strict-markers"
 markers = [
     "integration: needs PostgreSQL (Docker via testcontainers, or EPISTREL_TEST_DATABASE_URL)",
+    "redteam: red-team suite (docs/04 §10, R-xx); runs in PR CI with everything else",
+    "live_model: needs a real OpenAI-compatible endpoint (EPISTREL_LIVE_BASE_URL/_MODEL/_API_KEY); deselected unless -m names it, and fails when those are unset (#54)",
+    "chaos: chaos suite (docs/04 §12, X-xx); every test under tests/chaos/ (auto-marked). PR CI runs only the chaos_quick ones, at their default EPISTREL_CHAOS_ITERATIONS; the weekly chaos.yml runs them all at 500 (#75)",
+    "chaos_quick: the chaos tests PR CI runs (quick at their default iteration count; #75)",
+    "perf_quick: the performance tests PR CI runs (P-03's quick subset; #76); the nightly perf.yml runs them with the perf_long ones",
+    "perf_long: long performance tests (P-03 on the 20,000-event reference story; #76); deselected unless -m names the marker, run nightly by perf.yml. P-04's reference workload itself is `python -m perf.lite_smoke`, not a test",
+    "smoke: the deployment smoke (C-10, #77): every test under tests/smoke/ (auto-marked), run against a live compose stack at EPISTREL_SMOKE_BASE_URL; deselected unless -m names it, and fails when that is unset. publish-edge.yml and release.yml run it before publishing",
     "part(milestone, requirements, interim_until=None): milestone part (docs/04 §13) — gates from <milestone>, covers <requirements>; see tests/README.md",
 ]
 # tests/gates/fixtures holds deliberately broken test trees for the gate checks; pytest must not collect them.

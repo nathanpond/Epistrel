@@ -1,0 +1,11 @@
+# Code owners (FR-MODEL-13). Later, more specific patterns win.
+* @nathanpond
+
+# The Model Access Layer and the documents generated or measured from it are owned by the
+# Model Access Layer's maintainers.
+/src/epistrel/orchestrator/models/ @nathanpond
+/src/epistrel/tools/model_guide.py @nathanpond
+/src/epistrel/tools/model_matrix.py @nathanpond
+/docs/models.md @nathanpond
+/docs/model-matrix.md @nathanpond
+/docs/model-matrix.json @nathanpond

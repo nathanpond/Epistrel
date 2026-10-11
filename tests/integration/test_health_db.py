@@ -7,7 +7,7 @@ import socket
 from fastapi.testclient import TestClient
 
 from epistrel.api import create_app
-from epistrel.config import Settings
+from tests.auth_support import auth_settings
 
 
 def _closed_port() -> int:
@@ -18,18 +18,32 @@ def _closed_port() -> int:
 
 
 def test_health_reports_database_ok(pg_url: str) -> None:
-    with TestClient(create_app(Settings(database_url=pg_url))) as client:
+    """The database answers. This ``api``-mode app runs no worker, so the background half says
+    ``degraded`` (still 200; #71): the database check itself is ``ok``."""
+    with TestClient(create_app(auth_settings(pg_url))) as client:
         response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "checks": {"database": "ok"}}
+    body = response.json()
+    assert body["checks"]["database"] == "ok"
+    assert body["status"] in {"ok", "degraded"}
+    assert isinstance(body["checks"]["workers"]["alive"], int)
 
 
 def test_health_reports_database_error_and_keeps_serving() -> None:
     dsn = f"postgresql+psycopg://u:p@127.0.0.1:{_closed_port()}/nowhere"
-    with TestClient(create_app(Settings(database_url=dsn))) as client:
+    with TestClient(create_app(auth_settings(dsn))) as client:
         first = client.get("/health")
         second = client.get("/health")  # the process did not exit: a second request is answered
     assert first.status_code == 503
-    assert first.json() == {"status": "unavailable", "checks": {"database": "error"}}
+    assert first.json() == {
+        "status": "unavailable",
+        "checks": {
+            "database": "error",
+            "workers": {"alive": None, "last_heartbeat_s": None},
+            "oldest_overdue_timer_s": None,
+            "oldest_overdue_job_s": None,
+        },
+        "content_logging": False,
+    }
     assert second.status_code == 503
     assert second.json()["checks"]["database"] == "error"

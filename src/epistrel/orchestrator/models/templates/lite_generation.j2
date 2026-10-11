@@ -1,0 +1,60 @@
+{#- The single Lite prompt (FR-LITE-1, #57).
+
+The ``system`` block holds, in order: the story rating's prompt guidance (always first,
+FR-RATE-4), the custom instructions, each character's definition as labelled author notes
+(never a public card) in request order, the pinned memories, the rolling summary, then the constant preamble: who is voiced, in request order, and
+the one line that separates the characters' knowledge (FR-LITE-5: by instruction only), and on
+a guardrail regeneration one constraint line per violated output policy (#68).
+Empty sections are left out. The verbatim window follows as chat messages, one per transcript
+row through the ``line`` macro (``prompts.render``), and the ``user`` block is the player input,
+the final ``user`` message. -#}
+{% macro line(entry) -%}
+{% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
+{%- endmacro %}
+{% block system %}
+{% if rating_guidance %}
+## Content rating guidance
+{{ rating_guidance }}
+
+{% endif %}
+{% if custom_instructions %}
+## Custom instructions
+{{ custom_instructions }}
+
+{% endif %}
+{% for character in character_definitions %}
+### Author notes: {{ character.name }}
+{{ character.definition }}
+
+{% endfor %}
+{% if pinned_memories %}
+## Pinned memories
+{% for memory in pinned_memories %}
+- {{ memory }}
+{% endfor %}
+
+{% endif %}
+{% if summary_segments %}
+## Earlier in the story
+{% for segment in summary_segments %}
+{{ segment }}
+{% endfor %}
+
+{% endif %}
+## Your part
+{% if player_input.name in voiced_characters %}
+You voice the listed characters in turn.
+{% else %}
+You voice the listed characters in turn; never speak or act for {{ player_input.name }}.
+{% endif %}
+{% if voiced_characters %}
+Characters you voice: {{ voiced_characters | join(", ") }}.
+{% endif %}
+Each character knows only what their notes and the scene show.
+{% for constraint in policy_constraints %}
+{{ constraint }}
+{% endfor %}
+{% endblock %}
+{% block user %}
+{{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}
+{% endblock %}

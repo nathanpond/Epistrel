@@ -1,9 +1,14 @@
+import base64
+
 import pytest
 
 from epistrel.config import ConfigError, Settings, load_settings
 
+CREDENTIAL = "c" * 32
+
 
 def test_settings_load_from_env(monkeypatch: pytest.MonkeyPatch, dummy_dsn: str) -> None:
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
     monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
     monkeypatch.setenv("EPISTREL_LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("EPISTREL_PORT", "9000")
@@ -31,6 +36,7 @@ def test_non_postgres_url_rejected_without_leaking_value(monkeypatch: pytest.Mon
 
 
 def test_unknown_variable_rejected(monkeypatch: pytest.MonkeyPatch, dummy_dsn: str) -> None:
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
     monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
     monkeypatch.setenv("EPISTREL_FOO", "1")
     with pytest.raises(ConfigError) as exc:
@@ -39,6 +45,7 @@ def test_unknown_variable_rejected(monkeypatch: pytest.MonkeyPatch, dummy_dsn: s
 
 
 def test_test_prefix_is_not_a_setting(monkeypatch: pytest.MonkeyPatch, dummy_dsn: str) -> None:
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
     monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
     monkeypatch.setenv("EPISTREL_TEST_DATABASE_URL", dummy_dsn)
     assert load_settings().port == 8000
@@ -52,3 +59,106 @@ def test_all_problems_reported_together(monkeypatch: pytest.MonkeyPatch) -> None
         "error: EPISTREL_DATABASE_URL: is required",
         "error: EPISTREL_BAR: unknown setting",
     ]
+
+
+def test_service_credentials_split_and_trimmed(
+    monkeypatch: pytest.MonkeyPatch, dummy_dsn: str
+) -> None:
+    """FR-AUTH-1: several comma-separated credentials, all kept, trimmed, empties dropped."""
+    monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", f" {'a' * 32} ,{'b' * 40},, ")
+    creds = [c.get_secret_value() for c in load_settings().service_credentials]
+    assert creds == ["a" * 32, "b" * 40]
+
+
+def test_credentials_required_unless_auth_disabled(
+    monkeypatch: pytest.MonkeyPatch, dummy_dsn: str
+) -> None:
+    monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
+    with pytest.raises(ConfigError) as exc:
+        load_settings()
+    assert exc.value.lines == [
+        "error: EPISTREL_SERVICE_CREDENTIALS: at least one credential of 32+ characters is required"
+    ]
+    monkeypatch.setenv("EPISTREL_AUTH_DISABLED", "1")
+    monkeypatch.setenv("EPISTREL_DEBUG", "true")
+    assert load_settings().service_credentials == []
+
+
+def test_short_credential_rejected_without_leaking_value(
+    monkeypatch: pytest.MonkeyPatch, dummy_dsn: str
+) -> None:
+    monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", f"{'a' * 32},short-secret")
+    with pytest.raises(ConfigError) as exc:
+        load_settings()
+    assert exc.value.lines == [
+        "error: EPISTREL_SERVICE_CREDENTIALS: credential #2 is shorter than 32 characters"
+    ]
+    assert "short-secret" not in str(exc.value)
+
+
+def test_auth_disabled_refused_without_debug(
+    monkeypatch: pytest.MonkeyPatch, dummy_dsn: str
+) -> None:
+    monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
+    monkeypatch.setenv("EPISTREL_AUTH_DISABLED", "1")
+    with pytest.raises(ConfigError) as exc:
+        load_settings()
+    assert exc.value.lines == [
+        "error: EPISTREL_AUTH_DISABLED: is refused unless EPISTREL_DEBUG is on"
+    ]
+
+
+def test_config_key_is_a_known_secret_setting(
+    monkeypatch: pytest.MonkeyPatch, dummy_dsn: str
+) -> None:
+    monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
+    key = base64.urlsafe_b64encode(b"k" * 32).decode()
+    monkeypatch.setenv("EPISTREL_CONFIG_KEY", key)
+    settings = load_settings()
+    assert settings.config_key is not None
+    assert key not in repr(settings)
+    assert Settings.model_fields["config_key"].default is None
+
+
+@pytest.mark.parametrize("bad", ["k" * 44, "short", base64.urlsafe_b64encode(b"x" * 16).decode()])
+def test_config_key_must_be_a_fernet_key(
+    monkeypatch: pytest.MonkeyPatch, dummy_dsn: str, bad: str
+) -> None:
+    """A malformed key is refused at startup and the message never repeats it."""
+    monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
+    monkeypatch.setenv("EPISTREL_CONFIG_KEY", bad)
+    with pytest.raises(ConfigError) as exc:
+        load_settings()
+    assert exc.value.lines == [
+        "error: EPISTREL_CONFIG_KEY: must be URL-safe base64 of 32 bytes (44 characters)"
+    ]
+    assert bad not in str(exc.value)
+
+
+def test_model_adapter_defaults_to_openai_and_refuses_unknown(
+    monkeypatch: pytest.MonkeyPatch, dummy_dsn: str
+) -> None:
+    monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
+    assert load_settings().model_adapter == "openai"
+    monkeypatch.setenv("EPISTREL_MODEL_ADAPTER", "stub")
+    assert load_settings().model_adapter == "stub"
+    monkeypatch.setenv("EPISTREL_MODEL_ADAPTER", "litellm")
+    with pytest.raises(ConfigError, match="EPISTREL_MODEL_ADAPTER"):
+        load_settings()
+
+
+def test_rebuild_async_threshold_defaults_and_validates(
+    monkeypatch: pytest.MonkeyPatch, dummy_dsn: str
+) -> None:
+    monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
+    assert load_settings().rebuild_async_threshold == 10_000
+    monkeypatch.setenv("EPISTREL_REBUILD_ASYNC_THRESHOLD", "0")
+    with pytest.raises(ConfigError, match="EPISTREL_REBUILD_ASYNC_THRESHOLD"):
+        load_settings()

@@ -1,0 +1,17 @@
+# The reference workload's stack (P-04, #76): docker-compose.yml under its own project name
+# (`epistrel-perf`, its own volume and ports, so a developer's `epistrel` stack is untouched),
+# with the stub model answering every call after a fixed 2 s. Used by `python -m perf.lite_smoke`:
+#   docker compose -p epistrel-perf -f docker-compose.yml -f perf/lite_smoke/compose.perf.yml up
+services:
+  db:
+    ports: !override
+      - "127.0.0.1:5442:5432"
+  engine:
+    image: epistrel:perf
+    environment:
+      EPISTREL_MODEL_ADAPTER: stub
+      EPISTREL_STUB_LATENCY_S: "2"
+      EPISTREL_SERVICE_CREDENTIALS: perf-only-credential-0000000000000000
+      EPISTREL_LOG_LEVEL: WARNING
+    ports: !override
+      - "127.0.0.1:8100:8000"

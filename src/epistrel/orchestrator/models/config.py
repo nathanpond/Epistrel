@@ -55,6 +55,8 @@ FINGERPRINT_HEX = 8
 MAX_API_KEY_CHARS = 512
 MAX_MODEL_CHARS = 200
 MAX_BASE_URL_CHARS = 2048
+DEFAULT_STRUCTURED_RETRY_BUDGET = 2
+DEFAULT_UNCERTAIN_BELOW = 0.5
 UNREADABLE_KEY = "unreadable"
 """What a change row records for a stored key that cannot be decrypted (no fingerprint)."""
 
@@ -265,25 +267,69 @@ async def snapshot(db: AsyncEngine) -> tuple[int, dict[str, ConfigRow]]:
     return revision, rows
 
 
+class StructuredSettings(BaseModel):
+    """Deployment settings for structured model results (FR-MODEL-6,7), stored under
+    ``deployment_state.settings``: retries after the first attempt, and the ``confidence``
+    below which a result is ``Uncertain``. Other keys in that document belong to other stories
+    and are ignored here."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    structured_retry_budget: int = Field(default=DEFAULT_STRUCTURED_RETRY_BUDGET, ge=0, le=10)
+    uncertain_below: float = Field(default=DEFAULT_UNCERTAIN_BELOW, ge=0.0, le=1.0)
+
+
+def structured_settings(document: Mapping[str, Any] | None) -> StructuredSettings:
+    """Parse ``deployment_state.settings``; an invalid stored value falls back to the defaults
+    (the conservative ones) with a warning naming the keys, never the values."""
+    try:
+        return StructuredSettings.model_validate(dict(document or {}))
+    except ValidationError as exc:
+        keys = sorted({str(error["loc"][0]) for error in exc.errors() if error["loc"]})
+        log.warning("invalid structured-output settings %s; using the defaults", keys)
+        return StructuredSettings()
+
+
+async def read_structured_settings(conn: AsyncConnection) -> StructuredSettings:
+    document = await conn.scalar(
+        select(deployment_state.c.settings).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+    )
+    return structured_settings(document)
+
+
 class ConfigCache:
-    """The rows as of one ``config_revision``. Every lookup reads the revision first, on its own
-    short connection, and re-reads the rows only when it moved."""
+    """The rows (and the structured-output settings) as of one ``config_revision``. Every
+    lookup reads the revision first, on its own short connection, and re-reads the rows only
+    when it moved."""
 
     def __init__(self) -> None:
         self._revision: int | None = None
         self._rows: dict[str, ConfigRow] = {}
+        self._structured = StructuredSettings()
 
     def clear(self) -> None:
         self._revision, self._rows = None, {}
+        self._structured = StructuredSettings()
 
-    async def rows(self, db: AsyncEngine) -> tuple[int, dict[str, ConfigRow]]:
+    async def _refresh(self, db: AsyncEngine) -> int:
         async with db.connect() as conn:
             revision = await current_revision(conn)
         if revision != self._revision:
-            revision, rows = await snapshot(db)
-            self._revision, self._rows = revision, rows
-            return revision, rows
+            async with db.begin() as conn:
+                await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+                revision = await current_revision(conn)
+                rows = await read_rows(conn)
+                structured = await read_structured_settings(conn)
+            self._revision, self._rows, self._structured = revision, rows, structured
+        return revision
+
+    async def rows(self, db: AsyncEngine) -> tuple[int, dict[str, ConfigRow]]:
+        revision = await self._refresh(db)
         return revision, self._rows
+
+    async def structured(self, db: AsyncEngine) -> tuple[int, StructuredSettings]:
+        revision = await self._refresh(db)
+        return revision, self._structured
 
     async def effective(self, db: AsyncEngine, purpose: str) -> EffectiveConfig:
         revision, rows = await self.rows(db)

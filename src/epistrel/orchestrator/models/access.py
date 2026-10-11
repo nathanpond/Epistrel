@@ -6,10 +6,19 @@ names a delivered purpose: ``call(purpose, inputs, params)`` validates ``inputs`
 purpose's input schema (an undeclared field is refused), renders its template, and completes;
 ``complete(purpose, messages, params)`` sends prepared messages. Under the stub, calls never
 need ``model_config``: the stub only reports the configured model name when a database is bound.
+
+Every call goes through ``send``, which is where provider failures stop (FR-MODEL-6, NFR-REL-3):
+the call is bounded by its timeout (the purpose's ``params.timeout``, default 60 s) and by the
+turn's deadline when a ``TurnBudget`` is passed, whichever is sooner, and debits that budget;
+every SDK exception becomes a ``ModelError`` (``errors.map_provider_error``). An unstructured
+call that answers only whitespace raises ``EmptyCompletion``. Structured results go through
+``structured_call`` (``structured.py``), which never returns a partially parsed object.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -17,8 +26,10 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.adapter import (
+    DEFAULT_TIMEOUT_S,
     REQUEST_FIELDS,
     Message,
     ModelAdapter,
@@ -27,9 +38,21 @@ from epistrel.orchestrator.models.adapter import (
     UndeclaredInput,
     UnknownPurpose,
 )
-from epistrel.orchestrator.models.config import ConfigCache, ConfigEntry, EffectiveConfig, KeyBox
+from epistrel.orchestrator.models.config import (
+    ConfigCache,
+    ConfigEntry,
+    EffectiveConfig,
+    KeyBox,
+    StructuredSettings,
+)
+from epistrel.orchestrator.models.errors import (
+    BudgetExhausted,
+    EmptyCompletion,
+    ModelUnavailable,
+    map_provider_error,
+)
 from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
-from epistrel.orchestrator.models.prompts import render
+from epistrel.orchestrator.models.prompts import payload_fields, render
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
     RESERVED,
@@ -37,7 +60,15 @@ from epistrel.orchestrator.models.registry import (
     Purpose,
     declared_paths,
 )
+from epistrel.orchestrator.models.structured import (
+    DeterministicFirst,
+    ResponseFormatMemo,
+    Uncertain,
+    structured_call,
+)
 from epistrel.orchestrator.models.stub import StubAdapter
+
+log = logging.getLogger(__name__)
 
 
 def get_delivered(name: str) -> Purpose:
@@ -88,25 +119,6 @@ def build_inputs(purpose: Purpose, inputs: InputSchema | Mapping[str, Any]) -> I
         ) from None
 
 
-def _paths(value: Any, prefix: str = "") -> list[str]:
-    """The field paths actually present in a payload (list indexes dropped)."""
-    found: list[str] = []
-    if isinstance(value, BaseModel):
-        for name in type(value).model_fields:
-            path = f"{prefix}{name}"
-            found.append(path)
-            found.extend(_paths(getattr(value, name), f"{path}."))
-    elif isinstance(value, list | tuple):
-        for item in value:
-            found.extend(p for p in _paths(item, prefix) if p not in found)
-    return found
-
-
-def payload_fields(inputs: InputSchema) -> tuple[str, ...]:
-    """Sorted, de-duplicated field paths of a validated payload."""
-    return tuple(sorted(set(_paths(inputs))))
-
-
 def declared_fields(purpose: Purpose) -> frozenset[str]:
     """Every field path ``purpose`` declares (nested models included)."""
     return declared_paths(purpose.input_schema)
@@ -119,6 +131,7 @@ class ModelAccessLayer:
         self.settings = settings
         self.keybox = KeyBox(settings.config_key)
         self.cache = ConfigCache()
+        self.response_format = ResponseFormatMemo()
         self._db: AsyncEngine | None = None
         self.adapter: ModelAdapter = adapter or self._make_adapter(settings)
 
@@ -136,6 +149,7 @@ class ModelAccessLayer:
     def bind(self, db: AsyncEngine | None) -> None:
         self._db = db
         self.cache.clear()
+        self.response_format.clear()
 
     @property
     def db(self) -> AsyncEngine:
@@ -159,17 +173,93 @@ class ModelAccessLayer:
             return None
         return (await self.resolve(purpose)).model
 
+    async def endpoint(self, purpose: str) -> tuple[str, str, int]:
+        """``(base_url, model, config_revision)`` a call for ``purpose`` would use now (the
+        adapter's name stands in for the URL when nothing is configured or bound)."""
+        if self._db is None:
+            return self.adapter.name, self.adapter.name, 0
+        config = await self.resolve(purpose)
+        return config.base_url or self.adapter.name, config.model or "", config.revision
+
+    async def structured_settings(self) -> StructuredSettings:
+        """``structured_retry_budget`` and ``uncertain_below`` as of the current revision."""
+        if self._db is None:
+            return StructuredSettings()
+        return (await self.cache.structured(self.db))[1]
+
+    async def _timeout(self, purpose: str, params: ModelParams) -> float:
+        if params.timeout is not None:
+            return params.timeout
+        if self._db is None:
+            return DEFAULT_TIMEOUT_S
+        return (await self.resolve(purpose)).params.timeout or DEFAULT_TIMEOUT_S
+
+    async def send(
+        self,
+        purpose: str,
+        messages: Sequence[Message],
+        params: ModelParams | None,
+        response_schema: type[BaseModel] | None,
+        *,
+        budget: TurnBudget | None = None,
+    ) -> ModelResult:
+        """One adapter call, exactly as given (``response_schema`` ``None`` sends no
+        ``response_format``), bounded by the call's timeout and the budget's deadline and
+        debited from the budget. Every provider failure leaves as a ``ModelError``."""
+        get_delivered(purpose)
+        params = params or ModelParams()
+        if budget is not None:
+            if budget.expired():
+                raise ModelUnavailable(purpose, "deadline")
+            if not budget.can_afford():
+                raise BudgetExhausted(purpose, budget.used, budget.max_calls)
+        limit, reason = await self._timeout(purpose, params), "timeout"
+        remaining = budget.remaining_s() if budget is not None else None
+        if remaining is not None and remaining < limit:
+            limit, reason = remaining, "deadline"
+        if budget is not None:
+            budget.debit()
+        bound = asyncio.timeout(limit)
+        try:
+            async with bound:
+                return await self.adapter.complete(purpose, messages, params, response_schema)
+        except TimeoutError:
+            if not bound.expired():
+                raise
+            log.warning("model call failed purpose=%s reason=%s", purpose, reason)
+            raise ModelUnavailable(purpose, reason) from None
+        except Exception as exc:
+            mapped = map_provider_error(purpose, exc)
+            if mapped is None:
+                raise
+            # ``from None``: the provider's message can echo the prompt (invariant 3).
+            raise mapped from None
+
     async def complete(
         self,
         purpose: str,
         messages: Sequence[Message],
         params: ModelParams | None = None,
         response_schema: type[BaseModel] | None = None,
+        *,
+        budget: TurnBudget | None = None,
     ) -> ModelResult:
-        """Send prepared ``messages`` for a delivered ``purpose``."""
+        """Send prepared ``messages`` for a delivered ``purpose`` (its declared response schema
+        unless one is given). An unstructured answer of only whitespace is ``EmptyCompletion``."""
         declared = get_delivered(purpose)
         schema = response_schema if response_schema is not None else declared.response_schema
-        return await self.adapter.complete(purpose, messages, params or ModelParams(), schema)
+        result = await self.send(purpose, messages, params, schema, budget=budget)
+        if schema is None and not result.text.strip():
+            raise EmptyCompletion(purpose)
+        return result
+
+    def prepare(
+        self, purpose: str, inputs: InputSchema | Mapping[str, Any]
+    ) -> tuple[Purpose, InputSchema, list[Message]]:
+        """The delivered purpose, ``inputs`` validated as its schema, and the rendered prompt."""
+        declared = get_delivered(purpose)
+        payload = build_inputs(declared, inputs)
+        return declared, payload, render(declared, payload)
 
     async def call(
         self,
@@ -177,16 +267,37 @@ class ModelAccessLayer:
         inputs: InputSchema | Mapping[str, Any],
         params: ModelParams | None = None,
         response_schema: type[BaseModel] | None = None,
+        *,
+        budget: TurnBudget | None = None,
     ) -> ModelResult:
         """Validate ``inputs`` against the purpose's schema, render its template, complete."""
-        declared = get_delivered(purpose)
-        payload = build_inputs(declared, inputs)
-        messages = render(declared, payload)
+        _, payload, messages = self.prepare(purpose, inputs)
         token = REQUEST_FIELDS.set(payload_fields(payload))
         try:
-            return await self.complete(purpose, messages, params, response_schema)
+            return await self.complete(purpose, messages, params, response_schema, budget=budget)
         finally:
             REQUEST_FIELDS.reset(token)
+
+    async def structured_call[T: BaseModel](
+        self,
+        purpose: str,
+        schema: type[T],
+        inputs: InputSchema | Mapping[str, Any],
+        *,
+        params: ModelParams | None = None,
+        deterministic_first: DeterministicFirst[T] | None = None,
+        budget: TurnBudget,
+    ) -> T | Uncertain:
+        """A validated ``schema`` instance or ``Uncertain`` (see ``structured.structured_call``)."""
+        return await structured_call(
+            self,
+            purpose,
+            schema,
+            inputs,
+            params=params,
+            deterministic_first=deterministic_first,
+            budget=budget,
+        )
 
     async def configuration(self) -> tuple[int, dict[str, ConfigEntry]]:
         """``config_revision`` and every configurable purpose (``default`` included)."""

@@ -24,12 +24,19 @@ class EpistrelError(Exception):
     def envelope(self) -> dict[str, Any]:
         return {"error": {"code": self.code, "message": self.message, "details": self.details}}
 
+    def response_headers(self) -> dict[str, str]:
+        """Headers a REST response for this error carries (none by default)."""
+        return {}
+
 
 class Unauthenticated(EpistrelError):
     """No valid service credential (FR-AUTH-1)."""
 
     code = "unauthenticated"
     http_status = 401
+
+    def response_headers(self) -> dict[str, str]:
+        return {"WWW-Authenticate": "Bearer"}
 
 
 class PrincipalRequired(EpistrelError):

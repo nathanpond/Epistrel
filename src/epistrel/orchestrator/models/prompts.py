@@ -119,6 +119,25 @@ TEMPLATES: Mapping[str, Template] = types.MappingProxyType(load_templates(DELIVE
 """Every delivered purpose's checked template, by purpose name (checked at import)."""
 
 
+def _paths(value: Any, prefix: str = "") -> list[str]:
+    """The field paths actually present in a payload (list indexes dropped)."""
+    found: list[str] = []
+    if isinstance(value, BaseModel):
+        for name in type(value).model_fields:
+            path = f"{prefix}{name}"
+            found.append(path)
+            found.extend(_paths(getattr(value, name), f"{path}."))
+    elif isinstance(value, list | tuple):
+        for item in value:
+            found.extend(p for p in _paths(item, prefix) if p not in found)
+    return found
+
+
+def payload_fields(inputs: InputSchema) -> tuple[str, ...]:
+    """Sorted, de-duplicated field paths of a validated payload."""
+    return tuple(sorted(set(_paths(inputs))))
+
+
 def render(purpose: Purpose, inputs: InputSchema) -> list[Message]:
     """The system and user messages of ``purpose`` for ``inputs`` (already validated)."""
     return render_blocks(TEMPLATES[purpose.name], inputs)
@@ -131,5 +150,6 @@ __all__ = [
     "example_instance",
     "load_templates",
     "make_environment",
+    "payload_fields",
     "render",
 ]

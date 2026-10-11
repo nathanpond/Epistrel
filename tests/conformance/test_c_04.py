@@ -10,14 +10,19 @@ import json
 import os
 from collections.abc import AsyncIterator, Iterator
 
+import httpx2 as httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.policies.model import Policy
 from epistrel.engine import Engine
+from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
 from epistrel.orchestrator.models.prompts import example_instance
 from epistrel.orchestrator.models.registry import DELIVERED, GuardrailVerdict
+from epistrel.orchestrator.models.stub import GARBAGE
+from epistrel.testing.ops import TEST_EVENT, GuardedReplyEvent, guarded_reply, make_policy
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.suite import (
     DEFAULT_KEY,
@@ -25,6 +30,7 @@ from tests.conformance.suite import (
     HOUSE_MODEL,
     run_suite,
 )
+from tests.event_support import new_story
 from tests.model_support import (
     MockOpenAI,
     admin_client,
@@ -33,6 +39,13 @@ from tests.model_support import (
     put,
     put_key,
     restored_model_config,
+)
+from tests.structured_support import (
+    CHECK,
+    POLICY_PROMPT,
+    nothing_conclusive,
+    story_state,
+    structured_settings,
 )
 
 ADAPTERS = ("openai", "stub")
@@ -162,3 +175,144 @@ async def test_c_04__runtime(
         assert adapter.closed_clients >= 1  # superseded clients were closed once idle
     else:
         assert mock.requests == []
+
+
+async def _point_default_at(client: httpx.AsyncClient, mock: MockOpenAI) -> None:
+    await put(client, "default", {"base_url": f"{mock.root}/v1", "model": "house-model"})
+    await put_key(client, "default", DEFAULT_KEY)
+
+
+def _adapter_calls(engine: Engine, mock: MockOpenAI) -> int:
+    if engine.models.adapter.name == "openai":
+        return len(mock.requests)
+    return len(engine.models.stub.calls)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M2", "FR-MODEL-6,7")
+async def test_c_04__structured_output(
+    model_engine: Engine, adapter_settings: Settings, mock: MockOpenAI, engine: AsyncEngine
+) -> None:
+    """Structured results under both adapters: the ``json_schema`` path validates; an endpoint
+    that answers ``response_format`` with a 400 is served by parse-validate-retry on attempt 2;
+    garbage on every attempt is ``Uncertain`` and the caller's conservative default decides.
+
+    Complement asserted: the garbage text appears nowhere in the story's events, while the
+    reply ``generation`` produced on a clean run does (so the search can find payload text)."""
+    models = model_engine.models
+    openai_kind = adapter_settings.model_adapter == "openai"
+    async with admin_client(adapter_settings, model_engine) as client:
+        await _point_default_at(client, mock)
+
+        # json_schema: one call, constrained decoding requested, a validated verdict.
+        budget = TurnBudget()
+        verdict = await models.structured_call(
+            "guardrail_check",
+            GuardrailVerdict,
+            CHECK,
+            deterministic_first=nothing_conclusive,
+            budget=budget,
+        )
+        assert verdict == GuardrailVerdict(violation=False, confidence=1.0)
+        assert budget.used == 1
+
+        # A configuration write moves the revision; the endpoint now rejects response_format.
+        await put(client, "guardrail_check", {"model": "strict-less-model"})
+        if openai_kind:
+            mock.reject_response_format = True
+        else:
+            models.stub.fault("guardrail_check", "response_format_400")
+        budget = TurnBudget()
+        verdict = await models.structured_call(
+            "guardrail_check",
+            GuardrailVerdict,
+            CHECK,
+            deterministic_first=nothing_conclusive,
+            budget=budget,
+        )
+        assert verdict == GuardrailVerdict(violation=False, confidence=1.0)
+        assert budget.used == 2  # the 400 probe, then the fallback that succeeded
+        if openai_kind:
+            sent = ["response_format" in r.body for r in mock.requests]
+            assert sent == [True, True, False]
+            mock.reject_response_format = False
+        else:
+            assert [c.response_schema for c in models.stub.calls[-2:]] == [
+                "GuardrailVerdict",
+                None,
+            ]
+
+        # Garbage twice with structured_retry_budget 1 → Uncertain → the policy's default.
+        story = await new_story(engine)
+        clean = await guarded_reply(
+            model_engine, story, "a quiet road", principal="p-test", policies=[model_policy()]
+        )
+        async with structured_settings(engine, structured_retry_budget=1):
+            if openai_kind:
+                mock.script.extend([GARBAGE, GARBAGE])
+            else:
+                models.stub.fault("guardrail_check", "garbage", 2)
+            before = _adapter_calls(model_engine, mock)
+            op = await guarded_reply(
+                model_engine, story, "a dark wood", principal="p-test", policies=[model_policy()]
+            )
+            assert _adapter_calls(model_engine, mock) - before == 2
+
+    state = await story_state(engine, story)
+    payload = op.staged[0].payload
+    assert isinstance(payload, GuardedReplyEvent)
+    assert (payload.input_violation, payload.input_decided_by) == (True, "uncertain")
+    assert payload.reply is None  # refused: no generation call was made
+    assert state.statuses[op.operation_id] == "committed"
+    assert GARBAGE not in state.payloads
+    assert "stub garbage" not in state.payloads
+    # The complement: the clean run's reply is in the log, so the search sees payload text.
+    clean_payload = clean.staged[0].payload
+    assert isinstance(clean_payload, GuardedReplyEvent)
+    assert clean_payload.reply
+    assert json.dumps(clean_payload.reply)[1:-1] in state.payloads  # as stored (JSON-escaped)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M2", "FR-MODEL-5")
+async def test_c_04__deterministic_first(
+    model_engine: Engine, adapter_settings: Settings, mock: MockOpenAI, engine: AsyncEngine
+) -> None:
+    """A word-list violation decides the guardrail check with **zero** adapter calls, under
+    both adapters. Complement asserted: an input the word list does not catch goes to the model
+    (the check on input and output, and the generation between them)."""
+    async with admin_client(adapter_settings, model_engine) as client:
+        await _point_default_at(client, mock)
+        story = await new_story(engine)
+        policies = [
+            make_policy({"type": "wordlist", "words": ["dragon"]}, name="w"),
+            model_policy(),
+        ]
+
+        before = _adapter_calls(model_engine, mock)
+        caught = await guarded_reply(
+            model_engine, story, "A dragon lands.", principal="p-test", policies=policies
+        )
+        assert _adapter_calls(model_engine, mock) == before  # zero model calls
+
+        passed = await guarded_reply(
+            model_engine, story, "A knight lands.", principal="p-test", policies=policies
+        )
+        assert _adapter_calls(model_engine, mock) - before == 3
+
+    first, second = caught.staged[0].payload, passed.staged[0].payload
+    assert isinstance(first, GuardedReplyEvent)
+    assert isinstance(second, GuardedReplyEvent)
+    assert (first.input_violation, first.input_decided_by, first.reply) == (
+        True,
+        "deterministic",
+        None,
+    )
+    assert (second.input_violation, second.input_decided_by) == (False, "model")
+    assert second.reply
+    state = await story_state(engine, story)
+    assert state.events[caught.operation_id] == [TEST_EVENT]
+
+
+def model_policy() -> Policy:
+    return make_policy({"type": "model_assisted", "prompt": POLICY_PROMPT}, name="model")

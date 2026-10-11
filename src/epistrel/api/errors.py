@@ -1,4 +1,8 @@
-"""The single mapping from errors to the REST envelope ``{"error": {code, message, details}}``."""
+"""The single mapping from errors to the REST envelope ``{"error": {code, message, details}}``.
+
+A model failure that escapes a turn arrives here as ``ModelUnavailable`` (503
+``model_unavailable``, ``details.purpose``/``reason``), after its operation was rolled back.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from epistrel.core.errors import EpistrelError, InvalidRequest, Unauthenticated
+from epistrel.core.errors import EpistrelError, InvalidRequest
 
 
 def field_path(loc: tuple[int | str, ...] | list[int | str]) -> str:
@@ -22,8 +26,10 @@ def field_path(loc: tuple[int | str, ...] | list[int | str]) -> str:
 
 
 async def epistrel_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Every ``EpistrelError``, with the headers it asks for: ``WWW-Authenticate`` on 401, and
+    the provider's ``Retry-After`` on a rate-limited 503 ``model_unavailable`` (#53)."""
     assert isinstance(exc, EpistrelError)  # noqa: S101 - registered for EpistrelError only
-    headers = {"WWW-Authenticate": "Bearer"} if isinstance(exc, Unauthenticated) else None
+    headers = exc.response_headers() or None
     return JSONResponse(exc.envelope(), status_code=exc.http_status, headers=headers)
 
 

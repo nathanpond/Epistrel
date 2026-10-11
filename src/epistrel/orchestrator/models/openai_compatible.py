@@ -10,7 +10,10 @@ at the current ``config_revision``; when the revision moves, the next call build
 each old one is closed as soon as its in-flight calls finish (FR-MODEL-4).
 
 ``max_tokens`` is sent as ``max_completion_tokens``; an endpoint that answers that with a 400
-is retried once with the legacy ``max_tokens`` and remembered.
+is retried once with the legacy ``max_tokens`` and remembered (a 400 about ``response_format``
+is the structured caller's, #53). SDK exceptions escape as themselves; the Model Access Layer
+maps them (``errors.map_provider_error``), and a 200 that is not a chat completion raises
+``ProviderGarbage``.
 
 Logs carry the purpose, model, latency and the key's fingerprint only — never prompt or reply
 text (invariant 3).
@@ -25,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import openai
+from openai.types.chat import ChatCompletion
 from pydantic import BaseModel
 
 from epistrel.orchestrator.models.adapter import (
@@ -35,6 +39,7 @@ from epistrel.orchestrator.models.adapter import (
     ModelUnavailable,
 )
 from epistrel.orchestrator.models.config import EffectiveConfig, KeyBox, key_fingerprint
+from epistrel.orchestrator.models.errors import ProviderGarbage
 
 log = logging.getLogger(__name__)
 
@@ -172,18 +177,25 @@ class OpenAICompatibleAdapter:
         body = request_body(model, messages, effective, response_schema, legacy_max_tokens=legacy)
         try:
             completion = await client.chat.completions.create(**body, timeout=timeout)
-        except openai.BadRequestError:
-            if legacy or effective.max_tokens is None:
+        except openai.BadRequestError as exc:
+            if legacy or effective.max_tokens is None or "response_format" in exc.message:
                 raise
             self._legacy_max_tokens.add(base_url)
             body = request_body(model, messages, effective, response_schema, legacy_max_tokens=True)
             completion = await client.chat.completions.create(**body, timeout=timeout)
         latency_ms = round((time.perf_counter() - started) * 1000)
-        choice = completion.choices[0] if completion.choices else None
+        # A 200 whose body is not a chat completion (an HTML page, ``{}``, no choices) is
+        # garbage, not an empty answer.
+        if not isinstance(completion, ChatCompletion) or not completion.choices:
+            raise ProviderGarbage(f"{purpose}: the response is not a chat completion")
+        choice = completion.choices[0]
+        if getattr(choice, "message", None) is None:
+            raise ProviderGarbage(f"{purpose}: the response has no message")
         usage = completion.usage
         result = ModelResult(
-            text=(choice.message.content or "") if choice is not None else "",
-            finish_reason=choice.finish_reason if choice is not None else None,
+            text=choice.message.content or "",
+            finish_reason=choice.finish_reason,
+            refused=bool(choice.message.refusal),
             model=completion.model or model,
             latency_ms=latency_ms,
             tokens_in=usage.prompt_tokens if usage is not None else None,

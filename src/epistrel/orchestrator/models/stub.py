@@ -3,16 +3,25 @@
 With nothing scripted, the stub answers ``[stub <purpose> <sha256[:12]>] <first 40 characters
 of the last user message>``, where the hash covers the purpose, the messages and the params:
 the same request yields byte-identical output in every process. With a ``response_schema`` it
-answers a schema-conformant JSON object instead (``{"violation": false, "confidence": 1.0, ...}``
+answers a schema-conformant JSON object instead (``{"confidence": 1.0, "violation": false}``
 for the guardrail verdict).
 
 Tests drive it through the Model Access Layer's ``stub`` (the ``stub`` fixture):
 ``script(purpose, [responses])`` queues answers (FIFO; exhausted → the default),
 ``when(substring, response)`` answers any request whose messages contain ``substring``,
-``fault(purpose, kind, n)`` makes the next ``n`` calls fail (``timeout`` and ``http_500`` raise
-the ``openai`` SDK's own exception types; ``garbage`` returns unparseable text), ``hold(purpose)``
-latches calls until released, and ``calls`` records every request (purpose, messages, params,
-declared field paths, model). ``nondeterministic = True`` salts the hash per call.
+``fault(purpose, kind, n)`` makes the next ``n`` calls fail: ``timeout``, ``connection``,
+``http_500``, ``http_429`` (with ``Retry-After``), ``http_401``, ``response_format_400`` and
+``bad_body`` raise the ``openai`` SDK's own exception types; ``garbage`` answers unparseable
+text, ``empty`` answers nothing, ``refusal`` and ``length`` answer with the provider's refusal
+flag or a ``length`` finish; ``hang`` never answers (the Model Access Layer's timeout ends it).
+``fault_hook`` (a callable of the purpose) is consulted on every call with no queued fault,
+so a chaos test can draw faults at random. ``hold(purpose)`` latches calls until released, and
+``calls`` records every request (purpose, messages, params, declared field paths, model).
+``nondeterministic = True`` salts the hash per call.
+
+A purpose that declares a response schema (``guardrail_check``) answers schema-conformant JSON
+by default whether or not the request carried ``response_format``, as a model following the
+schema in its prompt would.
 """
 
 from __future__ import annotations
@@ -40,13 +49,30 @@ from epistrel.orchestrator.models.adapter import (
     ModelParams,
     ModelResult,
 )
+from epistrel.orchestrator.models.registry import DELIVERED
 
 STUB_URL = "http://stub.invalid/v1/chat/completions"
 STUB_MODEL = "stub"
 GARBAGE = '<<stub garbage>> {"violation": tru'
 DEFAULT_PREVIEW_CHARS = 40
 
-type FaultKind = Literal["timeout", "http_500", "garbage"]
+type FaultKind = Literal[
+    "timeout",
+    "connection",
+    "http_500",
+    "http_429",
+    "http_401",
+    "response_format_400",
+    "bad_body",
+    "garbage",
+    "empty",
+    "refusal",
+    "length",
+    "hang",
+]
+FAULT_KINDS: tuple[FaultKind, ...] = typing.get_args(FaultKind.__value__)
+RETRY_AFTER = "2"
+"""The ``Retry-After`` the stub's ``http_429`` fault sends."""
 type ModelLookup = Callable[[str], Awaitable[str | None]]
 
 
@@ -136,12 +162,30 @@ def conformant_example(schema: type[BaseModel]) -> dict[str, Any]:
 
 
 def _fault_error(kind: FaultKind) -> Exception | None:
+    """The SDK exception a transport fault raises (``None`` for faults that answer)."""
     request = httpx2.Request("POST", STUB_URL)
     if kind == "timeout":
         return openai.APITimeoutError(request=request)
+    if kind == "connection":
+        return openai.APIConnectionError(request=request)
     if kind == "http_500":
         response = httpx2.Response(500, request=request)
         return openai.InternalServerError("stub fault: http_500", response=response, body=None)
+    if kind == "http_429":
+        response = httpx2.Response(429, request=request, headers={"Retry-After": RETRY_AFTER})
+        return openai.RateLimitError("stub fault: http_429", response=response, body=None)
+    if kind == "http_401":
+        response = httpx2.Response(401, request=request)
+        return openai.AuthenticationError("stub fault: http_401", response=response, body=None)
+    if kind == "response_format_400":
+        response = httpx2.Response(400, request=request)
+        body = {"error": {"message": "response_format json_schema is not supported"}}
+        return openai.BadRequestError(
+            "stub fault: response_format is not supported", response=response, body=body
+        )
+    if kind == "bad_body":
+        response = httpx2.Response(200, request=request)
+        return openai.APIResponseValidationError(response=response, body=None)
     return None
 
 
@@ -159,6 +203,8 @@ class StubAdapter:
         self._faults: defaultdict[str, deque[FaultKind]] = defaultdict(deque)
         self._when: list[tuple[str, str]] = []
         self._latches: dict[str, StubLatch] = {}
+        self.fault_hook: Callable[[str], FaultKind | None] | None = None
+        """Consulted on every call with no queued fault (chaos tests draw faults at random)."""
 
     # -- test controls --------------------------------------------------------------------
 
@@ -183,6 +229,7 @@ class StubAdapter:
         self._faults.clear()
         self._when.clear()
         self._latches.clear()
+        self.fault_hook = None
         self.nondeterministic = False
 
     # -- the adapter ----------------------------------------------------------------------
@@ -208,8 +255,10 @@ class StubAdapter:
         for substring, response in self._when:
             if any(substring in m.content for m in messages):
                 return response
-        if response_schema is not None:
-            example = conformant_example(response_schema)
+        declared = DELIVERED.get(purpose)
+        schema = response_schema or (declared.response_schema if declared else None)
+        if schema is not None:
+            example = conformant_example(schema)
             return json.dumps(example, sort_keys=True, separators=(",", ":"))
         return self._default_text(purpose, digest, messages)
 
@@ -241,17 +290,28 @@ class StubAdapter:
         if self.nondeterministic:
             digest = hashlib.sha256(digest.encode() + os.urandom(16)).hexdigest()
         text: str | None = None
-        if self._faults[purpose]:
-            kind = self._faults[purpose].popleft()
+        finish_reason, refused = "stop", False
+        kind = self._faults[purpose].popleft() if self._faults[purpose] else None
+        if kind is None and self.fault_hook is not None:
+            kind = self.fault_hook(purpose)
+        if kind is not None:
             error = _fault_error(kind)
             if error is not None:
                 raise error
-            text = GARBAGE
+            if kind == "hang":
+                await asyncio.Event().wait()
+            text = {"garbage": GARBAGE, "empty": "  \n", "refusal": ""}.get(kind)
+            refused = kind == "refusal"
+            if kind == "length":
+                finish_reason = "length"
         if text is None:
             text = self._answer(purpose, messages, digest, response_schema)
+            if finish_reason == "length":
+                text = text[: len(text) // 2]
         return ModelResult(
             text=text,
-            finish_reason="stop",
+            finish_reason=finish_reason,
+            refused=refused,
             model=model,
             latency_ms=1,
             tokens_in=sum(len(m.content) for m in messages) // 4,
@@ -265,7 +325,9 @@ class StubAdapter:
 
 
 __all__ = [
+    "FAULT_KINDS",
     "GARBAGE",
+    "RETRY_AFTER",
     "STUB_MODEL",
     "StubAdapter",
     "StubCall",

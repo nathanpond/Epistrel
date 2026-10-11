@@ -14,13 +14,28 @@ from epistrel.orchestrator.models.adapter import (
     ModelResult,
     ModelUnavailable,
 )
-from epistrel.orchestrator.models.registry import DELIVERED, RESERVED, ContentCategory, Purpose
+from epistrel.orchestrator.models.errors import (
+    BudgetExhausted,
+    EmptyCompletion,
+    ResponseFormatRejected,
+)
+from epistrel.orchestrator.models.registry import (
+    DELIVERED,
+    RESERVED,
+    ContentCategory,
+    GuardrailVerdict,
+    Purpose,
+)
+from epistrel.orchestrator.models.structured import Uncertain
 from epistrel.orchestrator.models.stub import StubAdapter
 
 __all__ = [
     "DELIVERED",
     "RESERVED",
+    "BudgetExhausted",
     "ContentCategory",
+    "EmptyCompletion",
+    "GuardrailVerdict",
     "Message",
     "ModelAccessLayer",
     "ModelAdapter",
@@ -29,5 +44,7 @@ __all__ = [
     "ModelResult",
     "ModelUnavailable",
     "Purpose",
+    "ResponseFormatRejected",
     "StubAdapter",
+    "Uncertain",
 ]

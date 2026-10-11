@@ -136,13 +136,14 @@ class LiteSummaryInputs(InputSchema):
 
 
 class GuardrailVerdict(BaseModel):
-    """The structured result of a model-assisted guardrail check (#53 validates it)."""
+    """The structured result of a model-assisted guardrail check, validated strictly by
+    ``structured.structured_call``. No free-text field: a verdict carries nothing a model could
+    smuggle story content through."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     violation: bool
     confidence: float = Field(ge=0.0, le=1.0)
-    reason: str = ""
 
 
 # -- purposes ---------------------------------------------------------------------------------

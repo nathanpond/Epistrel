@@ -16,13 +16,13 @@ from collections.abc import Iterable
 from typing import Any
 
 import httpx2 as httpx
-import openai
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.engine import Engine
 from epistrel.orchestrator.models.config import KeyBox
+from epistrel.orchestrator.models.errors import ModelUnavailable
 from epistrel.orchestrator.models.prompts import example_instance
 from epistrel.orchestrator.models.registry import DELIVERED
 from tests.auth_support import auth_settings, bearer
@@ -138,10 +138,17 @@ async def test_c_09(pg_url: str, engine: AsyncEngine, caplog: pytest.LogCaptureF
                 async with admin_client(settings, epistrel) as client:
                     seen = await exercise(epistrel, client, mock.root, canaries)
                     mock.fail_with = 500
-                    with pytest.raises(openai.InternalServerError):
+                    with pytest.raises(ModelUnavailable) as failed:
                         await epistrel.models.call(
                             "generation", example_instance(DELIVERED["generation"].input_schema)
                         )
+                    # #53: the provider failure is mapped, its text redacted to the class.
+                    assert failed.value.details == {
+                        "purpose": "generation",
+                        "reason": "http_error",
+                        "provider_status": 500,
+                    }
+                    assert failed.value.__cause__ is None
                     deleted = await client.delete(
                         "/admin/model-config/generation/api-key", headers=OPERATOR_HEADERS
                     )

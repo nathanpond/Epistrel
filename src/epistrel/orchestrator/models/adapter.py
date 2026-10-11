@@ -6,8 +6,8 @@ completion for a purpose and returns a ``ModelResult``. Two implementations ship
 ``StubAdapter`` (deterministic, for tests). ``EPISTREL_MODEL_ADAPTER`` picks one; nothing in
 ``epistrel.core`` knows which.
 
-Transport failures surface as the SDK's own exception types from both adapters; #53 maps them
-to ``ModelUnavailable``.
+Transport failures surface as the SDK's own exception types from both adapters;
+``ModelAccessLayer`` maps every one to a ``ModelError`` (``errors.map_provider_error``).
 """
 
 from __future__ import annotations
@@ -18,7 +18,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from epistrel.core.errors import EpistrelError, InvalidRequest
+from epistrel.core.errors import InvalidRequest
+from epistrel.orchestrator.models.errors import ModelError, ModelUnavailable
 
 DEFAULT_TIMEOUT_S = 60.0
 """Per-call timeout when neither the purpose's config nor the call sets one."""
@@ -73,27 +74,9 @@ class ModelResult(BaseModel):
     tokens_out: int | None = None
     cost: float | None = None
     request_id: str | None = None
-
-
-class ModelError(EpistrelError):
-    """Base of every Model Access Layer failure (provisional; #53 completes the family)."""
-
-    code = "model_error"
-    http_status = 502
-
-
-class ModelUnavailable(ModelError):
-    """No usable model for the purpose. ``details``: ``purpose`` and ``reason``
-    (``not_configured``, ``no_api_key``, ``auth``)."""
-
-    code = "model_unavailable"
-    http_status = 503
-
-    def __init__(self, purpose: str, reason: str, message: str | None = None) -> None:
-        super().__init__(
-            message or f"no model is available for {purpose!r} ({reason})",
-            details={"purpose": purpose, "reason": reason},
-        )
+    refused: bool = False
+    """The provider set the message's ``refusal`` instead of answering (structured calls treat
+    it as unparseable)."""
 
 
 class UnknownPurpose(InvalidRequest):

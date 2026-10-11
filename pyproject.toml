@@ -126,6 +126,7 @@ addopts = "-ra --strict-markers"
 markers = [
     "integration: needs PostgreSQL (Docker via testcontainers, or EPISTREL_TEST_DATABASE_URL)",
     "redteam: red-team suite (docs/04 §10, R-xx); runs in PR CI with everything else",
+    "chaos: chaos suite (docs/04 §12, X-xx); the quick form (EPISTREL_CHAOS_ITERATIONS, default 50) runs in PR CI with everything else",
     "part(milestone, requirements, interim_until=None): milestone part (docs/04 §13) — gates from <milestone>, covers <requirements>; see tests/README.md",
 ]
 # tests/gates/fixtures holds deliberately broken test trees for the gate checks; pytest must not collect them.

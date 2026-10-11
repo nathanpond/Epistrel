@@ -333,3 +333,42 @@ Process:
 - **Decision:** The AC "principal stored on `operations.principal` and every event" is delivered as far as the `RequestContext` carrying the principal to the Engine. The stored-column assertion is #45's, as is S-TRUST-BOUNDARY's `operations` row-count check. "No side effects" is proven here with a spy on the Engine call.
   **Why:** Discretion (pass 1): "#44 proves 'no side effects' with a spy … and leaves the operations.principal assertion to #45's test". The `operations` table does not exist yet.
   **Issue:** #44
+- **Decision:** The write side is the package `epistrel.core.events/` (`operation.py`, `registry.py`, `types.py`, `__init__` exporting `Operation`), not the single module `events.py` the story's artifact list names. The tables live in `core/tables/` (`base.py` holds the shared `metadata`, which moved out of `core/schema.py`; `schema.py` re-exports it and imports the tables). The enums are in `core/enums.py` and the ULID generator in `core/ids.py`.
+  **Why:** The Discretion lines require both `epistrel.core.events.registry` and `core/events/types.py`, and a single module cannot hold both. Moving `metadata` breaks the circular import between `schema.py` and the table modules, and existing imports from `epistrel.core.schema` still work.
+  **Issue:** #45
+- **Decision:** ULIDs come from a 10-line stdlib generator (`epistrel.core.ids.new_ulid`: 48-bit ms timestamp + 80 random bits, Crockford base32). No ULID package was added.
+  **Why:** The `char(26)` ULID decision (#44) needs only generation. A new runtime dependency would mean a version lookup and a license review for something this small. Low cost to swap later.
+  **Issue:** #45
+- **Decision:** The CHECK is `kind <> 'turn' OR status <> 'committed' OR narrative_turn IS NOT NULL` (`ck_operations_turn_has_position`), not the literal `kind = 'turn' → narrative_turn IS NOT NULL`.
+  **Why:** The operations row is inserted `in_flight` at `begin()` (pass 2), but the turn index is allocated only under the story lock at `commit()` (pass 1). The literal CHECK would reject every turn's `begin()`. Every committed turn still has a position.
+  **Issue:** #45
+- **Decision:** Leaving `async with Operation(...)` without `commit()` marks the operation `failed` when an exception escapes and `abandoned` otherwise; `op.abandon()` does the same explicitly. A failure inside `commit()` rolls the transaction back and then marks `failed` in its own transaction. If that write fails too, the original error still propagates, with a note attached.
+  **Why:** Discretion says `__aexit__` rolls back unless `commit()` was called, but it names no status for a clean exit. `abandoned` is the only non-failure terminal state. A process crash leaves the row `in_flight` for #70's recovery pass to resolve.
+  **Issue:** #45
+- **Decision:** Positioning. A `turn` with no `turn=` takes `next_turn_index`, variant 1, and advances the index. A `turn` with `turn=N` (regenerate) takes the next variant of N and does not advance. A non-turn operation with `turn=N` takes N's active committed turn variant; with no active variant, or with N not yet reached, it raises `InvalidRequest`. Without `turn=` it is position-less. `slot_k` is never assigned yet.
+  **Why:** FR-STORE-8,24, and Discretion pass 1 ("auto-assigns the turn index unless `turn=` is passed"). Inter-turn slot allocation (FR-STORE-31) belongs to the story that first writes inter-turn operations. The views already exclude N's slots from "through N".
+  **Issue:** #45
+- **Decision:** Story-less operations (`story_id` NULL, deployment-scoped control) serialise on `pg_advisory_xact_lock(0x4550495354)` and get a dense `seq` among story-less events. A `turn` or `genesis` operation without a story is refused.
+  **Why:** Discretion pass 2 allows `story_id=None`, but such an operation has no story row to lock, and the unique `(story_id, seq)` treats NULLs as distinct.
+  **Issue:** #45
+- **Decision:** The `events` trigger raises SQLSTATE `EPI01` on any UPDATE, on DELETE, and on TRUNCATE (a separate statement trigger). There are two DELETE exemptions: `current_setting('epistrel.allow_story_delete', true) = story_id`, and `category = 'audit'` with `epistrel.allow_audit_expiry = 'on'`. The `operations` guard compares `to_jsonb(NEW) - allow_list` with the same expression on `OLD` and raises `EPI02`. The allow-list is #44's twelve columns, mirrored as `MUTABLE_OPERATION_COLUMNS` and checked against `pg_proc` by a test.
+  **Why:** The AC fixes `EPI01` for events, so operations get their own code. The value `'on'` for audit expiry is my choice, because #71 owns the deletion. The `to_jsonb` diff keeps the allow-list in one array.
+  **Issue:** #45
+- **Decision:** The `operations` table gets every column in the allow-list: `read_set`, `config_revisions` and `turn_report` as jsonb, `attempts` as int default 0, and `viewpoint` as text. It also gets `source_window` jsonb and `slot_k`. It does not get docs/02's singular `config_revision`. I also added an index on `(story_id, narrative_turn, turn_variant)` on `operations`.
+  **Why:** Discretion pass 2 names `config_revisions` (plural) as nullable in M2, and #44's allow-list names the other columns. The index serves turn-variant lookups at commit time.
+  **Issue:** #45
+- **Decision:** Payload errors are `EpistrelError`s: `UnregisteredEventType` (code `unsupported_event_kind`, 422) and `InvalidEventPayload` (a subclass of `InvalidRequest`, code `validation_error`). The details carry only the type and the failing field paths, never the values.
+  **Why:** `ingest` (#58) will surface these to consumers through the error envelope. Leaving values out keeps story content out of errors and logs (invariant 3).
+  **Issue:** #45
+- **Decision:** The migration freezes its own copy of the enum labels and does not import `epistrel.core.enums`. A test asserts that the database labels equal the Python enums. `stories.status` is text, default `'ready'`.
+  **Why:** Migrations must not change when application code changes. #50 owns the story status vocabulary.
+  **Issue:** #45
+- **Decision:** `create_story` (`core/stories.py`) inserts the story row and commits the genesis operation in two transactions. It is a minimal helper, not atomic story creation.
+  **Why:** Discretion pass 2 asks for a minimal genesis helper for #45's tests; #50 builds atomic creation.
+  **Issue:** #45
+- **Decision:** Tests: `test_i_01` (`part("M2", "FR-STORE-1,2,5; NFR-REL-1")`), `test_time__e` (`part("M2", "FR-STORE-8,24,25")`) and `test_s_audit_category__prereq` (`part("M2", "FR-STORE-25")`). The audit event in the S-AUDIT-CATEGORY slice is written inside the active turn operation itself, so the category filter alone keeps it out. Further unmarked tests cover the negative payload case, positioning, lifecycle, connections, concurrency, the operations guard, the schema, and the registry. Part bodies avoid later-milestone lexicon words, so `OperationKind.GENESIS` is reached through a helper and `"narrative_state"` is compared as a string.
+  **Why:** The test plan and the `__<slice>` convention. `check-lexicon` scans whole function bodies, including identifiers.
+  **Issue:** #45
+- **Decision:** CLAUDE.md invariant 6 ("nothing removes events except erasure and opt-in compaction") does not list the story-delete and audit-expiry exemptions that the AC requires. I implemented them as the AC states, because FR-STORE-1 names retention expiry as an exception and docs/02 §4.6 defines story deletion as `DELETE WHERE story_id`. I filed #274 (`needs-triage`) asking the owner to reconcile the wording. I did not treat it as a blocker: the trigger only permits these deletes, and #50 and #71 perform them.
+  **Why:** The plan and the requirements are explicit, but changing an invariant's wording is the user's call.
+  **Issue:** #45

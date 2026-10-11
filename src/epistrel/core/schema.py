@@ -1,26 +1,23 @@
 """Canonical SQLAlchemy metadata for the Epistrel schema.
 
 Every table the engine owns is declared against ``metadata`` so Alembic's autogenerate
-comparison has one source of truth. The naming convention gives every constraint a
-deterministic name, which keeps migrations reproducible across databases.
+comparison has one source of truth; the event store's tables live in ``core.tables``. The
+naming convention gives every constraint a deterministic name, which keeps migrations
+reproducible across databases.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import Column, MetaData, Table, Text
+from sqlalchemy import Column, Table, Text
 
-NAMING_CONVENTION: dict[str, str] = {
-    "ix": "ix_%(column_0_label)s",
-    "uq": "uq_%(table_name)s_%(column_0_name)s",
-    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
-    "pk": "pk_%(table_name)s",
-}
+from epistrel.core import tables
+from epistrel.core.tables import NAMING_CONVENTION, metadata
+
+__all__ = ["AUTOGENERATE_OPTS", "NAMING_CONVENTION", "metadata", "schema_meta", "tables"]
 
 ALEMBIC_VERSION_TABLE = "alembic_version"
-
-metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 schema_meta = Table(
     "schema_meta",

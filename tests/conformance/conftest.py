@@ -1,10 +1,11 @@
 """The dual-surface fixture (NFR-SEC-5's parity half, #59): one interface over REST and the
 in-process library, so a conformance test runs the same requests through both.
 
-Each call returns an ``Outcome``: the error ``code`` (REST's ``error.code``; the library's
-``EpistrelError.code``, or ``validation_error`` for a pydantic refusal of the request model)
-or the JSON body. Library results are rendered through the same response models REST uses,
-so the two surfaces are compared on content, not on Python types.
+Each call returns an ``Outcome``: the error ``code`` and ``details`` (REST's ``error``; the
+library's ``EpistrelError``, or ``validation_error`` with REST's ``details.field`` for a
+pydantic refusal of the request model) or the JSON body. Library results are rendered through
+the same response models REST uses, so the two surfaces are compared on content, not on
+Python types.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.api.errors import field_path
 from epistrel.api.routes.history import HistoryResponse
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.config import Settings
@@ -38,6 +40,7 @@ class Outcome:
     status: int
     code: str | None = None
     body: dict[str, Any] | None = None
+    details: dict[str, Any] | None = None
 
     @property
     def json(self) -> dict[str, Any]:
@@ -154,7 +157,8 @@ def _query(value: Any) -> str:
 def _rest(response: httpx.Response) -> Outcome:
     body = response.json()
     if response.status_code >= 400:
-        return Outcome(response.status_code, code=body["error"]["code"])
+        error = body["error"]
+        return Outcome(response.status_code, code=error["code"], details=error.get("details"))
     return Outcome(response.status_code, body=body)
 
 
@@ -167,9 +171,11 @@ async def _library(call: Callable[[], Awaitable[dict[str, Any]]], status: int) -
     try:
         return Outcome(status, body=await call())
     except EpistrelError as error:
-        return Outcome(error.http_status, code=error.code)
-    except ValidationError:
-        return Outcome(422, code="validation_error")
+        return Outcome(error.http_status, code=error.code, details=dict(error.details or {}))
+    except ValidationError as error:
+        first = error.errors()[0]
+        field = field_path(("body", *first["loc"]))
+        return Outcome(422, code="validation_error", details={"field": field})
 
 
 @pytest.fixture

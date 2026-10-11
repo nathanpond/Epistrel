@@ -18,8 +18,11 @@ from epistrel.orchestrator.models.metrics import ModelCall
 router = APIRouter(tags=["stories"])
 
 RESPOND_DESCRIPTION = (
-    "Play one turn of a story. The request names the acting character, what they say and/or do "
-    "(`player_input`, the turn's first beat), who answers (`render_character_ids`), the output "
+    "Play one turn of a story. The request names the acting character (any character of the "
+    "story; who acts as whom is your decision), what they say and/or do (`player_input`, the "
+    "turn's first beat and only ever the actor's own words), who answers "
+    "(`render_character_ids`: default every other character, voiced in the order given and "
+    "composed into one message), the output "
     "viewpoint (`character:<id>` or `omniscient`; default the actor, then the story's default; "
     "echoed as `output_viewpoint`, and `beats` are produced for it), prompt parameters "
     "(`length`, `temperature`, `top_p`) and optional scene context."
@@ -27,7 +30,10 @@ RESPOND_DESCRIPTION = (
     "own records. Scene context is checked against the cast and then ignored: it is never "
     "stored and never placed in the model's context.\n\nThe response is the **finished** reply: "
     "under the `lite` profile it is generated in one model call and none of its claims is "
-    "checked against the story's facts."
+    "checked against the story's facts. Several characters are voiced in one generation, and "
+    "their knowledge is kept apart only by instructions in that shared prompt."
+    "\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and "
+    "`X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written)."
 )
 
 

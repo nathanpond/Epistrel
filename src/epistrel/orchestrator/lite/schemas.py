@@ -18,6 +18,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from epistrel.core.history import HistoryItem
+from epistrel.core.ids import Ulid
 from epistrel.core.settings_schema import GenerationSettings
 from epistrel.orchestrator.models.metrics import ModelCall
 
@@ -67,7 +68,7 @@ class SceneContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    characters_present: list[str] = Field(default_factory=list, max_length=MAX_RENDER_CHARACTERS)
+    characters_present: list[Ulid] = Field(default_factory=list, max_length=MAX_RENDER_CHARACTERS)
     recent_messages: list[RecentMessage] = Field(
         default_factory=list, max_length=MAX_RECENT_MESSAGES
     )
@@ -76,11 +77,15 @@ class SceneContext(BaseModel):
 class RespondRequest(BaseModel):
     """``POST /stories/{id}/respond`` and ``Engine.respond``.
 
-    - ``actor_character_id``: whose input this is (any cast member may act).
-    - ``player_input``: the actor's ``say``/``do``; the turn's first beat.
-    - ``render_character_ids``: who answers, voiced in this order in one combined reply.
-      Omitted: every cast member except the actor. An explicit empty list is refused, and
-      duplicates are dropped.
+    - ``actor_character_id``: whose input this is. Any cast member may act, a player's own
+      character or not: who acts is the consumer's call (FR-AUTH-3).
+    - ``player_input``: the actor's ``say``/``do``; the turn's first beat. It is only ever the
+      actor's own speech and action: there is no field for another character's words, and a
+      ``say`` that quotes a render character is still the actor speaking (FR-AUTH-3 b).
+    - ``render_character_ids``: who answers, voiced in this order in one combined reply
+      (FR-RESP-5, FR-LITE-5). Omitted: every cast member except the actor, or the actor when
+      no one else is in the cast. The actor may be listed. An explicit empty list is refused,
+      and duplicates are dropped.
     - ``output_viewpoint``: ``character:<id>`` or ``omniscient``; default the actor.
     - ``prompt_params``: ``length`` (``short``/``medium``/``long`` or a token cap),
       ``temperature`` and ``top_p``, for this request only (FR-RESP-3).
@@ -89,9 +94,9 @@ class RespondRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    actor_character_id: str = Field(min_length=1, max_length=MAX_ID_CHARS)
+    actor_character_id: Ulid
     player_input: PlayerInputBody
-    render_character_ids: list[str] | None = Field(
+    render_character_ids: list[Ulid] | None = Field(
         default=None, min_length=1, max_length=MAX_RENDER_CHARACTERS
     )
     output_viewpoint: str | None = Field(default=None, max_length=MAX_ID_CHARS + 16)

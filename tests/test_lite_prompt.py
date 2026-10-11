@@ -15,6 +15,7 @@ from epistrel.core.settings_schema import (
 )
 from epistrel.core.turns import CastEntry, TurnInputs, WindowRow
 from epistrel.core.viewpoint import OMNISCIENT, resolve_viewpoint
+from epistrel.orchestrator.lite.cast import ResolvedCast
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
 from epistrel.orchestrator.lite.schemas import RespondRequest
 from epistrel.orchestrator.models import prompts
@@ -24,6 +25,7 @@ from epistrel.orchestrator.models.registry import GENERATION
 WREN = CastEntry(id="w", name="Wren", definition="A traveller.", is_player=True)
 ADA = CastEntry(id="a", name="Ada", definition="The innkeeper.", is_player=False)
 BO = CastEntry(id="b", name="Bo", definition="A farmer.", is_player=False)
+ACTOR = "01HZY0000000000000000000AC"
 
 
 def _inputs(**fields: object) -> TurnInputs:
@@ -84,15 +86,17 @@ def test_viewpoint_resolution() -> None:
 
 
 def test_request_model_refuses_extra_fields_and_blank_input() -> None:
-    ok = RespondRequest.model_validate({"actor_character_id": "w", "player_input": {"do": "x"}})
+    ok = RespondRequest.model_validate({"actor_character_id": ACTOR, "player_input": {"do": "x"}})
     assert ok.player_input.say_text is None
     assert ok.player_input.do_text == "x"
     for bad in (
-        {"actor_character_id": "w", "player_input": {"say": "hi"}, "memories": []},
-        {"actor_character_id": "w", "player_input": {"say": "hi", "think": "x"}},
-        {"actor_character_id": "w", "player_input": {"say": " ", "do": "\n"}},
-        {"actor_character_id": "w", "player_input": {"say": "x" * 8001}},
-        {"actor_character_id": "w", "player_input": {"say": "hi"}, "render_character_ids": []},
+        {"actor_character_id": ACTOR, "player_input": {"say": "hi"}, "memories": []},
+        {"actor_character_id": ACTOR, "player_input": {"say": "hi", "think": "x"}},
+        {"actor_character_id": ACTOR, "player_input": {"say": " ", "do": "\n"}},
+        {"actor_character_id": ACTOR, "player_input": {"say": "x" * 8001}},
+        {"actor_character_id": ACTOR, "player_input": {"say": "hi"}, "render_character_ids": []},
+        {"actor_character_id": "w", "player_input": {"say": "hi"}},
+        {"actor_character_id": ACTOR, "player_input": {"say": "hi"}, "render_character_ids": ["a"]},
     ):
         with pytest.raises(ValidationError):
             RespondRequest.model_validate(bad)
@@ -106,7 +110,8 @@ def test_prompt_shape_and_empty_sections() -> None:
         WindowRow("assistant", "message_rendered", None, ("a",), "Ada: hello", None, None),
         WindowRow("assistant", "message_rendered", None, ("a",), "Ada: again", None, None),
     )
-    payload = assemble(_inputs(window=window), actor=WREN, render=(ADA,), say="yo", do=None)
+    cast = ResolvedCast(actor=WREN, render=(ADA,))
+    payload = assemble(_inputs(window=window), cast, say="yo", do=None)
     messages = prompts.render(GENERATION, payload)
     assert [m.role for m in messages] == ["system", "user", "assistant", "user"]
     system = messages[0].content
@@ -117,7 +122,7 @@ def test_prompt_shape_and_empty_sections() -> None:
     assert "### Author notes: Bo" not in system
     assert messages[2].content == "Ada: hello\n\nAda: again"
     assert messages[3].content == 'Wren: "yo"'
-    params = model_params(resolve_generation(DEFAULT_LITE_GENERATION), actor=WREN, render=(ADA,))
+    params = model_params(resolve_generation(DEFAULT_LITE_GENERATION), cast)
     assert params.stop == ("\nWren:",)
     assert params.max_tokens == 400
 

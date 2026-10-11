@@ -3,11 +3,12 @@
 ``respond`` runs one Lite turn of a story for ``Engine.respond``:
 
 1. **Prechecks**, in #44's canonical order, before anything is written: the story exists and
-   the request's characters are its cast (422 ``validation_error`` with ``unknown_actor`` /
-   ``unknown_render_ids`` / ``unknown_present_ids``), the story is not archived, the
-   ``Idempotency-Key`` is claimed (#61: the request hash covers the body, the actor, the
-   *resolved* viewpoint and the expected revision, so a retry replays the stored turn and a key
-   reused for another viewpoint is 409 ``idempotency_conflict``), the expected revision holds
+   the request's characters are its cast (``cast.resolve_cast``, #62: 422 ``validation_error``
+   with ``unknown_actor`` / ``unknown_render_ids`` / ``unknown_present_ids``), the story is not
+   archived, the ``Idempotency-Key`` is claimed (#61: the request hash covers the body with the
+   *resolved*, deduped render set, the actor, the *resolved* viewpoint and the expected
+   revision, so a retry replays the stored turn and a key reused for another viewpoint or
+   render set is 409 ``idempotency_conflict``), the expected revision holds
    (409), and the output viewpoint resolves (422 ``viewpoint_unresolved``). The requested viewpoint
    arrives on ``ctx.viewpoint``, the single carrier (``Engine.respond`` folds the body field and
    the keyword argument into it).
@@ -34,7 +35,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
@@ -44,14 +44,12 @@ from epistrel.core import idempotency
 from epistrel.core.concurrency import LiteReadSet, check_expected_revision, run_with_revalidation
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
-from epistrel.core.errors import InvalidRequest, StoryArchived
+from epistrel.core.errors import StoryArchived
 from epistrel.core.events import Operation
 from epistrel.core.history import turn_beats
 from epistrel.core.settings_schema import ResolvedGeneration, resolve_generation
 from epistrel.core.turns import (
     REPLY_BEAT,
-    CastEntry,
-    StoryCast,
     TurnInputs,
     joined_input,
     read_story_cast,
@@ -60,6 +58,7 @@ from epistrel.core.turns import (
 )
 from epistrel.core.viewpoint import resolve_viewpoint, try_resolve
 from epistrel.orchestrator.budget import DEFAULT_TURN_DEADLINE_S, TurnBudget
+from epistrel.orchestrator.lite.cast import resolve_cast
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
 from epistrel.orchestrator.lite.schemas import FinishedMessage, RespondRequest, RespondResult
 from epistrel.orchestrator.models.access import ModelAccessLayer
@@ -72,41 +71,6 @@ INPUT_LOCATOR = "player_input"
 
 Gate = Callable[[TurnBudget, str, str], Awaitable[Any]]
 """``gate(budget, text, actor_character_id)``: the input gate (#56), raising on a violation."""
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedCast:
-    """The actor and the render characters, in the order they are voiced."""
-
-    actor: CastEntry
-    render: tuple[CastEntry, ...]
-
-
-def resolve_cast(story: StoryCast, request: RespondRequest) -> ResolvedCast:
-    """The request's characters against the cast (FR-AUTH-3 basics; #62 extends the rules).
-
-    The actor must be a cast member; ``render_character_ids`` default to every other cast
-    member in cast order, explicit ones keep their order with duplicates dropped; scene
-    context's ``characters_present`` must be cast members too. 422 otherwise."""
-    members = story.by_id()
-    problems: dict[str, Any] = {}
-    actor = members.get(request.actor_character_id)
-    if actor is None:
-        problems["unknown_actor"] = request.actor_character_id
-    if request.render_character_ids is None:
-        ids = [c.id for c in story.cast if c.id != request.actor_character_id]
-    else:
-        ids = list(dict.fromkeys(request.render_character_ids))
-        unknown = [i for i in ids if i not in members]
-        if unknown:
-            problems["unknown_render_ids"] = unknown
-    if request.scene_context is not None:
-        absent = [i for i in request.scene_context.characters_present if i not in members]
-        if absent:
-            problems["unknown_present_ids"] = absent
-    if problems or actor is None:
-        raise InvalidRequest("the request names characters that are not in the story", problems)
-    return ResolvedCast(actor=actor, render=tuple(members[i] for i in ids))
 
 
 async def respond(
@@ -139,7 +103,8 @@ async def respond(
         await call.claim(
             {
                 "story_id": story_id,
-                "body": request.model_dump(mode="json", exclude={"output_viewpoint"}),
+                "body": request.model_dump(mode="json", exclude={"output_viewpoint"})
+                | {"render_character_ids": cast.render_ids},
                 "actor_character_id": cast.actor.id,
                 "viewpoint": try_resolve(resolution),
                 "expected_revision": ctx.expected_revision,
@@ -174,8 +139,8 @@ async def respond(
 
         async def generate(op: Operation, read: tuple[TurnInputs, ResolvedGeneration]) -> None:
             inputs, resolved = read
-            payload = assemble(inputs, actor=cast.actor, render=cast.render, say=say, do=do)
-            params = model_params(resolved, actor=cast.actor, render=cast.render)
+            payload = assemble(inputs, cast, say=say, do=do)
+            params = model_params(resolved, cast)
             _, _, messages = models.prepare(GENERATION, payload)
             result = await _generate(models, payload, params, budget)
             stage_turn(
@@ -184,7 +149,7 @@ async def respond(
                 say=say,
                 do=do,
                 reply=result.text,
-                render_character_ids=[c.id for c in cast.render],
+                render_character_ids=cast.render_ids,
                 model=result.model,
                 prompt_hash=prompt_hash(messages),
                 finish_reason=result.finish_reason,
@@ -229,4 +194,4 @@ async def _generate(
         return await models.call(GENERATION, payload, params, budget=budget)
 
 
-__all__ = ["Gate", "ResolvedCast", "resolve_cast", "respond"]
+__all__ = ["Gate", "respond"]

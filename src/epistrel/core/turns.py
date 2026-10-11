@@ -254,7 +254,9 @@ def stage_turn(
         ),
         provenance=Provenance.ENGINE,
         authority=Authority.AUTHORITATIVE,
-        character_id=render_character_ids[0] if len(render_character_ids) == 1 else None,
+        # One combined reply, even for a single render character: who it voices is
+        # ``render_character_ids``, and no one character owns it (#62).
+        character_id=None,
         beat=REPLY_BEAT,
     )
 

@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import secrets
 import time
+from typing import Annotated
+
+from pydantic import StringConstraints
 
 CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 ULID_LENGTH = 26
+ULID_PATTERN = rf"^[{CROCKFORD}]{{{ULID_LENGTH}}}$"
+"""A well-formed id: 26 Crockford base32 characters, upper case, as ``new_ulid`` writes them."""
+
+Ulid = Annotated[str, StringConstraints(pattern=ULID_PATTERN)]
+"""A request field holding an Engine id; a malformed one is 422 at its ``details.field`` (#62)."""
 
 
 def new_ulid() -> str:

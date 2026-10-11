@@ -95,8 +95,9 @@ async def test_unknown_characters_are_refused_with_nothing_written(
 
 
 async def test_render_defaults_and_duplicates(stub_settings: Settings, engine: AsyncEngine) -> None:
-    """Omitted render ids are every other cast member in cast order; duplicates are dropped and
-    an actor who is rendered loses the stop sequence."""
+    """Omitted render ids are every other cast member in cast order, or the actor when the cast
+    is the player alone (#62); duplicates are dropped and an actor who is rendered loses the
+    stop sequence."""
     async with respond_client(stub_settings, engine) as (client, lib):
         story, ids = await new_story(client)
         stub = lib.models.stub
@@ -110,6 +111,14 @@ async def test_render_defaults_and_duplicates(stub_settings: Settings, engine: A
         (call,) = generation_calls(stub)
         assert call.params.stop is None
         assert "never speak or act for" not in call.messages[0].content
+
+        solo, solo_ids = await new_story(client, PLAYER)
+        stub.reset()
+        result = await played(client, solo, body(solo_ids[PLAYER]))
+        assert result["beats"][1]["render_character_ids"] == [solo_ids[PLAYER]]
+        (call,) = generation_calls(stub)
+        assert call.params.stop is None
+        assert f"Characters you voice: {PLAYER}." in call.messages[0].content
 
 
 async def test_archived_stale_and_viewpoint_refusals(

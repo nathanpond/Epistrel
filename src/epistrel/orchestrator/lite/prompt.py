@@ -2,11 +2,17 @@
 
 ``assemble`` turns the turn's inputs (``core.turns.TurnInputs``, the Engine's own records) into
 the ``generation`` purpose's ``GenerationInputs``; the ``lite_generation.j2`` template renders
-them as one ``system`` message (rating guidance first, then custom instructions, the actor's and
-render characters' definitions as ``### Author notes: <name>``, pinned memories, the rolling
-summary and the preamble), the verbatim window as alternating ``user``/``assistant`` messages,
-and the player input as the final ``user`` message. Nothing from the request's scene context
-is an argument here, so it cannot reach the prompt (FR-RESP-4).
+them as one ``system`` message (rating guidance first, then custom instructions, the actor's
+and render characters' definitions as ``### Author notes: <name>`` in request order, pinned
+memories, the rolling summary and the preamble), the verbatim window as alternating
+``user``/``assistant`` messages, and the player input as the final ``user`` message. Nothing
+from the request's scene context is an argument here, so it cannot reach the prompt
+(FR-RESP-4).
+
+Several render characters share this one generation (FR-RESP-5, FR-LITE-5). Their knowledge is
+separated only by instruction: each one's notes are labelled with its name and the preamble says
+each character knows only what its notes and the scene show. The notes all sit in one shared
+prompt, so a secret in one character's notes is in the context the others are voiced from.
 
 ``model_params`` maps the resolved generation settings onto the call: ``length`` →
 ``max_tokens``, ``temperature``/``top_p`` as given, and the stop sequence ``"\\n<Actor>:"`` so
@@ -19,7 +25,8 @@ from collections.abc import Mapping, Sequence
 
 from epistrel.core.concurrency import hash_member
 from epistrel.core.settings_schema import ResolvedGeneration
-from epistrel.core.turns import CastEntry, TurnInputs, WindowRow
+from epistrel.core.turns import TurnInputs, WindowRow
+from epistrel.orchestrator.lite.cast import ResolvedCast
 from epistrel.orchestrator.models.adapter import Message, ModelParams
 from epistrel.orchestrator.models.registry import (
     CharacterDefinition,
@@ -45,42 +52,36 @@ def _line(row: WindowRow, names: Mapping[str, str]) -> TranscriptLine:
 
 
 def assemble(
-    inputs: TurnInputs,
-    *,
-    actor: CastEntry,
-    render: Sequence[CastEntry],
-    say: str | None,
-    do: str | None,
+    inputs: TurnInputs, cast: ResolvedCast, *, say: str | None, do: str | None
 ) -> GenerationInputs:
-    """The ``generation`` inputs of one Lite turn, every section from the Engine's records."""
+    """The ``generation`` inputs of one Lite turn, every section from the Engine's records.
+
+    The author notes are the actor's and the render characters', in request order; the
+    definitions are the ones read in the turn's snapshot (``inputs.cast``)."""
     names = {c.id: c.name for c in inputs.cast}
-    included = {actor.id, *(c.id for c in render)}
+    current = {c.id: c for c in inputs.cast}
     return GenerationInputs(
         rating_guidance=inputs.guidance,
         custom_instructions=inputs.instructions,
         character_definitions=[
             CharacterDefinition(name=c.name, definition=c.definition)
-            for c in inputs.cast
-            if c.id in included
+            for c in (current.get(entry.id, entry) for entry in cast.noted)
         ],
         pinned_memories=list(inputs.pins),
         summary_segments=list(inputs.segments),
         recent_messages=[_line(row, names) for row in inputs.window],
-        voiced_characters=[c.name for c in render],
-        player_input=PlayerInput(name=actor.name, say=say, do=do),
+        voiced_characters=[c.name for c in cast.render],
+        player_input=PlayerInput(name=cast.actor.name, say=say, do=do),
     )
 
 
-def model_params(
-    resolved: ResolvedGeneration, *, actor: CastEntry, render: Sequence[CastEntry]
-) -> ModelParams:
+def model_params(resolved: ResolvedGeneration, cast: ResolvedCast) -> ModelParams:
     """The ``generation`` call's parameters for these settings (FR-RESP-3)."""
-    actor_rendered = any(c.id == actor.id for c in render)
     return ModelParams(
         temperature=resolved.temperature,
         top_p=resolved.top_p,
         max_tokens=resolved.max_tokens,
-        stop=None if actor_rendered else (f"\n{actor.name}:",),
+        stop=None if cast.actor_rendered else (f"\n{cast.actor.name}:",),
     )
 
 

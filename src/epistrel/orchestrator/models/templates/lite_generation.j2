@@ -2,7 +2,8 @@
 
 The ``system`` block holds, in order: the story rating's prompt guidance (always first,
 FR-RATE-4), the custom instructions, each character's definition as labelled author notes
-(never a public card), the pinned memories, the rolling summary, then the constant preamble.
+(never a public card) in request order, the pinned memories, the rolling summary, then the constant preamble: who is voiced, in request order, and
+the one line that separates the characters' knowledge (FR-LITE-5: by instruction only).
 Empty sections are left out. The verbatim window follows as chat messages, one per transcript
 row through the ``line`` macro (``prompts.render``), and the ``user`` block is the player input,
 the final ``user`` message. -#}
@@ -48,6 +49,7 @@ You voice the listed characters in turn; never speak or act for {{ player_input.
 {% if voiced_characters %}
 Characters you voice: {{ voiced_characters | join(", ") }}.
 {% endif %}
+Each character knows only what their notes and the scene show.
 {% endblock %}
 {% block user %}
 {{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}

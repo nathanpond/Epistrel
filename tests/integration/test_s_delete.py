@@ -15,6 +15,8 @@ from epistrel.core.errors import GuardrailViolation
 from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
+from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
 from tests.event_support import interleave, play_turn, rows
@@ -136,6 +138,9 @@ async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
             origin="generated",
             queue_max=5,
         )
+        # A background job of the victim's (#70): the deletion takes it too.
+        async with engine.begin() as conn:
+            await job_queue.enqueue(conn, REBUILD_KIND, {"story_id": victim}, story_id=victim)
 
         owned = await _rows_of(engine, victim)
         assert all(owned.values()), {t: len(r) for t, r in owned.items() if not r}

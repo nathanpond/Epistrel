@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, String
 from sqlalchemy import Table, and_, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import audit
+from epistrel.core import audit, clock
 from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
 from epistrel.core.errors import (
     InvalidRequest,
@@ -66,6 +66,7 @@ from epistrel.core.tables import (
     deployment_state,
     events,
     idempotency_keys,
+    jobs,
     operations,
     policies,
     stories,
@@ -95,6 +96,7 @@ STORY_TABLES: tuple[Table, ...] = (
     policies,
     characters,
     turn_queue,
+    jobs,
     operations,
 )
 """Every table with a ``story_id`` column, in the order deletion empties them (events before the
@@ -105,10 +107,10 @@ last; story-scoped ``config_changes`` and ``idempotency_keys`` rows (``scope = '
 goes with that operation."""
 
 STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
-    {"jobs", turn_queue.name, audit_log.name, idempotency_keys.name, "worker_heartbeats"}
+    {jobs.name, turn_queue.name, audit_log.name, idempotency_keys.name, "worker_heartbeats"}
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
-worker heartbeats; ``jobs`` and ``worker_heartbeats`` arrive later), deployment-level audit
+worker heartbeats; ``worker_heartbeats`` arrives with #71), deployment-level audit
 records, and idempotency keys (a fork answers its own requests). Every other table in
 ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it is
 named here."""
@@ -539,6 +541,25 @@ async def _refuse_busy(
         )
 
 
+async def _refuse_running_job(conn: AsyncConnection, story_id: str) -> None:
+    """423 ``story_busy`` (``reason: job_running``) while a job of the story holds a live lease
+    (#70); a job whose lease lapsed is abandoned work and is deleted with the story."""
+    running = await conn.scalar(
+        select(jobs.c.id)
+        .where(
+            jobs.c.story_id == story_id,
+            jobs.c.status == "running",
+            jobs.c.lease_until > clock.now(),
+        )
+        .limit(1)
+    )
+    if running is not None:
+        raise StoryBusy(
+            "a background job of the story is running; retry when it finishes",
+            {"reason": "job_running", "job_id": running, "story_id": story_id},
+        )
+
+
 # -- delete ---------------------------------------------------------------------------------
 
 
@@ -546,7 +567,8 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
     """Remove every row of ``story_id`` and nothing else (FR-STORE-16); return rows per table.
 
     One transaction under the story row lock: 404 when the story does not exist, 423
-    ``story_busy`` while any of its operations is in flight. Archived stories can be deleted.
+    ``story_busy`` while any of its operations is in flight or one of its jobs runs (#70).
+    Archived stories can be deleted.
     The deletion is recorded by a story-less ``control`` operation whose ``story_deleted``
     audit event names the story and the acting principal, and by a ``story_deleted``
     ``audit_log`` row (null ``story_id``; the story's earlier audit rows are detached).
@@ -564,6 +586,7 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
         if locked is None:
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
         await _refuse_busy(conn, story_id, turns_only=False)
+        await _refuse_running_job(conn, story_id)
         removed.update(await _delete_story_rows(conn, story_id))
         await audit.record(
             conn,

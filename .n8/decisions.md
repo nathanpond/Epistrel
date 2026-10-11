@@ -1290,3 +1290,66 @@ Process:
   - The word "scenario" in P-05's body was rephrased because of the M3 lexicon term.
   **Why:** The test plan.
   **Issue:** #69
+- **Decision:** The migration is `0017_jobs.py`, not the planned `0015_jobs.py`, because 0015 and 0016 were already taken. `jobs` has the AC columns plus these:
+  - `failures` (pass 2), separate from the `attempt` fencing token;
+  - `coalesce_key`, with a partial unique index `uq_jobs_coalesce_key_queued` (`WHERE status = 'queued'`);
+  - `created_at` and `updated_at`;
+  - indexes `(status, due_at)` and `(story_id)`.
+
+  `status` is checked text. `story_id` is plain, with no foreign key. The table is `core/tables/jobs.py`.
+  **Why:** The issue plans this table, so this is not Rule 4. Checked text and a plain `story_id` follow `turn_queue`'s conventions, and story deletion enumerates `STORY_TABLES`.
+  **Issue:** #70
+- **Decision:** Every jobs time is `core.clock.now()`, passed as a parameter, not the database's `now()`. This covers due, lease, reap and backoff. Claim only takes `queued` rows that are due. Lapsed leases go back to `queued` through the reaper (`attempt++`), which runs every poll tick and in the recovery pass. A reclaim advances `attempt` twice: once at the reap and once at the next claim. The token is the row's `attempt`. Heartbeat, fail, drop and commit all match `(id, attempt, status = running)`. If a row is re-queued (reap, retry or drop) while another `queued` row holds its `coalesce_key`, it ends `done` with `result.coalesced_into` instead.
+  **Why:** Discretion: "tests drive leases via the injectable clock", and "reaper flips expired leases to queued with attempt++, continuously in every poll tick". The coalesce rule keeps the partial unique index from rejecting a requeue.
+  **Issue:** #70
+- **Decision:** `commit_job` runs the job's operation through `Operation.write_in` in its own transaction, under the story lock. The kind is `maintenance` or `consolidation`; a story-less job runs as story-less `maintenance`. The first commit step locks the job row and checks the token, raising `Fenced` (REFUSED) on a mismatch. It then rechecks the declared inputs, raising `StaleInputs` (DROPPED) if any changed. The handler's events and steps run next, and the last step marks the job `done` with `result` (plus `operation_id`) and `input_versions`. Both exceptions subclass `Withdrawn`, so a refused or dropped attempt leaves its operation `abandoned`, not `failed`. A drop puts the same row back to `queued`, due now, with no failure counted. Retry backoff is `min(5·2^n, 300)` s ± 20 %, where n is the failure count before this one (5, 10, 20 s …). After `job_max_attempts` (5) failures the job is `failed` with `{"error": <exception class>}`. An unknown kind, or a payload that fails validation at claim time, fails the job terminally. The 10-minute runtime cap counts as a failed attempt.
+  **Why:** The Discretion lines. `abandoned` matches what `Withdrawn` already means in batches: work that is no longer wanted, although nothing went wrong.
+  **Issue:** #70
+- **Decision:** Input versions live in `core/input_versions.py`, a core module, as `{"<table>:<id>": version}`. Readers are registered per table:
+  - `operations` → `[membership, membership_tx]`, and must be `active`;
+  - `stories` → `timeline_revision`;
+  - `story_texts` → #47's `hash_member([pinned, custom_instructions])`.
+
+  A row that is gone reads as `None` and is always stale. Handlers get `JobContext(db, job, payload)` with `snapshot()`, a REPEATABLE READ READ ONLY transaction, and `declare_input(conn, key)`. This deviates from the pass-2 `JobContext(conn, …)`: a handler that calls a model must not hold an open transaction across the call.
+  **Why:** Discretion (pass 1/2: one generic recheck, versions per table). The recheck reads core tables, so it lives in core, and the import contract keeps core free of orchestrator imports.
+  **Issue:** #70
+- **Decision:** Worker settings go in env `Settings`: `worker_poll_interval` (5 s), `job_lease_seconds` (60), `job_max_attempts` (5), `worker_listen_enabled` (true) and `worker_concurrency` (2), all documented in `.env.example`. They are not in `core/settings_schema.py` and carry no `ConfigClass` tag.
+  **Why:** Discretion pass 2 says "job settings live in env `Settings`". These are per-process knobs read when a worker starts, like `rebuild_async_threshold` and `stub_latency_s`, not deployment configuration that `record_config_change` versions. The coordinator's note was that every new setting goes in `settings_schema` with a tag; that applies to deployment and story settings. Low cost to move later.
+  **Issue:** #70
+- **Decision:** The worker (`orchestrator/jobs/worker.py`) has these parts:
+  - One raw psycopg `LISTEN epistrel_jobs` connection per process, reconnecting with 1–30 s backoff and waking every loop after each reconnect. `NOTIFY` is sent in `enqueue`'s transaction with the kind as payload.
+  - N loops. Each one clears its wake event, reaps, claims one job, and otherwise sleeps until `min(poll, next due)` or a wake.
+  - A heartbeat every `lease/3`. If it finds the claim fenced it cancels the handler, and nothing is written.
+  - `stop()` drains for 30 s and then cancels; a cancelled job keeps its lease, which then lapses.
+  - `recovery_pass(db)`: reap, then the registered `async (conn)` hooks in order, each in its own transaction. A failing hook is logged and reported, and the others still run. `Worker.recovery_pass()` runs once per worker.
+
+  The CLI is `epistrel worker [--concurrency N]` with SIGTERM/SIGINT → `stop()`. `serve --mode` is #71's.
+  **Why:** Discretion lines. Logs carry job ids, kinds and exception class names only (invariant 3).
+  **Issue:** #70
+- **Decision:** The rebuild path from #46 is flipped. If a story has more events than `rebuild_async_threshold`, `Engine.rebuild_projections` enqueues `rebuild_projections` (coalesce key `rebuild_projections:<story>`, so asking again returns the queued job) and returns `RebuildQueued`. REST answers 202 `{job_id, timeline_revision, idempotency_key}`. The handler declares `stories:<id>` and folds in a commit step under the lock as a `maintenance` operation. Its result is `{counts, operation_id}`. The 202 body adds `timeline_revision` to the planned `{job_id}`, and the route returns it as a `JSONResponse`, documented under `responses={202: …}`.
+  **Why:** #46's Discretion ("async 202 `{job_id}`"). `test_every_mutating_route_carries_its_revision` requires every story-scoped mutation response to be a `MutationResponse`, so the 202 model carries the revision (Rule 3).
+  **Issue:** #70
+- **Decision:** Story delete now covers jobs. `jobs` joins `STORY_TABLES`, so it is deleted with the story. Delete is refused with 423 `story_busy` `{reason: job_running, job_id}` while a job of the story holds a live lease. A job whose lease lapsed is deleted. `test_s_delete` now gives the victim a queued job, so that comparison still bites.
+  **Why:** #50's hand-off ("#70 deletes queued jobs and adds running job → 423") and the pass-2 line "deleted story: row removed by #50's delete".
+  **Issue:** #70
+- **Decision:** Tests (`tests/integration/test_jobs.py`, 13):
+  - `test_x_07__jobs` (`part("M2","NFR-REL-5")`) covers these clauses:
+    - claimed within one poll with LISTEN off;
+    - a worker killed (task cancel) mid-job, the lease lapsed on the movable clock, the next worker's recovery pass reclaiming it once, and the job done at attempt 3;
+    - a second pass changing nothing (table byte-equal);
+    - the lost claim's late commit REFUSED with no derived row, and the current claim's commit accepted.
+  - The FR-CONC-8 clause is a separate part, `test_s_consolidation_race__jobs` (`part("M2","FR-CONC-8")`): a truncate while the job runs gives DROPPED, no `lite_summary_segment`, an `abandoned` operation, and the row `queued` and due now with 0 failures. Rerun, it declares only turn 1 and commits.
+  - Complements: NOTIFY wake under a 30 s poll, backoff → `failed`, reclaim not counted, enqueue validation and coalescing, an unknown kind at claim, fenced heartbeat cancelling the handler, the runtime cap, recovery-hook order, the async rebuild (library and REST 202), delete with a running job, the CLI exit codes, and input versions.
+  - Mutations that skip the stale check or the fence check each fail `test_x_07__jobs` or its sibling.
+
+  **Why:** The test plan names one `test_jobs` part for "NFR-REL-5 half, FR-CONC-8", but `check-traceability` refuses FR-CONC-8 on X-07: §15 maps FR-CONC-8 to S-CONSOLIDATION-RACE in M2. The `__jobs` suffix mirrors X-07's split. `check-lexicon` (M4 "consolidat*", M6 "clock") required the bodies to avoid those words.
+  **Issue:** #70
+- **Decision:** Hand-offs:
+  - #71 should register #63's queue-drainer recovery as a recovery hook, and run `Worker` beside the API in `all` mode (`serve --mode`). Worker mode currently drains no turn queues, because the drainer needs the Engine's handlers.
+  - #72 should register `lite_summary` as a `consolidation` `JobHandler` that declares its turn operations, and complete S-CONSOLIDATION-RACE.
+  - #71 owns `retention_sweep` and `idempotency_purge`, the 7-day purge of `done`/`failed` rows, and `worker_heartbeats`.
+  - Nothing implements a `turn_queue_drain` kind; #63's in-process drainer still owns the queue.
+  - Orphaned `in_flight` operations (#45/#50: a crashed genesis or maintenance op) are not swept by this recovery pass. A hook can do it later.
+
+  **Why:** Keeps #70 to the planned queue, worker and rebuild flip.
+  **Issue:** #70

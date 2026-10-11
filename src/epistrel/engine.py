@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import SecretStr, TypeAdapter, ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
@@ -53,6 +54,7 @@ from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.settings_schema import ConfigClass, StorySettings
+from epistrel.core.tables import events
 from epistrel.core.turn_gate import Concurrency, QueueItem
 from epistrel.core.viewpoint import is_omniscient, resolve_viewpoint, with_requested
 from epistrel.orchestrator import queue_drainer
@@ -63,6 +65,13 @@ from epistrel.orchestrator.budget import (
     TurnBudget,
     effective_max_calls,
 )
+from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.orchestrator.jobs.handlers.rebuild import (
+    REBUILD_KIND,
+    RebuildPayload,
+    RebuildQueued,
+)
+from epistrel.orchestrator.jobs.handlers.rebuild import coalesce_key as rebuild_coalesce_key
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.schemas import (
     RegenerateRequest,
@@ -93,7 +102,10 @@ def _changed_status(created: int = 200) -> Callable[[Any], int]:
 
 _CONFIG = "config_revision"
 CODECS: dict[str, ResultCodec[Any]] = {
-    "rebuild_projections": ResultCodec.of(projections.RebuildResult),
+    "rebuild_projections": ResultCodec.of(
+        projections.RebuildResult | RebuildQueued,
+        status=lambda result: 202 if isinstance(result, RebuildQueued) else 200,
+    ),
     "create_story": ResultCodec.of(stories.CreatedStory, status=201),
     "respond": ResultCodec.of(RespondResult),
     "ingest": ResultCodec.of(
@@ -464,16 +476,31 @@ class Engine:
 
     async def rebuild_projections(
         self, ctx: RequestContext, story_id: str
-    ) -> projections.RebuildResult:
+    ) -> projections.RebuildResult | RebuildQueued:
         """Refold every projection of ``story_id`` from the event log (FR-ADMIN-3).
 
-        Synchronous in M2 whatever the story's size; #70 moves stories over
-        ``settings.rebuild_async_threshold`` events to a background job.
+        A story with at most ``settings.rebuild_async_threshold`` events is rebuilt in the call;
+        a larger one is handed to a worker as a ``rebuild_projections`` job (``RebuildQueued``,
+        REST 202 ``{job_id, timeline_revision}``; a rebuild already queued for the story is
+        that job, #70).
         """
         principal = self.require_principal(ctx)
 
-        async def run(ctx: RequestContext) -> projections.RebuildResult:
-            await self.check_expected_revision(ctx, story_id)
+        async def run(ctx: RequestContext) -> projections.RebuildResult | RebuildQueued:
+            revision = await self.check_expected_revision(ctx, story_id)
+            async with self.db.begin() as conn:
+                count = await conn.scalar(
+                    select(func.count()).select_from(events).where(events.c.story_id == story_id)
+                )
+                if int(count or 0) > self.settings.rebuild_async_threshold:
+                    job_id = await job_queue.enqueue(
+                        conn,
+                        REBUILD_KIND,
+                        RebuildPayload(story_id=story_id),
+                        story_id=story_id,
+                        coalesce_key=rebuild_coalesce_key(story_id),
+                    )
+                    return RebuildQueued(job_id=job_id, timeline_revision=revision)
             return await projections.rebuild(self.db, story_id, principal=principal)
 
         return await self._keyed(

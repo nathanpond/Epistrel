@@ -17,6 +17,7 @@ from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.errors import RevisionConflict, StoryNotFound
+from epistrel.core.projections import RebuildResult
 from epistrel.engine import Engine
 from tests.auth_support import auth_settings, bearer, make_test_router
 from tests.event_support import new_story, play_turn, scalar
@@ -111,6 +112,7 @@ async def test_library_checks_the_expected_revision(engine: AsyncEngine) -> None
     result = await library.rebuild_projections(
         RequestContext(principal="p", expected_revision=2), story
     )
+    assert isinstance(result, RebuildResult)
     assert result.timeline_revision == 2
     async with engine.connect() as conn:
         assert await check_expected_revision(conn, story, 2) == 2

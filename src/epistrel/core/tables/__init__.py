@@ -7,6 +7,7 @@ from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.events import events
 from epistrel.core.tables.idempotency import idempotency_keys
+from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.operations import operations
 from epistrel.core.tables.policies import policies
@@ -26,6 +27,7 @@ __all__ = [
     "deployment_state",
     "events",
     "idempotency_keys",
+    "jobs",
     "metadata",
     "model_config",
     "operations",

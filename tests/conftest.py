@@ -29,6 +29,7 @@ ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 INTEGRATION_DIR = Path(__file__).resolve().parent / "integration"
 PG_IMAGE = "pgvector/pgvector:pg16"
 OVERRIDE_VAR = "EPISTREL_TEST_DATABASE_URL"
+LIVE_MODEL_MARKER = "live_model"
 DUMMY_DSN = "postgresql+psycopg://u:p@localhost:5432/epistrel_test"
 
 NO_DOCKER_MESSAGE = (
@@ -38,11 +39,18 @@ NO_DOCKER_MESSAGE = (
 )
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Everything under tests/integration/ is an integration test."""
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Everything under tests/integration/ is an integration test. ``live_model`` tests run
+    only when ``-m`` names that marker: they need a real endpoint (#54)."""
     for item in items:
         if INTEGRATION_DIR in Path(str(item.fspath)).parents:
             item.add_marker(pytest.mark.integration)
+    if LIVE_MODEL_MARKER in (config.getoption("markexpr", "") or ""):
+        return
+    live = [item for item in items if item.get_closest_marker(LIVE_MODEL_MARKER)]
+    if live:
+        config.hook.pytest_deselected(items=live)
+        items[:] = [item for item in items if not item.get_closest_marker(LIVE_MODEL_MARKER)]
 
 
 @pytest.fixture(autouse=True)

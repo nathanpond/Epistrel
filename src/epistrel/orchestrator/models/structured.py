@@ -47,7 +47,7 @@ from pydantic import BaseModel, ValidationError
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import Policy, Target
 from epistrel.orchestrator.budget import TurnBudget
-from epistrel.orchestrator.models.adapter import REQUEST_FIELDS, Message, ModelParams
+from epistrel.orchestrator.models.adapter import REQUEST_FIELDS, Message, ModelParams, ModelResult
 from epistrel.orchestrator.models.errors import ModelUnavailable, ResponseFormatRejected
 from epistrel.orchestrator.models.prompts import payload_fields
 from epistrel.orchestrator.models.registry import GuardrailVerdict, InputSchema
@@ -135,6 +135,13 @@ def parse[T: BaseModel](text: str, schema: type[T]) -> T | _Failure:
         return _Failure("schema_error", "; ".join(problems))
 
 
+def usable(result: ModelResult, schema: type[BaseModel]) -> bool:
+    """Whether ``result`` is a usable ``schema`` instance (the attempt's recorded outcome)."""
+    if result.refused or result.finish_reason == "length":
+        return False
+    return not isinstance(parse(result.text, schema), _Failure)
+
+
 def with_schema(messages: Sequence[Message], schema: type[BaseModel]) -> list[Message]:
     """``messages`` with the JSON Schema appended to the system message (fallback mode)."""
     dump = json.dumps(schema.model_json_schema(), sort_keys=True, separators=(",", ":"))
@@ -191,7 +198,13 @@ async def structured_call[T: BaseModel](
             attempts += 1
             try:
                 result = await mal.send(
-                    purpose, messages, call_params, schema if json_mode else None, budget=budget
+                    purpose,
+                    messages,
+                    call_params,
+                    schema if json_mode else None,
+                    budget=budget,
+                    attempt=attempts,
+                    usable=lambda answer: usable(answer, schema),
                 )
             except ResponseFormatRejected as exc:
                 if not json_mode:
@@ -267,5 +280,6 @@ __all__ = [
     "structured_call",
     "uncertain_verdict",
     "unfence",
+    "usable",
     "with_schema",
 ]

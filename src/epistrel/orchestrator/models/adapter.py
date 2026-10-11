@@ -88,6 +88,20 @@ class UndeclaredInput(InvalidRequest):
     """A payload carried a field its purpose does not declare (FR-MODEL-13)."""
 
 
+class ProbeResult(BaseModel):
+    """A protocol probe's answer: the endpoint's model list and the model that completed."""
+
+    model_config = ConfigDict(frozen=True)
+
+    models: tuple[str, ...]
+    model: str
+
+
+PROBE_MESSAGES = (Message(role="user", content="Reply with the single word: ready"),)
+"""The protocol probe's one completion: no story content, nothing to validate."""
+PROBE_TIMEOUT_S = 30.0
+
+
 REQUEST_FIELDS: ContextVar[tuple[str, ...] | None] = ContextVar("REQUEST_FIELDS", default=None)
 """The declared input field paths of the call in progress, set by ``ModelAccessLayer.call`` so
 the stub can record them; never holds values."""
@@ -107,11 +121,17 @@ class ModelAdapter(Protocol):
         response_schema: type[BaseModel] | None = None,
     ) -> ModelResult: ...
 
+    async def probe(self, purpose: str) -> ProbeResult:
+        """Protocol compatibility for ``purpose``'s endpoint: ``/models`` plus one completion."""
+        ...
+
     async def aclose(self) -> None: ...
 
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
+    "PROBE_MESSAGES",
+    "PROBE_TIMEOUT_S",
     "REQUEST_FIELDS",
     "Message",
     "ModelAdapter",
@@ -119,6 +139,7 @@ __all__ = [
     "ModelParams",
     "ModelResult",
     "ModelUnavailable",
+    "ProbeResult",
     "UndeclaredInput",
     "UnknownPurpose",
 ]

@@ -53,6 +53,14 @@ class MockOpenAI:
     raw_body: bytes | None = None
     script: list[str] = field(default_factory=list)
     """Answers served first, in order, whatever the request asks for."""
+    cost: float | None = None
+    """Reported as ``usage.cost`` when set (as some gateways do)."""
+    models: tuple[str, ...] = ("house-model",)
+    """What ``GET /v1/models`` lists."""
+    json_answers: dict[str, str] = field(
+        default_factory=lambda: {"ProbeAnswer": '{"colour": "red", "count": 3}'}
+    )
+    """Answers for structured requests by schema name (the capability probe's schema)."""
 
     @property
     def root(self) -> str:
@@ -68,6 +76,8 @@ class MockOpenAI:
         system = " ".join(m["content"] for m in body["messages"] if m["role"] == "system")
         if self.script:
             content = self.script.pop(0)
+        elif self.json_answer(body, system) is not None:
+            content = self.json_answer(body, system) or ""
         elif "response_format" in body or "JSON Schema" in system:
             content = VERDICT
         else:
@@ -87,7 +97,29 @@ class MockOpenAI:
                     "finish_reason": "stop",
                 }
             ],
-            "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            "usage": self.usage(),
+        }
+
+    def json_answer(self, body: dict[str, Any], system: str) -> str | None:
+        """The canned answer for a structured request whose schema is in ``json_answers``."""
+        named = body.get("response_format", {}).get("json_schema", {}).get("name")
+        for name, answer in self.json_answers.items():
+            if named == name or f'"title":"{name}"' in system:
+                return answer
+        return None
+
+    def usage(self) -> dict[str, Any]:
+        usage: dict[str, Any] = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+        if self.cost is not None:
+            usage["cost"] = self.cost
+        return usage
+
+    def listing(self) -> dict[str, Any]:
+        return {
+            "object": "list",
+            "data": [
+                {"id": m, "object": "model", "created": 0, "owned_by": "mock"} for m in self.models
+            ],
         }
 
 
@@ -106,6 +138,16 @@ def mock_openai(**options: Any) -> Iterator[MockOpenAI]:
                 status, encoded, kind = 200, mock.raw_body, "text/html"
             self.send_response(status)
             self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def do_GET(self) -> None:
+            mock.requests.append(Recorded(self.path, self.headers.get("Authorization"), {}))
+            found = self.path.rstrip("/").endswith("/models")
+            encoded = json.dumps(mock.listing() if found else {"error": "not found"}).encode()
+            self.send_response(200 if found else 404)
+            self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
             self.wfile.write(encoded)

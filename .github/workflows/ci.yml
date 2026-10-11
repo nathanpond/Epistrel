@@ -42,6 +42,10 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check --output-format=github .
       - run: uv run ruff format --check .
+      # Model guide (#54, FR-MODEL-13): docs/models.md is exactly what the purpose registry generates.
+      - name: model-guide
+        run: uv run python -m epistrel.tools.model_guide --check
+        if: always()
       # Milestone gate (#37): every requirement in docs/03 is assigned to exactly one milestone in §22.
       - run: uv run python -m tools.gates check-assignment
         if: always()
@@ -101,7 +105,9 @@ jobs:
       # Integration tests start pgvector/pgvector:pg16 through testcontainers on the runner's Docker.
       # Coverage is gated on epistrel.core only (the deterministic layer); the flags live here and in
       # the README, not in pytest's addopts, so a plain `uv run pytest` stays fast locally.
-      - run: uv run pytest --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90
+      # `live_model` tests (E-06, P-08) need a real endpoint; the model matrix tool runs them
+      # locally and records the result, reported not gated (#54).
+      - run: uv run pytest -m "not live_model" --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90
 
   docker:
     runs-on: ubuntu-latest

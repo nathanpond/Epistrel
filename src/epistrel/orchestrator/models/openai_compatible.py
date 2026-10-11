@@ -33,10 +33,13 @@ from pydantic import BaseModel
 
 from epistrel.orchestrator.models.adapter import (
     DEFAULT_TIMEOUT_S,
+    PROBE_MESSAGES,
+    PROBE_TIMEOUT_S,
     Message,
     ModelParams,
     ModelResult,
     ModelUnavailable,
+    ProbeResult,
 )
 from epistrel.orchestrator.models.config import EffectiveConfig, KeyBox, key_fingerprint
 from epistrel.orchestrator.models.errors import ProviderGarbage
@@ -77,6 +80,16 @@ def request_body(
             },
         }
     return body
+
+
+def reported_cost(usage: object) -> float | None:
+    """``usage.cost`` when the endpoint reports one (some gateways do; the SDK keeps it as an
+    extra field), else ``None``: cost is never estimated (FR-MODEL-12)."""
+    extra = getattr(usage, "model_extra", None) or {}
+    cost = extra.get("cost")
+    if isinstance(cost, bool) or not isinstance(cost, int | float) or cost < 0:
+        return None
+    return float(cost)
 
 
 @dataclass(eq=False)
@@ -200,7 +213,7 @@ class OpenAICompatibleAdapter:
             latency_ms=latency_ms,
             tokens_in=usage.prompt_tokens if usage is not None else None,
             tokens_out=usage.completion_tokens if usage is not None else None,
-            cost=None,
+            cost=reported_cost(usage),
             request_id=completion.id or None,
         )
         log.info(
@@ -212,10 +225,29 @@ class OpenAICompatibleAdapter:
         )
         return result
 
+    async def probe(self, purpose: str) -> ProbeResult:
+        """Protocol compatibility for ``purpose``'s endpoint: ``GET /models`` answers with a
+        model list, and one minimal chat completion succeeds (NFR-PORT-1). Failures escape as
+        the SDK's exceptions, like ``complete``."""
+        config = await self._resolve(purpose)
+        if config.base_url is None or config.model is None:
+            raise ModelUnavailable(purpose, "not_configured")
+        if config.api_key_ciphertext is None:
+            raise ModelUnavailable(purpose, "no_api_key")
+        secret = self._keybox.decrypt(config.api_key_ciphertext, purpose=purpose)
+        client = await self._acquire(config, config.base_url, secret.get_secret_value())
+        try:
+            page = await client.sdk.models.list(timeout=config.params.timeout or PROBE_TIMEOUT_S)
+            listed = tuple(sorted(model.id for model in page.data))
+        finally:
+            await self._release(client)
+        result = await self.complete(purpose, PROBE_MESSAGES, ModelParams(max_tokens=16))
+        return ProbeResult(models=listed, model=result.model)
+
     async def aclose(self) -> None:
         clients, self._clients = list(self._clients.values()), {}
         for client in clients:
             await client.sdk.close()
 
 
-__all__ = ["OpenAICompatibleAdapter", "request_body"]
+__all__ = ["OpenAICompatibleAdapter", "reported_cost", "request_body"]

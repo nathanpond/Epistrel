@@ -44,10 +44,12 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
 from epistrel.orchestrator.models.adapter import (
+    PROBE_MESSAGES,
     REQUEST_FIELDS,
     Message,
     ModelParams,
     ModelResult,
+    ProbeResult,
 )
 from epistrel.orchestrator.models.registry import DELIVERED
 
@@ -319,6 +321,12 @@ class StubAdapter:
             cost=0.0,
             request_id=f"stub-{digest[:24]}",
         )
+
+    async def probe(self, purpose: str) -> ProbeResult:
+        """The stub speaks the protocol: it lists its configured model and completes once
+        (a queued fault for ``purpose`` applies to that completion)."""
+        result = await self.complete(purpose, PROBE_MESSAGES, ModelParams(max_tokens=16))
+        return ProbeResult(models=(result.model,), model=result.model)
 
     async def aclose(self) -> None:
         return None

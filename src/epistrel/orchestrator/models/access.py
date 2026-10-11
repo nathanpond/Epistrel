@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -30,11 +31,13 @@ from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.adapter import (
     DEFAULT_TIMEOUT_S,
+    PROBE_TIMEOUT_S,
     REQUEST_FIELDS,
     Message,
     ModelAdapter,
     ModelParams,
     ModelResult,
+    ProbeResult,
     UndeclaredInput,
     UnknownPurpose,
 )
@@ -48,9 +51,11 @@ from epistrel.orchestrator.models.config import (
 from epistrel.orchestrator.models.errors import (
     BudgetExhausted,
     EmptyCompletion,
+    ModelError,
     ModelUnavailable,
     map_provider_error,
 )
+from epistrel.orchestrator.models.metrics import ModelCall, Outcome, outcome_of, record
 from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
 from epistrel.orchestrator.models.prompts import payload_fields, render
 from epistrel.orchestrator.models.registry import (
@@ -122,6 +127,22 @@ def build_inputs(purpose: Purpose, inputs: InputSchema | Mapping[str, Any]) -> I
 def declared_fields(purpose: Purpose) -> frozenset[str]:
     """Every field path ``purpose`` declares (nested models included)."""
     return declared_paths(purpose.input_schema)
+
+
+NOT_ATTEMPTED = frozenset({"not_configured", "no_api_key"})
+"""Failures the adapter raises before sending anything; they are not call attempts."""
+
+
+def _attempted(error: ModelError) -> bool:
+    return error.details.get("reason") not in NOT_ATTEMPTED
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1000))
+
+
+def _has_text(result: ModelResult) -> bool:
+    return bool(result.text.strip())
 
 
 class ModelAccessLayer:
@@ -202,10 +223,16 @@ class ModelAccessLayer:
         response_schema: type[BaseModel] | None,
         *,
         budget: TurnBudget | None = None,
+        attempt: int = 1,
+        usable: Callable[[ModelResult], bool] | None = None,
     ) -> ModelResult:
         """One adapter call, exactly as given (``response_schema`` ``None`` sends no
         ``response_format``), bounded by the call's timeout and the budget's deadline and
-        debited from the budget. Every provider failure leaves as a ``ModelError``."""
+        debited from the budget. Every provider failure leaves as a ``ModelError``.
+
+        The attempt is recorded once (``metrics.record``: counters and the operation's
+        ``model_calls``), as ``attempt`` of its caller's sequence; an answer ``usable`` rejects
+        is recorded as ``invalid_output`` and still returned for the caller to handle."""
         get_delivered(purpose)
         params = params or ModelParams()
         if budget is not None:
@@ -219,21 +246,69 @@ class ModelAccessLayer:
             limit, reason = remaining, "deadline"
         if budget is not None:
             budget.debit()
+        model = await self._model_name(purpose)
+        started = time.perf_counter()
         bound = asyncio.timeout(limit)
         try:
             async with bound:
-                return await self.adapter.complete(purpose, messages, params, response_schema)
+                result = await self.adapter.complete(purpose, messages, params, response_schema)
         except TimeoutError:
             if not bound.expired():
                 raise
             log.warning("model call failed purpose=%s reason=%s", purpose, reason)
-            raise ModelUnavailable(purpose, reason) from None
+            error = ModelUnavailable(purpose, reason)
+            self._record_failure(purpose, model, attempt, started, error)
+            raise error from None
+        except asyncio.CancelledError as exc:
+            self._record_failure(purpose, model, attempt, started, exc)
+            raise
         except Exception as exc:
             mapped = map_provider_error(purpose, exc)
             if mapped is None:
                 raise
+            if _attempted(mapped):
+                self._record_failure(purpose, model, attempt, started, mapped)
             # ``from None``: the provider's message can echo the prompt (invariant 3).
             raise mapped from None
+        outcome: Outcome = "ok" if usable is None or usable(result) else "invalid_output"
+        record(
+            ModelCall(
+                purpose=purpose,
+                model=model or result.model,
+                attempt=attempt,
+                outcome=outcome,
+                latency_ms=_elapsed_ms(started),
+                tokens_in=result.tokens_in or 0,
+                tokens_out=result.tokens_out or 0,
+                cost=result.cost,
+                request_id=result.request_id,
+                finish_reason=result.finish_reason,
+            )
+        )
+        return result
+
+    async def _model_name(self, purpose: str) -> str:
+        """The model a call for ``purpose`` is configured to use (the adapter's name when no
+        database is bound)."""
+        if self._db is None:
+            return self.adapter.name
+        return (await self.resolve(purpose)).model or ""
+
+    @staticmethod
+    def _record_failure(
+        purpose: str, model: str, attempt: int, started: float, error: BaseException
+    ) -> None:
+        record(
+            ModelCall(
+                purpose=purpose,
+                model=model or "unknown",
+                attempt=attempt,
+                outcome=outcome_of(error),
+                latency_ms=_elapsed_ms(started),
+                tokens_in=0,
+                tokens_out=0,
+            )
+        )
 
     async def complete(
         self,
@@ -248,7 +323,8 @@ class ModelAccessLayer:
         unless one is given). An unstructured answer of only whitespace is ``EmptyCompletion``."""
         declared = get_delivered(purpose)
         schema = response_schema if response_schema is not None else declared.response_schema
-        result = await self.send(purpose, messages, params, schema, budget=budget)
+        usable = _has_text if schema is None else None
+        result = await self.send(purpose, messages, params, schema, budget=budget, usable=usable)
         if schema is None and not result.text.strip():
             raise EmptyCompletion(purpose)
         return result
@@ -298,6 +374,21 @@ class ModelAccessLayer:
             deterministic_first=deterministic_first,
             budget=budget,
         )
+
+    async def probe(self, purpose: str) -> ProbeResult:
+        """Protocol compatibility for ``purpose``'s endpoint (``ModelAdapter.probe``), bounded
+        by ``PROBE_TIMEOUT_S``; every provider failure leaves as a ``ModelError``."""
+        get_delivered(purpose)
+        try:
+            async with asyncio.timeout(PROBE_TIMEOUT_S):
+                return await self.adapter.probe(purpose)
+        except TimeoutError:
+            raise ModelUnavailable(purpose, "timeout") from None
+        except Exception as exc:
+            mapped = map_provider_error(purpose, exc)
+            if mapped is None:
+                raise
+            raise mapped from None
 
     async def configuration(self) -> tuple[int, dict[str, ConfigEntry]]:
         """``config_revision`` and every configurable purpose (``default`` included)."""

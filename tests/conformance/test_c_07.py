@@ -1,4 +1,5 @@
-"""C-07: adapter swap (docs/04), the M2 swap half; the capability-reporting half is #54's."""
+"""C-07: adapter swap and capability reporting (docs/04), the M2 parts: the swap (#51) and
+protocol vs per-purpose capability (#54)."""
 
 from __future__ import annotations
 
@@ -10,6 +11,9 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.engine import Engine
+from epistrel.orchestrator.models.access import ModelAccessLayer
+from epistrel.orchestrator.models.capability import STRUCTURED_CALLS, assess
+from epistrel.orchestrator.models.registry import DELIVERED
 from tests.auth_support import auth_settings
 from tests.conformance.suite import GENERATION_MODEL, run_suite
 from tests.model_support import config_key, mock_openai, restored_model_config
@@ -73,3 +77,46 @@ async def test_c_07__swap(pg_url: str, engine: AsyncEngine) -> None:
     assert core_digest() == before
     assert seen["openai"] > 0
     assert seen["stub"] == 0
+
+
+@pytest.mark.part("M2", "NFR-PORT-3")
+async def test_c_07__capability(dummy_dsn: str) -> None:
+    """Protocol compatibility and per-purpose capability are separate results. The stub speaks
+    the protocol and meets every floor; with garbage on the structured-output floor of
+    ``guardrail_check`` it still passes protocol, and only that purpose is reported incapable.
+
+    Complements asserted: an endpoint that fails the protocol probe is reported as a protocol
+    failure with no capability results at all (not as N incapable purposes); a purpose whose
+    floor does not need structured output skips that check rather than passing it."""
+    models = ModelAccessLayer(auth_settings(dummy_dsn, model_adapter="stub"))
+    models.bind(None)
+    stub = models.stub
+
+    clean = await assess(models)
+    assert clean.protocol.ok
+    assert set(clean.purposes) == set(DELIVERED)
+    assert all(result.capable for result in clean.purposes.values())
+    structured = {c.name: c for c in clean.purposes["guardrail_check"].checks}["structured_output"]
+    assert (structured.passed, structured.valid, structured.mode) == (True, 20, "json_schema")
+    skipped = {c.name: c for c in clean.purposes["generation"].checks}["structured_output"]
+    assert skipped.passed is None
+
+    stub.fault("guardrail_check", "garbage", n=STRUCTURED_CALLS)
+    degraded = await assess(models)
+    assert degraded.protocol.ok
+    assert degraded.purposes["generation"].capable
+    assert degraded.purposes["lite_summary"].capable
+    guardrail = degraded.purposes["guardrail_check"]
+    assert not guardrail.capable
+    checks = {c.name: c for c in guardrail.checks}
+    assert checks["context"].passed is True
+    assert checks["structured_output"].passed is False
+    assert checks["structured_output"].valid == 0
+    assert checks["structured_output"].mode == "parse_validate_retry"
+
+    stub.reset()
+    stub.fault("generation", "connection")
+    unreachable = await assess(models)
+    assert not unreachable.protocol.ok
+    assert unreachable.protocol.reason == "connection"
+    assert unreachable.purposes == {}

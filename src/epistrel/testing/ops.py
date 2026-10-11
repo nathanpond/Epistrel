@@ -42,6 +42,7 @@ from epistrel.core.policies.model import (
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.adapter import ModelParams
+from epistrel.orchestrator.models.metrics import ModelCall, recording
 from epistrel.orchestrator.models.registry import (
     GenerationInputs,
     GuardrailCheckInputs,
@@ -216,6 +217,8 @@ class GuardedReplyResponse(MutationResponse):
     reply: str | None
     input_violation: bool
     output_violation: bool
+    model_calls: list[ModelCall]
+    """Every model call attempt the operation made (FR-MODEL-12), as #57's turns report them."""
 
 
 def make_router() -> APIRouter:
@@ -229,15 +232,16 @@ def make_router() -> APIRouter:
         principal = engine.require_principal(ctx)
         budget = TurnBudget(max_calls=body.max_calls, deadline_s=body.deadline_s)
         params = ModelParams(timeout=body.timeout_s) if body.timeout_s else None
-        op = await guarded_reply(
-            engine,
-            story_id,
-            body.said,
-            principal=principal,
-            policies=body.policies(),
-            budget=budget,
-            params=params,
-        )
+        with recording() as calls:
+            op = await guarded_reply(
+                engine,
+                story_id,
+                body.said,
+                principal=principal,
+                policies=body.policies(),
+                budget=budget,
+                params=params,
+            )
         event = op.staged[0].payload if op.staged else None
         assert isinstance(event, GuardedReplyEvent)  # noqa: S101 - guarded_reply stages exactly one
         assert op.timeline_revision is not None  # noqa: S101 - set by commit()
@@ -247,6 +251,7 @@ def make_router() -> APIRouter:
             reply=event.reply,
             input_violation=event.input_violation,
             output_violation=event.output_violation,
+            model_calls=list(calls.calls),
         )
 
     return router

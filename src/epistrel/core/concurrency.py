@@ -28,8 +28,10 @@ from typing import TYPE_CHECKING, Any, Protocol
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core.config_changes import read_lite_defaults
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.errors import RevisionConflict, StoryNotFound, TimelineChanged
+from epistrel.core.settings_schema import StorySettings, resolve_generation
 from epistrel.core.tables import (
     characters,
     content_rating_versions,
@@ -313,9 +315,18 @@ async def _guidance_text(conn: AsyncConnection, story_id: str, spec: LiteReadSet
     )
 
 
-async def _not_yet_recorded(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
-    """Generation-settings versions arrive with #52/#57."""
-    return None
+async def _generation_settings(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
+    """The generation settings and window size a turn of the story starts from: the
+    deployment's Lite defaults with the story's overrides applied (FR-LITE-4, #57). A request's
+    own ``prompt_params`` are fixed for the turn, so they are not part of the read set."""
+    defaults = await read_lite_defaults(conn)
+    raw = await conn.scalar(select(stories.c.settings).where(stories.c.id == story_id))
+    story = StorySettings.from_row(raw)
+    resolved = resolve_generation(defaults.lite_generation_defaults, story.generation_settings)
+    return {
+        "generation": resolved.model_dump(mode="json"),
+        "window_messages": story.lite_window_messages or defaults.lite_window_messages,
+    }
 
 
 for _name, _loader in (
@@ -325,7 +336,7 @@ for _name, _loader in (
     ("instructions", _instructions),
     ("definitions", _definitions),
     ("guidance_text", _guidance_text),
-    ("generation_settings", _not_yet_recorded),
+    ("generation_settings", _generation_settings),
 ):
     register_read_set_member(_name, _loader)
 

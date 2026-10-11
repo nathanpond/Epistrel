@@ -14,6 +14,9 @@ samples at temperature 0 are identical (≥ 8 passes). **p50 / p95** are nearest
 turn latencies over the measured Lite turns, after one warm-up turn (NFR-PERF-8). **Calls per
 turn** is the mean number of model calls by purpose.
 
+**Turn path.** Rows whose turn path is the guarded reply (#53) were measured before `respond`
+existed; a live re-run through `respond` (#57) is pending and will replace them.
+
 ## Results
 
 | Tier | Policies | Protocol | `generation` | `guardrail_check` | `lite_summary` | E-06 | Turns | p50 | p95 | Calls per turn |

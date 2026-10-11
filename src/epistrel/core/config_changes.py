@@ -11,14 +11,18 @@ write produced and the acting principal.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import insert, null, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.ids import new_ulid
+from epistrel.core.settings_schema import LiteDefaults
 from epistrel.core.tables import config_changes, deployment_state
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
@@ -35,6 +39,8 @@ class ConfigScope(StrEnum):
     DEPLOYMENT = "deployment"
     STORY = "story"
 
+
+log = logging.getLogger(__name__)
 
 RETIRED = "retired"
 """The ``new`` value recorded when a rating is retired."""
@@ -122,3 +128,25 @@ async def bump_config_revision(conn: AsyncConnection, current: DeploymentSetting
         .values(config_revision=revision)
     )
     return revision
+
+
+# -- the deployment's Lite defaults (FR-LITE-4; #57) -------------------------------------------
+
+
+def lite_defaults(document: Mapping[str, Any] | None) -> LiteDefaults:
+    """The Lite defaults in a ``deployment_state.settings`` document; an invalid stored value
+    falls back to the defaults (a warning names only the keys, never the values)."""
+    values = {k: v for k, v in (document or {}).items() if k in LiteDefaults.model_fields}
+    try:
+        return LiteDefaults.model_validate(values)
+    except ValidationError:
+        log.warning("invalid Lite defaults %s; using the defaults", sorted(values))
+        return LiteDefaults()
+
+
+async def read_lite_defaults(db: AsyncEngine | AsyncConnection) -> LiteDefaults:
+    query = select(deployment_state.c.settings).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+    if isinstance(db, AsyncConnection):
+        return lite_defaults(await db.scalar(query))
+    async with db.connect() as conn:
+        return lite_defaults(await conn.scalar(query))

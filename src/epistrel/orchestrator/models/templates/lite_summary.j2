@@ -14,7 +14,7 @@ Characters: {{ character_names | join(", ") }}
 {% endblock %}
 {% block user %}
 {% for line in messages %}
-{{ line.name }}:{% if line.say %} "{{ line.say }}"{% endif %}{% if line.do %} *{{ line.do }}*{% endif %}
+{% if line.text %}{{ line.text }}{% else %}{{ line.name }}:{% if line.say %} "{{ line.say }}"{% endif %}{% if line.do %} *{{ line.do }}*{% endif %}{% endif %}
 
 {% endfor %}
 Summarise the messages above.

@@ -22,6 +22,8 @@ from epistrel.core.history import History, read_history
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.settings_schema import StorySettings
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.lite import pipeline as lite
+from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
 from epistrel.orchestrator.models import ModelAccessLayer
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.policies import admin as policy_admin
@@ -169,6 +171,33 @@ class Engine:
             budget=budget,
             actor=actor,
             reserved=reserved,
+        )
+
+    async def respond(
+        self, ctx: RequestContext, story_id: str, request: RespondRequest
+    ) -> RespondResult:
+        """Play one Lite turn: the actor's input in, one finished reply out (FR-RESP-1).
+
+        The consumer does no retrieval or memory work (FR-RESP-2): the prompt is assembled from
+        the story's own records, never from ``scene_context`` (FR-RESP-4). The input is the
+        turn's first beat (FR-RESP-9) and goes through the input gate before anything is
+        recorded; the turn makes one ``generation`` call (FR-LITE-7). The message is
+        *finished*: under ``lite`` none of its claims is checked."""
+        principal = self.require_principal(ctx)
+
+        async def gate(budget: TurnBudget, text: str, actor: str) -> InputPass:
+            return await self.gate_input(
+                ctx,
+                story_id,
+                EntryPoint.RESPOND,
+                [GateText(lite.INPUT_LOCATOR, text)],
+                actor=actor,
+                budget=budget,
+                reserved=1,
+            )
+
+        return await lite.respond(
+            self.db, self.models, ctx, story_id, request, principal=principal, gate=gate
         )
 
     async def story_settings(

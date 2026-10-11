@@ -86,11 +86,13 @@ class CharacterDefinition(InputSchema):
 
 
 class TranscriptLine(InputSchema):
-    """One earlier message as the model sees it: who, what they said, what they did."""
+    """One earlier message as the model sees it: who, what they said, what they did; or, for a
+    reply, its ``text`` verbatim. Always the story's own recorded transcript (FR-RESP-4)."""
 
     name: Annotated[str, C.RECENT_MESSAGE]
     say: Annotated[str | None, C.RECENT_MESSAGE] = None
     do: Annotated[str | None, C.RECENT_MESSAGE] = None
+    text: Annotated[str | None, C.RECENT_MESSAGE] = None
     role: Annotated[Literal["user", "assistant"], C.RECENT_MESSAGE] = "assistant"
 
 
@@ -101,7 +103,11 @@ class PlayerInput(InputSchema):
 
 
 class GenerationInputs(InputSchema):
-    """The Lite prompt's sections (FR-LITE-1); M3-only sections join in M3."""
+    """The Lite prompt's sections (FR-LITE-1), in prompt order; M3-only sections join in M3.
+
+    ``recent_messages`` is the story's own verbatim window, sent as alternating ``user`` /
+    ``assistant`` chat messages; ``voiced_characters`` names the render characters the reply
+    voices, in request order (FR-LITE-5)."""
 
     rating_guidance: Annotated[str, C.RATING_GUIDANCE] = ""
     custom_instructions: Annotated[str, C.CUSTOM_INSTRUCTIONS] = ""
@@ -109,6 +115,7 @@ class GenerationInputs(InputSchema):
     pinned_memories: Annotated[list[str], C.PINNED_MEMORY] = Field(default_factory=list)
     summary_segments: Annotated[list[str], C.ROLLING_SUMMARY] = Field(default_factory=list)
     recent_messages: list[TranscriptLine] = Field(default_factory=list)
+    voiced_characters: Annotated[list[str], C.CHARACTER_DEFINITION] = Field(default_factory=list)
     player_input: PlayerInput
 
 
@@ -172,6 +179,9 @@ class Purpose:
     hot_path: bool
     never_receives: frozenset[ContentCategory]
     response_schema: type[BaseModel] | None = None
+    history_field: str | None = None
+    """An input field whose ``TranscriptLine``s render as chat messages between the ``system``
+    and ``user`` blocks, each with its own role, through the template's ``line`` macro."""
     status: PurposeStatus = field(default=PurposeStatus.DELIVERED, init=False)
 
 
@@ -196,9 +206,10 @@ GENERATION = Purpose(
     default_model_key=DEFAULT_MODEL_KEY,
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.NONE),
     input_schema=GenerationInputs,
-    template="generation.j2",
+    template="lite_generation.j2",
     hot_path=True,
     never_receives=frozenset({C.POLICY_TEXT, C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT}),
+    history_field="recent_messages",
 )
 
 GUARDRAIL_CHECK = Purpose(
@@ -331,6 +342,11 @@ def validate_purpose(purpose: Purpose) -> None:
         raise RegistryError(f"{purpose.name}: declares inputs it never receives: {names}")
     if not purpose.template.endswith(".j2"):
         raise RegistryError(f"{purpose.name}: template must be a .j2 file")
+    if (
+        purpose.history_field is not None
+        and purpose.history_field not in purpose.input_schema.model_fields
+    ):
+        raise RegistryError(f"{purpose.name}: history field {purpose.history_field!r} undeclared")
 
 
 def _build(purposes: tuple[Purpose, ...]) -> Mapping[str, Purpose]:

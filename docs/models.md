@@ -27,7 +27,7 @@ Writes the reply of a Lite turn from the story's prompt sections.
 
 - **Hot path:** yes
 - **Default model:** the `default` row of `model_config`, unless the purpose has its own
-- **Template:** `generation.j2`
+- **Template:** `lite_generation.j2`
 - **Capability floor:** structured output: not required; minimum context 8,192 tokens
 - **Returns:** free text
 
@@ -44,7 +44,9 @@ Writes the reply of a Lite turn from the story's prompt sections.
 | `recent_messages.name` | `recent_message` |
 | `recent_messages.say` | `recent_message` |
 | `recent_messages.do` | `recent_message` |
+| `recent_messages.text` | `recent_message` |
 | `recent_messages.role` | `recent_message` |
+| `voiced_characters` | `character_definition` |
 | `player_input.name` | `player_input` |
 | `player_input.say` | `player_input` |
 | `player_input.do` | `player_input` |
@@ -89,6 +91,7 @@ Folds old messages into a Lite story's rolling summary (FR-LITE-2).
 | `messages.name` | `recent_message` |
 | `messages.say` | `recent_message` |
 | `messages.do` | `recent_message` |
+| `messages.text` | `recent_message` |
 | `messages.role` | `recent_message` |
 | `prior_segments` | `rolling_summary` |
 | `character_names` | `character_definition` |

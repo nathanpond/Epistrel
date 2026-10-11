@@ -67,16 +67,29 @@ class CharacterDefined(EventPayload):
 
 @register("player_input", category=EventCategory.INPUT)
 class PlayerInput(EventPayload):
-    """What the player sent this turn (shell; #57 extends)."""
+    """What the acting character said and did this turn: the turn's first beat (FR-RESP-9).
+
+    ``text`` is ``say`` and ``do`` joined with a newline (what the gate checked and the
+    transcript shows); ``say``/``do`` keep the two apart for the prompt (#57). The event's
+    ``character_id`` is the actor."""
 
     text: str
+    say: str | None = None
+    do: str | None = None
 
 
 @register("message_rendered", category=EventCategory.NARRATIVE_STATE)
 class MessageRendered(EventPayload):
-    """The reply the turn produced (shell; #57 extends)."""
+    """The finished reply of a turn (#57): stored verbatim, with the characters it voices, the
+    model that wrote it, the SHA-256 of the prompt it answered (the rendered chat messages'
+    canonical JSON) and the provider's finish reason. ``character_id`` is null for a combined
+    reply of several characters."""
 
     text: str
+    render_character_ids: tuple[str, ...] = ()
+    model: str | None = None
+    prompt_hash: str | None = None
+    finish_reason: str | None = None
 
 
 @register("think", category=EventCategory.NARRATIVE_STATE)

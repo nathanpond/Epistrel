@@ -73,6 +73,7 @@ operations = Table(
     Column("attempts", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     Column("turn_report", JSONB, nullable=True),
     Column("viewpoint", Text, nullable=True),
+    Column("idempotency_key", Text, nullable=True),
     Column(
         "started_at",
         TIMESTAMP(timezone=True),

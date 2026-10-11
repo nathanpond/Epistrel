@@ -1,7 +1,10 @@
 """Prompt templates bound to the purpose registry (FR-MODEL-13).
 
 Each delivered purpose names a Jinja2 template in ``templates/`` with a ``system`` and a
-``user`` block, rendered separately into one system and one user ``Message``. Templates render
+``user`` block, rendered separately into one system and one user ``Message``. A purpose with a
+``history_field`` (``generation``) also sends that field's transcript lines between the two as
+chat messages, each with its own ``user``/``assistant`` role and rendered by the template's
+``line`` macro; consecutive messages of one role merge into one. Templates render
 with ``StrictUndefined`` and only Jinja's built-in filters, and are checked when this module is
 imported: a variable that is not a field of the purpose's ``input_schema`` (found by
 ``meta.find_undeclared_variables``), or an attribute a nested model does not have (found by
@@ -78,15 +81,48 @@ def template_context(inputs: BaseModel) -> dict[str, Any]:
     return {name: getattr(inputs, name) for name in type(inputs).model_fields}
 
 
-def render_blocks(template: Template, inputs: BaseModel) -> list[Message]:
-    context = template.new_context(template_context(inputs))
-    return [
+HISTORY_MACRO = "line"
+
+
+def render_blocks(
+    template: Template, inputs: BaseModel, history_field: str | None = None
+) -> list[Message]:
+    variables = template_context(inputs)
+    context = template.new_context(variables)
+    system, user = (
         Message(role=role, content="".join(template.blocks[role](context)).strip())
         for role in BLOCKS
+    )
+    if history_field is None:
+        return [system, user]
+    line = getattr(template.make_module(variables), HISTORY_MACRO, None)
+    if line is None:
+        raise TemplateFieldError(f"{template.name}: missing macro: {HISTORY_MACRO}")
+    history = [
+        Message(role=entry.role, content=str(line(entry)).strip())
+        for entry in getattr(inputs, history_field)
     ]
+    return merge_roles([system, *history, user])
 
 
-def check_template(environment: Environment, name: str, schema: type[InputSchema]) -> Template:
+def merge_roles(messages: list[Message]) -> list[Message]:
+    """Consecutive messages of one role as one message (their contents joined by a blank
+    line), so the chat alternates."""
+    merged: list[Message] = []
+    for message in messages:
+        if merged and merged[-1].role == message.role:
+            previous = merged.pop()
+            message = Message(role=message.role, content=f"{previous.content}\n\n{message.content}")
+        merged.append(message)
+    return merged
+
+
+def check_template(
+    environment: Environment,
+    name: str,
+    schema: type[InputSchema],
+    history_field: str | None = None,
+) -> Template:
     """Load ``name`` and prove it uses only ``schema``'s fields; raise ``TemplateFieldError``."""
     assert environment.loader is not None  # noqa: S101 - make_environment always sets one
     source, _, _ = environment.loader.get_source(environment, name)
@@ -102,7 +138,7 @@ def check_template(environment: Environment, name: str, schema: type[InputSchema
     if missing:
         raise TemplateFieldError(f"{name}: missing block(s): {', '.join(missing)}")
     try:
-        render_blocks(template, example_instance(schema))
+        render_blocks(template, example_instance(schema), history_field)
     except TemplateError as exc:
         raise TemplateFieldError(f"{name}: {exc}") from exc
     return template
@@ -113,7 +149,9 @@ def load_templates(
 ) -> dict[str, Template]:
     environment = environment or make_environment()
     return {
-        name: check_template(environment, purpose.template, purpose.input_schema)
+        name: check_template(
+            environment, purpose.template, purpose.input_schema, purpose.history_field
+        )
         for name, purpose in purposes.items()
     }
 
@@ -142,8 +180,9 @@ def payload_fields(inputs: InputSchema) -> tuple[str, ...]:
 
 
 def render(purpose: Purpose, inputs: InputSchema) -> list[Message]:
-    """The system and user messages of ``purpose`` for ``inputs`` (already validated)."""
-    return render_blocks(TEMPLATES[purpose.name], inputs)
+    """The chat messages of ``purpose`` for ``inputs`` (already validated): ``system``, the
+    history (when the purpose has one), then ``user``."""
+    return render_blocks(TEMPLATES[purpose.name], inputs, purpose.history_field)
 
 
 __all__ = [
@@ -153,6 +192,7 @@ __all__ = [
     "example_instance",
     "load_templates",
     "make_environment",
+    "merge_roles",
     "payload_fields",
     "render",
 ]

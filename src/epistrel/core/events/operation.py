@@ -111,6 +111,7 @@ class StagedEvent:
     provenance: Provenance
     authority: Authority
     character_id: str | None
+    beat: int | None = None
 
 
 class Operation:
@@ -140,6 +141,8 @@ class Operation:
         authority: Authority = Authority.AUTHORITATIVE,
         bumps_revision: bool | None = None,
         control_action: bool | None = None,
+        idempotency_key: str | None = None,
+        viewpoint: str | None = None,
     ) -> None:
         if principal is None or not principal.strip():
             raise PrincipalRequired("an operation needs a requesting principal")
@@ -171,6 +174,10 @@ class Operation:
         self.story_id = story_id
         self.kind = kind
         self.principal = principal
+        self.idempotency_key = idempotency_key
+        """The caller's idempotency key, stored on the row (#57); #61 adds replay."""
+        self.viewpoint = viewpoint
+        """The resolved output viewpoint the operation's result is for (FR-RESP-12)."""
         self.requested_turn = turn
         self.provenance = provenance
         self.authority = authority
@@ -241,6 +248,8 @@ class Operation:
                         base_revision=self.base_revision,
                         read_set=self.read_set,
                         config_revisions=self.config_revisions,
+                        idempotency_key=self.idempotency_key,
+                        viewpoint=self.viewpoint,
                     )
                 )
         self.status = OperationStatus.IN_FLIGHT
@@ -305,9 +314,11 @@ class Operation:
         provenance: Provenance | None = None,
         authority: Authority | None = None,
         character_id: str | None = None,
+        beat: int | None = None,
     ) -> EventPayload:
         """Validate and stage one event; nothing is written until ``commit()``.
 
+        ``beat`` is the event's beat within its turn (FR-RESP-9: the player input is beat 1).
         Raises ``UnregisteredEventType`` or ``InvalidEventPayload`` before anything is staged.
         The category comes from the registry, never from the caller.
         """
@@ -321,6 +332,7 @@ class Operation:
                 provenance=provenance or self.provenance,
                 authority=authority or self.authority,
                 character_id=character_id,
+                beat=beat,
             )
         )
         return model
@@ -431,6 +443,7 @@ class Operation:
                         "category": staged.category.value,
                         "narrative_turn": self.narrative_turn,
                         "turn_variant": self.turn_variant,
+                        "beat": staged.beat,
                         "character_id": staged.character_id,
                         "principal": self.principal,
                         "type": staged.type,
@@ -539,7 +552,7 @@ class Operation:
                 category=staged.category,
                 narrative_turn=self.narrative_turn,
                 turn_variant=self.turn_variant,
-                beat=None,
+                beat=staged.beat,
                 character_id=staged.character_id,
                 provenance=staged.provenance,
                 type=staged.type,

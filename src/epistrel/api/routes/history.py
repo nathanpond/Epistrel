@@ -16,6 +16,7 @@ class HistoryItemModel(BaseModel):
     beat: int | None
     kind: str
     actor_character_id: str | None
+    render_character_ids: list[str] | None
     channel: str
     text: str
     operation_id: str

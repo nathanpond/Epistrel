@@ -63,6 +63,9 @@ def message_row(event: LogEvent, beat: Beat) -> Row:
         "channel": channel,
         "role": role,
         "actor_character_id": event.character_id,
+        "render_character_ids": (
+            list(beat.render_character_ids) if isinstance(beat, MessageRendered) else None
+        ),
         "text": beat.text,
         "membership": event.membership.value,
     }

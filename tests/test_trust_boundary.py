@@ -1,5 +1,5 @@
 """The trust boundary: service credential, requesting principal, `/admin`, no MCP (docs/04
-S-TRUST-BOUNDARY, M2 auth half; the respond half lands with `respond` in #57)."""
+S-TRUST-BOUNDARY, M2): the auth half (#44) and the respond half (#57)."""
 
 from __future__ import annotations
 
@@ -7,12 +7,14 @@ import asyncio
 import os
 import subprocess
 import sys
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.routing import iter_route_contexts
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel import Engine
 from epistrel.api import create_app
@@ -31,6 +33,9 @@ from tests.auth_support import (
     make_test_router,
 )
 from tests.conftest import DUMMY_DSN, REPO_ROOT
+from tests.event_support import rows
+from tests.respond_support import PLAYER, body, new_story, respond_client
+from tests.story_support import count
 
 WRITE = f"{TEST_PREFIX}/write"
 READ = f"{TEST_PREFIX}/read"
@@ -238,3 +243,56 @@ def test_trust_boundary_statement_is_documented_verbatim() -> None:
     assert TRUST_BOUNDARY_STATEMENT in readme
     assert TRUST_BOUNDARY_STATEMENT in section_9
     assert "opaque IDs rather than names or email addresses" in TRUST_BOUNDARY_STATEMENT
+
+
+def _without_ids(result: dict[str, Any]) -> dict[str, Any]:
+    """A respond body with every per-story id removed: what two identical stories share."""
+    return {
+        "message": result["message"]["text"],
+        "beats": [(b["beat"], b["kind"], b["channel"], b["text"]) for b in result["beats"]],
+        "position": (result["turn"], result["variant"], result["timeline_revision"]),
+        "calls": [(c["purpose"], c["outcome"], c["attempt"]) for c in result["model_calls"]],
+        "audience_filter": result["audience_filter"],
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.part("M2", "FR-AUTH-1,4")
+async def test_s_trust_boundary__respond(pg_url: str, engine: AsyncEngine) -> None:
+    """The respond half (#57): the same respond request under two principal IDs gives the same
+    result apart from the recorded principal, which is on the turn's operation and every one of
+    its events; a respond with no principal is refused before anything is written.
+
+    Complement asserted: each principal is recorded on its own turn, not the other's."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, _):
+        results = {}
+        for principal in ("u-1", "u-2"):
+            story, ids = await new_story(client)
+            response = await client.post(
+                f"/stories/{story}/respond",
+                json=body(ids[PLAYER]),
+                headers={**bearer(), "X-Epistrel-Principal": principal},
+            )
+            assert response.status_code == 200, response.text
+            results[principal] = (story, response.json())
+        assert _without_ids(results["u-1"][1]) == _without_ids(results["u-2"][1])
+        for principal, (story, _) in results.items():
+            recorded = await rows(
+                engine,
+                "SELECT DISTINCT e.principal FROM events e JOIN operations o USING (operation_id) "
+                "WHERE e.story_id = :s AND o.kind = 'turn' "
+                "UNION SELECT principal FROM operations WHERE story_id = :s AND kind = 'turn'",
+                s=story,
+            )
+            assert {r.principal for r in recorded} == {principal}
+
+        story, ids = await new_story(client)
+        before = await count(engine, "SELECT count(*) FROM operations WHERE story_id = :s", s=story)
+        refused = await client.post(
+            f"/stories/{story}/respond", json=body(ids[PLAYER]), headers=bearer()
+        )
+        assert refused.status_code == 400
+        assert refused.json()["error"]["code"] == "principal_required"
+        after = await count(engine, "SELECT count(*) FROM operations WHERE story_id = :s", s=story)
+        assert after == before

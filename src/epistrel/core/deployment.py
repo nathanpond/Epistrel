@@ -1,26 +1,38 @@
-"""Deployment-wide settings: ``GET/PUT /admin/settings`` (#48; #64 adds fields)."""
+"""Deployment-wide settings: ``GET/PUT /admin/settings`` (#48; #64 adds fields), and the Lite
+defaults under ``deployment_state.settings`` (#57; a library write until #64's settings surface)."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.config_changes import (
+    ChangeClass,
     DeploymentSettings,
     bump_config_revision,
+    lite_defaults,
     lock_deployment,
+    read_lite_defaults,
     read_settings,
     record_config_change,
 )
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ratings import require_assignable
+from epistrel.core.settings_schema import GenerationSettings, LiteDefaults
 from epistrel.core.tables import deployment_state
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
-__all__ = ["DeploymentSettings", "SettingsPatch", "read_settings", "update_settings"]
+__all__ = [
+    "DeploymentSettings",
+    "SettingsPatch",
+    "read_lite_defaults",
+    "read_settings",
+    "update_lite_defaults",
+    "update_settings",
+]
 
 MINOR_AGE_THRESHOLD_MIN = 0
 MINOR_AGE_THRESHOLD_MAX = 120
@@ -78,3 +90,53 @@ async def update_settings(
                 actor=principal,
             )
         return await lock_deployment(conn)
+
+
+async def update_lite_defaults(
+    db: AsyncEngine,
+    *,
+    principal: str,
+    generation: GenerationSettings | None = None,
+    window_messages: int | None = None,
+) -> LiteDefaults:
+    """Replace the deployment's Lite generation defaults and/or window size (FR-LITE-4).
+
+    Recorded like every deployment write: one revision, one prospective ``config_changes`` row
+    per changed key. A value equal to the current one writes nothing."""
+    async with db.begin() as conn:
+        current_settings = await lock_deployment(conn)
+        document = dict(
+            await conn.scalar(
+                select(deployment_state.c.settings).where(
+                    deployment_state.c.id == DEPLOYMENT_ROW_ID
+                )
+            )
+            or {}
+        )
+        current = lite_defaults(document)
+        wanted = LiteDefaults(
+            lite_generation_defaults=generation or current.lite_generation_defaults,
+            lite_window_messages=window_messages or current.lite_window_messages,
+        )
+        old = current.model_dump(mode="json")
+        new = wanted.model_dump(mode="json")
+        changed = sorted(key for key in new if old[key] != new[key])
+        if not changed:
+            return current
+        revision = await bump_config_revision(conn, current_settings)
+        await conn.execute(
+            update(deployment_state)
+            .where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+            .values(settings={**document, **new})
+        )
+        for key in changed:
+            await record_config_change(
+                conn,
+                config_revision=revision,
+                setting=key,
+                old=old[key],
+                new=new[key],
+                actor=principal,
+                change_class=ChangeClass.PROSPECTIVE,
+            )
+        return wanted

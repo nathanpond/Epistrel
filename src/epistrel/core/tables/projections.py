@@ -4,7 +4,8 @@ Both carry a plain ``story_id`` (no foreign key) so story deletion enumerates th
 timestamps of their own: every value is a function of the log and the ``operations`` rows.
 
 - ``transcript_messages``: one row per beat event, keyed by the event id (``message_id``),
-  carrying its operation's ``membership`` so truncation and swaps flip rows in place.
+  carrying its operation's ``membership`` so truncation and swaps flip rows in place, and a
+  reply's ``render_character_ids`` (#57; null on input and narration beats).
 - ``story_heads``: one row per story, created at genesis: the next turn index and the active
   variant of every turn (``{"<turn>": variant}``).
 """
@@ -31,6 +32,7 @@ transcript_messages = Table(
     Column("channel", Text, nullable=False),
     Column("role", Text, nullable=False),
     Column("actor_character_id", ulid_type(), nullable=True),
+    Column("render_character_ids", JSONB, nullable=True),
     Column("text", Text, nullable=False),
     Column("membership", pg_enum(Membership, "membership"), nullable=False),
     Index("ix_transcript_messages_story_position", "story_id", "narrative_turn", "turn_variant"),

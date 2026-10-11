@@ -24,10 +24,13 @@ The rows go to ``docs/model-matrix.json`` (raw timings included) and are rendere
 own rows and keeps every other tier's. The matrix is **reported, not gated**: CI never runs
 it, and the owner commits the files after a local run. Percentiles are nearest-rank.
 
-**Turn path.** Until #57 delivers ``respond``, a Lite turn is #53's guarded reply
-(``epistrel.testing.ops.guarded_reply``): the input check for every model-assisted policy, one
-``generation`` call, and the output check. Each row records the turn path it measured, and #57
-swaps in ``respond``.
+**Turn path.** A Lite turn is a real ``Engine.respond`` turn (``RespondDriver``, #57): the
+input gate for every model-assisted input policy, then one ``generation`` call. The *minors
+policy on* row casts a 12-year-old, so the deployment's seeded ``minors_no_sexual_content``
+policy (#55) applies through the story's own guard context: one ``guardrail_check`` on the input
+per turn until #68 adds the output check. Rows measured before #57 went through #53's guarded
+reply (``GuardedReplyDriver``, an in-memory unconditioned policy checked on input and output);
+each row records the turn path it measured, so those rows stand until the next live run.
 """
 
 from __future__ import annotations
@@ -42,7 +45,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,11 +54,13 @@ from typing import Any, Literal, Protocol
 from cryptography.fernet import Fernet
 
 from epistrel.config import Settings
+from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.policies.model import Policy
 from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.lite.schemas import PlayerInputBody, RespondRequest
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.capability import (
     CapabilityReport,
@@ -75,7 +80,8 @@ PG_IMAGE = "pgvector/pgvector:pg16"
 PRINCIPAL = "model-matrix"
 DEFAULT_TURNS = 20
 TURN_DEADLINE_S = 300.0
-TURN_PATH = "guarded reply (#53), until respond (#57)"
+TURN_PATH = "respond (#57)"
+GUARDED_REPLY_PATH = "guarded reply (#53), until respond (#57)"
 EX_UNAVAILABLE = 1
 
 type PolicySet = Literal["off", "minors"]
@@ -152,10 +158,40 @@ def policy_set(policies: PolicySet) -> list[Policy]:
 
 
 @dataclass
-class GuardedReplyDriver:
-    """A Lite turn through #53's guarded reply (input check, ``generation``, output check)."""
+class RespondDriver:
+    """A Lite turn through ``Engine.respond`` (#57). The minors row's policy is the seeded one,
+    found by the turn's own guard context: nothing is passed in."""
 
     name: str = TURN_PATH
+    engine: Engine | None = None
+    story_id: str = ""
+    actor_id: str = ""
+
+    async def prepare(self, engine: Engine, policies: PolicySet) -> None:
+        spec = StorySpec(name=f"model matrix ({policies})", characters=cast(policies))
+        created = await create_story_from(engine.db, spec, principal=PRINCIPAL)
+        self.engine, self.story_id = engine, created.story_id
+        self.actor_id = next(c.id for c in created.characters if c.name == spec.characters[0].name)
+
+    async def turn(self, said: str) -> CallLog:
+        assert self.engine is not None  # noqa: S101 - prepare() ran
+        request = RespondRequest(
+            actor_character_id=self.actor_id, player_input=PlayerInputBody(say=said)
+        )
+        result = await self.engine.respond(
+            RequestContext(principal=PRINCIPAL), self.story_id, request
+        )
+        calls = CallLog()
+        calls.calls.extend(result.model_calls)
+        return calls
+
+
+@dataclass
+class GuardedReplyDriver:
+    """A Lite turn through #53's guarded reply (input check, ``generation``, output check): the
+    turn path of the rows measured before #57."""
+
+    name: str = GUARDED_REPLY_PATH
     engine: Engine | None = None
     story_id: str = ""
     policies: list[Policy] = field(default_factory=list)
@@ -319,6 +355,9 @@ over 20 calls (`json_schema`, or the schema in the prompt when the endpoint refu
 samples at temperature 0 are identical (≥ 8 passes). **p50 / p95** are nearest-rank end-to-end
 turn latencies over the measured Lite turns, after one warm-up turn (NFR-PERF-8). **Calls per
 turn** is the mean number of model calls by purpose.
+
+**Turn path.** Rows whose turn path is the guarded reply (#53) were measured before `respond`
+existed; a live re-run through `respond` (#57) is pending and will replace them.
 """
 
 
@@ -454,7 +493,7 @@ async def run_matrix(
     target: Target,
     *,
     turns: int = DEFAULT_TURNS,
-    driver_factory: type[GuardedReplyDriver] = GuardedReplyDriver,
+    driver_factory: Callable[[], TurnDriver] = RespondDriver,
     now: datetime | None = None,
 ) -> list[Row] | None:
     """The rows for ``target``, or ``None`` when the endpoint fails the protocol probe."""

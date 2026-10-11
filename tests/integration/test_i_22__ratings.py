@@ -31,7 +31,9 @@ from epistrel.core.ratings import (
 from epistrel.core.seeds.ratings import DEFAULT_RATING_ID, TEEN_ID
 from epistrel.core.stories import create_story
 from epistrel.engine import Engine
+from tests.auth_support import auth_settings
 from tests.event_support import play_turn, rows, scalar
+from tests.respond_support import FIRST, PLAYER, body, new_story, played, respond_client, system_of
 from tests.story_support import READ, WRITE, count, create, rest, story_body
 
 OPERATOR = "p-operator"
@@ -239,3 +241,49 @@ async def test_i_22__stories(engine: AsyncEngine, settings: Settings) -> None:
         await play_turn(engine, rated["story_id"], "still here?")
         after = (await client.get(f"/stories/{rated['story_id']}", headers=READ)).json()
         assert after["timeline_revision"] == 2
+
+
+@pytest.mark.part("M2", "FR-RATE-4")
+async def test_i_22__prompt(pg_url: str, engine: AsyncEngine) -> None:
+    """The story rating's current prompt guidance is the first section of the ``system``
+    message of every Lite generation, at no extra model call; editing the guidance changes the
+    next prompt (#57).
+
+    Complement asserted: the replaced guidance is gone from the next prompt."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    name = f"I22P {new_ulid()}"
+    created = await create_rating(
+        engine,
+        RatingFields(name=name, prompt_guidance="GUIDE-ONE: keep it gentle."),
+        principal=OPERATOR,
+    )
+    async with respond_client(settings, engine) as (client, lib):
+        stub = lib.models.stub
+        story, ids = await new_story(client, PLAYER, FIRST, content_rating_id=created.rating.id)
+        stub.reset()
+        await played(client, story, body(ids[PLAYER]))
+        (call,) = stub.calls
+        assert call.purpose == "generation"
+        assert system_of(call).startswith("## Content rating guidance\nGUIDE-ONE: keep it gentle.")
+
+        await update_rating(
+            engine,
+            created.rating.id,
+            RatingReplacement(
+                name=name,
+                description="",
+                display_order=created.rating.display_order,
+                prompt_guidance="GUIDE-TWO: be brisk.",
+                image_guidance="",
+                policy_ids=[],
+                inherits_from=[],
+            ),
+            principal=OPERATOR,
+        )
+        stub.reset()
+        await played(client, story, body(ids[PLAYER], "And now?"))
+        (call,) = stub.calls
+        system = system_of(call)
+        assert system.startswith("## Content rating guidance\nGUIDE-TWO: be brisk.")
+        assert "GUIDE-ONE" not in system
+    await retire_rating(engine, created.rating.id, principal=OPERATOR)

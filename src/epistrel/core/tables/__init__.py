@@ -4,6 +4,7 @@ from epistrel.core.tables.base import NAMING_CONVENTION, metadata
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.events import events
 from epistrel.core.tables.operations import operations
+from epistrel.core.tables.policies import policies
 from epistrel.core.tables.projections import story_heads, transcript_messages
 from epistrel.core.tables.ratings import content_rating_versions, content_ratings
 from epistrel.core.tables.stories import stories
@@ -17,6 +18,7 @@ __all__ = [
     "events",
     "metadata",
     "operations",
+    "policies",
     "stories",
     "story_heads",
     "transcript_messages",

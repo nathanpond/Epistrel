@@ -120,3 +120,22 @@ class InheritanceCycle(EpistrelError):
 
     code = "inheritance_cycle"
     http_status = 422
+
+
+class PolicyNotFound(EpistrelError):
+    """The policy named by a call does not exist."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class CannotRelax(EpistrelError):
+    """A policy write that would relax a policy (FR-GUARD-8): an ``effect`` other than ``deny``
+    (``allow``/``exempt``, at any scope), or a lower-scope item that names a higher-scope policy.
+
+    ``details``: ``field`` and ``reason`` (``effect`` or ``targets_higher_scope``), plus
+    ``policy_id`` for the latter.
+    """
+
+    code = "cannot_relax"
+    http_status = 422

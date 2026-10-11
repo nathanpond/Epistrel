@@ -15,6 +15,14 @@ from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import PrincipalRequired
 from epistrel.core.history import History, read_history
+from epistrel.core.policies.model import Policy, Scope
+from epistrel.orchestrator.policies import admin as policy_admin
+from epistrel.orchestrator.policies import store as policy_store
+from epistrel.orchestrator.policies.schemas import (
+    PolicyFields,
+    PolicyReplacement,
+    StoryPolicyItem,
+)
 
 
 class Engine:
@@ -119,3 +127,54 @@ class Engine:
     ) -> deployment.DeploymentSettings:
         principal = self.require_principal(ctx)
         return await deployment.update_settings(self.db, patch, principal=principal)
+
+    # -- the policy store (FR-GUARD-1,8,9; NFR-SEC-1) ----------------------------------------
+    # The writes below are the only callers of ``orchestrator.policies.admin``: the operator
+    # surface (``/admin/policies``) and story settings (#63). Nothing on a turn's path calls them.
+
+    async def policies_list(
+        self,
+        ctx: RequestContext,
+        *,
+        scope: Scope | None = None,
+        story_id: str | None = None,
+        include_retired: bool = False,
+    ) -> list[Policy]:
+        return await policy_store.list_policies(
+            self.db, scope=scope, story_id=story_id, include_retired=include_retired
+        )
+
+    async def policies_get(self, ctx: RequestContext, policy_id: str) -> Policy:
+        return await policy_store.get_policy(self.db, policy_id)
+
+    async def policies_effective(self, ctx: RequestContext, story_id: str) -> tuple[Policy, ...]:
+        """The story's effective policies: global, the rating closure, story, character."""
+        return await policy_store.effective_policies(self.db, story_id)
+
+    async def policies_create(
+        self, ctx: RequestContext, fields: PolicyFields
+    ) -> policy_admin.PolicyWrite:
+        principal = self.require_principal(ctx)
+        return await policy_admin.create_policy(
+            self.db, fields, principal=principal, idempotency_key=ctx.idempotency_key
+        )
+
+    async def policies_update(
+        self, ctx: RequestContext, policy_id: str, fields: PolicyReplacement
+    ) -> policy_admin.PolicyWrite:
+        principal = self.require_principal(ctx)
+        return await policy_admin.update_policy(self.db, policy_id, fields, principal=principal)
+
+    async def policies_retire(
+        self, ctx: RequestContext, policy_id: str
+    ) -> policy_admin.PolicyWrite:
+        principal = self.require_principal(ctx)
+        return await policy_admin.retire_policy(self.db, policy_id, principal=principal)
+
+    async def policies_set_story(
+        self, ctx: RequestContext, story_id: str, items: list[StoryPolicyItem]
+    ) -> policy_admin.StoryPoliciesWrite:
+        """Upsert the story's own policies (#63's ``PATCH /stories/{id}/settings``)."""
+        principal = self.require_principal(ctx)
+        await self.check_expected_revision(ctx, story_id)
+        return await policy_admin.set_story_policies(self.db, story_id, items, principal=principal)

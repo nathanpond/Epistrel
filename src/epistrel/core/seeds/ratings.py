@@ -2,9 +2,10 @@
 
 Each inherits guardrails from the next less restrictive one. Migration ``0005_ratings`` inserts
 these rows with the fixed head and version ids below, writes no ``config_changes`` rows, and
-leaves the deployment's ``config_revision`` at 0. The policy sets are empty until the policy
-store lands (#49). The text is starter prose for an operator to replace; once a database is
-seeded, editing this module changes nothing in it — change seeds through a new migration.
+leaves the deployment's ``config_revision`` at 0. The policy sets start empty: an operator
+creates rating policies under ``/admin/policies`` and lists them on a rating (#49). The text is
+starter prose for an operator to replace; once a database is seeded, editing this module
+changes nothing in it — change seeds through a new migration.
 """
 
 from __future__ import annotations

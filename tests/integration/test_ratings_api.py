@@ -75,6 +75,25 @@ def _create(client: TestClient, **fields: Any) -> dict[str, Any]:
     return body
 
 
+def _rating_policy(client: TestClient, slug: str) -> str:
+    """A live rating policy (#49) a rating can list; ``slug`` plus a unique suffix."""
+    policy_id = f"{slug}-{new_ulid().lower()}"
+    response = client.post(
+        "/admin/policies",
+        json={
+            "id": policy_id,
+            "scope": "rating",
+            "scope_id": EXPLICIT_ID,
+            "name": policy_id,
+            "rule": {"type": "wordlist", "words": [slug]},
+            "message": "Not at this rating.",
+        },
+        headers=WRITE,
+    )
+    assert response.status_code == 201, response.text
+    return policy_id
+
+
 def _replacement(rating: dict[str, Any], **changes: Any) -> dict[str, Any]:
     keys = (
         "name",
@@ -92,9 +111,10 @@ def test_create_get_update_and_versions(client: TestClient, pg_url: str) -> None
     """Create is version 1 (``config_changes``: old null, new the version id, class
     interpretive, the principal); a PUT is a new version recorded the same way; a no-op PUT
     writes nothing; ``/versions`` lists newest first."""
-    created = _create(client, description="d", prompt_guidance="g1", policy_ids=["p1", "p1"])
+    p1 = _rating_policy(client, "p1")
+    created = _create(client, description="d", prompt_guidance="g1", policy_ids=[p1, p1])
     assert created["version"] == 1
-    assert created["policy_ids"] == ["p1"]
+    assert created["policy_ids"] == [p1]
     assert created["created_by"] == "p-operator"
     assert created["retired_at"] is None
     setting = f"rating:{created['id']}"
@@ -134,7 +154,7 @@ def test_create_get_update_and_versions(client: TestClient, pg_url: str) -> None
 
     got = client.get(f"{BASE}/{created['id']}", headers=bearer()).json()
     assert (got["version"], got["prompt_guidance"]) == (2, "g2")
-    assert got["effective_guardrails"] == [{"policy_id": "p1", "source_rating_id": created["id"]}]
+    assert got["effective_guardrails"] == [{"policy_id": p1, "source_rating_id": created["id"]}]
     versions = client.get(f"{BASE}/{created['id']}/versions", headers=bearer()).json()["items"]
     assert [(v["version"], v["prompt_guidance"]) for v in versions] == [(2, "g2"), (1, "g1")]
 
@@ -149,20 +169,23 @@ def test_put_is_a_full_replacement(client: TestClient) -> None:
 def test_effective_guardrails_with_sources(client: TestClient) -> None:
     """A three-level chain with a shared policy: own first, then by source display order, each
     policy once, attributed to the nearest rating."""
-    top = _create(client, display_order=900, policy_ids=["shared", "top-only"])
-    mid = _create(client, display_order=800, policy_ids=["mid-only"], inherits_from=[top["id"]])
+    shared, top_only, mid_only, low_only = (
+        _rating_policy(client, slug) for slug in ("shared", "top-only", "mid-only", "low-only")
+    )
+    top = _create(client, display_order=900, policy_ids=[shared, top_only])
+    mid = _create(client, display_order=800, policy_ids=[mid_only], inherits_from=[top["id"]])
     low = _create(
         client,
         display_order=700,
-        policy_ids=["low-only", "shared"],
+        policy_ids=[low_only, shared],
         inherits_from=[mid["id"], top["id"]],
     )
     got = client.get(f"{BASE}/{low['id']}", headers=bearer()).json()["effective_guardrails"]
     assert got == [
-        {"policy_id": "low-only", "source_rating_id": low["id"]},
-        {"policy_id": "shared", "source_rating_id": low["id"]},
-        {"policy_id": "mid-only", "source_rating_id": mid["id"]},
-        {"policy_id": "top-only", "source_rating_id": top["id"]},
+        {"policy_id": low_only, "source_rating_id": low["id"]},
+        {"policy_id": shared, "source_rating_id": low["id"]},
+        {"policy_id": mid_only, "source_rating_id": mid["id"]},
+        {"policy_id": top_only, "source_rating_id": top["id"]},
     ]
     listed = client.get(BASE, headers=bearer()).json()["items"]
     assert all("effective_guardrails" not in item for item in listed)
@@ -171,7 +194,7 @@ def test_effective_guardrails_with_sources(client: TestClient) -> None:
 def test_seeded_chain_resolves_through_the_api(client: TestClient) -> None:
     got = client.get(f"{BASE}/{EVERYONE_ID}", headers=bearer()).json()
     assert got["inherits_from"] == [TEEN_ID]
-    assert got["effective_guardrails"] == []  # the policy store arrives with #49
+    assert got["effective_guardrails"] == []  # the seeds list no policies (#49)
 
 
 def test_inheritance_cycle_refused(client: TestClient, pg_url: str) -> None:

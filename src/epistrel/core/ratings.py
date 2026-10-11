@@ -45,7 +45,7 @@ from epistrel.core.errors import (
     StoryNotFound,
 )
 from epistrel.core.ids import new_ulid
-from epistrel.core.tables import content_rating_versions, content_ratings, stories
+from epistrel.core.tables import content_rating_versions, content_ratings, policies, stories
 
 NAME_MAX = 80
 DESCRIPTION_MAX = 4_000
@@ -64,8 +64,8 @@ Reference = Annotated[
 class RatingFields(BaseModel):
     """What a caller supplies when creating a rating (``POST /admin/content-ratings``).
 
-    ``policy_ids`` are the rating's own policies, accepted as given until the policy store
-    validates them (#49); ``inherits_from`` must name existing ratings. Duplicates are dropped,
+    ``policy_ids`` are the rating's own policies and must name live ``rating``-scoped policies
+    (#49); ``inherits_from`` must name existing ratings. Duplicates are dropped,
     keeping the first occurrence.
     """
 
@@ -198,8 +198,7 @@ def effective_guardrails(rating_id: str, graph: Graph) -> tuple[Guardrail, ...]:
     """Own policies plus the effective guardrails of every inherited rating, each policy once,
     ordered by source display order (then name, id) and policy id."""
     layers = _layers(rating_id, graph)
-    members = sorted((node.id, node.version_id) for layer in layers for node in layer)
-    key = (rating_id, tuple(members))
+    key = (rating_id, _versions(layers))
     cached = _CLOSURE_CACHE.get(key)
     if cached is not None:
         return cached
@@ -214,6 +213,16 @@ def effective_guardrails(rating_id: str, graph: Graph) -> tuple[Guardrail, ...]:
     )
     _CLOSURE_CACHE[key] = result
     return result
+
+
+def _versions(layers: list[list[RatingNode]]) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted((node.id, node.version_id) for layer in layers for node in layer))
+
+
+def closure_versions(rating_id: str, graph: Graph) -> tuple[tuple[str, str], ...]:
+    """``(rating id, version id)`` of every rating in ``rating_id``'s closure, sorted: changes
+    whenever any rating the closure depends on is edited (the policy store's cache key)."""
+    return _versions(_layers(rating_id, graph))
 
 
 def find_cycle(rating_id: str, inherits_from: Sequence[str], graph: Graph) -> list[str] | None:
@@ -436,7 +445,41 @@ class _Content:
         )
 
 
-async def _validate(conn: AsyncConnection, rating_id: str, content: _Content, graph: Graph) -> None:
+async def _validate_policies(conn: AsyncConnection, added: Sequence[str]) -> None:
+    """Every newly listed policy must be a live ``rating``-scoped policy (#49).
+
+    Only ids the version adds are checked, so a rating listing a policy retired since can
+    still be edited (a retired policy drops out of effective sets anyway).
+    """
+    if not added:
+        return
+    found = set(
+        (
+            await conn.scalars(
+                select(policies.c.id).where(
+                    policies.c.id.in_(list(added)),
+                    policies.c.scope == "rating",
+                    policies.c.retired_at.is_(None),
+                )
+            )
+        ).all()
+    )
+    unknown = [policy_id for policy_id in added if policy_id not in found]
+    if unknown:
+        raise InvalidRequest(
+            "policy_ids names policies that are not live rating policies",
+            {"field": "body.policy_ids", "unknown": unknown},
+        )
+
+
+async def _validate(
+    conn: AsyncConnection,
+    rating_id: str,
+    content: _Content,
+    graph: Graph,
+    previous: Sequence[str] = (),
+) -> None:
+    await _validate_policies(conn, [p for p in content.policy_ids if p not in previous])
     unknown = [parent for parent in content.inherits_from if parent not in graph]
     if unknown:
         raise InvalidRequest(
@@ -549,7 +592,9 @@ async def update_rating(
         )
         if content == _Content.of(current):
             return RatingWrite(rating=current, config_revision=state.config_revision, changed=False)
-        await _validate(conn, rating_id, content, await load_graph(conn))
+        await _validate(
+            conn, rating_id, content, await load_graph(conn), previous=current.policy_ids
+        )
         version_id = await _insert_version(conn, rating_id, current.version + 1, content, principal)
         await conn.execute(
             update(content_ratings)

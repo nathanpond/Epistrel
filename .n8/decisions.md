@@ -491,3 +491,64 @@ Process:
   - Unmarked: `tests/integration/test_ratings_api.py` (11 REST tests, including the default-delete 409 negative and the fresh-database seed check), the read-set test, the concurrency test, and the library-principal test.
   **Why:** The test plan and the Discretion line "#48 tests the core resolver; `test_i_22__stories` lands with #50". Under FR-RATE-4, only the storage and resolution half is claimed here; #57 asserts prompt inclusion. Tests create uniquely named ratings and restore the deployment settings they change, because they share one database.
   **Issue:** #48
+- **Decision:** The regex deadline runs in a stdlib subinterpreter pool (`concurrent.futures.InterpreterPoolExecutor`, Python 3.14, 4 workers), not a plain thread. The worker function is `core/policies/regex_worker.search_any`, which imports only `re`. The 50 ms deadline starts when a worker picks the search up, so interpreter start-up never counts against it; a search waiting more than 5 s for a worker fails too. A miss counts as a violation: the future is cancelled, the pool is replaced, and the abandoned search finishes in the background.
+  **Why:** Discretion said "50 ms thread deadline", but `re` holds the GIL for the whole match. I measured a `Thread.join(0.05)` returning only after the regex finished, 15 s later. A subinterpreter has its own GIL, and in a test the caller got control back at 55 ms. The `regex` package's built-in timeout was ruled out because its license is `Apache-2.0 AND CNRI-Python`, and CNRI-Python is not on invariant 2's allowlist; adding an exception is the owner's call. Known limit: interpreter exit waits for an abandoned search to finish (4 s in a test with a 26-character pathological input).
+  **Issue:** #49
+- **Decision:** Schema. `policies` has the AC's columns plus:
+  - `effect` (CHECK `= 'deny'`), `created_at`/`updated_at`, `retired_by`;
+  - a nullable `idempotency_key` with a partial unique index;
+  - CHECKs: `scope` ∈ four values; `scope_id` NULL exactly for global; `story_id` set exactly for story/character; `kind` ∈ two values; `applies_to` a non-empty subset of the four targets;
+  - a partial unique index on `(scope, coalesce(scope_id,''), lower(name)) WHERE retired_at IS NULL`;
+  - no foreign keys.
+
+  `id` is text: a client slug (`[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}`) or a ULID.
+  **Why:** Discretion: `effect` is a real field and only `deny`; names unique per scope among live rows, case-insensitive; plain references; client slug or ULID. The CHECKs mean even a direct write cannot store a relaxing effect. `idempotency_key` is a column, not a table, so it is not Rule 4, and it is the cheapest way to honour "admin mutations accept an optional Idempotency-Key": a repeated POST returns the first policy and writes nothing. PUT and DELETE are idempotent by construction (no-op PUT, 204 on retired).
+  **Issue:** #49
+- **Decision:** Rules are a pydantic discriminated union in `core/policies/model.py`, and `kind` is derived from the rule type (a client cannot send `kind`; doing so is 422).
+  - `wordlist {words}`: 1..2,000 entries of ≤ 200 chars.
+  - `regex {patterns}`: 1..20 patterns of ≤ 500 chars, compiled at save.
+  - `entity_list {names}`: names given explicitly for now.
+  - `model_assisted {prompt ≤ 4,000, on_uncertain = violation|pass}`.
+
+  `applies_to` defaults by scope (docs/02 §4.12): global → text_input + text_output; the others → text_output. An empty list is 422. `age_condition` accepts `minor_involved|minor_present|minor_involved_or_present` and is stored for #55. Effective-set ordering is: global by name; rating in closure order (nearest source first, #48); then story; then character.
+  **Why:** Discretion fixes the rule kinds, the limits, and that `kind` is visible (FR-GUARD-9). Deriving `kind` removes a field that could disagree with the rule. Freezing `entity_list` names from the story's characters needs characters, which arrive with #50 (`__slice` there). Until then the names in the rule are the frozen list.
+  **Issue:** #49
+- **Decision:** What counts as relaxing (`cannot_relax`, 422):
+  - any `effect` other than `deny`, at every scope, global included (`allow`, `exempt`, anything else);
+  - a story/character item whose `id` names an existing policy of a higher scope (global, rating, or the story's own story-scope policy named from character scope).
+
+  Another story's policy id is 409 `id_taken`, and moving a story-owned policy between scope or `scope_id` is 422 `scope_immutable`. Story and character policies are refused on `/admin/policies` with 409 `story_scoped`.
+  **Why:** Discretion: "relax = any lower-scope rule whose effect is allow/exempt or that names a higher-scope policy id"; `allow`/`exempt` → `cannot_relax`, global included. Rule bodies are `extra="forbid"`, so a rule cannot carry an override key at all. An item whose id targets a higher-scope policy is the only way to "name" one. The operator surface accepts only global and rating (Discretion pass 1/2).
+  **Issue:** #49
+- **Decision:** Writes and recording follow #48's pattern:
+  - Global and rating writes take `lock_deployment`, move `config_revision` by 1, and record `config_changes` (`setting = policy:<id>`, class interpretive, actor = principal). `old`/`new` are the policy's content snapshot, with `null` on create and `"retired"` on retire.
+  - Story writes (`Engine.policies_set_story` → `admin.set_story_policies`) lock the story row, move `stories.config_revision` by 1 per write that changes anything, and record story-scope `config_changes` rows. They call `check_expected_revision` first.
+  - Edits are in place with `version + 1`, and identical content writes nothing.
+  - The upsert list has no removal yet.
+  **Why:** Discretion: in-place edits with `version++` plus a `config_changes` row; global writes bump the deployment revision; story/character writes via the story settings upsert. Content snapshots make the audit self-contained, because policies have no version table. Removing a story's own policy is not in the AC; #63 can add a `retired` flag to items.
+  **Issue:** #49
+- **Decision:** Module layout:
+  - `core/policies/` holds `model.py`, `evaluate.py`, `rows.py` and `regex_worker.py`, and `core/tables/policies.py` holds the table.
+  - `orchestrator/policies/` holds `store.py` (reads; effective-set LRU cache of 1,024 keyed by deployment revision, story id, story config revision, and the closure's rating version ids), `admin.py` (the only writer) and `schemas.py` (request bodies, so the router does not import `admin`).
+  - `orchestrator/lite/` is created empty.
+  - The new import-linter contract `policy-store-written-only-by-admin` forbids `epistrel.orchestrator.lite`, `epistrel.core.events` and `epistrel.orchestrator.policies.store` from importing `…policies.admin`. `test_admin_is_imported_only_by_the_engine` (AST scan of `src`) asserts that `epistrel/engine.py` is its only importer, and `test_only_policy_routes_call_policy_writes` asserts that only `api/routes/admin/policies.py` calls the Engine's policy writes.
+  - `core.ratings` gained `closure_versions` for the cache key.
+  **Why:** Discretion: evaluate in core so the commit-time rebase can call it; store/admin in orchestrator; routers call `Engine.policies_*`; an empty `lite` package for the contract. Adding `store` to the contract keeps the read path read-only. Request bodies sit apart from `admin` so "only the Engine imports admin" holds.
+  **Issue:** #49
+- **Decision:** Rating `policy_ids` (#48) are validated: each id a version adds must be a live `scope = rating` policy, otherwise 422 `validation_error` `{field: body.policy_ids, unknown: [...]}`. Ids already on the current version are not rechecked. A rating policy's `scope_id` must name an existing rating (retired allowed). Linking stays explicit: creating a rating policy does not add it to the rating's `policy_ids`. The seeds still list no policies. `tests/integration/test_ratings_api.py` now creates real rating policies instead of the placeholder ids `p1`, `shared` and so on.
+  **Why:** Discretion pass 2: #48's `policy_ids` reference these rows, and #48's PUT validates that they exist with `scope = rating`. Not rechecking existing ids means a rating that lists a policy retired since can still be edited, and a retired policy drops out of effective sets anyway. Starter rating guardrails were not in this story's AC, and the minors policy is #55's.
+  **Issue:** #49
+- **Decision:** Tests:
+  - `tests/test_u_13.py::test_u_13` carries `part("M2","FR-GUARD-1,2,8")` and is integration-marked. It drives in-world attempts through test-only `Operation` writes: player input, pinned notes, custom instructions.
+  - `tests/property/test_policy.py::test_policy` carries `part("M2","FR-GUARD-3; NFR-SEC-1")`. It is Hypothesis with 100 examples over turn, pins, instructions and relax attempts, and it asserts that all four actions occurred. A story with 10,000 pinned notes and one with none get identical effective sets and verdicts.
+  - `tests/redteam/test_r_02.py::test_r_02` carries `part("M2","FR-GUARD-3")` and the new `redteam` marker. External text is a `scene_context` payload given to a test-only respond stand-in.
+  - Unmarked: `tests/test_policy_evaluate.py` (18 pure tests, including the regex-deadline violation), `tests/integration/test_policies_api.py` (9 REST tests, including the `cannot_relax` negative for allow, exempt and permit), and the story-upsert, operator-scope, effective-cache and import tests in `test_u_13.py`.
+
+  Row hashes are `md5(p::text)`. The HTTP `cannot_relax` assertion for story settings lands with #63 (`__slice`); here the library error is checked for code `cannot_relax` and status 422, and the REST check covers the same refusal on `/admin/policies`.
+  **Why:** The test plan and the Discretion lines (pass 2: `__slice` parts with #50/#57/#60/#63, `redteam` marker in pyproject, Hypothesis 100 examples). `test_policy` first used a helper named `_scenario`, and `check-lexicon` flagged "scenario" (M3), so it was renamed. An unmarked REST test docstring naming FR-GUARD-9 would have become a part under an undefined test id, so the id was removed (#44/#46's constraint). The property test's generated text excludes NUL (filed #275).
+  **Issue:** #49
+- **Decision:** I filed two out-of-scope findings as `needs-triage` and did not fix either:
+  - #275: an event payload containing NUL fails as a database error instead of a 422.
+  - #276: outside CI, `test_i_02`'s action-occurrence check sometimes draws no `regenerate`. It failed 2 of 9 local full runs, never in isolation, and never under the CI profile. The equality the test checks never failed.
+  **Why:** Both are outside #49's scope. The CI gate (`CI=1`, derandomized) passed every run.
+  **Issue:** #49

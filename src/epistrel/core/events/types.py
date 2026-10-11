@@ -8,7 +8,7 @@ outputs are ``audit``; truncate, untruncate, swap, fork, settings and story/char
 
 from __future__ import annotations
 
-from pydantic import JsonValue
+from pydantic import Field, JsonValue
 
 from epistrel.core.enums import EventCategory
 from epistrel.core.events.registry import EventPayload, register
@@ -57,25 +57,51 @@ class Latent(EventPayload):
     text: str
 
 
+class Head(EventPayload):
+    """A story's head: the next turn index and the active variant of every turn.
+
+    The same shape as the ``story_heads`` projection row; membership-changing control events
+    carry the head they leave behind, so the projection follows them without re-reading.
+    """
+
+    next_turn_index: int = Field(ge=1)
+    active_variants: dict[str, int] = Field(default_factory=dict)
+
+
 @register("truncate", category=EventCategory.CONTROL)
 class Truncate(EventPayload):
-    """Discard every turn after ``after_turn`` (shell; #65 extends)."""
+    """Discard every operation positioned after ``to_turn`` (#65 owns the operation).
 
-    after_turn: int
+    ``operation_ids`` are the operations whose membership became ``discarded``; ``prior_head``
+    is the head before the truncation.
+    """
+
+    to_turn: int = Field(ge=0)
+    prior_head: Head
+    operation_ids: list[str]
 
 
 @register("untruncate", category=EventCategory.CONTROL)
 class Untruncate(EventPayload):
-    """Reactivate the turns a truncation discarded (shell; #65 extends)."""
+    """Reactivate the operations the truncation ``truncate_operation_id`` discarded (#65)."""
 
-    after_turn: int
+    truncate_operation_id: str
+    operation_ids: list[str]
+    restored_head: Head
 
 
 @register("swap", category=EventCategory.CONTROL)
 class Swap(EventPayload):
-    """Make another continuation active from ``turn`` on (shell; #66 extends)."""
+    """Make another continuation active from ``turn`` on (#66 owns the operation and may extend).
 
-    turn: int
+    ``activated_operation_ids`` become ``active``, ``dormant_operation_ids`` become ``dormant``,
+    and ``active_head`` is the head afterwards.
+    """
+
+    turn: int = Field(ge=1)
+    activated_operation_ids: list[str]
+    dormant_operation_ids: list[str]
+    active_head: Head
 
 
 @register("fork", category=EventCategory.CONTROL)

@@ -6,7 +6,9 @@ lock (FR-CONC-2). ``commit()`` runs one transaction that does all of the followi
 
 1. takes ``SELECT … FOR UPDATE`` on the story row, with ``lock_timeout`` 5 s;
 2. positions the operation: only ``turn`` operations allocate a turn index (FR-STORE-8,24);
-3. assigns dense per-story ``seq`` values (``max(seq)+1`` under the lock) and writes the events;
+3. assigns dense per-story ``seq`` values (``max(seq)+1`` under the lock), writes the events,
+   and maintains every projection for them (``projections.apply_events``, FR-STORE-4), then
+   runs any commit steps the caller added;
 4. finalises the operation (``committed``, ``membership_tx`` = the commit's ``tx_time``) and
    bumps ``stories.timeline_revision`` for ``turn`` and ``genesis`` operations (#47 generalises).
 
@@ -22,7 +24,7 @@ advisory lock instead of a story row.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,6 +34,7 @@ from typing import Any, Self
 from sqlalchemy import and_, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import projections
 from epistrel.core.enums import (
     Authority,
     EventCategory,
@@ -40,12 +43,15 @@ from epistrel.core.enums import (
     OperationStatus,
     Provenance,
 )
-from epistrel.core.errors import EpistrelError, InvalidRequest, PrincipalRequired
+from epistrel.core.errors import InvalidRequest, PrincipalRequired, StoryNotFound
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
 from epistrel.core.tables import events, operations, stories
 
 logger = logging.getLogger(__name__)
+
+CommitStep = Callable[[AsyncConnection], Awaitable[None]]
+"""Extra work run inside the commit transaction, under the story lock, after the events."""
 
 Database = AsyncEngine | AsyncConnection
 
@@ -58,13 +64,6 @@ DEPLOYMENT_LOCK_KEY = 0x45_5049_5354  # "EPIST": serialises story-less operation
 
 REVISION_BUMPING_KINDS = frozenset({OperationKind.TURN, OperationKind.GENESIS})
 """Kinds whose commit increments ``stories.timeline_revision`` in #45 (#47 generalises)."""
-
-
-class StoryNotFound(EpistrelError):
-    """The operation's story does not exist."""
-
-    code = "not_found"
-    http_status = 404
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +120,7 @@ class Operation:
         self.tx_time: datetime | None = None
         self.seqs: tuple[int, ...] = ()
         self._staged: list[StagedEvent] = []
+        self._commit_steps: list[CommitStep] = []
 
     # -- lifecycle ---------------------------------------------------------------------------
 
@@ -181,6 +181,12 @@ class Operation:
         )
         return model
 
+    def add_commit_step(self, step: CommitStep) -> None:
+        """Run ``step(conn)`` inside the commit transaction, after the events and projections
+        are written and before the operation is finalised (e.g. a rebuild's refold)."""
+        self._require_in_flight("add a commit step to")
+        self._commit_steps.append(step)
+
     @property
     def staged(self) -> tuple[StagedEvent, ...]:
         return tuple(self._staged)
@@ -234,12 +240,13 @@ class Operation:
         )
         first = int(last_seq or 0) + 1
         self.seqs = tuple(range(first, first + len(self._staged)))
+        ids = [new_ulid() for _ in self._staged]
         if self._staged:
             await conn.execute(
                 insert(events),
                 [
                     {
-                        "id": new_ulid(),
+                        "id": event_id,
                         "story_id": self.story_id,
                         "seq": seq,
                         "operation_id": self.operation_id,
@@ -253,10 +260,38 @@ class Operation:
                         "provenance": staged.provenance.value,
                         "authority": staged.authority.value,
                     }
-                    for seq, staged in zip(self.seqs, self._staged, strict=True)
+                    for event_id, seq, staged in zip(ids, self.seqs, self._staged, strict=True)
                 ],
             )
+        if self.story_id is not None:
+            await projections.apply_events(
+                conn, self.story_id, self._log_events(self.story_id, ids)
+            )
+        for step in self._commit_steps:
+            await step(conn)
         await self._finalise(conn, advance)
+
+    def _log_events(self, story_id: str, ids: list[str]) -> list[projections.LogEvent]:
+        """The staged events as projections see them (this operation is ``active``)."""
+        return [
+            projections.LogEvent(
+                id=event_id,
+                story_id=story_id,
+                seq=seq,
+                operation_id=self.operation_id,
+                kind=self.kind,
+                membership=Membership.ACTIVE,
+                category=staged.category,
+                narrative_turn=self.narrative_turn,
+                turn_variant=self.turn_variant,
+                beat=None,
+                character_id=staged.character_id,
+                provenance=staged.provenance,
+                type=staged.type,
+                payload=staged.payload,
+            )
+            for event_id, seq, staged in zip(ids, self.seqs, self._staged, strict=True)
+        ]
 
     async def _position(
         self, conn: AsyncConnection, next_turn_index: int

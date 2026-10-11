@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from hypothesis import settings as hypothesis_settings
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -16,6 +17,12 @@ from epistrel.core.db import make_engine, make_sync_engine, normalize_url
 from tests.auth_support import auth_settings
 
 pytest_plugins = ("pytester",)
+
+# CI runs property tests derandomized: the same examples on every run, so a red build is
+# reproducible. Locally Hypothesis explores freely. Tests may set their own example counts.
+hypothesis_settings.register_profile("ci", derandomize=True, deadline=None, print_blob=True)
+if os.environ.get("CI"):
+    hypothesis_settings.load_profile("ci")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"

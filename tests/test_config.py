@@ -119,3 +119,14 @@ def test_config_key_is_a_known_secret_setting(
     assert settings.config_key is not None
     assert "k" * 44 not in repr(settings)
     assert Settings.model_fields["config_key"].default is None
+
+
+def test_rebuild_async_threshold_defaults_and_validates(
+    monkeypatch: pytest.MonkeyPatch, dummy_dsn: str
+) -> None:
+    monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
+    assert load_settings().rebuild_async_threshold == 10_000
+    monkeypatch.setenv("EPISTREL_REBUILD_ASYNC_THRESHOLD", "0")
+    with pytest.raises(ConfigError, match="EPISTREL_REBUILD_ASYNC_THRESHOLD"):
+        load_settings()

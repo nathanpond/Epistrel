@@ -1,8 +1,8 @@
 """Operator endpoints, all under ``/admin`` so a deployment can restrict them at its edge.
 
 FR-AUTH-1 names the operator surface; Epistrel treats these calls like any other (service
-credential, principal on mutations). The router is included by the first story that adds an
-operator endpoint (#48).
+credential, principal on mutations). ``epistrel.api.routes`` includes it in the protected router
+(#46, the first operator endpoint: ``POST /admin/stories/{id}/rebuild``).
 """
 
 from __future__ import annotations
@@ -11,9 +11,12 @@ import re
 
 from fastapi import APIRouter
 
+from epistrel.api.routes.admin import stories
+
 ADMIN_PREFIX = "/admin"
 
 router = APIRouter(prefix=ADMIN_PREFIX, tags=["admin"])
+router.include_router(stories.router)
 
 _SEGMENT = r"(?:^|/){}(?:/|$)"
 

@@ -44,3 +44,10 @@ class InvalidRequest(EpistrelError):
 
     code = "validation_error"
     http_status = 422
+
+
+class StoryNotFound(EpistrelError):
+    """The story named by a call does not exist."""
+
+    code = "not_found"
+    http_status = 404

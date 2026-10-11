@@ -20,9 +20,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Own the database engine for the life of the server process."""
     engine = make_engine(app.state.settings)
     app.state.engine = engine
+    app.state.epistrel.bind(engine)
     try:
         yield
     finally:
+        app.state.epistrel.bind(None)
         await engine.dispose()
         app.state.engine = None
 

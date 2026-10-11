@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # Key that encrypts stored provider API keys (#51 validates and uses it). Accepted here so a
     # deployment may set it before the model configuration exists.
     config_key: SecretStr | None = None
+    # A projection rebuild of a story with more events than this runs as a background job once
+    # #70's workers exist; until then every rebuild is synchronous.
+    rebuild_async_threshold: int = Field(default=10_000, ge=1)
 
     @field_validator("database_url")
     @classmethod

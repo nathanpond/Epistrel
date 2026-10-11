@@ -326,6 +326,16 @@ async def read_guardrail_settings(db: AsyncEngine | AsyncConnection) -> Guardrai
         return section(GuardrailSettings, await conn.scalar(query))
 
 
+async def read_section[M: BaseModel](db: AsyncEngine | AsyncConnection, view: type[M]) -> M:
+    """One view of the deployment's settings document, read now (defaults if invalid), e.g.
+    ``RetentionSettings`` or ``WorkerHealthSettings`` (#71)."""
+    query = select(deployment_state.c.settings).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+    if isinstance(db, AsyncConnection):
+        return section(view, await db.scalar(query))
+    async with db.connect() as conn:
+        return section(view, await conn.scalar(query))
+
+
 # -- the deployment's story-level text caps (FR-LITE-3; #60) ----------------------------------
 
 

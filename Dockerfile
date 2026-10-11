@@ -31,7 +31,11 @@ COPY --chown=epistrel:epistrel docker/entrypoint.sh ./entrypoint.sh
 RUN chmod 0755 /app/entrypoint.sh
 USER epistrel
 EXPOSE 8000
-# Stdlib only: urlopen raises on any non-2xx (a 503 from /health marks the container unhealthy).
+# Stdlib only. `ok` and `degraded` (no live worker, or overdue timed work; HTTP 200) exit 0, so an
+# api-only container is not restart-looped: the status is printed to the health log as the flag.
+# `unavailable` (503, the database does not answer) raises, and the container is unhealthy.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
-    CMD ["python", "-c", "import os, urllib.request as u; u.urlopen(f\"http://127.0.0.1:{os.environ.get('EPISTREL_PORT', '8000')}/health\", timeout=2)"]
+    CMD ["python", "-c", "import json, os, urllib.request as u; r = u.urlopen(f\"http://127.0.0.1:{os.environ.get('EPISTREL_PORT', '8000')}/health\", timeout=2); print(json.load(r)['status'])"]
 ENTRYPOINT ["/app/entrypoint.sh"]
+# `all`: the API and the background workers in one process (NFR-OPS-1); see docker/entrypoint.sh.
+CMD ["serve", "--mode", "all"]

@@ -14,10 +14,22 @@ longer validates fails the job at once), with the lease renewed every third of
 running past ``MAX_RUNTIME_S`` is a failed attempt. A finished handler's output goes through
 ``queue.commit_job`` (fenced, input versions rechecked).
 
+**Timers and recurring tasks (#71).** Every loop iteration also fires the due timers and
+recurring tasks (``timers.fire_due``: each becomes a job, once across all workers), and the idle
+sleep ends early when one falls due. A recurring kind's handler may set ``max_attempts`` (the
+sweeps use 1: a failed run waits for its next interval).
+
+**Heartbeats (#71).** While it runs, the worker upserts one ``worker_heartbeats`` row per loop
+every ``poll_interval`` (``health.beat``) and deletes them when it stops, so ``/health`` in any
+process sees how many workers are alive.
+
 **Recovery pass.** ``recovery_pass()`` runs once when a worker starts: it reclaims every job
-whose lease lapsed (each exactly once, with fencing) and then runs the registered recovery
+whose lease lapsed (each exactly once, with fencing), writes the registered recurring tasks
+into rows (``timers.reconcile``), fires every overdue timer and recurring task (late, never
+skipped; a task that missed several runs runs once), and then runs the registered recovery
 hooks (``register_recovery_hook``, ``async (conn) -> None``, in registration order, each in its
-own transaction). Running it again changes nothing.
+own transaction; the Engine registers its turn-queue drain as ``turn_queue``). Running it again
+changes nothing.
 
 **Stopping.** ``stop()`` (SIGTERM/SIGINT under ``epistrel worker``) lets running jobs finish for
 up to ``DRAIN_S`` seconds, then cancels them; a cancelled job keeps its lease, which lapses, and
@@ -33,6 +45,7 @@ import os
 import socket
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import psycopg
 from pydantic import ValidationError
@@ -40,7 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core import clock
-from epistrel.orchestrator.jobs import handlers, queue
+from epistrel.orchestrator.jobs import handlers, health, queue, timers
 from epistrel.orchestrator.jobs.types import ClaimedJob, JobContext, JobHandler, JobOutput
 
 logger = logging.getLogger(__name__)
@@ -72,11 +85,15 @@ class RecoveryReport:
     reclaimed: tuple[str, ...]
     hooks: tuple[str, ...]
     failed_hooks: tuple[str, ...] = ()
+    fired: tuple[str, ...] = ()
 
 
 async def recovery_pass(db: AsyncEngine) -> RecoveryReport:
-    """Reclaim every lapsed lease (fenced, each once) and run the recovery hooks; idempotent."""
+    """Reclaim every lapsed lease (fenced, each once), reconcile and fire every overdue timer
+    and recurring task, and run the recovery hooks; idempotent."""
     reclaimed = await queue.reap(db)
+    await timers.reconcile(db)
+    due = await timers.fire_due(db)
     ran: list[str] = []
     failed: list[str] = []
     for name, hook in list(_RECOVERY_HOOKS.items()):
@@ -87,7 +104,9 @@ async def recovery_pass(db: AsyncEngine) -> RecoveryReport:
         except Exception as exc:
             logger.warning("recovery hook %s failed: %s", name, type(exc).__name__)
             failed.append(name)
-    return RecoveryReport(tuple(reclaimed), tuple(ran), tuple(failed))
+    return RecoveryReport(
+        tuple(reclaimed), tuple(ran), tuple(failed), tuple(due.timers + due.recurring)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,15 +118,22 @@ class WorkerConfig:
     concurrency: int = 2
     max_runtime_s: float = MAX_RUNTIME_S
     drain_s: float = DRAIN_S
+    mode: str = "worker"
+    """The process mode the heartbeats name (``all`` or ``worker``)."""
+    timers: bool = True
+    """Fire due timers and recurring tasks in the loop (tests of the bare queue turn it off)."""
 
     @classmethod
-    def from_settings(cls, settings: Settings, *, concurrency: int | None = None) -> WorkerConfig:
+    def from_settings(
+        cls, settings: Settings, *, concurrency: int | None = None, mode: str | None = None
+    ) -> WorkerConfig:
         return cls(
             poll_interval=settings.worker_poll_interval,
             lease_s=settings.job_lease_seconds,
             max_attempts=settings.job_max_attempts,
             listen=settings.worker_listen_enabled,
             concurrency=concurrency or settings.worker_concurrency,
+            mode=mode or settings.mode,
         )
 
 
@@ -134,6 +160,7 @@ class Worker:
     _stopping: bool = False
     _stopped: asyncio.Event = field(default_factory=asyncio.Event)
     _recovered: bool = False
+    _started_at: datetime | None = None
 
     async def recovery_pass(self) -> RecoveryReport | None:
         """The start-up recovery pass, once per worker (``None`` when it already ran)."""
@@ -154,9 +181,36 @@ class Worker:
         self._stopped.set()
         self.wake()
 
+    def worker_ids(self) -> list[str]:
+        return [self.worker_id(index) for index in range(self.config.concurrency)]
+
+    async def beat(self) -> None:
+        """Upsert this process's heartbeats (one per loop) now."""
+        if self._started_at is None:
+            self._started_at = clock.now()
+        await health.beat(
+            self.db,
+            self.worker_ids(),
+            mode=self.config.mode,
+            pid=os.getpid(),
+            started_at=self._started_at,
+        )
+
+    async def _heartbeats(self) -> None:
+        while not self._stopping:
+            try:
+                await self.beat()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("worker heartbeat failed: %s", type(exc).__name__)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stopped.wait(), self.config.poll_interval)
+
     async def run(self) -> None:
         """Recovery pass, then the loops (and the listener) until ``stop()``."""
         self._wakes = [asyncio.Event() for _ in range(self.config.concurrency)]
+        beats = asyncio.create_task(self._heartbeats(), name="epistrel-jobs-heartbeat")
         try:
             await self.recovery_pass()
         except Exception as exc:
@@ -184,6 +238,13 @@ class Worker:
                 with contextlib.suppress(asyncio.CancelledError):
                     await listener
             await asyncio.gather(*loops, return_exceptions=True)
+            beats.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await beats
+            try:
+                await asyncio.shield(health.forget(self.db, self.worker_ids()))
+            except Exception as exc:
+                logger.warning("worker heartbeats not removed: %s", type(exc).__name__)
 
     # -- the loop ---------------------------------------------------------------------------
 
@@ -194,6 +255,8 @@ class Worker:
             wake.clear()
             try:
                 await queue.reap(self.db)
+                if self.config.timers:
+                    await timers.fire_due(self.db)
                 if await self.run_one(worker_id):
                     continue
                 timeout = await self._idle_timeout()
@@ -210,9 +273,12 @@ class Worker:
     async def _idle_timeout(self) -> float:
         """Sleep until the next poll, or until the earliest queued job is due if sooner."""
         timeout = self.config.poll_interval
-        due = await queue.next_due(self.db)
-        if due is not None:
-            timeout = max(0.0, min(timeout, (due - clock.now()).total_seconds()))
+        due = [await queue.next_due(self.db)]
+        if self.config.timers:
+            due.append(await timers.next_due(self.db))
+        for moment in due:
+            if moment is not None:
+                timeout = max(0.0, min(timeout, (moment - clock.now()).total_seconds()))
         return timeout
 
     async def run_one(self, worker_id: str) -> bool:
@@ -233,7 +299,7 @@ class Worker:
         try:
             payload = handler.payload.model_validate(job.payload)
         except ValidationError:
-            return await self._fail(job, ValidationError.__name__, terminal=True)
+            return await self._fail(job, ValidationError.__name__, handler, terminal=True)
         ctx = JobContext(db=self.db, job=job, payload=payload)
         state = _Run()
         task = asyncio.create_task(handler.run(ctx))
@@ -257,7 +323,7 @@ class Worker:
             async with asyncio.timeout(self.config.max_runtime_s):
                 output = await task
         except TimeoutError:
-            return await self._fail(job, TimeoutError.__name__)
+            return await self._fail(job, TimeoutError.__name__, handler)
         except asyncio.CancelledError:
             current = asyncio.current_task()
             if state.fenced and (current is None or not current.cancelling()):
@@ -265,16 +331,24 @@ class Worker:
                 return None
             raise
         except Exception as exc:
-            return await self._fail(job, type(exc).__name__)
+            return await self._fail(job, type(exc).__name__, handler)
         try:
             return await queue.commit_job(self.db, job, handler, output, ctx.input_versions)
         except Exception as exc:
-            return await self._fail(job, type(exc).__name__)
+            return await self._fail(job, type(exc).__name__, handler)
 
-    async def _fail(self, job: ClaimedJob, error: str, *, terminal: bool = False) -> str | None:
-        return await queue.fail_job(
-            self.db, job, error, max_attempts=self.config.max_attempts, terminal=terminal
-        )
+    async def _fail(
+        self,
+        job: ClaimedJob,
+        error: str,
+        handler: JobHandler | None = None,
+        *,
+        terminal: bool = False,
+    ) -> str | None:
+        limit = self.config.max_attempts
+        if handler is not None and handler.max_attempts is not None:
+            limit = handler.max_attempts
+        return await queue.fail_job(self.db, job, error, max_attempts=limit, terminal=terminal)
 
     async def _heartbeat(self, job: ClaimedJob, task: asyncio.Task[JobOutput], state: _Run) -> None:
         interval = self.config.lease_s / 3

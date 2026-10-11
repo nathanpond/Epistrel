@@ -32,7 +32,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise ConfigError([problem])
     app.state.engine = engine
     app.state.epistrel.bind(engine)
-    # Queued turns left by a stopped process are drained here (#63; #70's worker loop later).
+    # ``all``/``worker``: the job worker runs here as an asyncio task (#71); ``api``: queued turns
+    # left by a stopped process are drained once (#63).
     await app.state.epistrel.start_workers()
     try:
         yield
@@ -71,6 +72,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     The engine is created by the lifespan, so an app that is never started (plain
     `TestClient(app)` without `with`) has no engine and `/health` reports `skipped`.
+
+    ``settings.mode`` decides the routes: ``all`` and ``api`` serve every route; ``worker``
+    serves only the public operational routes (``/health``), since it takes no API calls (#71).
     """
     if settings is None:
         settings = load_settings()
@@ -88,5 +92,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     errors.install(app)
     app.add_middleware(ReceiptStamp)
     app.include_router(routes.public_router)
-    include_protected(app, routes.router)
+    if settings.mode != "worker":
+        include_protected(app, routes.router)
     return app

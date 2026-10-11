@@ -83,12 +83,19 @@ Run = Callable[[JobContext], Coroutine[Any, Any, JobOutput]]
 @dataclass(frozen=True, slots=True)
 class JobHandler:
     """One job kind: its payload model, what it runs, and the kind of operation its output
-    commits as (``maintenance`` or ``consolidation``; neither bumps the revision)."""
+    commits as (``maintenance`` or ``consolidation``; neither bumps the revision).
+
+    ``max_attempts`` overrides the worker's ``job_max_attempts`` for this kind (recurring
+    sweeps use 1, #71). ``records_operation=False`` is for housekeeping that writes no story
+    state (the sweeps, the turn-queue safety net): the job finishes under its fencing token
+    without an ``operations`` row, so a task running every 30 s does not grow the log."""
 
     kind: str
     payload: type[BaseModel]
     run: Run
     operation_kind: OperationKind = OperationKind.MAINTENANCE
+    max_attempts: int | None = None
+    records_operation: bool = True
 
 
 __all__ = ["ClaimedJob", "JobContext", "JobHandler", "JobOutput", "Run", "Stage"]

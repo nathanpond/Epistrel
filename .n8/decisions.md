@@ -1353,3 +1353,90 @@ Process:
 
   **Why:** Keeps #70 to the planned queue, worker and rebuild flip.
   **Issue:** #70
+- **Decision (invariant amendment applied):** CLAUDE.md invariant 6 now reads "Only erasure, opt-in compaction, and audit-record retention expiry remove events; erasure and compaction leave markers". This is the user-approved text recorded at `/n8-plan M2`. It keeps "compaction", because #246's rename to "pruning" is still open; #246 will swap the term. Whole-story deletion is still not named in the invariant. #274 tracks that, and I commented there; I did not widen the approved wording.
+  **Why:** #71's acceptance criteria apply the amendment, and `/n8-plan M2` logged it as user-approved. I did not add a new `## Ad-hoc` section: the amendment was planned, not drift, and a section after this one would capture later stories' entries.
+  **Issue:** #71
+- **Decision:** The migration is `0018_timers` (the issue says `0016`, which is taken). It creates three tables:
+  - `timers`: surrogate ULID, unique `(kind, target)`, nullable plain `story_id`.
+  - `recurring_tasks`: `name` PK, Postgres `interval`, `last_status ok|failed` plus `last_error` (the exception class).
+  - `worker_heartbeats`: `worker_id` PK, `mode`, `pid`, `started_at`, `at`.
+
+  Seeds: `idempotency_purge` (1 h) and `retention_sweep` (1 d), due at migration time. `turn_queue_drain` (30 s) is not seeded; start-up reconcile writes it from the code registry. `timers` joins `STORY_TABLES`, so story deletion removes it, and joins `STORY_TABLES_NOT_COPIED`, so a fork does not copy it.
+  **Why:** Discretion (pass 1 and 2). `test_s_delete` gives the victim a timer, so the comparison still bites.
+  **Issue:** #71
+- **Decision:** Firing (`orchestrator/jobs/timers.py`):
+  - `fire_due` uses one transaction per row, `FOR UPDATE SKIP LOCKED`, with `core.clock.now()` passed into the SQL.
+  - A fired timer is deleted and enqueues a job of its kind `{target}`, with coalesce key `timer:<kind>:<target>`.
+  - A fired recurring task sets `last_run_at = now` and `next_run_at = now + interval`, and enqueues its job with coalesce key `recurring:<name>`. Three missed intervals therefore fire once.
+  - An unknown timer kind, or a target the handler's payload refuses, is deleted and logged.
+  - Only registered tasks with a handler fire. Unregistered rows are left alone and logged by `reconcile`. `/health` counts only registered rows, so a leftover row cannot hold a deployment in `degraded`.
+  - Every worker loop calls `fire_due` each tick. The idle sleep also wakes for the next timer or task.
+  - The recovery pass now runs reap → reconcile → fire_due → hooks, and reports what it `fired`.
+  **Why:** Discretion: firing enqueues a job, the transaction that fires sets `last_run_at`, catch-up is aligned, the recovery pass fires overdue rows, rows without a handler are skipped and logged.
+  **Issue:** #71
+- **Decision:** `JobHandler` gains `max_attempts`, which the sweeps set to 1 ("failed run waits one interval"). It also gains `records_operation`; when that is False, `commit_job` finishes the job under its fencing token with no `operations` row. `recurring.recording(run)` makes the job set `last_status`.
+  **Why:** `turn_queue_drain` runs every 30 s, and an operation per run would add about 2,900 empty maintenance operations a day. Sweeps write no story state. This is Rule 2 (needed so the planned 30 s task is sane) and is a small extension of #70's handler type.
+  **Issue:** #71
+- **Decision:** `retention_sweep` (`handlers/retention.py`):
+  - It deletes `audit` events whose `tx_time <` the cut-off, using the story's own `audit_retention_days` when that is a number, else the deployment's. Operations still `in_flight` or `queued` are exempt.
+  - It deletes `audit_log` rows by `at`, with the same story override. A row with a null or deleted story uses the default.
+  - It deletes `done`/`failed` jobs whose `updated_at` is older than `job_retention_days`.
+  - Each 1,000-row chunk is its own transaction under `epistrel.allow_audit_expiry`, at most 100 chunks per table per run. No marker is written.
+  - No M2 operation kind writes only audit events, so no operation rows are deleted.
+  - Fired timers delete themselves, so there are no timer rows to prune.
+  **Why:** Discretion (pass 1 and 2). The settings are new `DeploymentSettings` sections:
+  - `RetentionSettings`: `audit_retention_days` 1–3650, default 90; `job_retention_days`, default 7.
+  - `WorkerHealthSettings`: `worker_heartbeat_timeout` 1–3600, default 60; `timer_lag_alert` 1–86400, default 300.
+
+  All four are prospective and tagged. `/admin/settings` PATCH accepts them. `StorySettings.audit_retention_days` (null → default, 1–3650) is tagged prospective.
+  **Issue:** #71
+- **Decision:** `idempotency_purge` = #61's `purge_expired` (results nulled, tombstones kept) plus stale keys. An `in_flight` key whose lease lapsed more than one result window ago is handled by its operation's status:
+  - `committed`: becomes a `done` tombstone.
+  - none, a missing operation, `failed` or `abandoned`: deleted.
+  - `queued` or `in_flight`: left alone.
+  **Why:** Discretion: "stale `in_flight` idempotency rows past expiry purged". A committed one must keep at-most-once semantics (FR-CONC-6), so it is settled rather than deleted.
+  **Issue:** #71
+- **Decision:** Process modes. `EPISTREL_MODE` (`all|api|worker`, default `all`) is an env `Settings` field, following #70's convention for per-process knobs. `epistrel serve --mode/--concurrency` overrides it, `epistrel worker` is `serve --mode worker`, and uvicorn runs with `workers=1`.
+  - `all` and `worker`: `Engine.start_workers` runs `Worker` as an asyncio task, registers the recovery hook `turn_queue` (the drainer's `recover`), and binds the drainer to the `turn_queue_drain` job.
+  - `api`: keeps #63's one-off start-up recover.
+  - `worker` mode builds the same app with only the public router (`/health`; `/metrics` arrives with #74).
+  - The entrypoint migrates only when the mode is not `worker` (from `--mode`, `--mode=`, or `EPISTREL_MODE`). The Dockerfile gains `CMD ["serve","--mode","all"]`. The HEALTHCHECK prints the status, exits 0 on `ok`/`degraded` and raises on 503. Compose gains `command: ["serve","--mode","all"]`.
+  - `stop_workers` stops the worker (DRAIN_S 30 s < lease 60 s), unregisters the hook, and unbinds the drainer.
+  **Why:** Discretion (pass 1 and 2) and the #70 hand-off ("worker-only mode drains no turn queue").
+  **Issue:** #71
+- **Decision:** `tests/auth_support.auth_settings` now defaults to `mode="api"`. Any test that builds an app gets no background worker unless it asks for one; X-07's `all`-mode test asks explicitly.
+  **Why:** With `all` as the default, every app under test would start a worker. That worker would fire the seeded sweeps (purge, retention) and claim test jobs behind other tests' backs. `api` keeps #63's start-up recover, so the existing queue-recovery tests are unchanged.
+  **Issue:** #71
+- **Decision:** `/health` returns `{status, checks: {database, workers: {alive, last_heartbeat_s}, oldest_overdue_timer_s, oldest_overdue_job_s}}`. It is one statement using the DB's `now()`, under a single 2 s timeout.
+  - `alive` counts heartbeat rows within `worker_heartbeat_timeout`. Heartbeats are one row per loop, upserted every poll tick by a per-process task, pruned after 10 min, and deleted on a clean stop.
+  - The overdue fields are `null` when nothing is overdue. The timer field folds in registered recurring rows. Running (leased) jobs are not counted.
+  - `degraded` (200): `alive == 0` or something is overdue for more than `timer_lag_alert`.
+  - `unavailable` (503): the DB check fails or times out, and every field is null.
+  - If the snapshot fails while the DB answers, the result is `degraded` with null fields.
+  - An app that never started reports `ok` with `database: skipped`.
+  - `test_health*.py` were updated to the new shape. A migrated DB with no worker is now `degraded`.
+  **Why:** Discretion: DB-down gives null fields, `last_heartbeat_s` is the newest heartbeat's age (null → degraded), `oldest_overdue_job_s` is added, `/health` arithmetic uses DB `now()`, and the probe has its own 2 s timeout.
+  **Issue:** #71
+- **Decision:** Tests:
+  - `tests/chaos/test_x_07.py` has 8 `test_x_07__*` functions (`chaos` marker; parts `NFR-REL-5`, `NFR-REL-5; NFR-OPS-1`, `NFR-OPS-1,2`):
+    - `timers`: polled within one interval with no NOTIFY; 10 timers × 4 racers fire once each; upsert and cancel; unknown kind and refused target dropped.
+    - `recurring`: three missed intervals and 4 racers fire once; `ok`/`failed` plus the class after one attempt; an orphan row is never fired; reconcile updates the interval.
+    - `restart`: a 4 h outage on the movable clock; recovery reclaims the job and fires the purge once each; the result is purged and the tombstone kept; the fresh result is kept; a second pass does nothing.
+    - `sweep_rerun`: the sweep is cancelled inside its second audit_log chunk; the first chunk stands; the rerun deletes the rest; a third run deletes nothing.
+    - `health`: degraded and ok cases, the lag complement, an overdue job vs a leased job, a stale heartbeat.
+    - `all_mode`: lifespan worker with alive == 3; heartbeats removed on stop; worker mode serves no API routes; api mode starts no worker.
+    - `turn_queue`: the worker-mode hook and the 30 s task kick the drainer, and the unbound case is a no-op.
+    - `processes`: two real `epistrel worker` subprocesses run the purge, which missed three runs, once; 404 for API routes; after SIGKILL an api process reports degraded with alive 0.
+    - `compose`: services `== {engine, db}`, `command` is `all`, no broker/cron images; the HEALTHCHECK command is run against a stub server (degraded exits 0, 503 exits non-zero); entrypoint migration per mode with stubbed `alembic`/`epistrel`.
+  - `tests/scenario/test_s_retention.py` (`FR-STORE-30`) covers:
+    - The deletes: 91-day audit under the default, and 31-day audit in a story with a 30-day override, are gone; the matching `audit_log` rows are gone.
+    - The complements that are kept: 89-day, 31-day under the default, 29-day under the override, fresh pipeline audit, and an unscoped 89-day `audit_log` row.
+    - Every non-audit event and every operation (active, discarded and dormant) is byte-equal.
+    - The test plan's "pre-change trigger" check: the same sweep run without the exemption (`_allow_audit_expiry` made a no-op) is refused with `EPI01` and deletes nothing.
+  - `test_idempotency_purge_settles_stale_keys` covers the stale-key cases.
+
+  **Why:** The issue's test plan. Workers run as subprocesses only in `processes`; in-process `Worker`s elsewhere keep the run time to seconds. The heartbeat timeout and the 400 s lags are aged in SQL, because `/health` uses DB `now()`. `check-lexicon` (M6 "clock", M7 "import") kept those words out of test bodies (`_now()`, `_due()` helpers).
+  **Issue:** #71
+- **Decision:** The "pre-change trigger" fail-first step could not be run literally. #45 already shipped the events and audit_log triggers with the `epistrel.allow_audit_expiry` exemption, so no pre-change trigger exists to run against. The equivalent check is the sweep without the exemption, which was observed failing with EPI01 and is kept as the complement in `test_s_retention`.
+  **Why:** The trigger change the plan anticipated landed earlier (#45, `0002_event_store`/`0010_audit_log`).
+  **Issue:** #71

@@ -12,9 +12,11 @@ With Docker only (builds locally; or pull the **unstable** `edge` image, `docker
 
 ```bash
 docker compose up            # Engine + PostgreSQL 16/pgvector; migrates, then serves http://localhost:8000
-curl localhost:8000/health   # {"status":"ok","checks":{"database":"ok"}}  (503 + "error" while the DB is down)
+curl localhost:8000/health   # {"status":"ok","checks":{"database":"ok","workers":{"alive":2,...},...}}
 docker compose down -v       # stop and drop the database volume
 ```
+
+The engine runs in `all` mode: the API and the background workers (`EPISTREL_WORKER_CONCURRENCY` loops, default 2) in one process. The workers own every timer and sweep (idempotency-result purge hourly, audit-record retention daily, the turn-queue safety net every 30 s), so no scheduler, cron, broker or cache is needed. Larger deployments run `epistrel serve --mode api` and `epistrel serve --mode worker` (alias `epistrel worker`, which serves only `/health`) as separate processes. `/health` answers `degraded` (still HTTP 200) when no worker has sent a heartbeat for `worker_heartbeat_timeout` (60 s) or timed work is overdue by more than `timer_lag_alert` (5 min). It answers `unavailable` (503) while the database is down.
 
 The compose file's database password, service credential (`EPISTREL_SERVICE_CREDENTIALS`) and config key (`EPISTREL_CONFIG_KEY`) are dev-only defaults; set `EPISTREL_DATABASE_URL`, `EPISTREL_SERVICE_CREDENTIALS` and `EPISTREL_CONFIG_KEY` yourself for anything but local use. Every call except `GET /health`, `/metrics`, `/openapi.json`, `/docs` and `/redoc` needs the credential (`curl -H 'Authorization: Bearer dev-only-credential-change-me-00000000' …`), and every `POST`/`PUT`/`PATCH`/`DELETE` also sends `X-Epistrel-Principal`. A model server on the host (e.g. LM Studio) is reachable from the container as `host.docker.internal`.
 

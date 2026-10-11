@@ -1,5 +1,7 @@
-# Dev/hobby deployment (docs/02 §12, NFR-OPS-1): `docker compose up` brings up the Engine and
-# PostgreSQL 16 + pgvector with no prior configuration. Tear down with `docker compose down -v`.
+# Dev/hobby deployment (docs/02 §12, NFR-OPS-1,2): `docker compose up` brings up the Engine and
+# PostgreSQL 16 + pgvector with no prior configuration. The engine runs in `all` mode: the API and
+# the background workers that own every timer and sweep, in one process, so no scheduler, cron,
+# broker or cache service exists here. Tear down with `docker compose down -v`.
 name: epistrel
 
 services:
@@ -23,6 +25,7 @@ services:
   engine:
     build: .
     image: epistrel:dev
+    command: ["serve", "--mode", "all"]
     depends_on:
       db:
         condition: service_healthy

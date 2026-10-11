@@ -95,6 +95,10 @@ class SettingsPatch(BaseModel):
     structured_retry_budget: int | None = None
     uncertain_below: float | None = None
     default_safe_fallback: str | None = None
+    audit_retention_days: int | None = None
+    job_retention_days: int | None = None
+    worker_heartbeat_timeout: float | None = None
+    timer_lag_alert: float | None = None
 
     def changes(self) -> dict[str, Any]:
         present: dict[str, Any] = {}

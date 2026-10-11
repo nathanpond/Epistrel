@@ -29,6 +29,8 @@ FERNET_KEY_LENGTH = 44
 log = logging.getLogger(__name__)
 
 LogLevel = Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"]
+ProcessMode = Literal["all", "api", "worker"]
+PROCESS_MODES: tuple[ProcessMode, ...] = ("all", "api", "worker")
 
 
 class ConfigError(Exception):
@@ -75,6 +77,10 @@ class Settings(BaseSettings):
     job_max_attempts: int = Field(default=5, ge=1, le=100)
     worker_listen_enabled: bool = True
     worker_concurrency: int = Field(default=2, ge=1, le=64)
+    # Process mode (NFR-OPS-1, #71): ``all`` serves the API and runs ``worker_concurrency``
+    # worker loops in one process (the image's default); ``api`` serves the API only; ``worker``
+    # runs the worker loops and serves only ``/health``. ``epistrel serve --mode`` overrides it.
+    mode: ProcessMode = "all"
 
     @field_validator("database_url")
     @classmethod

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel import Engine
 from epistrel.config import Settings
-from epistrel.core import turn_gate
+from epistrel.core import clock, turn_gate
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind
 from epistrel.core.errors import GuardrailViolation
@@ -16,6 +18,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
 from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.orchestrator.jobs import timers
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
@@ -66,6 +69,10 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
         await lib.gate_input(
             AUTHOR, story_id, EntryPoint.INGEST, [GateText("events[0]", "an unsayable thing")]
         )
+
+
+def _due() -> datetime:
+    return clock.now()
 
 
 async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
@@ -141,6 +148,8 @@ async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
         # A background job of the victim's (#70): the deletion takes it too.
         async with engine.begin() as conn:
             await job_queue.enqueue(conn, REBUILD_KIND, {"story_id": victim}, story_id=victim)
+            # A one-shot timer of the victim's (#71): the deletion takes it too.
+            await timers.schedule(conn, "test_timer", victim, _due(), story_id=victim)
 
         owned = await _rows_of(engine, victim)
         assert all(owned.values()), {t: len(r) for t, r in owned.items() if not r}

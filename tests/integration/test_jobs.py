@@ -1,9 +1,9 @@
 """Durable background jobs: claim, lease, fencing, the recovery pass and the input recheck (#70).
 
-``test_x_07__jobs`` is X-07's jobs half (docs/04 §12; #71 completes X-07 with timers,
-recurring tasks, health and the compose file). Test handlers are registered per test through
-the handler registry; a worker is killed by cancelling its task, and leases lapse by moving the
-injectable clock (``core.clock``), not by sleeping.
+X-07's jobs half, ``test_x_07__jobs``, moved to ``tests/chaos/test_x_07.py`` with the rest of
+X-07 (#71; a docs/04 part lives in one file) and uses this module's handlers. Test handlers
+are registered per test through the handler registry; a worker is killed by cancelling its
+task, and leases lapse by moving the injectable clock (``core.clock``), not by sleeping.
 """
 
 from __future__ import annotations
@@ -225,85 +225,6 @@ def _config(**kw: Any) -> WorkerConfig:
 async def _status(engine: AsyncEngine, job_id: str) -> str:
     row = await _job(engine, job_id)
     return str(row.status) if row is not None else "gone"
-
-
-# -- X-07, jobs half -------------------------------------------------------------------------
-
-
-@pytest.mark.part("M2", "NFR-REL-5")
-async def test_x_07__jobs(engine: AsyncEngine, registry: Probe, moved: MovableClock) -> None:
-    """Notifications suppressed, a job is still claimed within one poll interval. A worker
-    killed mid-job leaves its lease; once it lapses the next worker's recovery pass reclaims it
-    exactly once with fencing, and the job then finishes; a second recovery pass changes
-    nothing. The lost claim's late commit is refused and writes nothing. Complement: the
-    current claim's commit is accepted."""
-    # 1. NOTIFY suppressed: polling alone claims the job within one interval.
-    worker = Worker(engine, _config())
-    running = asyncio.create_task(worker.run())
-    await asyncio.sleep(0.1)  # the loop is idle and waiting for its next poll
-    assert not worker.listening.is_set()
-    started = time.monotonic()
-    polled = await _enqueue(engine, "test_echo", {"n": 1})
-    await _wait_for(lambda: _done(engine, polled), within=POLL_S + 2.0)
-    assert time.monotonic() - started <= POLL_S + 0.5
-    worker.stop()
-    await running
-
-    # 2. Kill a worker mid-job; the lease lapses; a new worker's recovery pass reclaims it once.
-    killed = Worker(engine, _config())
-    running = asyncio.create_task(killed.run())
-    blocked = await _enqueue(engine, "test_block", {"n": 2})
-    await asyncio.wait_for(registry.entered.wait(), 5.0)
-    running.cancel()  # the kill
-    with pytest.raises(asyncio.CancelledError):
-        await running
-    row = await _job(engine, blocked)
-    assert (row.status, row.attempt) == ("running", 1)
-    moved.advance(LEASE_S + 1)
-    registry.gate.set()
-    revived = Worker(engine, _config())
-    report = await revived.recovery_pass()
-    assert report is not None
-    assert report.reclaimed == (blocked,)
-    assert await revived.recovery_pass() is None  # once per worker process
-    again = await recovery_pass(engine)  # and idempotent when run again anyway
-    assert again.reclaimed == ()
-    assert await revived.run_one(revived.worker_id(0))
-    row = await _job(engine, blocked)
-    assert (row.status, row.attempt, row.failures) == ("done", 3, 0)
-    assert row.result["n"] == 2
-    assert [attempt for job, attempt in registry.started if job == blocked] == [1, 3]
-
-    # 3. Fencing: a lost claim's late commit is refused; the current claim's is accepted.
-    story = await new_story(engine)
-    await play_turn(engine, story, "first")
-    fenced = await _enqueue(engine, "test_summarise", {"story_id": story}, story_id=story)
-    lost = await queue.claim(engine, "w:lost:0", lease_s=LEASE_S)
-    assert lost is not None
-    assert lost.id == fenced
-
-    def late(op: Operation) -> None:
-        op.append("lite_summary_segment", {"text": "late", "through_turn": 1})
-
-    output = JobOutput(stage=late)
-    moved.advance(LEASE_S + 1)
-    before = await _table(engine)
-    assert (await recovery_pass(engine)).reclaimed == (fenced,)
-    after = await _table(engine)
-    assert (await recovery_pass(engine)).reclaimed == ()
-    assert await _table(engine) == after != before  # the second pass changed nothing
-    current = await queue.claim(engine, "w:new:0", lease_s=LEASE_S)
-    assert current is not None
-    assert current.attempt == lost.attempt + 2
-    summarise = handlers.lookup("test_summarise")
-    assert summarise is not None
-    refused = await queue.commit_job(engine, lost, summarise, output, {})
-    assert refused is queue.CommitOutcome.REFUSED
-    assert not await queue.heartbeat(engine, lost, lease_s=LEASE_S)
-    assert await _segments(engine, story) == []
-    accepted = await queue.commit_job(engine, current, summarise, output, {})
-    assert accepted is queue.CommitOutcome.COMMITTED
-    assert await _segments(engine, story) == ["late"]
 
 
 @pytest.mark.part("M2", "FR-CONC-8")

@@ -13,7 +13,15 @@ def client(dummy_dsn: str) -> TestClient:
 def test_health_reports_ok(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "checks": {"database": "skipped"}}
+    assert response.json() == {
+        "status": "ok",
+        "checks": {
+            "database": "skipped",
+            "workers": {"alive": None, "last_heartbeat_s": None},
+            "oldest_overdue_timer_s": None,
+            "oldest_overdue_job_s": None,
+        },
+    }
 
 
 def test_old_scaffold_routes_are_gone(client: TestClient) -> None:

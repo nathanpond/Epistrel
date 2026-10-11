@@ -1,18 +1,17 @@
-"""`epistrel` command line: `serve` runs the API, `worker` runs the background-job workers."""
+"""`epistrel` command line: `serve --mode all|api|worker` runs the Engine (default ``all``: the
+API and the background workers in one process); `worker` is `serve --mode worker`."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import logging
 import os
-import signal
 import sys
 
 import uvicorn
 
-from epistrel.config import ConfigError, Settings, load_settings
+from epistrel.config import PROCESS_MODES, ConfigError, ProcessMode, Settings, load_settings
 
 EX_CONFIG = 78
 
@@ -20,10 +19,20 @@ EX_CONFIG = 78
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="epistrel", description="Epistrel Engine")
     sub = parser.add_subparsers(dest="command")
-    serve = sub.add_parser("serve", help="run the REST API")
+    serve = sub.add_parser(
+        "serve",
+        help="run the Engine: the API and the background workers (--mode all, the default), "
+        "the API only (api), or the workers only (worker)",
+    )
     serve.add_argument("--host", help="override EPISTREL_HOST")
     serve.add_argument("--port", type=int, help="override EPISTREL_PORT")
-    worker = sub.add_parser("worker", help="run the background-job worker loops (NFR-REL-5)")
+    serve.add_argument("--mode", choices=PROCESS_MODES, help="override EPISTREL_MODE")
+    serve.add_argument("--concurrency", type=_positive, help="override EPISTREL_WORKER_CONCURRENCY")
+    worker = sub.add_parser(
+        "worker", help="alias of `serve --mode worker`: the worker loops, serving only /health"
+    )
+    worker.add_argument("--host", help="override EPISTREL_HOST")
+    worker.add_argument("--port", type=int, help="override EPISTREL_PORT")
     worker.add_argument(
         "--concurrency", type=_positive, help="override EPISTREL_WORKER_CONCURRENCY"
     )
@@ -60,12 +69,25 @@ async def _preflight(settings: Settings) -> str | None:
         await engine.dispose()
 
 
-def serve(host: str | None, port: int | None) -> int:
+def serve(
+    host: str | None,
+    port: int | None,
+    mode: ProcessMode | None = None,
+    concurrency: int | None = None,
+) -> int:
+    """``epistrel serve``: uvicorn with one process (``workers=1``). In ``all`` and ``worker``
+    modes the app's lifespan runs the job worker as an asyncio task (NFR-OPS-1, #71); SIGTERM
+    stops it, letting running jobs finish within their lease."""
     # Overrides go through the environment so uvicorn's factory sees the same values.
-    if host is not None:
-        os.environ["EPISTREL_HOST"] = host
-    if port is not None:
-        os.environ["EPISTREL_PORT"] = str(port)
+    overrides = {
+        "EPISTREL_HOST": host,
+        "EPISTREL_PORT": None if port is None else str(port),
+        "EPISTREL_MODE": mode,
+        "EPISTREL_WORKER_CONCURRENCY": None if concurrency is None else str(concurrency),
+    }
+    for name, value in overrides.items():
+        if value is not None:
+            os.environ[name] = value
     settings = _load()
     if settings is None:
         return EX_CONFIG
@@ -82,37 +104,8 @@ def serve(host: str | None, port: int | None) -> int:
         log_level=level.lower(),
         reload=settings.debug,
         reload_dirs=["src"] if settings.debug else None,
+        workers=1,
     )
-    return 0
-
-
-async def _run_worker(settings: Settings, concurrency: int | None) -> None:
-    from epistrel.core.db import make_engine
-    from epistrel.orchestrator.jobs.worker import Worker, WorkerConfig
-
-    engine = make_engine(settings)
-    worker = Worker(engine, WorkerConfig.from_settings(settings, concurrency=concurrency))
-    loop = asyncio.get_running_loop()
-    for signum in (signal.SIGTERM, signal.SIGINT):
-        with contextlib.suppress(NotImplementedError):  # pragma: no cover - not on Windows
-            loop.add_signal_handler(signum, worker.stop)
-    try:
-        await worker.run()
-    finally:
-        await engine.dispose()
-
-
-def run_worker(concurrency: int | None) -> int:
-    """``epistrel worker``: the recovery pass, then the worker loops until SIGTERM/SIGINT
-    (running jobs get ``DRAIN_S`` to finish)."""
-    settings = _load()
-    if settings is None:
-        return EX_CONFIG
-    problem = asyncio.run(_preflight(settings))
-    if problem is not None:
-        print(problem, file=sys.stderr)
-        return EX_CONFIG
-    asyncio.run(_run_worker(settings, concurrency))
     return 0
 
 
@@ -120,9 +113,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "serve":
-        return serve(args.host, args.port)
+        return serve(args.host, args.port, args.mode, args.concurrency)
     if args.command == "worker":
-        return run_worker(args.concurrency)
+        return serve(args.host, args.port, "worker", args.concurrency)
     parser.print_help(sys.stderr)
     return 2
 

@@ -336,6 +336,8 @@ async def commit_job(
     """Commit ``output`` under the claim's fencing token and the input recheck (see the module
     docstring). Raises whatever else the commit raised (the attempt then fails)."""
     declared = dict(input_versions)
+    if not handler.records_operation:
+        return await _finish_plain(db, job, output, declared)
     op = Operation(
         db,
         story_id=job.story_id,
@@ -396,6 +398,35 @@ async def commit_job(
         )
         return CommitOutcome.DROPPED
     raise error
+
+
+async def _finish_plain(
+    db: AsyncEngine, job: ClaimedJob, output: JobOutput, declared: Mapping[str, Any]
+) -> CommitOutcome:
+    """Finish a job whose handler records no operation (``records_operation=False``): ``done``
+    under the claim's token, or ``REFUSED`` when it was fenced. Its ``stage`` must be empty."""
+    if output.stage is not None:
+        raise ValueError(f"job kind {job.kind!r} records no operation but staged output")
+    result = dict(output.result or {})
+    if output.result_of is not None:
+        result.update(output.result_of())
+    async with db.begin() as conn:
+        done = await conn.scalar(
+            update(jobs)
+            .where(_held(job))
+            .values(
+                status=DONE,
+                result=result,
+                input_versions=dict(declared),
+                lease_until=None,
+                updated_at=clock.now(),
+            )
+            .returning(jobs.c.id)
+        )
+    if done is None:
+        logger.info("job %s (%s): commit refused, the claim was fenced", job.id, job.kind)
+        return CommitOutcome.REFUSED
+    return CommitOutcome.COMMITTED
 
 
 async def _drop(db: AsyncEngine, job: ClaimedJob, declared: Mapping[str, Any]) -> None:

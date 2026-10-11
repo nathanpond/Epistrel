@@ -20,7 +20,7 @@ from pydantic import SecretStr, TypeAdapter, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.config import Settings
+from epistrel.config import ProcessMode, Settings
 from epistrel.core import config_changes as config_log
 from epistrel.core import (
     deployment,
@@ -66,12 +66,19 @@ from epistrel.orchestrator.budget import (
     effective_max_calls,
 )
 from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
 from epistrel.orchestrator.jobs.handlers.rebuild import (
     REBUILD_KIND,
     RebuildPayload,
     RebuildQueued,
 )
 from epistrel.orchestrator.jobs.handlers.rebuild import coalesce_key as rebuild_coalesce_key
+from epistrel.orchestrator.jobs.worker import (
+    Worker,
+    WorkerConfig,
+    register_recovery_hook,
+    unregister_recovery_hook,
+)
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.schemas import (
     RegenerateRequest,
@@ -193,6 +200,10 @@ def _policy_items(raw: Any) -> list[StoryPolicyItem]:
         ) from None
 
 
+TURN_QUEUE_HOOK = "turn_queue"
+"""The worker recovery hook that drains the turn queues a stopped process left (#63, #71)."""
+
+
 class Engine:
     """The async entry point to Epistrel.
 
@@ -216,8 +227,11 @@ class Engine:
         # EPISTREL_MODEL_ADAPTER. Tests reach the stub through ``engine.models.stub``.
         self.models = models or ModelAccessLayer.from_settings(settings)
         self.models.bind(db)
-        # Queued turns (FR-CONC-5, #63) are drained in this process until #70's worker loop.
+        # Queued turns (FR-CONC-5, #63) are drained in this process: kicked when queued here, and
+        # by the worker's ``turn_queue`` recovery hook and ``turn_queue_drain`` task (#71).
         self._recovery: asyncio.Task[None] | None = None
+        self.worker: Worker | None = None
+        self._worker_task: asyncio.Task[None] | None = None
         self.drainer = queue_drainer.QueueDrainer(
             lambda: self.db,
             {turn_gate.RESPOND: self._drain_respond, turn_gate.INGEST: self._drain_ingest},
@@ -232,11 +246,25 @@ class Engine:
         self._db = db
         self.models.bind(db)
 
-    async def start_workers(self) -> None:
-        """Start the in-process background work (the app's start-up): drain every story's turn
-        queue a stopped process left behind (#63's recovery pass, ahead of #70). It runs in
-        the background, so an unreachable database never stops the server starting."""
-        self._recovery = asyncio.create_task(self._recover())
+    async def start_workers(self, mode: ProcessMode | None = None) -> None:
+        """Start the in-process background work (the app's start-up; NFR-REL-5, #71).
+
+        ``all`` and ``worker`` modes run the job worker (``worker_concurrency`` loops) as an
+        asyncio task: its recovery pass drains every turn queue a stopped process left behind
+        (the ``turn_queue`` recovery hook), and its ``turn_queue_drain`` task re-checks every
+        30 s. ``api`` mode runs no worker and only drains the queues left behind once. Either
+        way it runs in the background, so an unreachable database never stops the server."""
+        mode = mode or self.settings.mode
+        turn_queue_job.bind(self.drainer.recover)
+        if mode == "api":
+            self._recovery = asyncio.create_task(self._recover())
+            return
+        register_recovery_hook(TURN_QUEUE_HOOK, self._recovery_hook)
+        self.worker = Worker(self.db, WorkerConfig.from_settings(self.settings, mode=mode))
+        self._worker_task = asyncio.create_task(self.worker.run(), name="epistrel-worker")
+
+    async def _recovery_hook(self, conn: Any) -> None:
+        await self.drainer.recover()
 
     async def _recover(self) -> None:
         try:
@@ -245,12 +273,23 @@ class Engine:
             logger.warning("queued turns were not recovered at start-up: %s", type(exc).__name__)
 
     async def stop_workers(self) -> None:
-        """Stop the background work; a queued turn stopped mid-run goes back to its queue."""
+        """Stop the background work: the worker lets running jobs finish (up to its
+        ``DRAIN_S``, within the lease), then the drainer stops; a queued turn stopped mid-run
+        goes back to its queue."""
         recovery, self._recovery = self._recovery, None
         if recovery is not None and not recovery.done():
             recovery.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await recovery
+        worker, task = self.worker, self._worker_task
+        self.worker, self._worker_task = None, None
+        if worker is not None and task is not None:
+            worker.stop()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            unregister_recovery_hook(TURN_QUEUE_HOOK)
+        if turn_queue_job.bound() == self.drainer.recover:
+            turn_queue_job.bind(None)
         await self.drainer.stop()
 
     @property

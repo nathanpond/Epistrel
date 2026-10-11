@@ -39,6 +39,9 @@ INTERPRETIVE = ConfigClass.interpretive
 PROSPECTIVE = ConfigClass.prospective
 
 DEFAULT_REGENERATE_RETRY_BUDGET = 2
+DEFAULT_AUDIT_RETENTION_DAYS = 90
+AUDIT_RETENTION_MIN_DAYS = 1
+AUDIT_RETENTION_MAX_DAYS = 3650
 DEFAULT_GUARDRAIL_RETRY_BUDGET = 2
 MAX_GUARDRAIL_RETRY_BUDGET = 5
 
@@ -261,6 +264,13 @@ class StorySettings(BaseModel):
     safe fallback is used (FR-GUARD-6; #68), over the whole turn; ``0`` goes straight to the
     fallback. Prospective."""
 
+    audit_retention_days: Annotated[int | None, PROSPECTIVE] = Field(
+        default=None, ge=AUDIT_RETENTION_MIN_DAYS, le=AUDIT_RETENTION_MAX_DAYS
+    )
+    """How many days this story's audit records are kept before the ``retention_sweep`` deletes
+    them (FR-STORE-30; #71), 1 to 3650. ``None``: the deployment's ``audit_retention_days``
+    (default 90). Never affects story history. Prospective."""
+
     @field_validator("default_output_viewpoint")
     @classmethod
     def _never_omniscient(cls, value: str | None) -> str | None:
@@ -320,6 +330,48 @@ class GuardrailSettings(BaseModel):
     )
 
 
+# -- retention and worker health (FR-STORE-30, NFR-REL-5; #71) ---------------------------------
+
+DEFAULT_JOB_RETENTION_DAYS = 7
+DEFAULT_WORKER_HEARTBEAT_TIMEOUT_S = 60.0
+DEFAULT_TIMER_LAG_ALERT_S = 300.0
+
+
+class RetentionSettings(BaseModel):
+    """How long the ``retention_sweep`` keeps what may expire (FR-STORE-30; #71), stored under
+    ``deployment_state.settings``: audit records (``audit`` events and ``audit_log`` rows) for
+    ``audit_retention_days`` (a story's own value overrides it for that story's records), and
+    finished (``done``/``failed``) job rows for ``job_retention_days``. Prospective: each sweep
+    applies the values in force when it runs; story history never expires."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    audit_retention_days: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_AUDIT_RETENTION_DAYS,
+        ge=AUDIT_RETENTION_MIN_DAYS,
+        le=AUDIT_RETENTION_MAX_DAYS,
+    )
+    job_retention_days: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_JOB_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
+    )
+
+
+class WorkerHealthSettings(BaseModel):
+    """When ``/health`` reports ``degraded`` (NFR-REL-5; #71), stored under
+    ``deployment_state.settings``: no worker heartbeat within ``worker_heartbeat_timeout``
+    seconds, or a timer, recurring task or job overdue by more than ``timer_lag_alert`` seconds.
+    Prospective."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    worker_heartbeat_timeout: Annotated[float, PROSPECTIVE] = Field(
+        default=DEFAULT_WORKER_HEARTBEAT_TIMEOUT_S, ge=1.0, le=3600.0
+    )
+    timer_lag_alert: Annotated[float, PROSPECTIVE] = Field(
+        default=DEFAULT_TIMER_LAG_ALERT_S, ge=1.0, le=86_400.0
+    )
+
+
 # -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
 
 DEFAULT_MINOR_AGE_THRESHOLD = 18
@@ -338,6 +390,8 @@ class DeploymentSettings(
     TurnBudgetDefaults,
     StructuredSettings,
     GuardrailSettings,
+    RetentionSettings,
+    WorkerHealthSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the two
     ``deployment_state`` columns and the ``settings`` document's sections, each of which earlier

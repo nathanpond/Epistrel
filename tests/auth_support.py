@@ -14,9 +14,12 @@ TEST_PREFIX = "/_test"
 
 
 def auth_settings(dsn: str, **overrides: object) -> Settings:
+    # ``api`` unless a test asks for workers: an app under test must not start a job worker
+    # that fires the seeded sweeps behind the test's back (#71; X-07 starts its own).
     values: dict[str, object] = {
         "database_url": dsn,
         "service_credentials": [CREDENTIAL_A, CREDENTIAL_B],
+        "mode": "api",
     }
     values.update(overrides)
     return Settings.model_validate(values)

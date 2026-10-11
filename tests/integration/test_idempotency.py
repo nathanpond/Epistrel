@@ -8,6 +8,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel import Engine
@@ -25,10 +26,14 @@ from epistrel.core.idempotency import (
     ResultCodec,
     Scope,
 )
+from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
+from epistrel.core.tables import idempotency_keys
+from epistrel.orchestrator.jobs.handlers.retention import purge_idempotency
 from epistrel.orchestrator.lite.schemas import RespondRequest
 from tests.auth_support import auth_settings
-from tests.event_support import rows
+from tests.event_support import new_story as new_event_story
+from tests.event_support import play_turn, rows
 from tests.idempotency_support import KEY, REPLAY, committed_turns, key_row, keyed
 from tests.policy_support import unique
 from tests.respond_support import PLAYER, body, new_story, respond_client
@@ -361,3 +366,59 @@ async def test_library_replays_and_references(stub_settings: Settings, engine: A
     assert ingested.created
     assert not ingested.replayed
     assert await count(engine, "SELECT count(*) FROM idempotency_keys") == before + 1
+
+
+async def test_idempotency_purge_settles_stale_keys(engine: AsyncEngine) -> None:
+    """``idempotency_purge`` (#71) settles keys a dead call left ``in_flight`` once their lease
+    lapsed more than a result window ago: committed → a ``done`` tombstone with no result; no
+    operation, or one that never existed → deleted (the key is free). Complement: a key whose
+    lease lapsed within the window, and a key whose operation is still queued, are untouched."""
+
+    story = await new_event_story(engine)
+    committed = await play_turn(engine, story, "kept as a tombstone")
+    queued = await play_turn(engine, story, "still queued")
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE operations SET status = 'queued' WHERE operation_id = :o"),
+            {"o": queued.operation_id},
+        )
+    now = clock.now()
+    long_ago, lately = now - timedelta(hours=25), now - timedelta(hours=1)
+    cases = {
+        "committed": (committed.operation_id, long_ago),
+        "no-op": (None, long_ago),
+        "ghost-op": (new_ulid(), long_ago),
+        "recent": (None, lately),
+        "queued": (queued.operation_id, long_ago),
+    }
+    run = new_ulid()
+    async with engine.begin() as conn:
+        for name, (operation_id, lease) in cases.items():
+            await conn.execute(
+                idempotency_keys.insert().values(
+                    scope="story",
+                    scope_id=story,
+                    key=f"{run}-{name}",
+                    request_hash="h",
+                    operation_id=operation_id,
+                    status="in_flight",
+                    owner_token="dead",
+                    lease_until=lease,
+                )
+            )
+    counts = await purge_idempotency(engine)
+    assert counts["keys_settled"] >= 1
+    assert counts["keys_freed"] >= 2
+    left = {
+        r.key.removeprefix(f"{run}-"): (r.status, r.result)
+        for r in await rows(
+            engine,
+            "SELECT key, status, result FROM idempotency_keys WHERE key LIKE :k",
+            k=f"{run}-%",
+        )
+    }
+    assert left == {
+        "committed": ("done", None),
+        "recent": ("in_flight", None),
+        "queued": ("in_flight", None),
+    }

@@ -72,8 +72,10 @@ from epistrel.core.tables import (
     stories,
     story_heads,
     story_texts,
+    timers,
     transcript_messages,
     turn_queue,
+    worker_heartbeats,
 )
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -97,6 +99,7 @@ STORY_TABLES: tuple[Table, ...] = (
     characters,
     turn_queue,
     jobs,
+    timers,
     operations,
 )
 """Every table with a ``story_id`` column, in the order deletion empties them (events before the
@@ -107,10 +110,17 @@ last; story-scoped ``config_changes`` and ``idempotency_keys`` rows (``scope = '
 goes with that operation."""
 
 STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
-    {jobs.name, turn_queue.name, audit_log.name, idempotency_keys.name, "worker_heartbeats"}
+    {
+        jobs.name,
+        turn_queue.name,
+        timers.name,
+        audit_log.name,
+        idempotency_keys.name,
+        worker_heartbeats.name,
+    }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
-worker heartbeats; ``worker_heartbeats`` arrives with #71), deployment-level audit
+``timers``, worker heartbeats; #71), deployment-level audit
 records, and idempotency keys (a fork answers its own requests). Every other table in
 ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it is
 named here."""

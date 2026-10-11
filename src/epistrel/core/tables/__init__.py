@@ -14,6 +14,7 @@ from epistrel.core.tables.policies import policies
 from epistrel.core.tables.projections import story_heads, story_texts, transcript_messages
 from epistrel.core.tables.ratings import content_rating_versions, content_ratings
 from epistrel.core.tables.stories import stories
+from epistrel.core.tables.timers import recurring_tasks, timers, worker_heartbeats
 from epistrel.core.tables.turn_queue import turn_queue
 
 __all__ = [
@@ -32,9 +33,12 @@ __all__ = [
     "model_config",
     "operations",
     "policies",
+    "recurring_tasks",
     "stories",
     "story_heads",
     "story_texts",
+    "timers",
     "transcript_messages",
     "turn_queue",
+    "worker_heartbeats",
 ]

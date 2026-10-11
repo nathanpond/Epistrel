@@ -1440,3 +1440,6 @@ Process:
 - **Decision:** The "pre-change trigger" fail-first step could not be run literally. #45 already shipped the events and audit_log triggers with the `epistrel.allow_audit_expiry` exemption, so no pre-change trigger exists to run against. The equivalent check is the sweep without the exemption, which was observed failing with EPI01 and is kept as the complement in `test_s_retention`.
   **Why:** The trigger change the plan anticipated landed earlier (#45, `0002_event_store`/`0010_audit_log`).
   **Issue:** #71
+- **Decision (Rule 1, orchestrator):** `test_p_09__deadline` failed once in the full suite after #71 (`outcomes[-1] == "ok"`, not `"timeout"`). Its 0.3 s stub calls let the deadline fall in the gap between calls under load, so no call was cut. The stub latency is now 0.7 s: the deadline lands inside the second generation unless the gaps exceed 0.6 s. No product change; the assertion is unchanged.
+  **Why:** Make a #69 timing test deterministic without weakening it. Before the fix it passed 5/5 alone and failed under full-suite load; after, 3/3 alone and the full suite passed (738).
+  **Issue:** #69

@@ -250,7 +250,7 @@ async def test_p_09__degradation(stub_settings: Settings, engine: AsyncEngine) -
 
 @pytest.mark.part("M2", "NFR-PERF-6,7; FR-OBS-3")
 async def test_p_09__deadline(stub_settings: Settings, engine: AsyncEngine) -> None:
-    """A slow stub: every call takes 0.3 s and the output policy flags every draft, under a
+    """A slow stub: every call takes 0.7 s and the output policy flags every draft, under a
     2 s deadline and a retry budget of 5. The first generation answers; the turn regenerates
     until a call is cut at the deadline (cancelled, recorded as ``timeout``) and the safe
     fallback is released with cause ``deadline``, by the deadline plus the tolerance. A hanging
@@ -265,7 +265,8 @@ async def test_p_09__deadline(stub_settings: Settings, engine: AsyncEngine) -> N
         story, ids = await new_story(client, PLAYER, FIRST)
         actor = ids[PLAYER]
         await _settings(client, story, turn_deadline=DEADLINE_S, guardrail_retry_budget=5)
-        stub.latency_s = 0.3
+        # 0.7 s calls put the deadline inside the second generation, tolerating 0.6 s of gaps.
+        stub.latency_s = 0.7
 
         turn = (await respond(client, story, body(actor, "Hello."))).json()
         assert turn["call_counts"] == {"generation": 1}

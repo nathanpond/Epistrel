@@ -34,7 +34,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144 |
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
-| FR-AUTH | §17.1 | 078, 091, 093, 144 |
+| FR-AUTH | §17.1 | 078, 091, 093, 144, 149 |
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
@@ -50,7 +50,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-SCALE | §20 | 070, 072, 075, 137 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115 |
 | NFR-REL | §20 | 045, 127 |
-| NFR-SEC | §20 | 138 |
+| NFR-SEC | §20 | 138, 149 |
 | NFR-PRIV | §20 | 077, 101 |
 | NFR-OPS | §20 | 127, 148 |
 | NFR-MAINT | §20 | 148 |
@@ -151,7 +151,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 088 | Facts from the scenario, personality from the character; personas are not catalog characters; only public cards are public | Partly superseded | 089, 091, 107, 142, 090, 141 |
 | 089 | Persona details are seeded by audience, like any other knowledge | Amended | 107 |
 | 090 | Character and companion versions are separate, pinned, and published atomically | Amended | 094 |
-| 091 | Epistrel authorizes no end users: service authentication, attribution and ownership, and privacy per requested viewpoint | Current | — |
+| 091 | Epistrel authorizes no end users: service authentication, attribution and ownership, and privacy per requested viewpoint | Amended | 149 |
 | 092 | No MCP server | Current | — |
 | 093 | Principal offboarding works type by type | Current | — |
 | 094 | Content ratings are deployment-defined guidance plus guardrails; a story's rating changes only on request | Amended | 098, 107, 132 |
@@ -209,6 +209,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 146 | The concurrency gate is a fixed-schedule capacity test, staged by capability | Amended | 147 |
 | 147 | The concurrency gate's service criteria hold per story | Current | — |
 | 148 | Python 3.14 is the single supported version | Current | — |
+| 149 | The API schema and documentation routes are served without a service credential | Current | — |
 
 ---
 
@@ -960,6 +961,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-091 — Epistrel authorizes no end users: service authentication, attribution and ownership, and privacy per requested viewpoint
 **Status:** Accepted. Supersedes the authorization parts of ADR-033, ADR-047, ADR-059, ADR-078, and ADR-088.
+**Amended by:** ADR-149 — the credential-free routes are exactly `GET /health`, `/metrics`, `/openapi.json`, `/docs`, and `/redoc`
 **Context:** Epistrel had grown a user-permission system — per-story roles (player, author/GM, operator), catalog editors, grants, shared visibility, and a `story_creator` permission — whose lifecycle was undefined: who grants and revokes, where principals and groups come from, what happens when an owner leaves. Every consumer already has its own users and permissions, so a second permission model inside Epistrel would be a second source of truth that can disagree with the game's.
 **Decision:** (1) Epistrel authenticates only the calling service and holds no user roles, grants, groups, or permissions; the consumer decides who may call what, act as which character, see which entries, and request which viewpoint (FR-AUTH-1). Operator endpoints sit under `/admin` so a deployment can restrict them at its edge. (2) Epistrel runs behind the consumer, and its privacy guarantee is stated per request: output for a viewpoint contains only what that viewpoint may know (FR-AUTH-2). (3) Authority comes from the operation, not the caller: a directive is canon because it is a directive; render-trigger rules and `player_authority` stay as story rules (FR-AUTH-3). (4) Viewpoints stay fail-closed: defaults resolve only to a character, `omniscient` is returned only when named, private reads are omniscient reads, and stored results are bound to the viewpoint they were produced for (FR-RESP-12). (5) Requesting principals are opaque, recorded for attribution, and never decision inputs; every owned entity has one owner and any number of consumer-named relations, none interpreted or enforced (FR-AUTH-4..6, 8). (6) Catalog entries are served as a `card` (default) or `full` projection, carry descriptive labels, and have a consumer-defined listing status that gates nothing (FR-SCN-10, FR-CAT-11).
 **Consequences:** No permission model to keep in sync with the game, and the catalog-permission lifecycle questions disappear. The cost is stated plainly: Epistrel cannot stop a consumer that requests the omniscient view on a player's behalf. Tests C-12, C-13, C-15, C-19, I-21, S-TRUST-BOUNDARY.
@@ -1410,6 +1412,14 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 **Context:** The architecture set a floor of 3.12 with no ceiling, which reads as a promise to test and ship on three interpreters. A hobby-scale project with one deployment image has no consumer who needs an older interpreter, and every extra version is another CI matrix entry, another set of wheels to pin, and another place for a typing or asyncio difference to hide.
 **Decision:** Python 3.14 is the only supported version. `requires-python` is `>=3.14`, the image is built on `python:3.14-slim`, and tooling (`ruff`, `mypy`) targets 3.14. Raising the floor is an ordinary change; adding an older version back is a decision that needs a consumer asking for it.
 **Consequences:** One interpreter to test, one lockfile resolution, and the newest stdlib (`asyncio.timeout`, `tomllib`) usable without compatibility shims. The compose deployment (NFR-OPS-1) and the typed public contracts (NFR-MAINT-2) are exercised on exactly the interpreter that ships. Test: `tests/test_docs_python_version.py` fails if any document names another version.
+
+---
+
+### ADR-149 — The API schema and documentation routes are served without a service credential
+**Status:** Accepted. Amends ADR-091.
+**Context:** ADR-091 requires a service credential on every REST call (FR-AUTH-1), and project invariant 4 allowed one exception, `GET /health`. The OpenAPI schema and its rendered documentation are what a consumer's developers read to integrate, they carry no story data, and they are where the trust-boundary statement lives (FR-AUTH-2). Probes and scrapers need `/health` and `/metrics` the same way.
+**Decision:** Exactly five routes are served without a credential: `GET /health`, `GET /metrics`, `GET /openapi.json`, `GET /docs`, and `GET /redoc` (`HEAD` follows its `GET`). FastAPI's OAuth redirect page is disabled, because no OAuth flow exists. Every other route requires one of the deployment's service credentials, and every mutating call requires an opaque requesting principal. The exempt set is one constant in the code, and a route-table guard fails the build when any other route lacks the credential dependency. Project invariant 4 is reworded to name the five routes.
+**Consequences:** The schema, including the trust-boundary statement, can be read without a credential; nothing that reads or changes story data can. A new public route needs a new ADR and an invariant change. Tests S-TRUST-BOUNDARY (M2 auth half) and the route-table guard (#44).
 
 ---
 

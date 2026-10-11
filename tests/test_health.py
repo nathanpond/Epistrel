@@ -2,12 +2,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from epistrel.api import create_app
-from epistrel.config import Settings
+from tests.auth_support import auth_settings
 
 
 @pytest.fixture
 def client(dummy_dsn: str) -> TestClient:
-    return TestClient(create_app(Settings(database_url=dummy_dsn)))
+    return TestClient(create_app(auth_settings(dummy_dsn)))
 
 
 def test_health_reports_ok(client: TestClient) -> None:

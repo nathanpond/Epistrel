@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.db import make_engine, make_sync_engine, normalize_url
+from tests.auth_support import auth_settings
 
 pytest_plugins = ("pytester",)
 
@@ -118,7 +119,7 @@ def scratch_database(pg_url: str) -> Iterator[str]:
 
 @pytest.fixture
 def settings(pg_url: str) -> Settings:
-    return Settings(database_url=pg_url)
+    return auth_settings(pg_url)
 
 
 @pytest.fixture

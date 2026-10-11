@@ -300,3 +300,36 @@ Process:
 - Round two went out, then 9 changed stories were re-simulated (186 lines). That second pass was run as a Workflow without the owner's explicit opt-in, which was disclosed to the owner.
 - A fresh coverage check found five clauses delivered only by Discretion text. Each was lifted into an AC and re-verified.
 - **Whole-project analysis (final):** M8 is the highest-numbered feature milestone, and every lower one has stories. The Audit milestone's emphases are marked final, with M8's image safety path, staging and candidate privacy, viewpoint-filtered inputs, reservation chaos, cost honesty and eval-image safety added. No project-specific skill is recommended.
+
+## /n8-exec M2 — 2026-10-11
+
+- **Decision:** Settings gain `service_credentials` (`NoDecode` comma-split, trimmed, empties dropped, each ≥ 32 chars, refusal names the position never the value), `auth_disabled` (refused unless `debug`, WARNING logged) and a pass-through `config_key: SecretStr | None`. Cross-field refusals come from a `model_validator` whose message names the variables; `load_settings` prints model-level errors without a synthetic variable name, so the CLI's existing exit 78 covers them.
+  **Why:** Discretion lines (pass 1/2). `config_key` is Rule 3: `Settings` forbids unknown `EPISTREL_*` names, so compose's required dev-only `EPISTREL_CONFIG_KEY` would otherwise stop the engine starting; #51 adds its format validation and use. The `pydantic-settings` floor rose from 2.6 to 2.7 (Rule 3: `NoDecode` first shipped in 2.7; the lock already resolves 2.15.0, so only the specifier changed).
+  **Issue:** #44
+- **Decision:** "`system` reserved" is read as: no REST caller may send `X-Epistrel-Principal: system` (400 `principal_required` on a mutation); `SYSTEM_PRINCIPAL` lives in `epistrel.core.context` for workers.
+  **Why:** The Discretion line is ambiguous; a credential cannot be `system` anyway (≥ 32 chars), and a caller claiming the workers' principal would forge attribution (FR-AUTH-4). Low cost to relax later.
+  **Issue:** #44
+- **Decision:** The route-table guard enumerates `fastapi.routing.iter_route_contexts(app.routes)` rather than `app.routes`.
+  **Why:** FastAPI 0.142 includes routers lazily: `app.routes` holds `_IncludedRouter` placeholders, so a plain walk sees no `APIRoute`s and would fail closed on everything. Route contexts are the routes as served, with the include's prefix and dependencies applied. The guard lives in `src` (`epistrel.api.auth.unguarded_routes`, with `EXEMPT_ROUTES`) for reuse by #77.
+  **Issue:** #44
+- **Decision:** `swagger_ui_oauth2_redirect_url=None` on the app.
+  **Why:** FastAPI otherwise serves `/docs/oauth2-redirect`, a sixth unauthenticated route that invariant 4 does not allow; no OAuth flow exists.
+  **Issue:** #44
+- **Decision:** Protected routers go through one helper, `epistrel.api.app.include_protected(app, router)`, which applies `[Depends(require_service_credential), Depends(require_principal)]`; `/health` sits on a separate `public_router`. The test-only mutating route (`/_test/write`) and read route are registered by tests through the same helper. The Epistrel `Engine` sits at `app.state.epistrel` (`app.state.engine` stays the SQLAlchemy engine `/health` uses).
+  **Why:** One code path for "applied app-wide via the router include", testable without shipping a test route. The test route was first named `/_test/mutate`, and the new operator-path test flagged it, because `mutate` is one of FR-AUTH-1's low-level calls.
+  **Issue:** #44
+- **Decision:** The `Engine` skeleton (`src/epistrel/engine.py`, exported as `epistrel.Engine`) holds only settings and has one stub mutating method, `noop(ctx)`, which returns the principal and raises `PrincipalRequired` without one. `EpistrelError` (`epistrel.core.errors`) carries `code` and `http_status` class attributes, and a single handler in `api/errors.py` renders the envelope (plus `WWW-Authenticate: Bearer` on 401). `get_request_context` parses `X-Epistrel-Expected-Revision` as an int (422 `validation_error`, `details.field = headers.X-Epistrel-Expected-Revision`) and reads the viewpoint from the `?viewpoint=` query.
+  **Why:** Discretion (pass 2) asks for a stub method the spy targets. `RequestContext.expected_revision` is typed `int`, so a non-integer header has to be rejected somewhere (Rule 2). The query param matches #59's `?viewpoint=` reads. Body-level `output_viewpoint` is merged by the handlers that take one (#57/#59).
+  **Issue:** #44
+- **Decision:** `test_route_guard` and `test_auth_disabled_refused` have no `part("M2", "NFR-SEC-5")` marker, which the Discretion asked for. NFR-SEC-5's M2 part is `test_s_trust_boundary__auth`.
+  **Why:** With the marker, `check-traceability` fails with "missing from §15: NFR-SEC-5 ← test_route_guard (M2)": docs/04 §15, the plan of record, lists only S-TRUST-BOUNDARY (M2) for NFR-SEC-5, and these names map to the undefined test IDs ROUTE-GUARD and AUTH-DISABLED-REFUSED. Adding undefined test IDs to §15 would be a plan change, and weakening the gate is not allowed. Both tests still run on every PR as ordinary tests.
+  **Issue:** #44
+- **Decision:** The FR-AUTH-1 operator enumeration is `OPERATOR_PATH_PATTERNS` in `api/routes/admin/__init__.py`. It holds segment regexes for model-config, providers, policies, content-ratings, erasure, retention, export/import, commit_fact, mutate, record_utterance, ingest_turn and offboard, plus a top-level `/settings`. `/stories/{id}/settings` and the per-story `content-rating` do not match. The `/admin` router is defined but not yet included; #48 includes it first.
+  **Why:** Discretion (pass 2) asks for the enumeration, not-yet-built paths included. `ingest_turn` counts under FR-AUTH-1's "and similar" low-level calls.
+  **Issue:** #44
+- **Decision:** `TRUST_BOUNDARY_STATEMENT` (in `epistrel.api.auth`) is the OpenAPI `info.description` and appears verbatim in README's new "Trust boundary" section and in docs/02 §9, which also gains the exempt-route list and the principal rule. Invariant 4 in CLAUDE.md names the five exempt routes (`guard: #44`). ADR-149 amends ADR-091, and the ADR indexes are updated (FR-AUTH, NFR-SEC, and the 091 and 149 rows).
+  **Why:** The user decided this in the story's Discretion ("(user) … invariant 4 is reworded to list all five"). It is planned work, so no `## Ad-hoc` drift entry was written.
+  **Issue:** #44
+- **Decision:** The AC "principal stored on `operations.principal` and every event" is delivered as far as the `RequestContext` carrying the principal to the Engine. The stored-column assertion is #45's, as is S-TRUST-BOUNDARY's `operations` row-count check. "No side effects" is proven here with a spy on the Engine call.
+  **Why:** Discretion (pass 1): "#44 proves 'no side effects' with a spy … and leaves the operations.principal assertion to #45's test". The `operations` table does not exist yet.
+  **Issue:** #44

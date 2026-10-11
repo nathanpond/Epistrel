@@ -30,6 +30,8 @@ services:
       # Literal, not ${...}: a developer's .env with a localhost URL must never reach the container.
       EPISTREL_DATABASE_URL: postgresql+psycopg://epistrel:epistrel-dev@db:5432/epistrel
       EPISTREL_LOG_LEVEL: INFO
+      EPISTREL_SERVICE_CREDENTIALS: dev-only-credential-change-me-00000000  # dev-only default — override for anything but local use
+      EPISTREL_CONFIG_KEY: ZXBpc3RyZWwtZGV2LW9ubHktY29uZmlnLWtleS0wMDA=  # dev-only default — override for anything but local use
     ports:
       - "127.0.0.1:8000:8000"
     extra_hosts:

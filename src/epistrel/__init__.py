@@ -7,4 +7,6 @@ try:
 except PackageNotFoundError:  # pragma: no cover - only outside an installed environment
     __version__ = "0.0.0+unknown"
 
-__all__ = ["__version__"]
+from epistrel.engine import Engine
+
+__all__ = ["Engine", "__version__"]

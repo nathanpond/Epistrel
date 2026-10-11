@@ -1,0 +1,240 @@
+"""The trust boundary: service credential, requesting principal, `/admin`, no MCP (docs/04
+S-TRUST-BOUNDARY, M2 auth half; the respond half lands with `respond` in #57)."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import subprocess
+import sys
+from unittest.mock import AsyncMock
+
+import pytest
+from fastapi import FastAPI
+from fastapi.routing import iter_route_contexts
+from fastapi.testclient import TestClient
+
+from epistrel import Engine
+from epistrel.api import create_app
+from epistrel.api.app import include_protected
+from epistrel.api.auth import TRUST_BOUNDARY_STATEMENT, match_credential
+from epistrel.api.routes.admin import ADMIN_PREFIX, is_operator_path
+from epistrel.config import Settings
+from epistrel.core.context import RequestContext
+from epistrel.core.errors import PrincipalRequired
+from tests.auth_support import (
+    CREDENTIAL_A,
+    CREDENTIAL_B,
+    TEST_PREFIX,
+    auth_settings,
+    bearer,
+    make_test_router,
+)
+from tests.conftest import DUMMY_DSN, REPO_ROOT
+
+WRITE = f"{TEST_PREFIX}/write"
+READ = f"{TEST_PREFIX}/read"
+MCP_PATHS = ("/mcp", "/sse", "/.well-known/mcp", "/.well-known/mcp.json")
+
+
+@pytest.fixture
+def app(dummy_dsn: str) -> FastAPI:
+    app = create_app(auth_settings(dummy_dsn))
+    include_protected(app, make_test_router())
+    return app
+
+
+@pytest.fixture
+def spy(app: FastAPI) -> AsyncMock:
+    """Wraps the Engine call every protected handler makes; a rejected call never reaches it."""
+    engine: Engine = app.state.epistrel
+    wrapped = AsyncMock(side_effect=engine.noop)
+    app.state.epistrel.noop = wrapped
+    return wrapped
+
+
+@pytest.fixture
+def client(app: FastAPI) -> TestClient:
+    return TestClient(app)
+
+
+def _code(response: object) -> str:
+    body = response.json()  # type: ignore[attr-defined]
+    code: str = body["error"]["code"]
+    return code
+
+
+@pytest.mark.part("M2", "FR-AUTH-1,2,4; FR-API-2; NFR-SEC-5")
+def test_s_trust_boundary__auth(client: TestClient, app: FastAPI, spy: AsyncMock) -> None:
+    """Credential → principal → no MCP → documented boundary. Complement: a call with either
+    configured credential and a principal is accepted and reaches the Engine."""
+    principal = {"X-Epistrel-Principal": "p-1"}
+    body = {"value": 1}
+
+    # No credential, an unknown one, or the wrong scheme: 401 with no side effects.
+    for headers in (
+        principal,
+        {**principal, "Authorization": "Bearer not-a-configured-credential-000000000"},
+        {**principal, "Authorization": f"Basic {CREDENTIAL_A}"},
+    ):
+        response = client.post(WRITE, json=body, headers=headers)
+        assert response.status_code == 401
+        assert _code(response) == "unauthenticated"
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+        assert set(response.json()["error"]) == {"code", "message", "details"}
+    assert client.get(READ).status_code == 401
+    spy.assert_not_called()
+
+    # Either of two configured credentials is accepted (complement).
+    for credential in (CREDENTIAL_A, CREDENTIAL_B):
+        response = client.post(WRITE, json=body, headers={**bearer(credential), **principal})
+        assert response.status_code == 200, response.text
+        assert response.json() == {"principal": "p-1", "value": 1}
+    assert spy.await_count == 2
+
+    # A mutating call without a usable principal: 400 before any work, even before the body
+    # is validated; nothing reaches the Engine.
+    spy.reset_mock()
+    for headers in (
+        bearer(),
+        {**bearer(), "X-Epistrel-Principal": "   "},
+        {**bearer(), "X-Epistrel-Principal": "x" * 257},
+        {**bearer(), "X-Epistrel-Principal": "a\tb"},
+        {**bearer(), "X-Epistrel-Principal": "system"},
+    ):
+        response = client.post(WRITE, json=body, headers=headers)
+        assert response.status_code == 400
+        assert _code(response) == "principal_required"
+        assert client.post(WRITE, json={"value": "nope"}, headers=headers).status_code == 400
+    spy.assert_not_called()
+
+    # The principal is opaque: the same call under two principals differs only in attribution.
+    one = client.post(WRITE, json=body, headers={**bearer(), "X-Epistrel-Principal": " u-1 "})
+    two = client.post(WRITE, json=body, headers={**bearer(), "X-Epistrel-Principal": "x" * 256})
+    assert one.status_code == two.status_code == 200
+    assert {**one.json(), "principal": None} == {**two.json(), "principal": None}
+    assert one.json()["principal"] == "u-1"
+
+    # A read needs the credential but no principal; a principal on a read is carried.
+    assert client.get(READ, headers=bearer()).json()["principal"] is None
+    assert client.get(READ, headers={**bearer(), **principal}).json()["principal"] == "p-1"
+
+    # No MCP endpoint is served.
+    paths = [route.path or "" for route in iter_route_contexts(app.routes)]
+    assert not [p for p in paths if p.startswith(MCP_PATHS)]
+    for path in MCP_PATHS:
+        assert client.get(path, headers=bearer()).status_code == 404
+
+    # The API documentation states that Epistrel sits behind the consumer.
+    schema = client.get("/openapi.json").json()
+    assert schema["info"]["description"] == TRUST_BOUNDARY_STATEMENT
+    assert "behind the consumer" in TRUST_BOUNDARY_STATEMENT
+    assert schema["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"
+
+
+def test_in_process_library_needs_no_credential() -> None:
+    """FR-AUTH-1, FR-AUTH-4: the library takes no credential but still requires a principal."""
+    engine = Engine.from_settings(auth_settings(DUMMY_DSN))
+
+    async def run() -> str:
+        return await engine.noop(RequestContext(principal="p-9"))
+
+    assert asyncio.run(run()) == "p-9"
+    with pytest.raises(PrincipalRequired):
+        asyncio.run(engine.noop(RequestContext()))
+
+
+def test_exempt_routes_answer_without_credential(client: TestClient) -> None:
+    for path in ("/health", "/openapi.json", "/docs", "/redoc"):
+        assert client.get(path).status_code == 200, path
+    assert client.get("/docs/oauth2-redirect").status_code == 404
+
+
+def test_request_context_carries_all_four_fields(client: TestClient) -> None:
+    headers = {
+        **bearer(),
+        "X-Epistrel-Principal": "p-2",
+        "Idempotency-Key": "k-1",
+        "X-Epistrel-Expected-Revision": "7",
+    }
+    assert client.get(f"{READ}?viewpoint=omniscient", headers=headers).json() == {
+        "principal": "p-2",
+        "idempotency_key": "k-1",
+        "expected_revision": 7,
+        "viewpoint": "omniscient",
+    }
+    bad = client.get(READ, headers={**bearer(), "X-Epistrel-Expected-Revision": "seven"})
+    assert bad.status_code == 422
+    assert bad.json()["error"]["details"]["field"] == "headers.X-Epistrel-Expected-Revision"
+
+
+def test_body_validation_error_envelope(client: TestClient) -> None:
+    headers = {**bearer(), "X-Epistrel-Principal": "p-1"}
+    response = client.post(WRITE, json={"value": "nope"}, headers=headers)
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "validation_error"
+    assert error["details"]["field"] == "body.value"
+
+
+def test_auth_disabled_accepts_calls_only_in_debug(dummy_dsn: str) -> None:
+    app = create_app(Settings(database_url=dummy_dsn, auth_disabled=True, debug=True))
+    include_protected(app, make_test_router())
+    client = TestClient(app)
+    assert client.get(READ).status_code == 200
+    assert client.post(WRITE, json={"value": 1}).status_code == 400  # principal still required
+
+
+def test_match_credential_reports_index_only() -> None:
+    settings = auth_settings(DUMMY_DSN)
+    assert match_credential(CREDENTIAL_B, settings) == 1
+    assert match_credential(CREDENTIAL_A, settings) == 0
+    assert match_credential(CREDENTIAL_A[:-1], settings) is None
+
+
+def test_operator_paths_live_under_admin(app: FastAPI) -> None:
+    """FR-AUTH-1: no path outside `/admin` matches the operator enumeration."""
+    for route in iter_route_contexts(app.routes):
+        path = route.path or ""
+        if not path.startswith(f"{ADMIN_PREFIX}/"):
+            assert not is_operator_path(path), path
+    # The patterns recognise the operator surface and leave the story surface alone.
+    assert is_operator_path("/model-config")
+    assert is_operator_path("/policies/abc")
+    assert is_operator_path("/content-ratings")
+    assert is_operator_path("/settings")
+    assert is_operator_path("/stories/{id}/mutate")
+    assert not is_operator_path("/stories/{id}/settings")
+    assert not is_operator_path("/stories/{id}/content-rating")
+    assert not is_operator_path("/stories/{id}/respond")
+
+
+def test_auth_disabled_refused() -> None:
+    """`EPISTREL_AUTH_DISABLED=1` with debug off exits 78 at startup, naming the variable.
+    Complement: the same variable with debug on is accepted by the settings."""
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("EPISTREL_")}
+    env |= {"EPISTREL_DATABASE_URL": DUMMY_DSN, "EPISTREL_AUTH_DISABLED": "1"}
+    proc = subprocess.run(
+        [sys.executable, "-m", "epistrel.cli", "serve"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert proc.returncode == 78
+    assert "EPISTREL_AUTH_DISABLED" in proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert Settings(database_url=DUMMY_DSN, auth_disabled=True, debug=True).auth_disabled
+
+
+def test_trust_boundary_statement_is_documented_verbatim() -> None:
+    """FR-AUTH-2 (documentation half): README and docs/02 §9 carry the OpenAPI text word for word,
+    including the opaque-principal recommendation."""
+    readme = (REPO_ROOT / "README.md").read_text()
+    architecture = (REPO_ROOT / "docs" / "02-technology-architecture.md").read_text()
+    section_9 = architecture.split("## 9. API surfaces", 1)[1].split("\n## ", 1)[0]
+    assert TRUST_BOUNDARY_STATEMENT in readme
+    assert TRUST_BOUNDARY_STATEMENT in section_9
+    assert "opaque IDs rather than names or email addresses" in TRUST_BOUNDARY_STATEMENT

@@ -7,7 +7,10 @@ license = "Apache-2.0"
 requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.14",
+    "cryptography>=50.0.2",
     "fastapi>=0.115",
+    "jinja2>=3.1.6",
+    "openai>=3.28.0",
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.7",
     "sqlalchemy[asyncio]>=2.0",
@@ -63,7 +66,7 @@ allow = [
 # Families reported as "denied" rather than "not allowed"; an exception can never admit one of these.
 deny = ["GPL", "AGPL", "SSPL", "EUPL"]
 # package = "one-line rationale"; admits a not-allowed or UNKNOWN license, never a denied family.
-exceptions = {}
+exceptions = { cffi = "MIT-0 (MIT without the attribution clause; permissive like the allowed 0BSD and Unlicense); runtime dependency of cryptography, used unmodified (#51)" }
 
 [tool.importlinter]
 # docs/02 layering — Core is the deterministic layer; not a project invariant (an ordinary PR may relax it).

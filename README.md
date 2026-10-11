@@ -27,6 +27,16 @@ uv run --env-file .env alembic upgrade head   # bring the database to the curren
 uv run --env-file .env epistrel serve    # http://127.0.0.1:8000
 ```
 
+## Models
+
+Every model call goes through the Model Access Layer (`epistrel.orchestrator.models`, docs/02 §5) to an external OpenAI-compatible endpoint; Epistrel runs no model itself. Each purpose (`generation`, `guardrail_check`, `lite_summary` today; `GET /admin/model-config` lists them) has its own `{base_url, model, api_key, params}` in the `model_config` table and falls back field by field to the `default` row. API keys are stored encrypted with `EPISTREL_CONFIG_KEY`. `EPISTREL_MODEL_ADAPTER=stub` swaps in a deterministic stub that needs no endpoint. To check a model server directly:
+
+```bash
+uv run python -m epistrel.tools.model_probe generation "Say hello" \
+    --base-url http://localhost:1234/v1 --model <loaded model> --api-key lm-studio
+EPISTREL_MODEL_ADAPTER=stub uv run python -m epistrel.tools.model_probe generation "Say hello"
+```
+
 ## Trust boundary
 
 Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records.

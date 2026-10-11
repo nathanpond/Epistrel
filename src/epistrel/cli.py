@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import sys
 
 import uvicorn
 
-from epistrel.config import ConfigError, load_settings
+from epistrel.config import ConfigError, Settings, load_settings
 
 EX_CONFIG = 78
 
@@ -21,6 +22,18 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", help="override EPISTREL_HOST")
     serve.add_argument("--port", type=int, help="override EPISTREL_PORT")
     return parser
+
+
+async def _preflight(settings: Settings) -> str | None:
+    """Checks that need the database; ``None`` when the server may start."""
+    from epistrel.core.db import make_engine
+    from epistrel.orchestrator.models.config import config_key_problem
+
+    engine = make_engine(settings)
+    try:
+        return await config_key_problem(settings, engine)
+    finally:
+        await engine.dispose()
 
 
 def serve(host: str | None, port: int | None) -> int:
@@ -36,6 +49,10 @@ def serve(host: str | None, port: int | None) -> int:
         return EX_CONFIG
     level = "DEBUG" if settings.debug else settings.log_level
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    problem = asyncio.run(_preflight(settings))
+    if problem is not None:
+        print(problem, file=sys.stderr)
+        return EX_CONFIG
     uvicorn.run(
         "epistrel.api.app:create_app",
         factory=True,

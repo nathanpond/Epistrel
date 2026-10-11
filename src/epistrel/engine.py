@@ -17,6 +17,8 @@ from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import PrincipalRequired
 from epistrel.core.history import History, read_history
 from epistrel.core.policies.model import Policy, Scope
+from epistrel.orchestrator.models import ModelAccessLayer
+from epistrel.orchestrator.models.config import EffectiveConfig
 from epistrel.orchestrator.policies import admin as policy_admin
 from epistrel.orchestrator.policies import store as policy_store
 from epistrel.orchestrator.policies.schemas import (
@@ -29,9 +31,18 @@ from epistrel.orchestrator.policies.schemas import (
 class Engine:
     """The async entry point to Epistrel."""
 
-    def __init__(self, settings: Settings, db: AsyncEngine | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        db: AsyncEngine | None = None,
+        models: ModelAccessLayer | None = None,
+    ) -> None:
         self.settings = settings
         self._db = db
+        # Every model call goes through this one layer (FR-MODEL-1); the adapter is chosen by
+        # EPISTREL_MODEL_ADAPTER. Tests reach the stub through ``engine.models.stub``.
+        self.models = models or ModelAccessLayer.from_settings(settings)
+        self.models.bind(db)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Engine:
@@ -40,6 +51,7 @@ class Engine:
     def bind(self, db: AsyncEngine | None) -> None:
         """Use ``db`` for every operation (``None`` unbinds)."""
         self._db = db
+        self.models.bind(db)
 
     @property
     def db(self) -> AsyncEngine:
@@ -215,3 +227,11 @@ class Engine:
         principal = self.require_principal(ctx)
         await self.check_expected_revision(ctx, story_id)
         return await policy_admin.set_story_policies(self.db, story_id, items, principal=principal)
+
+    # -- model configuration (FR-MODEL-1..3; #52 adds the writes) ------------------------------
+
+    async def model_configuration(
+        self, ctx: RequestContext
+    ) -> tuple[EffectiveConfig, dict[str, EffectiveConfig]]:
+        """The ``default`` row and the effective configuration of every delivered purpose."""
+        return await self.models.configuration()

@@ -28,7 +28,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-VERIFY | §9 | 043, 065, 077, 138, 144 |
 | FR-GUARD | §11 | 087, 095, 096, 114 |
 | FR-REWRITE | §12.1 | 144 |
-| FR-MODEL | §13 | 129, 136, 144 |
+| FR-MODEL | §13 | 129, 136, 144, 150 |
 | FR-EXT | §15 | 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144 |
 | FR-STATE | §15.1 | 055, 072, 144 |
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144 |
@@ -52,6 +52,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-REL | §20 | 045, 127 |
 | NFR-SEC | §20 | 138, 149 |
 | NFR-PRIV | §20 | 077, 101 |
+| NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148 |
 | NFR-MAINT | §20 | 148 |
 
@@ -67,7 +68,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 004 | Epistemic-first: per-character viewpoint is the core primitive | Current | — |
 | 005 | Product boundary: Epistrel = Engine Core + Orchestrator; the consumer is thin | Current | — |
 | 006 | Engine Core is deterministic and model-free; deterministic-first, cognition-on-the-residual | Amended | 017, 035 |
-| 007 | Model Access Layer: per-purpose config held in Epistrel; Epistrel connects directly | Amended | 136 |
+| 007 | Model Access Layer: per-purpose config held in Epistrel; Epistrel connects directly | Partly superseded | 136, 150 |
 | 008 | Structured turn contract (say/think/do/latent); utterances as speech acts | Amended | 036 |
 | 009 | Commitment lifecycle: consequence-driven, salience-triggered, per-knower | Partly superseded | 022, 043, 053 |
 | 010 | Validation and repair: three-way verify, viewpoint-aware, least-invasive repair | Amended | 035, 065, 087 |
@@ -210,6 +211,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 147 | The concurrency gate's service criteria hold per story | Current | — |
 | 148 | Python 3.14 is the single supported version | Current | — |
 | 149 | The API schema and documentation routes are served without a service credential | Current | — |
+| 150 | The model transport is the `openai` SDK against OpenAI-compatible endpoints | Current | — |
 
 ---
 
@@ -267,9 +269,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 ### ADR-007 — Model Access Layer: per-purpose config held in Epistrel; Epistrel connects directly
 **Status:** Accepted. **Supersedes** an earlier framing that put the generation call on the consumer's side.
-**Amended by:** ADR-136 — purposes are declared in a registry that generates the model guide.
+**Amended by:** ADR-136 — purposes are declared in a registry that generates the model guide; ADR-150 — the transport is the `openai` SDK, not LiteLLM.
 **Context:** Because the Orchestrator owns the turn loop and re-generates several times per turn, routing each sub-call back through the consumer is incoherent and breaks the thin-consumer contract. The earlier "consumer-side model" framing conflated *where the model runs* with *where its config lives*.
-**Decision:** Model *processes* run externally (Ollama/vLLM/hosted) over the OpenAI-compatible wire. Epistrel **holds per-purpose configuration** (`base_url`, model, key, params) and **connects directly**, via a Model Access Layer (default adapter over LiteLLM). A **runtime config API** allows changes without restart. `base_url` is configurable for enterprise LLM gateways; a bring-your-own-completion escape hatch covers non-OpenAI-compatible models. "Model-agnostic" means configurable endpoints, not consumer-owned calls.
+**Decision:** Model *processes* run externally (Ollama/vLLM/hosted) over the OpenAI-compatible wire. Epistrel **holds per-purpose configuration** (`base_url`, model, key, params) and **connects directly**, via a Model Access Layer (default adapter over LiteLLM *[superseded by ADR-150: the default adapter uses the `openai` SDK]*). A **runtime config API** allows changes without restart. `base_url` is configurable for enterprise LLM gateways; a bring-your-own-completion escape hatch covers non-OpenAI-compatible models. "Model-agnostic" means configurable endpoints, not consumer-owned calls.
 **Consequences:** Clean per-purpose routing (generation, regeneration, entailment-fallback, consolidation, importance, salience, extraction; embedding is a separate sticky port). Keys live in Epistrel config; for self-hosted OSS the adopter supplies keys to their own deployment.
 
 ---
@@ -1420,6 +1422,14 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 **Context:** ADR-091 requires a service credential on every REST call (FR-AUTH-1), and project invariant 4 allowed one exception, `GET /health`. The OpenAPI schema and its rendered documentation are what a consumer's developers read to integrate, they carry no story data, and they are where the trust-boundary statement lives (FR-AUTH-2). Probes and scrapers need `/health` and `/metrics` the same way.
 **Decision:** Exactly five routes are served without a credential: `GET /health`, `GET /metrics`, `GET /openapi.json`, `GET /docs`, and `GET /redoc` (`HEAD` follows its `GET`). FastAPI's OAuth redirect page is disabled, because no OAuth flow exists. Every other route requires one of the deployment's service credentials, and every mutating call requires an opaque requesting principal. The exempt set is one constant in the code, and a route-table guard fails the build when any other route lacks the credential dependency. Project invariant 4 is reworded to name the five routes.
 **Consequences:** The schema, including the trust-boundary statement, can be read without a credential; nothing that reads or changes story data can. A new public route needs a new ADR and an invariant change. Tests S-TRUST-BOUNDARY (M2 auth half) and the route-table guard (#44).
+
+---
+
+### ADR-150 — The model transport is the `openai` SDK against OpenAI-compatible endpoints
+**Status:** Accepted. Amends ADR-007.
+**Context:** ADR-007 put the Model Access Layer's default adapter over LiteLLM for its per-call routing, retries, fallbacks and cost tracking. Each of those is already Epistrel's: routing is per purpose from `model_config` (FR-MODEL-1,3), every attempt is owned by the turn budget (NFR-PERF-6), and per-purpose call counts and cost are reported by the Model Access Layer (FR-MODEL-12). Every target the project names — hosted providers, enterprise gateways, LM Studio, vLLM, Ollama — speaks the OpenAI-compatible wire format. Measured on 2026-10-11 with `uv pip install --dry-run` into an empty Python 3.14 environment: `litellm` 1.104.2 installs **58** packages (including `openai` 2.54.0 itself, plus `tokenizers`, `huggingface-hub` and an HTTP stack of its own), while `openai` 3.28.0 installs **14**.
+**Decision:** The default adapter (`OpenAICompatibleAdapter`) calls Chat Completions through the `openai` SDK, one `AsyncOpenAI` client per distinct `base_url` and key, with the SDK's retries off (`max_retries=0`) and a per-call timeout from the purpose's params (default 60 s). `EPISTREL_MODEL_ADAPTER` selects `openai` (default) or `stub`, the deterministic test adapter (FR-MODEL-11). Prompts are Jinja2 templates checked against the purpose registry at import (ADR-136); stored API keys are Fernet-encrypted with `EPISTREL_CONFIG_KEY` (`cryptography`). LiteLLM moves to the architecture's alternatives.
+**Consequences:** A quarter of the dependency footprint, no second retry or routing layer underneath the turn budget, and one wire format to test (a local OpenAI-compatible server in CI). A provider that does not speak the format needs the bring-your-own-completion path (FR-MODEL-9) or a gateway in front of it. Tests C-04 and C-07 (M2 swap half).
 
 ---
 

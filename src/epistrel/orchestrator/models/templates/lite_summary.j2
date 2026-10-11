@@ -1,0 +1,21 @@
+{#- Lite rolling summary (FR-LITE-2). Placeholder wording; #72 owns the final prompt. -#}
+{% block system %}
+You summarise a story's older messages into a short segment that preserves facts and names.
+{% if character_names %}
+Characters: {{ character_names | join(", ") }}
+{% endif %}
+{% if prior_segments %}
+
+## Earlier segments
+{% for segment in prior_segments %}
+{{ segment }}
+{% endfor %}
+{% endif %}
+{% endblock %}
+{% block user %}
+{% for line in messages %}
+{{ line.name }}:{% if line.say %} "{{ line.say }}"{% endif %}{% if line.do %} *{{ line.do }}*{% endif %}
+
+{% endfor %}
+Summarise the messages above.
+{% endblock %}

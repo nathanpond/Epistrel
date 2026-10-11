@@ -16,7 +16,10 @@ from tools.gates.licenses import (
 
 from tests.conftest import REPO_ROOT
 
-CONFIG = load_licenses_config(REPO_ROOT / "pyproject.toml")
+REPO_CONFIG = load_licenses_config(REPO_ROOT / "pyproject.toml")
+# The repo's allow and deny lists without its exceptions: the synthetic closures below never
+# contain the excepted packages, which would otherwise be reported as stale.
+CONFIG = LicensesConfig(REPO_CONFIG.allow, REPO_CONFIG.deny, {})
 PARENTS = {"fastapi": {"epistrel"}, "starlette": {"fastapi"}, "psycopg": {"epistrel"}}
 
 

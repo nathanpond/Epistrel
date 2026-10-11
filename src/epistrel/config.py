@@ -7,6 +7,8 @@ fast on a missing or malformed required setting and names it.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import os
 from typing import Annotated, Literal, Self
@@ -21,6 +23,8 @@ TEST_PREFIX = "EPISTREL_TEST_"
 DATABASE_URL_SCHEME = "postgresql+psycopg://"
 MIN_CREDENTIAL_LENGTH = 32
 """FR-AUTH-1: a service credential shorter than this is refused at startup."""
+FERNET_KEY_BYTES = 32
+FERNET_KEY_LENGTH = 44
 
 log = logging.getLogger(__name__)
 
@@ -50,9 +54,14 @@ class Settings(BaseSettings):
     service_credentials: Annotated[list[SecretStr], NoDecode] = Field(default_factory=list)
     # Development only: accept REST calls without a credential. Refused unless `debug` is on.
     auth_disabled: bool = False
-    # Key that encrypts stored provider API keys (#51 validates and uses it). Accepted here so a
-    # deployment may set it before the model configuration exists.
+    # Key that encrypts stored provider API keys (Fernet: URL-safe base64 of 32 random bytes).
+    # Required once any purpose has a stored key and the adapter is `openai` (checked at startup).
     config_key: SecretStr | None = None
+    # Which model adapter serves every purpose (FR-MODEL-11, NFR-PORT-2): `openai` talks to the
+    # configured OpenAI-compatible endpoints; `stub` is the deterministic test adapter.
+    model_adapter: Literal["openai", "stub"] = "openai"
+    # Seconds the stub adapter waits before answering (load and latency tests); 0 answers at once.
+    stub_latency_s: float = Field(default=0.0, ge=0.0, le=600.0)
     # A projection rebuild of a story with more events than this runs as a background job once
     # #70's workers exist; until then every rebuild is synchronous.
     rebuild_async_threshold: int = Field(default=10_000, ge=1)
@@ -62,6 +71,14 @@ class Settings(BaseSettings):
     def _must_be_psycopg_url(cls, value: SecretStr) -> SecretStr:
         if not value.get_secret_value().startswith(DATABASE_URL_SCHEME):
             raise ValueError(f"must be a {DATABASE_URL_SCHEME} URL")
+        return value
+
+    @field_validator("config_key")
+    @classmethod
+    def _config_key_is_a_fernet_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not is_fernet_key(value.get_secret_value()):
+            # Never echo the value.
+            raise ValueError("must be URL-safe base64 of 32 bytes (44 characters)")
         return value
 
     @field_validator("service_credentials", mode="before")
@@ -99,6 +116,15 @@ class Settings(BaseSettings):
                 f"{MIN_CREDENTIAL_LENGTH}+ characters is required"
             )
         return self
+
+
+def is_fernet_key(value: str) -> bool:
+    """True when ``value`` is URL-safe base64 of exactly 32 bytes (a Fernet key)."""
+    try:
+        decoded = base64.urlsafe_b64decode(value.encode("ascii"))
+    except ValueError, binascii.Error:
+        return False
+    return len(decoded) == FERNET_KEY_BYTES and len(value) == FERNET_KEY_LENGTH
 
 
 def _env_name(field: str) -> str:

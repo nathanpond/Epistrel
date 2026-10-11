@@ -1,3 +1,5 @@
+import base64
+
 import pytest
 
 from epistrel.config import ConfigError, Settings, load_settings
@@ -114,11 +116,41 @@ def test_config_key_is_a_known_secret_setting(
 ) -> None:
     monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
     monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
-    monkeypatch.setenv("EPISTREL_CONFIG_KEY", "k" * 44)
+    key = base64.urlsafe_b64encode(b"k" * 32).decode()
+    monkeypatch.setenv("EPISTREL_CONFIG_KEY", key)
     settings = load_settings()
     assert settings.config_key is not None
-    assert "k" * 44 not in repr(settings)
+    assert key not in repr(settings)
     assert Settings.model_fields["config_key"].default is None
+
+
+@pytest.mark.parametrize("bad", ["k" * 44, "short", base64.urlsafe_b64encode(b"x" * 16).decode()])
+def test_config_key_must_be_a_fernet_key(
+    monkeypatch: pytest.MonkeyPatch, dummy_dsn: str, bad: str
+) -> None:
+    """A malformed key is refused at startup and the message never repeats it."""
+    monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
+    monkeypatch.setenv("EPISTREL_CONFIG_KEY", bad)
+    with pytest.raises(ConfigError) as exc:
+        load_settings()
+    assert exc.value.lines == [
+        "error: EPISTREL_CONFIG_KEY: must be URL-safe base64 of 32 bytes (44 characters)"
+    ]
+    assert bad not in str(exc.value)
+
+
+def test_model_adapter_defaults_to_openai_and_refuses_unknown(
+    monkeypatch: pytest.MonkeyPatch, dummy_dsn: str
+) -> None:
+    monkeypatch.setenv("EPISTREL_DATABASE_URL", dummy_dsn)
+    monkeypatch.setenv("EPISTREL_SERVICE_CREDENTIALS", CREDENTIAL)
+    assert load_settings().model_adapter == "openai"
+    monkeypatch.setenv("EPISTREL_MODEL_ADAPTER", "stub")
+    assert load_settings().model_adapter == "stub"
+    monkeypatch.setenv("EPISTREL_MODEL_ADAPTER", "litellm")
+    with pytest.raises(ConfigError, match="EPISTREL_MODEL_ADAPTER"):
+        load_settings()
 
 
 def test_rebuild_async_threshold_defaults_and_validates(

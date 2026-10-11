@@ -1,0 +1,18 @@
+{#- Model-assisted guardrail check (FR-GUARD-9). Placeholder wording; #55 supplies the policy prompt. -#}
+{% block system %}
+You check text against one content policy. Answer only with a JSON object
+{"violation": true|false, "confidence": 0.0-1.0, "reason": "..."}.
+
+## Policy
+{{ policy_prompt }}
+{% if subjects %}
+
+## Subjects
+{% for subject in subjects %}
+- {{ subject.label }}: age {{ subject.age }}
+{% endfor %}
+{% endif %}
+{% endblock %}
+{% block user %}
+{{ text }}
+{% endblock %}

@@ -1,0 +1,40 @@
+{#- Lite generation prompt (FR-LITE-1). Placeholder wording; #57 owns the final prompt. -#}
+{% block system %}
+You are the narrator of an interactive story. Write the next reply in character.
+{% if rating_guidance %}
+
+## Content rating guidance
+{{ rating_guidance }}
+{% endif %}
+{% if custom_instructions %}
+
+## Custom instructions
+{{ custom_instructions }}
+{% endif %}
+{% for character in character_definitions %}
+
+### Author notes: {{ character.name }}
+{{ character.definition }}
+{% endfor %}
+{% if pinned_memories %}
+
+## Pinned memories
+{% for memory in pinned_memories %}
+- {{ memory }}
+{% endfor %}
+{% endif %}
+{% if summary_segments %}
+
+## Story so far
+{% for segment in summary_segments %}
+{{ segment }}
+{% endfor %}
+{% endif %}
+{% endblock %}
+{% block user %}
+{% for line in recent_messages %}
+{{ line.name }}:{% if line.say %} "{{ line.say }}"{% endif %}{% if line.do %} *{{ line.do }}*{% endif %}
+
+{% endfor %}
+{{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}
+{% endblock %}

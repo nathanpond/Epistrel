@@ -11,7 +11,7 @@ import re
 
 from fastapi import APIRouter
 
-from epistrel.api.routes.admin import policies, ratings, settings, stories
+from epistrel.api.routes.admin import model_config, policies, ratings, settings, stories
 
 ADMIN_PREFIX = "/admin"
 
@@ -20,6 +20,7 @@ router.include_router(stories.router)
 router.include_router(ratings.router)
 router.include_router(settings.router)
 router.include_router(policies.router)
+router.include_router(model_config.router)
 
 _SEGMENT = r"(?:^|/){}(?:/|$)"
 

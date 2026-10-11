@@ -10,21 +10,31 @@ from fastapi import APIRouter, FastAPI
 from epistrel import __version__
 from epistrel.api import errors, routes
 from epistrel.api.auth import PROTECTED_DEPENDENCIES, TRUST_BOUNDARY_STATEMENT
-from epistrel.config import Settings, load_settings
+from epistrel.config import ConfigError, Settings, load_settings
 from epistrel.core.db import make_engine
 from epistrel.engine import Engine
+from epistrel.orchestrator.models.config import config_key_problem
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Own the database engine for the life of the server process."""
+    """Own the database engine for the life of the server process.
+
+    Refuses to start when a model API key is stored but ``EPISTREL_CONFIG_KEY`` is unset
+    (skipped under the stub adapter); ``epistrel serve`` runs the same check first and exits 78.
+    """
     engine = make_engine(app.state.settings)
+    problem = await config_key_problem(app.state.settings, engine)
+    if problem is not None:
+        await engine.dispose()
+        raise ConfigError([problem])
     app.state.engine = engine
     app.state.epistrel.bind(engine)
     try:
         yield
     finally:
         app.state.epistrel.bind(None)
+        await app.state.epistrel.models.aclose()
         await engine.dispose()
         app.state.engine = None
 

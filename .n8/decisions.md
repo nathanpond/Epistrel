@@ -236,3 +236,26 @@ Owner decisions (round one, 2026-10-10):
 Process: 34 fresh executor simulations against a pre-implementation skeleton (M1–M5's own planned code is itself unbuilt in this checkout); five hit a provider rate limit mid-run and succeeded on retry. Every story returned substantial build-shape decisions, folded as `(planner)` discretion inline at drafting time rather than in a second pass. Coverage check: N=58/K=4 confirmed, every map line and outcome resolves to a story. Full map, outcomes, and executor-simulation summary are in the milestone (#7, "M6: The world") description.
 
 `/n8-plan M7`, `/n8-plan M8` remain unplanned — this run's whole-project analysis is provisional until they are planned; no specialized-audit or project-skill suggestions beyond the default suite were found warranted at this pass.
+
+## /n8-plan M7 — 2026-10-10
+
+Milestone 8 "M7: History, profiles & portability" planned as 32 stories (#220–#251) under epics #24, #25 and #26. Surface: docs/03 §22 M7 row at tier M, N=40, K=0; all 40 covered. One IN-BY-REQUEST item (Lite directives and rewrites) and three housekeeping stories (#236 amendments reaching beliefs/States/jobs, split from #221; #243 the C-17 pairwise module-combination runner, unowned since M3; #246 the pruning rename).
+
+Owner decisions (round one, 2026-10-10):
+- The seeded `Structured` profile is converted in place into **Full** (same id); **Standard** and **Max** are new seed rows (#227).
+- Standard, Full and Max are certified by **one hand-run script on local LM Studio**; the committed reports are the NFR-QUAL-11 exit evidence, and docs/04's "certified in CI" is amended (#235, `needs-owner-action`). No paid or scheduled real-model runs.
+- Certification canaries are **off by default** (#234).
+- The engine may ask clarifying questions in any resolution mode, but **every engine question carries a recommended answer** the author can accept as-is.
+- The spec's in-story continuation model stands: forks are separate stories that stay active forever; dormant continuations and discarded tails are in-story undo buffers. Manual pruning follows FR-STORE-32; the automatic policy is off by default with one knob ("older than N days"); the engine never suggests pruning and never prunes a fork (#247, #248). Pruning is unrelated to the Lite rolling summary.
+
+Owner decisions (round two, 2026-10-10; all recommendations accepted except as noted):
+- **Lite stories get directives and history rewrites** — reversing the spec's FR-PROF-13 tie of FR-DIRECT/FR-REWRITE to the structured pipeline. Owner: "These absolutely need to be available to lite." Lite directives are one-reply nudges and lasting author facts tied to a narrative position (separate from pinned memories) (#244); Lite rewrites use the same side-channel, preview (on by default), resolution modes and undo, with reach found by a model search over transcript and summary, fixes stored as amendments to the lines, and summary segments rebuilt (#245). #244 lands the spec amendment (new FR-LITE-8). Guarantee table: Lite rewrite reach is model-searched, not structurally complete.
+- **"Compaction" is renamed "pruning"** everywhere (#246). "Purge" was proposed first and rejected because the spec already uses it generically (media sweep, idempotency results, retired profiles). Invariant 6's wording follows #71's rewording with the new term.
+- `best_effort` may rewrite a player's own earlier line (listed in the report); a removed line shows no marker; directive facts can be ended by later story events; standing style requests go to custom instructions; defaults of 24 h session expiry, 5 open sessions, 24 h unused-nudge expiry; rewrite/directive/amendment routes require `omniscient`; past changes to game-owned values are always refused.
+- Downgrade to Lite keeps playing with `summary_rebuilding`; a missed floor keeps M7 open as a bug; Max's strongest model is one operator setting.
+- Pruning: forks prune their own history; anything an amendment's undo depends on is excluded; automatic runs are listed, not pushed. Import: media skip the moderation hook, story-scoped erasures apply only along the bundle's lineage, imported stories always come back live.
+- #227 is a new story building on #132 (M4); #132 is not extended.
+
+Planner decisions surfaced at the gate and approved with the plan: Lite rewrite search capped at about 1,400 messages, with the unsearched range reported; lasting Lite author facts capped at 50 with no delete in M7 (state a later fact or rewind); no listing route for them; authors may edit a player's line directly in Lite; Lite nudges share about 500 tokens and an overflowing one is refused; until #244/#245 land, Lite gets an interim 422 `module_off` that those stories remove.
+
+Process: 29 fresh executor simulations (1,168 decision lines), three reconcilers, round two, then re-simulation of the 8 changed or new stories (122 lines, all settled). A fresh-subagent coverage check confirmed N=40, every item delivered by a quoted AC; its two caveats were folded into the map. Whole-project analysis is provisional (after M8): Audit emphases gained M7's import, pruning, amendment-atomicity and certification-honesty surfaces.

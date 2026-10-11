@@ -1,9 +1,10 @@
 """Helpers for the projection tests: synthetic timeline control through ``Operation``, and
 canonical snapshots of the projection rows.
 
-Truncate, untruncate and swap belong to #65/#66. Until they land, these helpers write the same
-control events (with the settled payloads) and flip ``operations.membership`` in the same
-transaction, so the fold has the membership changes it must reproduce.
+Truncate and untruncate call #65's ``core.timeline``. Swap belongs to #66: until it lands, the
+helper writes the same control event (with the settled payload) and flips
+``operations.membership`` in the same transaction, so the fold has the membership changes it
+must reproduce.
 """
 
 from __future__ import annotations
@@ -14,9 +15,12 @@ from typing import Any
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import timeline
 from epistrel.core.enums import Membership, OperationKind, OperationStatus, Provenance
+from epistrel.core.errors import NothingToUndo, SwapRequired
 from epistrel.core.events import Operation
 from epistrel.core.tables import events, operations, stories
+from epistrel.core.timeline import Truncation, Untruncation
 
 CONTROL_PRINCIPAL = "p-control"
 
@@ -133,20 +137,17 @@ async def _control(
     return op
 
 
-async def truncate(engine: AsyncEngine, story_id: str, to_turn: int) -> Operation:
-    """Discard every active operation positioned after ``to_turn``."""
-    ops = await committed_operations(engine, story_id)
-    discarded = [
-        op.operation_id
-        for op in ops
-        if op.membership == Membership.ACTIVE.value
-        and op.narrative_turn is not None
-        and op.narrative_turn > to_turn
-    ]
-    flips = dict.fromkeys(discarded, Membership.DISCARDED.value)
-    after = head_of(ops, flips)
-    payload = {"to_turn": to_turn, "prior_head": head_of(ops), "operation_ids": discarded}
-    return await _control(engine, story_id, "truncate", payload, flips, after["next_turn_index"])
+async def truncate(engine: AsyncEngine, story_id: str, to_turn: int) -> Truncation | None:
+    """Truncate through #65's ``core.timeline.truncate``; ``None`` (nothing written) when
+    ``to_turn`` is at or past the head, which the real call refuses with 422."""
+    async with engine.connect() as conn:
+        found = await conn.scalar(select(stories.c.next_turn_index).where(stories.c.id == story_id))
+    head = int(found or 0)
+    if to_turn >= head - 1:
+        return None
+    return await timeline.truncate(
+        engine, story_id, timeline.TruncateRequest(to_turn=to_turn), principal=CONTROL_PRINCIPAL
+    )
 
 
 async def _latest_undoable_truncate(
@@ -167,19 +168,13 @@ async def _latest_undoable_truncate(
     return None
 
 
-async def untruncate(engine: AsyncEngine, story_id: str) -> Operation | None:
-    """Reactivate the latest truncation's operations when no new turn was written over them."""
-    ops = await committed_operations(engine, story_id)
-    found = await _latest_undoable_truncate(engine, story_id, ops)
-    if found is None:
+async def untruncate(engine: AsyncEngine, story_id: str) -> Untruncation | None:
+    """Untruncate through #65's ``core.timeline.untruncate``; ``None`` when there is nothing to
+    undo or undoing it is a swap."""
+    try:
+        return await timeline.untruncate(engine, story_id, principal=CONTROL_PRINCIPAL)
+    except NothingToUndo, SwapRequired:
         return None
-    truncate_id, to_turn, ids = found
-    if _newer_active(ops, to_turn):
-        return None
-    flips = dict.fromkeys(ids, Membership.ACTIVE.value)
-    head = head_of(ops, flips)
-    payload = {"truncate_operation_id": truncate_id, "operation_ids": ids, "restored_head": head}
-    return await _control(engine, story_id, "untruncate", payload, flips, head["next_turn_index"])
 
 
 async def swap(engine: AsyncEngine, story_id: str) -> Operation | None:

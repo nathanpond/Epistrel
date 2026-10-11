@@ -1132,3 +1132,38 @@ Process:
   - Unmarked `tests/integration/test_config_changes.py` (2): the settings surface and the listings.
   **Why:** The test plan. FR-PROF-14's §15 row is I-18 (M2), so the planned `test_fr_prof_14` is `test_i_18__no_bypass`. The output-side check uses the re-check path, because #68's output gate does not exist yet.
   **Issue:** #64
+- **Decision:** Truncate and untruncate live in `core/timeline.py` as `control` operations (`bumps_revision`, `control_action`). The only mutation is `operations.membership`/`membership_tx` plus `stories.next_turn_index`; events, rows and valid-times are untouched (invariant 6 holds, nothing is deleted). Truncate flips every **active** committed operation of any kind positioned after N, and N's own inter-turn slots (`slot_k` not null; none in M2). Already-`discarded` operations from a stacked truncation keep their stamp, and `dormant` regenerated variants after N stay `dormant`. Only active operations are flipped, so an untruncate that reactivates `operation_ids` restores exactly the prior state.
+  **Why:** AC 1 and the Discretion ("stacked truncations don't re-stamp", O(operations after N), payload `{to_turn, prior_head, operation_ids}`). Leaving dormant variants alone keeps the payload enough to undo exactly, and #66 owns dormant continuations. Lite summary segments (consolidation operations positioned at their `covers_to`) fall under the same rule, so no segment-specific code is needed.
+  **Issue:** #65
+- **Decision:** Both edits commit against current state. The payload is planned in the read phase and staged; a commit step recomputes the plan under the story lock, and if it differs it raises `RevalidationRequired(Regenerate("timeline_moved"))`. The same operation then restarts and restages, up to `EDIT_RETRY_BUDGET` = 3 times, after which it is 409 `revision_conflict`. Validation (`to_turn` < 0 or ≥ head → 422 at `body.to_turn`) runs at both points.
+  **Why:** A non-bumping operation (consolidation) can commit after N without moving the revision, so `decide`'s revision-based read-set check would miss it. Recomputing under the lock is exact, and one operation id per edit is preserved. `test_i_04__timeline_moved` exercises the path.
+  **Issue:** #65
+- **Decision:** Undo is LIFO over "undoable" truncations, meaning the `truncate` events whose discarded operations are all still `discarded`, newest first. Untruncate reverts the top one. A named `truncate_operation_id` that is not the top one, or an empty stack, is 409 `nothing_to_undo`. Active turns after its `to_turn` mean 409 `swap_required` with `details {truncate_operation_id, to_turn, options: ["swap","fork"]}`. `GET /stories/{id}` reports `undo_available` (the stack is non-empty, so a reactivation or a swap exists) and `dormant_chains: [{truncate_operation_id, from_turn, through_turn, operations}]`, which lists the undoable truncations with active turns over them. The new errors are `NothingToUndo` and `SwapRequired` in `core/errors.py`.
+  **Why:** Discretion (pass 1 and pass 2). This is the same definition the projection test helpers used, so #46's fold and TIME (f) needed no change. The `dormant_chains` item shape was not specified, and this shape is the minimum a client needs to offer the swap.
+  **Issue:** #65
+- **Decision:** REST lives in `api/routes/timeline.py`: `POST /stories/{id}/truncate {to_turn}` returns `{operation_id, timeline_revision, next_turn_index, to_turn, discarded_operations}`, and `POST /stories/{id}/untruncate` (optional body `{truncate_operation_id}`) returns `{operation_id, timeline_revision, next_turn_index, truncate_operation_id, restored_operations}`. Both are idempotent `Engine` methods (`truncate`/`untruncate` codecs, expected revision honoured), and requests use `extra="forbid"`. `discarded_operations` and `restored_operations` are counts, not id lists.
+  **Why:** Discretion said "responses carry operation_id, next_turn_index, discarded count" (pass 1) and "responses name `discarded_operations`" (pass 2). A count keeps a 1,000-message rewind's answer small, and the ids are in the control event.
+  **Issue:** #65
+- **Decision:** Queued turns are failed inside the truncation's transaction with `timeline_changed {current_revision, control_operation_id}` through the new `turn_gate.fail_queued`. This applies only to turns still `queued`; one the drainer already started abandons through its own revalidation (#47). Waiters are woken after the commit. Untruncate does not fail queued turns, because the Discretion names truncate only.
+  **Why:** Discretion ("queued turns at truncate are failed with `timeline_changed`", "truncate proceeds while in flight").
+  **Issue:** #65
+- **Decision:** The membership hook registry is `timeline.on_membership_change(hook, phase=HookPhase.IN_TRANSACTION|POST_COMMIT)` and `remove_membership_hook`. A hook is `hook(conn, MembershipChange(story_id, operation_ids, old, new, cause, control_operation_id))`. In-transaction hooks run inside the commit after the flip, and their failure rolls the edit back. Post-commit hooks get their own connection; a failure is logged with only the hook name, cause, operation id and exception type (invariant 3) and never undoes the edit. #72 registers here.
+  **Why:** Discretion pass 2 (signature and two phases). `story_id` and `control_operation_id` were added to the change so a hook does not have to re-read them.
+  **Issue:** #65
+- **Decision:** `tests/projection_support.truncate`/`untruncate` now call `core.timeline`. `truncate` returns `None` without writing anything when `to_turn` ≥ head, where the stand-in used to write a no-op truncation and the real call answers 422. `untruncate` returns `None` on `nothing_to_undo`/`swap_required`. `swap` stays a stand-in until #66. `test_i_02` and `test_conc_linear` count a truncation only when one happened, and `test_s_truncate_midgen` asserts the result is not `None`.
+  **Why:** Rule 3: earlier tests' timelines now run through the real operation, and the old no-op truncation is a 422 by the Discretion.
+  **Issue:** #65
+- **Decision:** Tests:
+  - `tests/integration/test_i_03.py::test_i_03` (`part("M2","FR-STORE-6")`) uses a `lite_summary_segment` consolidation positioned at its `covers_to`. The state as of N includes the late-recorded earlier-positioned segment and excludes the later-positioned one; the complement is that a `seq` cut differs.
+  - `tests/integration/test_i_04.py` has five functions:
+    - `__truncate` (`FR-STORE-10,11,18`): row-level flip, events byte-identical, view and projections restored.
+    - `__undo_stack` (`FR-STORE-10,18`): LIFO, no re-stamp, `nothing_to_undo`, `swap_required`, 422 bounds, `to_turn=0`.
+    - `__queued_turns_and_hooks` (`FR-STORE-10`).
+    - `__rest` (`FR-STORE-10,11,18`): endpoints, `as_of`, `undo_available`/`dormant_chains`, idempotent replay, archived and 404.
+    - `__timeline_moved` (`FR-STORE-10`).
+  - `tests/scenario/test_s_rewind.py` (`part("M2","FR-STORE-10..12,18")`): 1,000 player-only turns, truncate to 800, then a row-level diff after untruncate in which only `membership_tx` moves. It then regenerates message 1,000, and the old variant is kept dormant. The test takes about 7 s.
+  - `test_time__b` (`part("M2","FR-STORE-10,11")`): for every N of a story with background work between turns, the truncation only flips membership and the untruncation restores every view through every turn and every projection row.
+  
+  No pre-fix guard run was planned.
+  **Why:** The test plan. FR-STORE-18 is not in TIME's M2 bracket, so `test_time__b` claims 10 and 11 only.
+  **Issue:** #65

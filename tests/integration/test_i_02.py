@@ -99,7 +99,7 @@ async def _perform(engine: AsyncEngine, story_id: str, action: Action, n: int) -
         )
     elif name == "truncate":
         done = await truncate(engine, story_id, number % head)
-        OCCURRED["truncate"] += bool(done.staged[0].payload.model_dump()["operation_ids"])
+        OCCURRED["truncate"] += done is not None and done.discarded_operations > 0
     elif name in ("rewind_and_restore", "rewind_play_and_swap"):
         # Play a turn, then truncate to before it, so the rewind always discards something.
         await play_turn(engine, story_id, f"line {n}")

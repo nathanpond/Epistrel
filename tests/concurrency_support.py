@@ -1,8 +1,9 @@
 """Helpers for the concurrency tests (#47): a stub model held on latches, turns driven through
 ``run_with_revalidation``, and the test-only truth-changing operations.
 
-The timeline controls (#65/#66) are not built yet, so their operations are written here
-through ``Operation`` with the flags the real ones will declare (``change_setting`` stands in
+Truncate and untruncate are #65's (``tests.projection_support`` calls them); swap (#66) is
+not built yet, so test-only operations are written here through ``Operation`` with the flags the
+real ones will declare (``change_setting`` stands in
 for a settings write, which #64 records as a ``control`` operation); ``set_pins`` and
 ``set_instructions`` write #60's events raw (no caps or gate). #61/#63/#64 reuse these.
 """

@@ -557,6 +557,28 @@ async def fail_item(
         wakeups.wake(story_id)
 
 
+async def fail_queued(conn: AsyncConnection, story_id: str, error: BaseException) -> list[str]:
+    """Fail every turn still waiting in the story's queue with ``error``, inside the caller's
+    transaction (a truncation, #65: the turns were asked for against a timeline that is gone).
+    A turn the drainer already started is left to its own revalidation. Returns the failed
+    operations' ids; the caller wakes the story's waiters after its commit."""
+    waiting = list(
+        await conn.scalars(
+            select(turn_queue.c.operation_id)
+            .join(operations, operations.c.operation_id == turn_queue.c.operation_id)
+            .where(
+                turn_queue.c.story_id == story_id,
+                operations.c.status == OperationStatus.QUEUED.value,
+            )
+            .order_by(turn_queue.c.position)
+        )
+    )
+    for operation_id in waiting:
+        await _fail(conn, operation_id, error, statuses=(OperationStatus.QUEUED,))
+        await _forget_item(conn, operation_id)
+    return waiting
+
+
 async def close_item(db: AsyncEngine, story_id: str, operation_id: str) -> None:
     """A queued turn finished: its queue row and slot go (both already went if it committed).
     One that finished without committing anything (an ingest whose every event was a replay)
@@ -662,6 +684,7 @@ __all__ = [
     "enqueue",
     "error_record",
     "fail_item",
+    "fail_queued",
     "head",
     "lease_seconds",
     "outcome",

@@ -243,3 +243,21 @@ class BudgetBelowSafetyMinimum(EpistrelError):
 
     code = "budget_below_safety_minimum"
     http_status = 422
+
+
+class NothingToUndo(EpistrelError):
+    """``untruncate`` found no truncation to revert, or the one it named is not the most recent
+    (undo is LIFO, FR-STORE-18; #65). Nothing is written. ``details``: ``story_id`` and, when
+    the request named one, ``truncate_operation_id``."""
+
+    code = "nothing_to_undo"
+    http_status = 409
+
+
+class SwapRequired(EpistrelError):
+    """The most recent truncation cannot be reverted by reactivating it: newer turns were
+    written over its discarded tail (FR-STORE-18,28). Nothing is written. ``details``:
+    ``truncate_operation_id``, ``to_turn`` and ``options`` (``["swap", "fork"]``)."""
+
+    code = "swap_required"
+    http_status = 409

@@ -30,6 +30,7 @@ from epistrel.core import (
     ratings,
     stories,
     story_texts,
+    timeline,
     turn_gate,
 )
 from epistrel.core import story_settings as settings_store
@@ -92,6 +93,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "update_story_settings": ResultCodec.of(
         settings_store.StorySettingsWrite, revision_field=_CONFIG
     ),
+    "truncate": ResultCodec.of(timeline.Truncation),
+    "untruncate": ResultCodec.of(timeline.Untruncation),
     "archive_story": ResultCodec.of(stories.StatusChange),
     "unarchive_story": ResultCodec.of(stories.StatusChange),
     "delete_story": ResultCodec.of(stories.DeletedStory, status=204),
@@ -863,6 +866,66 @@ class Engine:
         if not is_omniscient(resolved):
             return story
         return await stories.get_story(self.db, story_id, omniscient=True)
+
+    async def undo_state(self, ctx: RequestContext, story_id: str) -> timeline.UndoState:
+        """Whether the story's latest truncation can be undone, and the discarded tails that
+        have newer turns over them (``GET /stories/{id}``, #65)."""
+        return await timeline.undo_state(self.db, story_id)
+
+    async def truncate(
+        self, ctx: RequestContext, story_id: str, request: timeline.TruncateRequest
+    ) -> timeline.Truncation:
+        """Discard everything positioned after ``request.to_turn`` (FR-STORE-10): membership
+        only, nothing deleted; a turn generating meanwhile abandons with ``timeline_changed``
+        and queued turns fail with it."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> timeline.Truncation:
+            return await timeline.truncate(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "truncate",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def untruncate(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: timeline.UntruncateRequest | None = None,
+    ) -> timeline.Untruncation:
+        """Revert the most recent truncation (FR-STORE-18, LIFO): 409 ``nothing_to_undo``
+        without one, 409 ``swap_required`` when newer turns were written over it."""
+        principal = self.require_principal(ctx)
+        request = request or timeline.UntruncateRequest()
+
+        async def run(ctx: RequestContext) -> timeline.Untruncation:
+            return await timeline.untruncate(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "untruncate",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
 
     async def list_stories(
         self, ctx: RequestContext, *, status: StoryStatus | None = None

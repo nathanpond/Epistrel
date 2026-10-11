@@ -15,6 +15,7 @@ from epistrel.api.routes import (
     respond,
     stories,
     story_texts,
+    timeline,
 )
 
 public_router = APIRouter()
@@ -25,6 +26,7 @@ router.include_router(stories.router)
 router.include_router(history.router)
 router.include_router(respond.router)
 router.include_router(story_texts.router)
+router.include_router(timeline.router)
 router.include_router(operations.router)
 router.include_router(admin.router)
 

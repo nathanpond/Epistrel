@@ -3,7 +3,8 @@
 - ``POST /stories``: a blank story with its cast (each character with a required true age),
   rating and settings; 201 with ``Location``.
 - ``GET /stories`` (``?status=``) and ``GET /stories/{id}``; a character's ``true_age`` appears
-  only under ``?viewpoint=omniscient`` (FR-CAT-12).
+  only under ``?viewpoint=omniscient`` (FR-CAT-12). The single read also reports
+  ``undo_available`` and ``dormant_chains`` (#65).
 - ``POST /stories/{id}/archive`` and ``…/unarchive``: control operations, idempotent (200).
 - ``DELETE /stories/{id}``: removes every row of the story and nothing else (204).
 - ``POST /stories/{id}/ingest``: record consumer events (a player-only turn, narration) without
@@ -101,9 +102,23 @@ class StorySummaryBody(BaseModel):
         }
 
 
+class DormantChainBody(BaseModel):
+    """A discarded tail with newer turns written over it (turns ``from_turn``..
+    ``through_turn``): undoing its truncation is a swap (#66)."""
+
+    truncate_operation_id: str
+    from_turn: int
+    through_turn: int
+    operations: int
+
+
 class StoryBody(StorySummaryBody):
     characters: list[OmniscientCharacterBody | CharacterBody]
     settings: dict[str, Any]
+    undo_available: bool
+    """Whether ``POST /stories/{id}/untruncate`` has a truncation to revert (by reactivation,
+    or by a swap when newer turns exist)."""
+    dormant_chains: list[DormantChainBody]
 
 
 class StoryList(BaseModel):
@@ -247,10 +262,21 @@ async def list_stories(
 @router.get("/{story_id}", response_model=StoryBody)
 async def get_story(story_id: str, ctx: ContextDep, engine: EngineDep) -> StoryBody:
     story = await engine.get_story(ctx, story_id)
+    undo = await engine.undo_state(ctx, story_id)
     return StoryBody(
         **StorySummaryBody.fields_of(story),
         characters=[_character(c) for c in story.characters],
         settings=story.settings,
+        undo_available=undo.undo_available,
+        dormant_chains=[
+            DormantChainBody(
+                truncate_operation_id=c.truncate_operation_id,
+                from_turn=c.from_turn,
+                through_turn=c.through_turn,
+                operations=c.operations,
+            )
+            for c in undo.dormant_chains
+        ],
     )
 
 

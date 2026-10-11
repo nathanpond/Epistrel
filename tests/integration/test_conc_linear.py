@@ -207,8 +207,8 @@ class ConcLinear(RuleBasedStateMachine):
     @rule(to=st.integers(0, 20))
     def truncate_story(self, to: int) -> None:
         head = self.run(next_turn_index(self.engine, self.story))
-        self.run(truncate(self.engine, self.story, to % head))
-        self.changed("control", bumps=True)
+        if self.run(truncate(self.engine, self.story, to % head)) is not None:
+            self.changed("control", bumps=True)
 
     @rule()
     def untruncate_story(self) -> None:

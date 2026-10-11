@@ -29,6 +29,7 @@ async def test_s_truncate_midgen(engine: AsyncEngine) -> None:
 
     held = await start_turn(engine, story, "a reply nobody wants any more")
     cut = await truncate(engine, story, 1)
+    assert cut is not None
     await held.release()
     with pytest.raises(TimelineChanged) as caught:
         await held.task

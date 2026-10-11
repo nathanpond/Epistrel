@@ -7,6 +7,10 @@ character-scoped policies. Retired policies drop out. A lower scope only adds to
 nothing in it can remove or weaken a policy above it, because ``deny`` is the only effect
 (``admin`` refuses anything else).
 
+``guard_context`` adds what age-conditioned policies need (#55): the story's cast with true
+ages and the live ``minor_age_threshold``, and splits the set into the policies that apply and
+those whose age condition is false (``age.partition``).
+
 The set is cached in-process, keyed by the deployment ``config_revision`` (global and rating
 policy writes and rating edits move it), the story's ``config_revision`` (story-scoped writes
 move it), and the version ids of every rating in the story rating's closure.
@@ -16,6 +20,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -26,7 +31,8 @@ from epistrel.core.errors import PolicyNotFound, StoryNotFound
 from epistrel.core.policies.model import SCOPE_RANK, Policy, Scope
 from epistrel.core.policies.rows import policy_of, select_policies
 from epistrel.core.ratings import closure_versions, effective_guardrails, load_graph
-from epistrel.core.tables import policies, stories
+from epistrel.core.tables import characters, policies, stories
+from epistrel.orchestrator.policies.age import CastMember, partition
 
 CACHE_SIZE = 1_024
 
@@ -137,3 +143,57 @@ def _arrange(found: Sequence[Policy], rating_ids: Sequence[str]) -> tuple[Policy
         return (rank, 0, policy.scope_id or "", policy.name.casefold(), policy.id)
 
     return tuple(sorted(found, key=key))
+
+
+@dataclass(frozen=True, slots=True)
+class GuardContext:
+    """What a guardrail gate needs for one story: its effective policies, its cast, and the
+    deployment's live ``minor_age_threshold``."""
+
+    policies: tuple[Policy, ...]
+    cast: tuple[CastMember, ...]
+    threshold: int
+
+    @property
+    def active(self) -> tuple[Policy, ...]:
+        """The effective policies that apply: age-conditioned ones only with a minor present."""
+        return partition(self.policies, self.cast, self.threshold)[0]
+
+    @property
+    def inactive(self) -> tuple[Policy, ...]:
+        """Age-conditioned policies whose condition is false for this cast."""
+        return partition(self.policies, self.cast, self.threshold)[1]
+
+
+async def read_cast(conn: AsyncConnection, story_id: str) -> tuple[CastMember, ...]:
+    """The story's cast in creation order, with true ages (never leaves the engine)."""
+    rows = (
+        await conn.execute(
+            select(
+                characters.c.id,
+                characters.c.ordinal,
+                characters.c.true_age,
+                characters.c.age_recorded_at,
+            )
+            .where(characters.c.story_id == story_id)
+            .order_by(characters.c.ordinal)
+        )
+    ).all()
+    return tuple(
+        CastMember(
+            character_id=row.id,
+            ordinal=int(row.ordinal),
+            true_age=int(row.true_age),
+            age_recorded_at=row.age_recorded_at,
+        )
+        for row in rows
+    )
+
+
+async def guard_context(db: AsyncEngine, story_id: str) -> GuardContext:
+    """The story's effective policies, cast and live threshold (``StoryNotFound`` if absent)."""
+    found = await effective_policies(db, story_id)
+    async with db.connect() as conn, conn.begin():
+        cast = await read_cast(conn, story_id)
+        threshold = (await read_settings(conn)).minor_age_threshold
+    return GuardContext(policies=found, cast=cast, threshold=threshold)

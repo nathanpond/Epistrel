@@ -9,6 +9,15 @@
 3. the same check on the reply for ``text_output``;
 4. one ``test_event`` recording the outcome, then commit.
 
+With ``story_policies`` (#55) the checks use the story's effective policies, its cast and the
+live ``minor_age_threshold`` (``store.guard_context``), and the input check becomes a gate: it
+runs before the operation opens, and a violation raises 422 ``guardrail_violation`` with
+nothing written (as #56's input gate will). An output violation withholds the reply; #68 adds
+regeneration and the safe fallback. ``POST /_test/stories/{id}/ingest-check`` gates a list of
+ingest-shaped texts the same way, each its own text, until #58's ingest route exists.
+
+The checks themselves are ``epistrel.orchestrator.policies.check.check_text``.
+
 Any ``ModelError`` escapes the ``async with``, so the operation is marked ``failed``, nothing is
 committed (no event, no revision change), and the REST route answers 503
 ``model_unavailable`` with ``details.purpose`` (NFR-REL-3). The event records only the
@@ -19,9 +28,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from epistrel.api.deps import ContextDep, EngineDep
@@ -33,7 +42,6 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.policies.model import (
     RULE_ADAPTER,
     Effect,
-    ModelAssistedRule,
     Policy,
     Scope,
     Target,
@@ -43,23 +51,19 @@ from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.adapter import ModelParams
 from epistrel.orchestrator.models.metrics import ModelCall, recording
-from epistrel.orchestrator.models.registry import (
-    GenerationInputs,
-    GuardrailCheckInputs,
-    GuardrailVerdict,
-    PlayerInput,
+from epistrel.orchestrator.models.registry import GenerationInputs, PlayerInput
+from epistrel.orchestrator.policies.age import CastMember
+from epistrel.orchestrator.policies.check import (
+    DEFAULT_MINOR_AGE_THRESHOLD,
+    DecidedBy,
+    check_text,
+    guardrail_violation,
 )
-from epistrel.orchestrator.models.structured import (
-    Uncertain,
-    guardrail_deterministic_first,
-    uncertain_verdict,
-)
+from epistrel.orchestrator.policies.store import guard_context
 
 TEST_EVENT = "test_event"
 TEST_PREFIX = "/_test"
 PLAYER = "Player"
-
-type DecidedBy = Literal["none", "deterministic", "model", "uncertain"]
 
 
 class GuardedReplyEvent(EventPayload):
@@ -109,41 +113,40 @@ async def check(
     policies: Sequence[Policy],
     target: Target,
     budget: TurnBudget,
+    *,
+    cast: Sequence[CastMember] = (),
+    threshold: int = DEFAULT_MINOR_AGE_THRESHOLD,
 ) -> tuple[bool, DecidedBy]:
     """Whether ``text`` violates ``policies`` for ``target``, and what decided it."""
-    applicable = [p for p in policies if target in p.applies_to]
-    deterministic = [p for p in applicable if not isinstance(p.rule, ModelAssistedRule)]
-    step = guardrail_deterministic_first(text, deterministic, target)
-    fired: list[GuardrailVerdict] = []
+    outcome = await check_text(
+        engine.models, text, policies, target, budget=budget, cast=cast, threshold=threshold
+    )
+    return outcome.violated, outcome.decided_by
 
-    def first() -> GuardrailVerdict | None:
-        conclusive = step()
-        if conclusive is not None:
-            fired.append(conclusive)
-        return conclusive
 
-    for policy in applicable:
-        rule = policy.rule
-        if not isinstance(rule, ModelAssistedRule):
-            continue
-        result = await engine.models.structured_call(
-            "guardrail_check",
-            GuardrailVerdict,
-            GuardrailCheckInputs(text=text, policy_prompt=rule.prompt),
-            deterministic_first=first,
+async def gate(
+    engine: Engine,
+    texts: Sequence[str],
+    policies: Sequence[Policy],
+    budget: TurnBudget,
+    *,
+    cast: Sequence[CastMember] = (),
+    threshold: int = DEFAULT_MINOR_AGE_THRESHOLD,
+) -> None:
+    """Raise 422 ``guardrail_violation`` for the first of ``texts`` that breaks an input
+    policy; nothing is written either way."""
+    for text in texts:
+        outcome = await check_text(
+            engine.models,
+            text,
+            policies,
+            Target.TEXT_INPUT,
             budget=budget,
+            cast=cast,
+            threshold=threshold,
         )
-        if fired:
-            return True, "deterministic"
-        if isinstance(result, Uncertain):
-            verdict = uncertain_verdict(rule.on_uncertain)
-            if verdict.violation:
-                return True, "uncertain"
-        elif result.violation:
-            return True, "model"
-    if step() is not None:
-        return True, "deterministic"
-    return False, "model" if len(deterministic) < len(applicable) else "none"
+        if outcome.violated:
+            raise guardrail_violation(outcome.violations, policies)
 
 
 async def guarded_reply(
@@ -155,20 +158,46 @@ async def guarded_reply(
     policies: Sequence[Policy] = (),
     budget: TurnBudget | None = None,
     params: ModelParams | None = None,
+    cast: Sequence[CastMember] = (),
+    threshold: int = DEFAULT_MINOR_AGE_THRESHOLD,
+    gate_input: bool = False,
 ) -> Operation:
-    """Run the guarded reply as one operation; see the module docstring."""
+    """Run the guarded reply as one operation; see the module docstring. With ``gate_input``
+    an input violation raises before the operation opens."""
     budget = budget or TurnBudget()
+    gated: tuple[bool, DecidedBy] | None = None
+    if gate_input:
+        outcome = await check_text(
+            engine.models,
+            said,
+            policies,
+            Target.TEXT_INPUT,
+            budget=budget,
+            cast=cast,
+            threshold=threshold,
+        )
+        if outcome.violated:
+            raise guardrail_violation(outcome.violations, policies)
+        gated = (False, outcome.decided_by)
     async with Operation(
         engine.db, story_id=story_id, kind=OperationKind.TURN, principal=principal
     ) as op:
-        input_violation, input_by = await check(engine, said, policies, Target.TEXT_INPUT, budget)
+        input_violation, input_by = gated or await check(
+            engine, said, policies, Target.TEXT_INPUT, budget, cast=cast, threshold=threshold
+        )
         reply: str | None = None
         output_violation, output_by = False, "none"
         if not input_violation:
             inputs = GenerationInputs(player_input=PlayerInput(name=PLAYER, say=said))
             result = await engine.models.call("generation", inputs, params, budget=budget)
             output_violation, output_by = await check(
-                engine, result.text, policies, Target.TEXT_OUTPUT, budget
+                engine,
+                result.text,
+                policies,
+                Target.TEXT_OUTPUT,
+                budget,
+                cast=cast,
+                threshold=threshold,
             )
             reply = None if output_violation else result.text
         op.append(
@@ -197,6 +226,8 @@ class GuardedReplyBody(BaseModel):
     deadline_s: float | None = Field(default=None, gt=0, le=300)
     max_calls: int | None = Field(default=None, ge=0, le=50)
     timeout_s: float | None = Field(default=None, gt=0, le=600)
+    story_policies: bool = False
+    """Check against the story's effective policies, cast and threshold, gating input (#55)."""
 
     def policies(self) -> list[Policy]:
         found: list[Policy] = []
@@ -210,6 +241,14 @@ class GuardedReplyBody(BaseModel):
             }
             found.append(make_policy(rule, name="model"))
         return found
+
+
+class IngestCheckBody(BaseModel):
+    """Ingest-shaped texts, each gated on its own (#58's ingest route gates its events so)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    texts: list[str] = Field(min_length=1, max_length=20)
 
 
 class GuardedReplyResponse(MutationResponse):
@@ -232,15 +271,22 @@ def make_router() -> APIRouter:
         principal = engine.require_principal(ctx)
         budget = TurnBudget(max_calls=body.max_calls, deadline_s=body.deadline_s)
         params = ModelParams(timeout=body.timeout_s) if body.timeout_s else None
+        policies = body.policies()
+        ages: dict[str, Any] = {}
+        if body.story_policies:
+            context = await guard_context(engine.db, story_id)
+            policies = [*context.policies, *policies]
+            ages = {"cast": context.cast, "threshold": context.threshold, "gate_input": True}
         with recording() as calls:
             op = await guarded_reply(
                 engine,
                 story_id,
                 body.said,
                 principal=principal,
-                policies=body.policies(),
+                policies=policies,
                 budget=budget,
                 params=params,
+                **ages,
             )
         event = op.staged[0].payload if op.staged else None
         assert isinstance(event, GuardedReplyEvent)  # noqa: S101 - guarded_reply stages exactly one
@@ -254,6 +300,22 @@ def make_router() -> APIRouter:
             model_calls=list(calls.calls),
         )
 
+    @router.post("/stories/{story_id}/ingest-check", status_code=status.HTTP_204_NO_CONTENT)
+    async def ingest_check(
+        story_id: str, body: IngestCheckBody, ctx: ContextDep, engine: EngineDep
+    ) -> Response:
+        engine.require_principal(ctx)
+        context = await guard_context(engine.db, story_id)
+        await gate(
+            engine,
+            body.texts,
+            context.policies,
+            TurnBudget(),
+            cast=context.cast,
+            threshold=context.threshold,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     return router
 
 
@@ -262,6 +324,7 @@ __all__ = [
     "GuardedReplyBody",
     "GuardedReplyEvent",
     "check",
+    "gate",
     "guarded_reply",
     "make_policy",
     "make_router",

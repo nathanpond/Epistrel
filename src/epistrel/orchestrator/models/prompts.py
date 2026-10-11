@@ -66,7 +66,10 @@ def _example_value(annotation: Any) -> Any:
 
 def example_instance[T: BaseModel](schema: type[T]) -> T:
     """An instance of ``schema`` with every field set, optional ones included."""
-    values = {name: _example_value(info.annotation) for name, info in schema.model_fields.items()}
+    values = {
+        name: info.examples[0] if info.examples else _example_value(info.annotation)
+        for name, info in schema.model_fields.items()
+    }
     return schema.model_validate(values)
 
 

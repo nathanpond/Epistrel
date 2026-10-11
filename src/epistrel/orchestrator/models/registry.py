@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
 class ContentCategory(StrEnum):
@@ -112,11 +112,21 @@ class GenerationInputs(InputSchema):
     player_input: PlayerInput
 
 
-class Subject(InputSchema):
-    """A resolved subject of an age-conditioned policy: an opaque label and its true age."""
+SUBJECT_LABEL_PATTERN = r"^character_[1-9][0-9]{0,3}$"
+"""Positional labels only (``character_1`` …): a subject's name can never reach the model."""
 
-    label: Annotated[str, C.POLICY_TEXT]
-    age: Annotated[int, C.SUBJECT_TRUE_AGE]
+
+class Subject(InputSchema):
+    """A resolved subject of an age-conditioned policy: an opaque positional label and its true
+    age (FR-GUARD-11). The label pattern refuses anything else, a character's name included."""
+
+    label: Annotated[
+        str,
+        StringConstraints(pattern=SUBJECT_LABEL_PATTERN),
+        Field(examples=["character_1"]),
+        C.POLICY_TEXT,
+    ]
+    age: Annotated[int, Field(ge=0, le=150), C.SUBJECT_TRUE_AGE]
 
 
 class GuardrailCheckInputs(InputSchema):
@@ -352,6 +362,7 @@ __all__ = [
     "DEFAULT_MODEL_KEY",
     "DELIVERED",
     "RESERVED",
+    "SUBJECT_LABEL_PATTERN",
     "CapabilityFloor",
     "CharacterDefinition",
     "ContentCategory",

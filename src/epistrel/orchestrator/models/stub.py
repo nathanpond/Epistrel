@@ -8,7 +8,8 @@ for the guardrail verdict).
 
 Tests drive it through the Model Access Layer's ``stub`` (the ``stub`` fixture):
 ``script(purpose, [responses])`` queues answers (FIFO; exhausted → the default),
-``when(substring, response)`` answers any request whose messages contain ``substring``,
+``when(substring, response, purpose=None)`` answers any request (of ``purpose``, when given)
+whose messages contain ``substring`` (or every one of a tuple of substrings),
 ``fault(purpose, kind, n)`` makes the next ``n`` calls fail: ``timeout``, ``connection``,
 ``http_500``, ``http_429`` (with ``Retry-After``), ``http_401``, ``response_format_400`` and
 ``bad_body`` raise the ``openai`` SDK's own exception types; ``garbage`` answers unparseable
@@ -203,7 +204,7 @@ class StubAdapter:
         self.calls: list[StubCall] = []
         self._scripts: defaultdict[str, deque[str]] = defaultdict(deque)
         self._faults: defaultdict[str, deque[FaultKind]] = defaultdict(deque)
-        self._when: list[tuple[str, str]] = []
+        self._when: list[tuple[tuple[str, ...], str, str | None]] = []
         self._latches: dict[str, StubLatch] = {}
         self.fault_hook: Callable[[str], FaultKind | None] | None = None
         """Consulted on every call with no queued fault (chaos tests draw faults at random)."""
@@ -213,8 +214,13 @@ class StubAdapter:
     def script(self, purpose: str, responses: Iterable[str]) -> None:
         self._scripts[purpose].extend(responses)
 
-    def when(self, substring: str, response: str) -> None:
-        self._when.append((substring, response))
+    def when(
+        self, substring: str | tuple[str, ...], response: str, purpose: str | None = None
+    ) -> None:
+        """Answer ``response`` to requests whose messages contain ``substring`` (each of them,
+        for a tuple; only ``purpose``'s requests, when given). The first match wins."""
+        needles = (substring,) if isinstance(substring, str) else substring
+        self._when.append((needles, response, purpose))
 
     def fault(self, purpose: str, kind: FaultKind = "timeout", n: int = 1) -> None:
         self._faults[purpose].extend([kind] * n)
@@ -254,8 +260,10 @@ class StubAdapter:
     ) -> str:
         if self._scripts[purpose]:
             return self._scripts[purpose].popleft()
-        for substring, response in self._when:
-            if any(substring in m.content for m in messages):
+        for needles, response, only in self._when:
+            if only not in (None, purpose):
+                continue
+            if all(any(n in m.content for m in messages) for n in needles):
                 return response
         declared = DELIVERED.get(purpose)
         schema = response_schema or (declared.response_schema if declared else None)

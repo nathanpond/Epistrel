@@ -68,6 +68,19 @@ async def test_stub_answers_a_schema_with_a_conformant_object() -> None:
     assert (verdict.violation, verdict.confidence) == (False, 1.0)
 
 
+async def test_stub_when_filters_by_purpose_and_needs_every_substring() -> None:
+    """``when`` with a purpose answers only that purpose; a tuple needs all its substrings.
+    Complement asserted: an unmatched request gets the default answer."""
+    stub = StubAdapter()
+    stub.when(("hello", "absent"), "both")
+    stub.when("hello", "summary only", purpose="lite_summary")
+    generated = await stub.complete("generation", HELLO, ModelParams())
+    assert generated.text.startswith("[stub generation ")
+    assert (await stub.complete("lite_summary", HELLO, ModelParams())).text == "summary only"
+    stub.when(("hello",), "any purpose")
+    assert (await stub.complete("generation", HELLO, ModelParams())).text == "any purpose"
+
+
 async def test_stub_scripts_matches_faults_and_latches() -> None:
     stub = StubAdapter()
     stub.script("generation", ["one", "two"])

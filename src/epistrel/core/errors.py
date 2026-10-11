@@ -173,3 +173,15 @@ class ViewpointUnresolved(EpistrelError):
 
     code = "viewpoint_unresolved"
     http_status = 422
+
+
+class GuardrailViolation(EpistrelError):
+    """Text breaks one or more policies that apply to it (FR-GUARD-10,11): the request is
+    refused with no side effects.
+
+    ``details.violations``: ``[{policy_id, name, message}]``. For an age-conditioned policy the
+    error says only that a minor is involved or present: never which character, nor any age.
+    """
+
+    code = "guardrail_violation"
+    http_status = 422

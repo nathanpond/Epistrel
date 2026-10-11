@@ -68,8 +68,10 @@ class Effect(StrEnum):
     DENY = "deny"
 
 
-AgeCondition = Literal["minor_involved", "minor_present", "minor_involved_or_present"]
-"""FR-GUARD-11's condition on true ages; stored now, enforced by #55."""
+AgeCondition = Literal["minor_involved_or_present"]
+"""FR-GUARD-11's condition on true ages, enforced by ``orchestrator.policies.age`` (#55): the
+policy applies only when a character younger than ``minor_age_threshold`` is involved in or
+present for the content. M2 accepts this one value; narrower conditions need presence (M5)."""
 
 Word = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=WORD_MAX)]
 Pattern = Annotated[str, StringConstraints(min_length=1, max_length=REGEX_MAX)]

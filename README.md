@@ -37,6 +37,12 @@ uv run python -m epistrel.tools.model_probe generation "Say hello" \
 EPISTREL_MODEL_ADAPTER=stub uv run python -m epistrel.tools.model_probe generation "Say hello"
 ```
 
+## The minors policy
+
+Epistrel ships a seeded global policy, `minors_no_sexual_content`: **no sexual content involving a minor, or in the presence of a minor**, at every content rating, Explicit included. It applies to text the consumer sends in and to text the model writes. A minor is a character younger than the deployment's `minor_age_threshold` (default 18; `PUT /admin/settings`), judged from each character's true age, which every character must declare at creation. The age check is deterministic and costs nothing: a story whose cast has no minor never calls a model for this policy. When a minor is in the cast, the `guardrail_check` model judges the text, seeing the cast only as anonymous labels with ages. A refused request says that a minor is involved or present, never who or how old.
+
+**The policy ships enabled.** It is ordinary policy data: an administrator can edit or retire it with `/admin/policies`, and the change is recorded with the acting principal. Removing or weakening it is the deployment's decision and responsibility.
+
 ## Trust boundary
 
 Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records.

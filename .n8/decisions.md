@@ -1646,3 +1646,6 @@ Process:
 - **Decision:** README's Run section documents the one-endpoint requirement with an LM Studio `curl` walk-through (configure `default` + key, create story, respond, `docker compose ps`), and the test section documents `pytest -m smoke`, C-11 and #76's hand-off that `test_p_04` fails once the newest committed P-04 report is over 30 days old (first report 2026-10-11, so ~2026-11-10). RELEASING.md says every publish now passes the smoke. Filed #283 (needs-triage) as the reminder for the P-04 refresh.
   **Why:** AC4 and the #76 hand-off; the expiry would otherwise surface as an unexplained red PR gate.
   **Issue:** #77
+- **Decision (orchestrator):** CLAUDE.md's guard annotations now read `guard: #74 (merged)` (invariant 3) and `guard: #44 (merged)` (invariant 4), committed on the milestone branch so they land on `main` with the guard code in the milestone PR.
+  **Why:** n8-exec rewrites `(planned)` to `(merged)` when the guard lands; landing both in the same squash keeps the annotation true at every commit on `main`.
+  **Issue:** #74, #44

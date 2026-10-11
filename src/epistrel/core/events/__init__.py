@@ -5,6 +5,7 @@ Importing this package registers every M2 event type (``epistrel.core.events.typ
 
 from epistrel.core.errors import StoryNotFound
 from epistrel.core.events import registry, types
+from epistrel.core.events.batch import OperationBatch
 from epistrel.core.events.operation import Operation, StagedEvent
 from epistrel.core.events.registry import (
     EventPayload,
@@ -17,6 +18,7 @@ __all__ = [
     "EventPayload",
     "InvalidEventPayload",
     "Operation",
+    "OperationBatch",
     "StagedEvent",
     "StoryNotFound",
     "UnregisteredEventType",

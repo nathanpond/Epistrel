@@ -40,6 +40,10 @@ MUTABLE_OPERATION_COLUMNS: tuple[str, ...] = (
 )
 """The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list)."""
 
+ORIGIN_CHECK = "origin IN ('generated', 'ingested')"
+"""``generated``: the Engine produced the operation's records; ``ingested``: a consumer recorded
+them through ``ingest`` (#58). Written once at ``begin()``."""
+
 ACTIVE_TURN_PREDICATE = "kind = 'turn' AND membership = 'active' AND status = 'committed'"
 """The rows ``uq_operations_active_turn`` covers: a story's active committed turn variants."""
 
@@ -74,6 +78,7 @@ operations = Table(
     Column("turn_report", JSONB, nullable=True),
     Column("viewpoint", Text, nullable=True),
     Column("idempotency_key", Text, nullable=True),
+    Column("origin", Text, nullable=False, server_default=text("'generated'")),
     Column(
         "started_at",
         TIMESTAMP(timezone=True),
@@ -81,6 +86,7 @@ operations = Table(
         server_default=text("transaction_timestamp()"),
     ),
     Column("committed_at", TIMESTAMP(timezone=True), nullable=True),
+    CheckConstraint(ORIGIN_CHECK, name="origin"),
     CheckConstraint(
         "kind <> 'turn' OR status <> 'committed' OR narrative_turn IS NOT NULL",
         name="turn_has_position",

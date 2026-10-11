@@ -38,7 +38,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from sqlalchemy import and_, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -78,6 +78,9 @@ from epistrel.core.tables import content_ratings, events, operations, stories
 
 logger = logging.getLogger(__name__)
 
+Origin = Literal["generated", "ingested"]
+"""Who produced an operation's records: the Engine, or a consumer's ``ingest`` (#58)."""
+
 CommitStep = Callable[[AsyncConnection], Awaitable[None]]
 """Extra work run inside the commit transaction, under the story lock, after the events."""
 
@@ -99,6 +102,11 @@ edit, ingest, …) declares ``bumps_revision=True`` explicitly; settings and arc
 NEVER_BUMPING_KINDS = frozenset({OperationKind.CONSOLIDATION, OperationKind.MAINTENANCE})
 """Derived and maintenance work never bumps the revision (FR-CONC-1), so background work never
 invalidates in-flight turns. Audit-only records are written by such operations."""
+
+
+class Withdrawn(Exception):
+    """Raised inside a batch commit when its work is no longer wanted although nothing went
+    wrong (e.g. a concurrent duplicate already recorded it): the operations end ``abandoned``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +151,7 @@ class Operation:
         control_action: bool | None = None,
         idempotency_key: str | None = None,
         viewpoint: str | None = None,
+        origin: Origin = "generated",
     ) -> None:
         if principal is None or not principal.strip():
             raise PrincipalRequired("an operation needs a requesting principal")
@@ -178,6 +187,8 @@ class Operation:
         """The caller's idempotency key, stored on the row (#57); #61 adds replay."""
         self.viewpoint = viewpoint
         """The resolved output viewpoint the operation's result is for (FR-RESP-12)."""
+        self.origin: Origin = origin
+        """``ingested`` when a consumer recorded the operation's events (#58)."""
         self.requested_turn = turn
         self.provenance = provenance
         self.authority = authority
@@ -250,6 +261,7 @@ class Operation:
                         config_revisions=self.config_revisions,
                         idempotency_key=self.idempotency_key,
                         viewpoint=self.viewpoint,
+                        origin=self.origin,
                     )
                 )
         self.status = OperationStatus.IN_FLIGHT
@@ -381,6 +393,31 @@ class Operation:
         """Give up after an error (status ``failed``)."""
         self._require_in_flight("fail")
         await self._finish(OperationStatus.FAILED, cause)
+
+    # -- batch hooks (``OperationBatch``) -------------------------------------------------
+
+    async def write_in(self, conn: AsyncConnection, decide: Decide | None = None) -> None:
+        """Do this operation's commit work inside ``conn``'s open transaction, which the caller
+        (``OperationBatch``) owns: it commits or rolls back, then calls ``settle``."""
+        self._require_in_flight("commit")
+        if decide is not None and (self.story_id is None or self.base_revision is None):
+            raise InvalidRequest("only a story operation with a base revision revalidates")
+        await self._write(conn, decide)
+
+    async def settle(self, error: BaseException | None) -> None:
+        """Record the outcome of a ``write_in`` whose transaction has ended: ``committed``
+        without ``error``; else ``abandoned`` (a revalidation or ``Withdrawn``) or ``failed``."""
+        if error is None:
+            self.status = OperationStatus.COMMITTED
+            return
+        self._reset_position()
+        if isinstance(error, RevalidationRequired):
+            await self._record_attempts()
+            await self._finish(OperationStatus.ABANDONED, error)
+        elif isinstance(error, Withdrawn):
+            await self._finish(OperationStatus.ABANDONED, error)
+        else:
+            await self._finish(OperationStatus.FAILED, error)
 
     def _reset_position(self) -> None:
         self.narrative_turn = self.turn_variant = self.tx_time = None

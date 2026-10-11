@@ -3,6 +3,7 @@
 from epistrel.core.tables.audit_log import audit_log
 from epistrel.core.tables.base import NAMING_CONVENTION, metadata
 from epistrel.core.tables.characters import characters
+from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.events import events
 from epistrel.core.tables.model_config import model_config
@@ -16,6 +17,7 @@ __all__ = [
     "NAMING_CONVENTION",
     "audit_log",
     "characters",
+    "client_events",
     "config_changes",
     "content_rating_versions",
     "content_ratings",

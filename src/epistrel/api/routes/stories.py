@@ -6,6 +6,9 @@
   only under ``?viewpoint=omniscient`` (FR-CAT-12).
 - ``POST /stories/{id}/archive`` and ``…/unarchive``: control operations, idempotent (200).
 - ``DELETE /stories/{id}``: removes every row of the story and nothing else (204).
+- ``POST /stories/{id}/ingest``: record consumer events (a player-only turn, narration) without
+  generating, deduplicated by ``client_event_id`` (FR-RESP-10; #58): 201 when every event is
+  new, 200 when any was ingested before (``Idempotent-Replay: true`` when all were).
 - ``GET /stories/{id}/settings``: the settings with defaults filled in, and the story's
   guardrails — ``effective_policies`` (scope, source, applies_to, age_condition, kind),
   ``inactive_policies`` (age-conditioned ones whose condition is false for the cast) and
@@ -27,6 +30,7 @@ from pydantic import BaseModel
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.api.responses import MutationResponse
 from epistrel.core.enums import StoryStatus
+from epistrel.core.ingest import IngestRequest
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
 from epistrel.core.stories import CharacterView, RatingRef, StorySpec, StoryView
 from epistrel.orchestrator.policies.store import StoryGuardrails
@@ -143,6 +147,34 @@ class StorySettingsBody(BaseModel):
     guardrail_calls: GuardrailCallsBody
 
 
+IDEMPOTENT_REPLAY_HEADER = "Idempotent-Replay"
+
+INGEST_DESCRIPTION = (
+    "Record events into the story's authoritative history without generating a reply: a "
+    "`player_turn` (an actor's `say`/`do`) or consumer-authored `narration` (`text`, no actor)."
+    " Each event is its own narrative turn at the next turn index and advances the timeline "
+    "revision; up to 50 events are recorded all or nothing, each through the input gate.\n\n"
+    "Every event carries a `client_event_id` unique within the story. Re-ingesting an ID with "
+    "the same payload returns the original result and writes nothing; the same ID with a "
+    "different payload is 409 `client_event_conflict`. The response is 201 when every event is "
+    "new and 200 when any was replayed (`Idempotent-Replay: true` when all were). "
+    "`outcome` and `state_change` events arrive in M6 (422 `unsupported_event_kind`)."
+)
+
+
+class IngestedEventBody(BaseModel):
+    client_event_id: str
+    operation_id: str
+    turn: int
+    replayed: bool
+
+
+class IngestResponse(MutationResponse):
+    """One result per event, in request order, and the story's revision after the call."""
+
+    results: list[IngestedEventBody]
+
+
 def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterBody:
     if character.true_age is not None:
         return OmniscientCharacterBody(
@@ -183,6 +215,35 @@ async def get_story(story_id: str, ctx: ContextDep, engine: EngineDep) -> StoryB
         **StorySummaryBody.fields_of(story),
         characters=[_character(c) for c in story.characters],
         settings=story.settings,
+    )
+
+
+@router.post(
+    "/{story_id}/ingest",
+    status_code=http_status.HTTP_201_CREATED,
+    response_model=IngestResponse,
+    summary="Record consumer events without generating",
+    description=INGEST_DESCRIPTION,
+)
+async def ingest(
+    story_id: str, body: IngestRequest, response: Response, ctx: ContextDep, engine: EngineDep
+) -> IngestResponse:
+    result = await engine.ingest(ctx, story_id, body)
+    if not result.created:
+        response.status_code = http_status.HTTP_200_OK
+    if result.replayed:
+        response.headers[IDEMPOTENT_REPLAY_HEADER] = "true"
+    return IngestResponse(
+        results=[
+            IngestedEventBody(
+                client_event_id=r.client_event_id,
+                operation_id=r.operation_id,
+                turn=r.turn,
+                replayed=r.replayed,
+            )
+            for r in result.results
+        ],
+        timeline_revision=result.timeline_revision,
     )
 
 

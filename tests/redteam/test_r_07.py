@@ -7,8 +7,8 @@ output (the reply withheld). The stub guardrail model is scripted to recognise t
 phrases, and only in checks of the seeded age-conditioned policy.
 
 The turn path is #53's test-only guarded reply with the story's own policies; the ingest path
-is the same gate over ingest-shaped texts. #56/#57/#58/#68 add slices through the real
-routes (respond, ingest, regeneration then the safe fallback).
+is the real ``POST /stories/{id}/ingest`` (#58), each narration event gated on its own.
+#68 adds regeneration then the safe fallback.
 """
 
 from __future__ import annotations
@@ -66,8 +66,12 @@ async def test_r_07(pg_url: str, engine: AsyncEngine) -> None:
             return client.post(url, json={"said": said, "story_policies": True}, headers=WRITE)
 
         def ingest(story_id: str) -> Any:
-            url = f"/_test/stories/{story_id}/ingest-check"
-            return client.post(url, json={"texts": INGESTED}, headers=WRITE)
+            events = [
+                {"client_event_id": f"r07-{i}", "kind": "narration", "text": text}
+                for i, text in enumerate(INGESTED)
+            ]
+            url = f"/stories/{story_id}/ingest"
+            return client.post(url, json={"events": events}, headers=WRITE)
 
         # Euphemism, framing, and the older claim: refused on input, nothing written.
         before = await story_state(engine, story)
@@ -95,12 +99,13 @@ async def test_r_07(pg_url: str, engine: AsyncEngine) -> None:
         assert (second.json()["output_violation"], second.json()["reply"]) == (True, None)
         assert SPLIT_REPLY not in (await story_state(engine, story)).payloads
 
-        # The ingest path: refused, naming the policy.
+        # The ingest path: refused, naming the policy and the event; nothing recorded.
+        before = await story_state(engine, story)
         ingested = await ingest(story)
         assert ingested.status_code == 422, ingested.text
-        assert ingested.json()["error"]["details"]["violations"][0]["policy_id"] == (
-            MINORS_POLICY_ID
-        )
+        (violation,) = ingested.json()["error"]["details"]["violations"]
+        assert (violation["policy_id"], violation["locator"]) == (MINORS_POLICY_ID, "events[1]")
+        assert await story_state(engine, story) == before
 
         # The complement: the same cast without a minor lets everything through.
         stub.calls.clear()
@@ -109,5 +114,5 @@ async def test_r_07(pg_url: str, engine: AsyncEngine) -> None:
             assert passed.status_code == 200, passed.text
             assert passed.json()["output_violation"] is False
             assert passed.json()["reply"] is not None
-        assert (await ingest(adults)).status_code == 204
+        assert (await ingest(adults)).status_code == 201
         assert subject_checks(stub) == []

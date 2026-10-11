@@ -11,6 +11,7 @@ from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind
 from epistrel.core.errors import GuardrailViolation
+from epistrel.core.ingest import IngestRequest
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
@@ -22,8 +23,9 @@ AUTHOR = RequestContext(principal="p-author")
 
 
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:
-    """Turns, background work between them, story and character policies, a rebuild, and a
-    rejected input (an ``audit_log`` row naming the story)."""
+    """Turns, background work between them, story and character policies, a rebuild, an
+    ingested narration (a ``client_events`` row, #58), and a rejected input (an ``audit_log``
+    row naming the story)."""
     for n in range(1, 3):
         await play_turn(engine, story_id, f"turn {n} of {story_id}")
         await interleave(engine, story_id, after_turn=n)
@@ -54,6 +56,8 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
         ],
     )
     await lib.rebuild_projections(AUTHOR, story_id)
+    narration = {"client_event_id": "narration-1", "kind": "narration", "text": f"of {story_id}"}
+    await lib.ingest(AUTHOR, story_id, IngestRequest.model_validate({"events": [narration]}))
     with pytest.raises(GuardrailViolation):
         await lib.gate_input(
             AUTHOR, story_id, EntryPoint.INGEST, [GateText("events[0]", "an unsayable thing")]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -21,6 +23,7 @@ class HistoryItemModel(BaseModel):
     text: str
     operation_id: str
     message_id: str
+    origin: Literal["generated", "ingested"]
 
 
 class HistoryResponse(BaseModel):

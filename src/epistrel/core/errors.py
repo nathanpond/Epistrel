@@ -167,6 +167,15 @@ class StoryBusy(EpistrelError):
     http_status = 423
 
 
+class ClientEventConflict(EpistrelError):
+    """An ingested ``client_event_id`` the story already recorded with a different payload
+    (FR-RESP-10). Nothing is written. ``details``: ``client_event_ids``, each with its
+    ``index`` in the request."""
+
+    code = "client_event_conflict"
+    http_status = 409
+
+
 class ViewpointUnresolved(EpistrelError):
     """An output viewpoint names no character of the story, or is not allowed where it is used
     (a story's default viewpoint may only be a character, FR-RESP-12). ``details.field``."""

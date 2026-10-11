@@ -13,7 +13,7 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core import deployment, projections, ratings, stories
+from epistrel.core import deployment, ingest, projections, ratings, stories
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import StoryStatus
@@ -21,7 +21,7 @@ from epistrel.core.errors import PrincipalRequired
 from epistrel.core.history import History, read_history
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.settings_schema import StorySettings
-from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.budget import DEFAULT_TURN_DEADLINE_S, TurnBudget
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
 from epistrel.orchestrator.models import ModelAccessLayer
@@ -198,6 +198,38 @@ class Engine:
 
         return await lite.respond(
             self.db, self.models, ctx, story_id, request, principal=principal, gate=gate
+        )
+
+    async def ingest(
+        self, ctx: RequestContext, story_id: str, request: ingest.IngestRequest
+    ) -> ingest.IngestResult:
+        """Record consumer events into authoritative history without generating (FR-RESP-10).
+
+        Each event is its own ``turn`` at the next index (revision +1), all or nothing; a
+        ``client_event_id`` the story has seen returns the original result (same payload) or
+        409 ``client_event_conflict`` (different payload), writing nothing. Every new event's
+        text passes the input gate on its own before anything is recorded."""
+        principal = self.require_principal(ctx)
+
+        async def gate(groups: Sequence[ingest.GateGroup]) -> None:
+            for group in groups:
+                await self.gate_input(
+                    ctx,
+                    story_id,
+                    EntryPoint.INGEST,
+                    [GateText(locator, text) for locator, text in group.texts],
+                    actor=group.actor,
+                )
+
+        return await ingest.ingest(
+            self.db,
+            story_id,
+            request,
+            principal=principal,
+            gate=gate,
+            idempotency_key=ctx.idempotency_key,
+            expected_revision=ctx.expected_revision,
+            deadline_s=DEFAULT_TURN_DEADLINE_S,
         )
 
     async def story_settings(

@@ -2,7 +2,8 @@
 
 Reads ``transcript_messages`` only, never the log, which is what makes a projection rebuild
 observable (NFR-REL-2). Items use #59's shape; #59 adds the output viewpoint, ``as_of`` and
-paging; #57 adds the render characters of each reply.
+paging; #57 adds the render characters of each reply; #58 each beat's ``origin``
+(``generated`` or ``ingested``).
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import Membership
 from epistrel.core.errors import StoryNotFound
-from epistrel.core.tables import stories, transcript_messages
+from epistrel.core.tables import operations, stories, transcript_messages
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,8 @@ class HistoryItem:
     text: str
     operation_id: str
     message_id: str
+    origin: str = "generated"
+    """``ingested`` when a consumer recorded the beat through ``ingest`` (#58)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +55,8 @@ async def read_history(
         if revision is None:
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
         found = await conn.execute(
-            select(t)
+            select(t, operations.c.origin)
+            .join(operations, operations.c.operation_id == t.c.operation_id)
             .where(
                 t.c.story_id == story_id,
                 t.c.membership == Membership.ACTIVE.value,
@@ -78,6 +82,7 @@ async def read_history(
                 text=row.text,
                 operation_id=row.operation_id,
                 message_id=row.message_id,
+                origin=row.origin,
             )
             for row in rows
         ],

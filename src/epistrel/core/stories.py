@@ -55,6 +55,7 @@ from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, StorySetti
 from epistrel.core.tables import (
     audit_log,
     characters,
+    client_events,
     config_changes,
     content_ratings,
     deployment_state,
@@ -79,6 +80,7 @@ SAFE_FALLBACK_MAX = 500
 OMNISCIENT = "omniscient"
 
 STORY_TABLES: tuple[Table, ...] = (
+    client_events,
     events,
     transcript_messages,
     story_heads,

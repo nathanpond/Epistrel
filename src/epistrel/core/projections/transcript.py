@@ -7,7 +7,8 @@ of the operations they name, so no row is re-read from the log. A regenerated tu
 > 1, #47) makes the rows of every other active variant at its index ``dormant``, as its commit
 does to their operations.
 
-``role`` comes from (provenance, character): ``player`` for the player's input, ``narration``
+``role`` comes from (provenance, character): ``player`` for a ``player_input`` (respond's or an
+ingested one, #58), ``narration``
 for a consumer beat with no character, ``character`` otherwise (``actor_character_id`` is null
 for a combined reply). ``channel`` is ``think``/``latent`` for those beats, ``narration`` for
 narration, and ``message`` otherwise.
@@ -39,7 +40,7 @@ PRIVATE_CHANNELS: dict[type[Beat], str] = {Think: "think", Latent: "latent"}
 
 
 def role_of(event: LogEvent) -> str:
-    if event.provenance is Provenance.PLAYER:
+    if event.provenance is Provenance.PLAYER or isinstance(event.payload, PlayerInput):
         return "player"
     if event.provenance is Provenance.CONSUMER and event.character_id is None:
         return "narration"

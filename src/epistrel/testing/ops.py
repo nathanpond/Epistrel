@@ -13,9 +13,8 @@ With ``story_policies`` (#55) the checks use the story's effective policies, its
 live ``minor_age_threshold`` (``store.guard_context``), and the input check is #56's input gate
 (``Engine.gate_input``): it runs before the operation opens, and a violation raises 422
 ``guardrail_violation`` with only the ``audit_log`` row written. An output violation withholds
-the reply; #68 adds regeneration and the safe fallback. ``POST /_test/stories/{id}/ingest-check``
-gates a list of ingest-shaped texts the same way, each its own text, until #58's ingest route
-exists.
+the reply; #68 adds regeneration and the safe fallback. (#55's ``ingest-check`` route is
+retired: the ingest path is the real ``POST /stories/{id}/ingest``, #58.)
 
 ``POST /_test/stories/{id}/gated-input`` is #56's fixture caller: a truth-changing write that
 accepts text through any entry point (respond, ingest, pinned memories, custom instructions),
@@ -36,7 +35,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
 
 from epistrel.api.deps import ContextDep, EngineDep
@@ -253,14 +252,6 @@ class GuardedReplyBody(BaseModel):
         return found
 
 
-class IngestCheckBody(BaseModel):
-    """Ingest-shaped texts, each gated on its own (#58's ingest route gates its events so)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    texts: list[str] = Field(min_length=1, max_length=20)
-
-
 GatedEntryPoint = Literal["respond", "ingest", "pinned_memories", "custom_instructions"]
 LOCATOR_PREFIX = {
     EntryPoint.INGEST: "events",
@@ -387,14 +378,6 @@ def make_router() -> APIRouter:
             output_violation=event.output_violation,
             model_calls=list(calls.calls),
         )
-
-    @router.post("/stories/{story_id}/ingest-check", status_code=status.HTTP_204_NO_CONTENT)
-    async def ingest_check(
-        story_id: str, body: IngestCheckBody, ctx: ContextDep, engine: EngineDep
-    ) -> Response:
-        texts = [GateText(f"events[{i}]", text) for i, text in enumerate(body.texts)]
-        await engine.gate_input(ctx, story_id, EntryPoint.INGEST, texts)
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @router.post("/stories/{story_id}/gated-input")
     async def gated_input(

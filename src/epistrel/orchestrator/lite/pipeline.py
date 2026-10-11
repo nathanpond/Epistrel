@@ -23,7 +23,10 @@
    the prompt's inputs) and resolves the generation settings, deployment → story → request
    (FR-LITE-4); the generate step makes exactly one ``generation`` call (FR-LITE-7) — an empty
    reply is asked once more, then 503 ``model_unavailable`` ``reason=empty`` — and stages the
-   input as beat 1 and the reply as beat 2. A touched read set regenerates the same operation.
+   input as beat 1 and the reply as beat 2. A touched read set regenerates the same operation;
+   an interpretive configuration change the turn depends on (a rating's guardrails, a policy,
+   ``minor_age_threshold``, the default output viewpoint) re-checks the reply under the new
+   configuration before it commits (``policies.rebase``, #64).
 4. **The result**: the finished message (never "verified": under ``lite`` no claim is
    checked), the turn's beats for the resolved viewpoint, the new revision, and the model calls
    the turn made (``model_calls``, #54) with its ``elapsed_ms`` (fixed at the commit). Under an
@@ -70,6 +73,7 @@ from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelResult
 from epistrel.orchestrator.models.errors import EmptyCompletion
 from epistrel.orchestrator.models.metrics import CallLog, recording
+from epistrel.orchestrator.policies.rebase import output_recheck
 
 GENERATION = "generation"
 INPUT_LOCATOR = "player_input"
@@ -263,7 +267,13 @@ async def _play(
     if call is not None:
         # ``done`` and the result commit with the turn (#61).
         call.result_in_commit = result
-    await run_with_revalidation(op, begin=begin, generate=generate, read_set=LiteReadSet())
+    await run_with_revalidation(
+        op,
+        begin=begin,
+        generate=generate,
+        read_set=LiteReadSet(),
+        config_recheck=output_recheck(db, models, budget),
+    )
     if call is not None and call.stored_in_commit:
         stored: RespondResult = call.committed_value
         return stored

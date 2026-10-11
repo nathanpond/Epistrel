@@ -27,6 +27,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.settings_schema import StructuredSettings
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.adapter import (
@@ -46,7 +47,6 @@ from epistrel.orchestrator.models.config import (
     ConfigEntry,
     EffectiveConfig,
     KeyBox,
-    StructuredSettings,
 )
 from epistrel.orchestrator.models.errors import (
     BudgetExhausted,

@@ -40,12 +40,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.config_changes import (
-    ChangeClass,
     bump_config_revision,
     lock_deployment,
     record_config_change,
 )
 from epistrel.core.errors import ConfigConflict, InvalidRequest
+from epistrel.core.settings_schema import ConfigClass, StructuredSettings
 from epistrel.core.tables import deployment_state, model_config
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.orchestrator.models.adapter import ModelParams, ModelUnavailable
@@ -55,8 +55,6 @@ FINGERPRINT_HEX = 8
 MAX_API_KEY_CHARS = 512
 MAX_MODEL_CHARS = 200
 MAX_BASE_URL_CHARS = 2048
-DEFAULT_STRUCTURED_RETRY_BUDGET = 2
-DEFAULT_UNCERTAIN_BELOW = 0.5
 UNREADABLE_KEY = "unreadable"
 """What a change row records for a stored key that cannot be decrypted (no fingerprint)."""
 
@@ -267,18 +265,6 @@ async def snapshot(db: AsyncEngine) -> tuple[int, dict[str, ConfigRow]]:
     return revision, rows
 
 
-class StructuredSettings(BaseModel):
-    """Deployment settings for structured model results (FR-MODEL-6,7), stored under
-    ``deployment_state.settings``: retries after the first attempt, and the ``confidence``
-    below which a result is ``Uncertain``. Other keys in that document belong to other stories
-    and are ignored here."""
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    structured_retry_budget: int = Field(default=DEFAULT_STRUCTURED_RETRY_BUDGET, ge=0, le=10)
-    uncertain_below: float = Field(default=DEFAULT_UNCERTAIN_BELOW, ge=0.0, le=1.0)
-
-
 def structured_settings(document: Mapping[str, Any] | None) -> StructuredSettings:
     """Parse ``deployment_state.settings``; an invalid stored value falls back to the defaults
     (the conservative ones) with a warning naming the keys, never the values."""
@@ -474,7 +460,7 @@ async def _store(
                 old=old,
                 new=new,
                 actor=principal,
-                change_class=ChangeClass.PROSPECTIVE,
+                change_class=ConfigClass.prospective,
             )
         return ConfigWrite(changed=True, config_revision=revision)
 

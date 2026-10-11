@@ -122,8 +122,8 @@ async def test_settings_patch(stub_settings: Settings, engine: AsyncEngine) -> N
             "WHERE scope = 'story' AND scope_id = :s ORDER BY setting",
             s=story,
         )
-        assert [r.setting for r in recorded] == [
-            "generation_settings",
+        assert [r.setting for r in recorded] == [  # one row per changed leaf (#64)
+            "generation_settings.temperature",
             "turn_concurrency",
             "turn_deadline",
             "turn_queue_max",

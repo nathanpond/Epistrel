@@ -24,17 +24,20 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Response
+from fastapi import APIRouter, Body, Query, Response
 from fastapi import status as http_status
 from pydantic import BaseModel
 
+from epistrel.api.config_changes import ConfigChangesBody
 from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import MutationResponse
 from epistrel.core import idempotency
+from epistrel.core.config_changes import ConfigScope
 from epistrel.core.enums import StoryStatus
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
+from epistrel.core.settings_schema import ConfigClass
 from epistrel.core.stories import CharacterView, RatingRef, StorySpec, StoryView
 from epistrel.orchestrator.policies.store import StoryGuardrails
 
@@ -295,6 +298,32 @@ async def story_settings(story_id: str, ctx: ContextDep, engine: EngineDep) -> S
             input=guardrails.calls_input, output=guardrails.calls_output
         ),
     )
+
+
+@router.get("/{story_id}/config-changes", response_model=ConfigChangesBody)
+async def story_config_changes(
+    story_id: str,
+    ctx: ContextDep,
+    engine: EngineDep,
+    setting: Annotated[list[str] | None, Query()] = None,
+    change_class: Annotated[ConfigClass | None, Query(alias="class")] = None,
+    since: datetime | None = None,
+    after: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> ConfigChangesBody:
+    """The story's configuration changes (settings, story and character policies), newest
+    first (#64); ``next`` pages on (``after``)."""
+    page = await engine.config_changes(
+        ctx,
+        scope=ConfigScope.STORY,
+        story_id=story_id,
+        settings=setting or (),
+        change_class=change_class,
+        since=since,
+        after=after,
+        limit=limit,
+    )
+    return ConfigChangesBody.of(page)
 
 
 @router.patch(

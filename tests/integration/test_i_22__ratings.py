@@ -1,11 +1,13 @@
 """I-22 (M2 half, core resolver): a story's rating — the deployment default, a retired rating
 refused for new stories while its stories keep running, and every operation recording the
 rating version it ran under. The HTTP clauses that need ``POST/GET /stories`` are
-``test_i_22__stories`` (#50); the in-flight re-check lands with #64."""
+``test_i_22__stories`` (#50); the in-flight re-check is ``test_i_22__in_flight`` (#64)."""
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -31,9 +33,20 @@ from epistrel.core.ratings import (
 from epistrel.core.seeds.ratings import DEFAULT_RATING_ID, TEEN_ID
 from epistrel.core.stories import create_story
 from epistrel.engine import Engine
+from epistrel.orchestrator.policies.schemas import PolicyFields
 from tests.auth_support import auth_settings
 from tests.event_support import play_turn, rows, scalar
-from tests.respond_support import FIRST, PLAYER, body, new_story, played, respond_client, system_of
+from tests.respond_support import (
+    FIRST,
+    PLAYER,
+    body,
+    generation_calls,
+    new_story,
+    played,
+    respond,
+    respond_client,
+    system_of,
+)
 from tests.story_support import READ, WRITE, count, create, rest, story_body
 
 OPERATOR = "p-operator"
@@ -287,3 +300,129 @@ async def test_i_22__prompt(pg_url: str, engine: AsyncEngine) -> None:
         assert system.startswith("## Content rating guidance\nGUIDE-TWO: be brisk.")
         assert "GUIDE-ONE" not in system
     await retire_rating(engine, created.rating.id, principal=OPERATOR)
+
+
+async def _turn_row(engine: AsyncEngine, story_id: str) -> Any:
+    found = await rows(
+        engine,
+        "SELECT operation_id, attempts, config_revisions FROM operations WHERE story_id = :s "
+        "AND kind = 'turn' AND status = 'committed' ORDER BY committed_at DESC LIMIT 1",
+        s=story_id,
+    )
+    return found[0]
+
+
+@pytest.mark.part("M2", "FR-CONC-15")
+async def test_i_22__in_flight(pg_url: str, engine: AsyncEngine) -> None:
+    """Editing a rating's guardrails applies to every operation that commits after the edit:
+    a turn in flight is re-checked under the new guardrails at commit, and its reply that now
+    breaks one is regenerated before anything commits; the turn records the rating version
+    and the configuration it committed under (#64, FR-CONC-16).
+
+    Complements asserted: an edit whose new guardrails the reply passes re-checks once and
+    commits that reply without a second generation; a prospective change mid-turn (a story's
+    ``turn_deadline``) re-checks nothing and the turn commits as generated; the committed
+    history is not re-checked by a later edit."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    name = f"I22F {new_ulid()}"
+    rating = (await create_rating(engine, RatingFields(name=name), principal=OPERATOR)).rating
+
+    async def guardrails(*policy_ids: str) -> RatingWrite:
+        return await update_rating(
+            engine,
+            rating.id,
+            RatingReplacement(
+                name=name,
+                description="",
+                display_order=rating.display_order,
+                prompt_guidance="",
+                image_guidance="",
+                policy_ids=list(policy_ids),
+                inherits_from=[],
+            ),
+            principal=OPERATOR,
+        )
+
+    async with respond_client(settings, engine) as (client, lib):
+        stub = lib.models.stub
+        story, ids = await new_story(client, PLAYER, FIRST, content_rating_id=rating.id)
+        dragons = (
+            await lib.policies_create(
+                RequestContext(principal=OPERATOR),
+                PolicyFields.model_validate(
+                    {
+                        "scope": "rating",
+                        "scope_id": rating.id,
+                        "name": f"no-dragons-{new_ulid().lower()}",
+                        "rule": {"type": "wordlist", "words": ["dragon"]},
+                        "message": "No dragons here.",
+                    }
+                ),
+            )
+        ).policy
+
+        async def held_turn(*replies: str, during: Callable[[], Awaitable[Any]]) -> Any:
+            stub.reset()
+            stub.script("generation", replies)
+            latch = stub.hold("generation")
+            task = asyncio.ensure_future(respond(client, story, body(ids[PLAYER])))
+            await asyncio.wait_for(latch.entered.wait(), 5)
+            changed = await during()
+            latch.release()
+            response = await task
+            assert response.status_code == 200, response.text
+            return response.json(), changed
+
+        # The guardrail lands while the dragon reply is generating: re-checked, regenerated.
+        turn, edit = await held_turn(
+            "A dragon lands on the roof.", "A cat purrs.", during=lambda: guardrails(dragons.id)
+        )
+        assert turn["message"]["text"] == "A cat purrs."
+        assert len(generation_calls(stub)) == 2
+        row = await _turn_row(engine, story)
+        assert [(a["outcome"], a.get("recheck")) for a in row.attempts] == [
+            ("recheck", "failed"),
+            ("commit", None),
+        ]
+        assert {"rating_guardrail_set", "policy_set"} <= set(row.attempts[0]["config_changed"])
+        assert row.config_revisions["rating_version"] == edit.rating.version_id
+        assert row.config_revisions["deployment"] >= edit.config_revision
+        replies = await rows(
+            engine,
+            "SELECT payload->>'text' FROM events WHERE story_id = :s AND type = 'message_rendered'",
+            s=story,
+        )
+        assert [r[0] for r in replies] == ["A cat purrs."]  # the refused draft never committed
+
+        # Complement: relaxed mid-turn, the reply passes the re-check and commits as is.
+        turn, relaxed = await held_turn("A dragon naps.", during=lambda: guardrails())
+        assert turn["message"]["text"] == "A dragon naps."
+        assert len(generation_calls(stub)) == 1
+        row = await _turn_row(engine, story)
+        assert [(a["outcome"], a.get("recheck")) for a in row.attempts] == [
+            ("recheck", "passed"),
+            ("commit", None),
+        ]
+        assert row.config_revisions["rating_version"] == relaxed.rating.version_id
+
+        # Complement: a prospective change mid-turn re-checks nothing.
+        before = row.config_revisions["story"]
+
+        async def deadline() -> Any:
+            return await client.patch(
+                f"/stories/{story}/settings", json={"turn_deadline": 40}, headers=WRITE
+            )
+
+        turn, patched = await held_turn("Rain on the window.", during=deadline)
+        assert patched.status_code == 200, patched.text
+        assert len(generation_calls(stub)) == 1
+        row = await _turn_row(engine, story)
+        assert [a["outcome"] for a in row.attempts] == ["commit"]
+        assert row.config_revisions["story"] == before
+        assert patched.json()["config_revision"] == before + 1
+
+        # Complement: committed history is not re-checked by a later edit.
+        await guardrails(dragons.id)
+        history = await client.get(f"/stories/{story}/history", headers=READ)
+        assert "A dragon naps." in history.text
+    await retire_rating(engine, rating.id, principal=OPERATOR)

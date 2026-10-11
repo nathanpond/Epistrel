@@ -25,6 +25,7 @@ from epistrel.core.seeds.ratings import (
     SEED_RATINGS,
     TEEN_ID,
 )
+from epistrel.core.settings_schema import DeploymentSettings
 from tests.auth_support import auth_settings, bearer
 from tests.conftest import alembic_config
 from tests.event_support import rows
@@ -304,7 +305,7 @@ def test_settings_read_and_partial_update(client: TestClient, pg_url: str) -> No
     field and one revision; a no-op PUT writes nothing; an unknown or retired default is 422
     ``rating_retired``; the threshold is bounded 0 to 120."""
     start = client.get("/admin/settings", headers=bearer()).json()
-    assert set(start) == {"config_revision", "default_content_rating_id", "minor_age_threshold"}
+    assert set(start) == {"config_revision", *DeploymentSettings.model_fields}  # #64: all
 
     changed = client.put(
         "/admin/settings",
@@ -315,6 +316,7 @@ def test_settings_read_and_partial_update(client: TestClient, pg_url: str) -> No
         assert changed.status_code == 200, changed.text
         body = changed.json()
         assert body == {
+            **start,
             "idempotency_key": changed.headers["Idempotency-Key"],
             "config_revision": start["config_revision"] + 1,
             "default_content_rating_id": TEEN_ID,

@@ -1,8 +1,9 @@
 """Helpers for the concurrency tests (#47): a stub model held on latches, turns driven through
 ``run_with_revalidation``, and the test-only truth-changing operations.
 
-Settings (#64) and the timeline controls (#65/#66) are not built yet, so their operations are
-written here through ``Operation`` with the flags the real ones will declare; ``set_pins`` and
+The timeline controls (#65/#66) are not built yet, so their operations are written here
+through ``Operation`` with the flags the real ones will declare (``change_setting`` stands in
+for a settings write, which #64 records as a ``control`` operation); ``set_pins`` and
 ``set_instructions`` write #60's events raw (no caps or gate). #61/#63/#64 reuse these.
 """
 
@@ -15,7 +16,12 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.concurrency import LiteReadSet, RevalidationResult, run_with_revalidation
+from epistrel.core.concurrency import (
+    ConfigRecheckFn,
+    LiteReadSet,
+    RevalidationResult,
+    run_with_revalidation,
+)
 from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.events import Operation
 from epistrel.core.ids import new_ulid
@@ -92,15 +98,23 @@ async def start_turn(
     budget: int | None = None,
     on_call: OnCall | None = None,
     turn: int | None = None,
+    model: HeldModel | None = None,
+    config_recheck: ConfigRecheckFn | None = None,
 ) -> HeldTurn:
-    """Begin a turn under FR-CONC-4 and hold it inside its first model call."""
-    model = HeldModel(said, on_call=on_call)
+    """Begin a turn under FR-CONC-4 and hold it inside its first model call. ``model``
+    replaces the default ``HeldModel``; ``config_recheck`` is #64's re-check (FR-CONC-16)."""
+    model = model or HeldModel(said, on_call=on_call)
     op = Operation(
         engine, story_id=story_id, kind=OperationKind.TURN, principal=TURN_PRINCIPAL, turn=turn
     )
     task = asyncio.ensure_future(
         run_with_revalidation(
-            op, begin=_no_inputs, generate=model, budget=budget, read_set=LiteReadSet()
+            op,
+            begin=_no_inputs,
+            generate=model,
+            budget=budget,
+            read_set=LiteReadSet(),
+            config_recheck=config_recheck,
         )
     )
     arrived = asyncio.ensure_future(model.arrived())

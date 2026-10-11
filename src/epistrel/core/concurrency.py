@@ -12,7 +12,15 @@ lock held. At commit, under the story row lock, ``Operation.commit(decide=...)``
 - the read set was touched → ``Regenerate``: nothing is written, and the same operation
   (same id, new base) generates again, up to the story's ``regenerate_retry_budget``, then
   409 ``revision_conflict``;
+- an interpretive setting the operation depends on changed since its capture (FR-CONC-16,
+  #64; ``core.config_dependencies``) → ``ConfigRecheck``: nothing is written; the loop
+  re-captures the configuration, re-runs the policy checks on the staged output outside the
+  lock (``config_recheck``), and commits again if they pass, else regenerates — each round
+  within the same ``regenerate_retry_budget``, then 409 ``revision_conflict``;
 - otherwise → ``Rebase``: the deterministic re-checks run and the operation commits.
+
+The order is abandon > regenerate > configuration re-check: a prospective change moves no
+dependency, so it never reaches the re-check.
 
 ``run_with_revalidation`` drives that loop; the respond pipeline (#57) calls it.
 """
@@ -58,7 +66,7 @@ READ_SET_MEMBERS: tuple[str, ...] = (
     "generation_settings",
 )
 """The Lite read set (FR-CONC-4: the assembled prompt's inputs). Guardrail and policy sets are
-not members: they belong to #64's configuration dependency set, which rebases."""
+not members: they belong to #64's configuration dependency set, which is re-checked."""
 
 
 # -- outcomes ---------------------------------------------------------------------------------
@@ -95,7 +103,16 @@ class Abandon:
     name: str = "abandon"
 
 
-Decision = Commit | Rebase | Regenerate | Abandon
+@dataclass(frozen=True, slots=True)
+class ConfigRecheck:
+    """An interpretive setting the operation depends on changed (FR-CONC-16): re-check the
+    staged output under the new configuration before committing."""
+
+    changed: tuple[str, ...]
+    name: str = "recheck"
+
+
+Decision = Commit | Rebase | Regenerate | Abandon | ConfigRecheck
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +125,8 @@ class RevalidationState:
     control_since_base: bool
     control_operation_id: str | None
     touched: tuple[str, ...]
+    config_changed: tuple[str, ...] = ()
+    """Dependency members whose value changed since the operation's capture (#64)."""
 
     @property
     def moved(self) -> bool:
@@ -125,23 +144,28 @@ def decide(state: RevalidationState, *, recheck: Recheck | None = None) -> Decis
     """The FR-CONC-4 decision. Bind ``recheck`` with ``functools.partial`` to add re-checks."""
     if state.control_since_base:
         return Abandon(control_operation_id=state.control_operation_id)
-    if not state.moved:
+    if not state.moved and not state.config_changed:
         return Commit()
     if state.touched:
         return Regenerate(reason="read_set_touched", touched=state.touched)
+    if state.config_changed:
+        return ConfigRecheck(changed=state.config_changed)
     if recheck is not None and not recheck():
         return Regenerate(reason="rebase_failed")
     return Rebase()
 
 
 class RevalidationRequired(Exception):
-    """Raised by ``Operation.commit(decide=...)`` for ``Regenerate`` and ``Abandon``.
+    """Raised by ``Operation.commit(decide=...)`` for ``Regenerate``, ``Abandon`` and
+    ``ConfigRecheck``.
 
     The commit transaction has rolled back (no event exists) and the attempt is recorded on
     ``operations.attempts``; the operation is still ``in_flight``.
     """
 
-    def __init__(self, outcome: Regenerate | Abandon, state: RevalidationState) -> None:
+    def __init__(
+        self, outcome: Regenerate | Abandon | ConfigRecheck, state: RevalidationState
+    ) -> None:
         super().__init__(outcome.name)
         self.outcome = outcome
         self.state = state
@@ -160,6 +184,8 @@ def attempt_record(state: RevalidationState, outcome: Decision) -> dict[str, Any
         record["touched"] = list(outcome.touched)
     elif isinstance(outcome, Abandon):
         record["control_operation_id"] = outcome.control_operation_id
+    elif isinstance(outcome, ConfigRecheck):
+        record["config_changed"] = list(outcome.changed)
     return record
 
 
@@ -383,6 +409,10 @@ Begin = Callable[[AsyncConnection], Awaitable[Any]]
 Generate = Callable[["Operation", Any], Awaitable[None]]
 """The model call(s): stages the operation's events from the inputs. Holds no lock."""
 
+ConfigRecheckFn = Callable[["Operation", tuple[str, ...]], Awaitable[bool]]
+"""``config_recheck(op, changed)``: the policy checks on ``op``'s staged output under the
+configuration just re-captured (FR-CONC-16); ``False`` regenerates. Runs with no lock held."""
+
 
 @dataclass
 class RevalidationResult:
@@ -400,21 +430,60 @@ async def run_with_revalidation(
     decide: Decide = decide,
     budget: int | None = None,
     read_set: ReadSetSource | None = None,
+    config_recheck: ConfigRecheckFn | None = None,
 ) -> RevalidationResult:
-    """Begin ``op``, generate, and commit under FR-CONC-4, regenerating within ``budget``.
+    """Begin ``op``, generate, and commit under FR-CONC-4/16, regenerating within ``budget``.
 
     ``budget`` defaults to the story's ``regenerate_retry_budget`` (read at start). Every
     attempt is the same operation (same id) with a new base. Raises ``TimelineChanged`` on
     ``Abandon`` and ``RevisionConflict`` once the budget is spent; either way the operation
     ends ``abandoned`` with no events. Any other failure marks it ``failed``.
+
+    A ``ConfigRecheck`` (FR-CONC-16) re-captures the configuration and runs ``config_recheck``
+    on the staged output with no lock held (none given: nothing to re-check, it passes); a
+    pass commits again without generating, a failure regenerates — and the regenerated output
+    is re-checked before its commit too, so no reply produced after a tightening commits
+    unchecked. Up to ``budget + 1`` re-check rounds run (one always may) and regenerations
+    spend ``budget``; past either bound the call is 409 ``revision_conflict``.
     """
     op.read_set_source = read_set if read_set is not None else LiteReadSet()
     inputs = await op.begin(read=begin)
     limit = budget if budget is not None else op.story_settings.regenerate_retry_budget
     regenerations = 0
+    rechecks = 0
+    generate_next = True
+    verify_next = False  # the next output follows a failed re-check: check it first
+
+    async def conflict(current_revision: int, reason: str) -> RevisionConflict:
+        await op.abandon()
+        return RevisionConflict(
+            "the story kept changing under the turn; regeneration budget spent",
+            {"current_revision": current_revision, "attempts": len(op.attempts), "reason": reason},
+        )
+
     try:
         while True:
-            await generate(op, inputs)
+            if generate_next:
+                await generate(op, inputs)
+            generate_next = True
+            if verify_next and config_recheck is not None and not await config_recheck(op, ()):
+                base = op.base_revision or 0
+                op.attempts.append(
+                    {
+                        "attempt": len(op.attempts) + 1,
+                        "base_revision": base,
+                        "current_revision": base,
+                        "outcome": "regenerate",
+                        "reason": "rebase_failed",
+                        "touched": [],
+                    }
+                )
+                if regenerations >= limit:
+                    raise await conflict(base, "rebase_failed")
+                regenerations += 1
+                inputs = await op.restart(read=begin)
+                continue
+            verify_next = False
             try:
                 await op.commit(decide=decide)
             except RevalidationRequired as signal:
@@ -428,16 +497,26 @@ async def run_with_revalidation(
                             "control_operation_id": outcome.control_operation_id,
                         },
                     ) from None
+                if isinstance(outcome, ConfigRecheck):
+                    if rechecks > limit:
+                        raise await conflict(state.current_revision, "config_changed") from None
+                    rechecks += 1
+                    await op.recapture_config()
+                    passed = (
+                        True
+                        if config_recheck is None
+                        else await config_recheck(op, outcome.changed)
+                    )
+                    op.attempts[-1]["recheck"] = "passed" if passed else "failed"
+                    if passed:
+                        generate_next = False
+                        continue
+                    verify_next = True
+                    reason = "rebase_failed"
+                else:
+                    reason = outcome.reason
                 if regenerations >= limit:
-                    await op.abandon()
-                    raise RevisionConflict(
-                        "the story kept changing under the turn; regeneration budget spent",
-                        {
-                            "current_revision": state.current_revision,
-                            "attempts": len(op.attempts),
-                            "reason": outcome.reason,
-                        },
-                    ) from None
+                    raise await conflict(state.current_revision, reason) from None
                 regenerations += 1
                 inputs = await op.restart(read=begin)
                 continue

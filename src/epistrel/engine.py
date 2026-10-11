@@ -13,12 +13,14 @@ import dataclasses
 import hashlib
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import datetime
 from typing import Any
 
 from pydantic import SecretStr, TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import config_changes as config_log
 from epistrel.core import (
     deployment,
     idempotency,
@@ -47,7 +49,7 @@ from epistrel.core.idempotency import (
 from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
 from epistrel.core.policies.model import Policy, Scope
-from epistrel.core.settings_schema import StorySettings
+from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.turn_gate import Concurrency, QueueItem
 from epistrel.core.viewpoint import is_omniscient, resolve_viewpoint, with_requested
 from epistrel.orchestrator import queue_drainer
@@ -101,7 +103,7 @@ CODECS: dict[str, ResultCodec[Any]] = {
         ratings.RatingWrite, status=_changed_status(), revision_field=_CONFIG
     ),
     "update_deployment_settings": ResultCodec.of(
-        deployment.DeploymentSettings, revision_field=_CONFIG
+        deployment.DeploymentState, revision_field=_CONFIG
     ),
     "policies_create": ResultCodec.of(policy_admin.PolicyWrite, status=201, revision_field=_CONFIG),
     "policies_update": ResultCodec.of(policy_admin.PolicyWrite, revision_field=_CONFIG),
@@ -951,18 +953,45 @@ class Engine:
             material={"rating_id": rating_id},
         )
 
-    async def deployment_settings(self, ctx: RequestContext) -> deployment.DeploymentSettings:
+    async def deployment_settings(self, ctx: RequestContext) -> deployment.DeploymentState:
         return await deployment.read_settings(self.db)
 
     async def update_deployment_settings(
         self, ctx: RequestContext, patch: deployment.SettingsPatch
-    ) -> deployment.DeploymentSettings:
+    ) -> deployment.DeploymentState:
         principal = self.require_principal(ctx)
         return await self._keyed(
             ctx,
             "update_deployment_settings",
             lambda _: deployment.update_settings(self.db, patch, principal=principal),
             material={"body": patch.model_dump(mode="json", exclude_unset=True)},
+        )
+
+    async def config_changes(
+        self,
+        ctx: RequestContext,
+        *,
+        scope: config_log.ConfigScope,
+        story_id: str | None = None,
+        settings: Sequence[str] = (),
+        change_class: ConfigClass | None = None,
+        since: datetime | None = None,
+        after: str | None = None,
+        limit: int = config_log.DEFAULT_PAGE,
+    ) -> config_log.ConfigChangePage:
+        """A page of the configuration log (FR-CONC-14, #64): the deployment's changes, or a
+        story's (404 for an unknown story), newest first."""
+        if story_id is not None:
+            await check_expected_revision(self.db, story_id, None)
+        return await config_log.list_config_changes(
+            self.db,
+            scope=scope,
+            scope_id=story_id,
+            settings=settings,
+            change_class=change_class,
+            since=since,
+            after=after,
+            limit=limit,
         )
 
     # -- the policy store (FR-GUARD-1,8,9; NFR-SEC-1) ----------------------------------------

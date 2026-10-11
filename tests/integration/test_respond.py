@@ -295,7 +295,7 @@ async def test_openapi_calls_the_message_finished_never_verified(
 
 async def test_lite_defaults_write_is_recorded(engine: AsyncEngine) -> None:
     """The deployment's Lite defaults are a recorded configuration write: one revision and one
-    prospective ``config_changes`` row per changed key; the same values again write nothing; a
+    prospective ``config_changes`` row per changed leaf; the same values again write nothing; a
     corrupt stored document reads as the defaults."""
     before = await read_lite_defaults(engine)
     start = (await read_settings(engine)).config_revision
@@ -314,7 +314,9 @@ async def test_lite_defaults_write_is_recorded(engine: AsyncEngine) -> None:
             r=start + 1,
         )
         assert [(c.setting, c.change_class, c.actor) for c in changes] == [
-            ("lite_generation_defaults", "prospective", "p-operator"),
+            ("lite_generation_defaults.length", "prospective", "p-operator"),
+            ("lite_generation_defaults.temperature", "prospective", "p-operator"),
+            ("lite_generation_defaults.top_p", "prospective", "p-operator"),  # replaced: None
             ("lite_window_messages", "prospective", "p-operator"),
         ]
         again = await update_lite_defaults(engine, principal="p-operator", window_messages=7)

@@ -7,14 +7,36 @@
 ``turn_queue_max`` live in their own ``stories`` columns) and #64 tags every setting
 interpretive or prospective. Settings are read when an operation starts (prospective
 settings never affect work already in flight).
+
+**Classification (FR-CONC-15, #64).** Every leaf setting of ``StorySettings`` and
+``DeploymentSettings`` carries ``Annotated[..., ConfigClass.interpretive]`` or
+``Annotated[..., ConfigClass.prospective]``: an *interpretive* change applies to every operation
+that commits after it (a turn in flight is re-checked under it at commit, FR-CONC-16), a
+*prospective* one only to operations that start after it. ``setting_class`` reads the tag; an
+untagged setting is interpretive (``test_u_18`` fails the build when one is missing).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import types
+import typing
+from collections.abc import Iterator, Mapping
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic.fields import FieldInfo
+
+
+class ConfigClass(StrEnum):
+    """FR-CONC-15: how a setting's change reaches work in flight (see the module docstring)."""
+
+    interpretive = "interpretive"
+    prospective = "prospective"
+
+
+INTERPRETIVE = ConfigClass.interpretive
+PROSPECTIVE = ConfigClass.prospective
 
 DEFAULT_REGENERATE_RETRY_BUDGET = 2
 
@@ -38,9 +60,9 @@ class GenerationSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
-    length: Length | None = None
+    temperature: Annotated[float | None, PROSPECTIVE] = Field(default=None, ge=0.0, le=2.0)
+    top_p: Annotated[float | None, PROSPECTIVE] = Field(default=None, ge=0.0, le=1.0)
+    length: Annotated[Length | None, PROSPECTIVE] = None
 
 
 DEFAULT_LITE_GENERATION = GenerationSettings(temperature=0.8, top_p=0.95, length="medium")
@@ -84,7 +106,7 @@ class LiteDefaults(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     lite_generation_defaults: GenerationSettings = DEFAULT_LITE_GENERATION
-    lite_window_messages: int = Field(
+    lite_window_messages: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_LITE_WINDOW_MESSAGES, ge=1, le=MAX_LITE_WINDOW_MESSAGES
     )
 
@@ -106,10 +128,10 @@ class StoryTextCaps(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    max_pinned_memories: int = Field(
+    max_pinned_memories: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_MAX_PINNED_MEMORIES, ge=1, le=MAX_PINNED_MEMORIES_LIMIT
     )
-    max_custom_instructions_chars: int = Field(
+    max_custom_instructions_chars: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_MAX_CUSTOM_INSTRUCTIONS_CHARS, ge=1, le=MAX_CUSTOM_INSTRUCTIONS_CHARS_LIMIT
     )
 
@@ -127,7 +149,7 @@ class IdempotencySettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    idempotency_result_window: int = Field(
+    idempotency_result_window: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_IDEMPOTENCY_RESULT_WINDOW_HOURS,
         ge=1,
         le=MAX_IDEMPOTENCY_RESULT_WINDOW_HOURS,
@@ -152,7 +174,7 @@ class TurnQueueDefaults(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    turn_queue_max: int = Field(
+    turn_queue_max: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_TURN_QUEUE_MAX, ge=TURN_QUEUE_MAX_MIN, le=TURN_QUEUE_MAX_LIMIT
     )
 
@@ -166,33 +188,42 @@ class StorySettings(BaseModel):
 
     model_config = ConfigDict(extra="allow", frozen=True)
 
-    regenerate_retry_budget: int = Field(default=DEFAULT_REGENERATE_RETRY_BUDGET, ge=0, le=10)
+    regenerate_retry_budget: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_REGENERATE_RETRY_BUDGET, ge=0, le=10
+    )
     """How many times a turn whose read set was touched is regenerated before the call fails
     with ``revision_conflict`` (FR-CONC-4c). Prospective."""
 
-    turn_concurrency: TurnConcurrency = "reject"
+    turn_concurrency: Annotated[TurnConcurrency, PROSPECTIVE] = "reject"
     """Same-story turn concurrency (FR-CONC-5): ``reject`` refuses an overlapping turn as busy
     (423 ``story_busy``), ``queue`` queues it in a per-story FIFO (#63). Stored in its own
     ``stories`` column. Prospective: a change applies to requests that arrive after it."""
 
-    turn_queue_max: int | None = Field(default=None, ge=TURN_QUEUE_MAX_MIN, le=TURN_QUEUE_MAX_LIMIT)
+    turn_queue_max: Annotated[int | None, PROSPECTIVE] = Field(
+        default=None, ge=TURN_QUEUE_MAX_MIN, le=TURN_QUEUE_MAX_LIMIT
+    )
     """How many turns may wait behind the running one under ``queue`` (``None``: the
     deployment's ``turn_queue_max``, default 5); one more is 423 ``story_busy``. Stored in its
     own ``stories`` column. Prospective."""
 
-    turn_deadline: float = Field(default=DEFAULT_TURN_DEADLINE_S, gt=0, le=MAX_TURN_DEADLINE_S)
+    turn_deadline: Annotated[float, PROSPECTIVE] = Field(
+        default=DEFAULT_TURN_DEADLINE_S, gt=0, le=MAX_TURN_DEADLINE_S
+    )
     """A turn's wall-clock deadline in seconds (NFR-PERF-6; #69 adds the call budget). The turn
     slot's lease is ``turn_deadline`` + 10 s, and a queued request waits at most this long
     before it is answered 202. Prospective."""
 
-    default_output_viewpoint: str | None = None
+    default_output_viewpoint: Annotated[str | None, INTERPRETIVE] = None
     """The viewpoint a read or respond falls back to when the request names none and has no
-    actor (FR-RESP-12): ``character:<id>``, never ``omniscient`` (#59 resolves it)."""
+    actor (FR-RESP-12): ``character:<id>``, never ``omniscient`` (#59 resolves it).
+    Interpretive: a Lite turn depends on it (#64)."""
 
     generation_settings: GenerationSettings | None = None
     """The story's override of the deployment's Lite generation defaults (FR-LITE-4)."""
 
-    lite_window_messages: int | None = Field(default=None, ge=1, le=MAX_LITE_WINDOW_MESSAGES)
+    lite_window_messages: Annotated[int | None, PROSPECTIVE] = Field(
+        default=None, ge=1, le=MAX_LITE_WINDOW_MESSAGES
+    )
     """The story's override of how many transcript rows a Lite prompt carries verbatim."""
 
     @field_validator("default_output_viewpoint")
@@ -210,3 +241,137 @@ class StorySettings(BaseModel):
         document = dict(value or {})
         document.update({k: v for k, v in columns.items() if k in COLUMN_SETTINGS})
         return cls.model_validate(document)
+
+
+# -- structured model results (FR-MODEL-6,7; #53) ------------------------------------------------
+
+DEFAULT_STRUCTURED_RETRY_BUDGET = 2
+DEFAULT_UNCERTAIN_BELOW = 0.5
+
+
+class StructuredSettings(BaseModel):
+    """Deployment settings for structured model results (FR-MODEL-6,7), stored under
+    ``deployment_state.settings``: retries after the first attempt (prospective, a budget), and
+    the ``confidence`` below which a result is ``Uncertain`` (interpretive: it decides whether a
+    guardrail verdict counts, #64). Other keys in that document are ignored here."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    structured_retry_budget: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_STRUCTURED_RETRY_BUDGET, ge=0, le=10
+    )
+    uncertain_below: Annotated[float, INTERPRETIVE] = Field(
+        default=DEFAULT_UNCERTAIN_BELOW, ge=0.0, le=1.0
+    )
+
+
+# -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
+
+DEFAULT_MINOR_AGE_THRESHOLD = 18
+MINOR_AGE_THRESHOLD_MIN = 0
+MINOR_AGE_THRESHOLD_MAX = 120
+DEPLOYMENT_COLUMNS = ("default_content_rating_id", "minor_age_threshold")
+"""Deployment settings kept in their own ``deployment_state`` columns (#48) rather than in its
+``settings`` document."""
+
+
+class DeploymentSettings(
+    LiteDefaults, StoryTextCaps, IdempotencySettings, TurnQueueDefaults, StructuredSettings
+):
+    """Every deployment setting ``/admin/settings`` reads and writes (#64): the two
+    ``deployment_state`` columns and the ``settings`` document's sections, each of which earlier
+    stories read through its own view (``LiteDefaults``, ``StoryTextCaps``, …)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    default_content_rating_id: Annotated[str, INTERPRETIVE] = Field(min_length=1, max_length=64)
+    """The rating a story created without one gets (FR-RATE-1). Interpretive."""
+
+    minor_age_threshold: Annotated[int, INTERPRETIVE] = Field(
+        default=DEFAULT_MINOR_AGE_THRESHOLD, ge=MINOR_AGE_THRESHOLD_MIN, le=MINOR_AGE_THRESHOLD_MAX
+    )
+    """Below this true age a character is a minor (docs/02 §4.12). Interpretive."""
+
+    def document(self) -> dict[str, Any]:
+        """The fields stored in ``deployment_state.settings`` (JSON)."""
+        return self.model_dump(mode="json", exclude=set(DEPLOYMENT_COLUMNS))
+
+
+def merge_patch(target: Mapping[str, Any], patch: Mapping[str, Any]) -> dict[str, Any]:
+    """RFC 7396: ``null`` removes a key, an object merges into an object, anything else
+    replaces."""
+    merged = dict(target)
+    for key, value in patch.items():
+        if value is None:
+            merged.pop(key, None)
+        elif isinstance(value, Mapping):
+            current = merged.get(key)
+            merged[key] = merge_patch(current if isinstance(current, Mapping) else {}, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+# -- classification (FR-CONC-15; #64) ------------------------------------------------------------
+
+
+def _nested_model(annotation: Any) -> type[BaseModel] | None:
+    """The model a field holds (``Model`` or ``Model | None``), else ``None``."""
+    candidates = (
+        typing.get_args(annotation)
+        if isinstance(annotation, types.UnionType) or typing.get_origin(annotation) is typing.Union
+        else (annotation,)
+    )
+    for candidate in candidates:
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate
+    return None
+
+
+def tag_of(info: FieldInfo) -> ConfigClass | None:
+    """The ``ConfigClass`` a field is annotated with, if any."""
+    return next((item for item in info.metadata if isinstance(item, ConfigClass)), None)
+
+
+def leaves(model: type[BaseModel], prefix: str = "") -> Iterator[tuple[str, FieldInfo]]:
+    """Every leaf setting of ``model`` as ``(dotted path, field)``, nested models walked."""
+    for name, info in model.model_fields.items():
+        nested = _nested_model(info.annotation)
+        if nested is not None:
+            yield from leaves(nested, f"{prefix}{name}.")
+        else:
+            yield f"{prefix}{name}", info
+
+
+def untagged(model: type[BaseModel]) -> list[str]:
+    """The leaf settings of ``model`` that carry no ``ConfigClass`` (``test_u_18``)."""
+    return [path for path, info in leaves(model) if tag_of(info) is None]
+
+
+def setting_class(model: type[BaseModel], path: str) -> ConfigClass:
+    """The class of the leaf setting at ``path``; untagged or unknown → interpretive."""
+    current: type[BaseModel] | None = model
+    info: FieldInfo | None = None
+    for part in path.split("."):
+        if current is None or part not in current.model_fields:
+            return ConfigClass.interpretive
+        info = current.model_fields[part]
+        current = _nested_model(info.annotation)
+    if info is None or current is not None:
+        return ConfigClass.interpretive
+    return tag_of(info) or ConfigClass.interpretive
+
+
+def flatten(model: type[BaseModel], values: Mapping[str, Any] | None) -> dict[str, Any]:
+    """``values`` (a JSON dump of ``model``) as one entry per leaf setting, keyed by dotted path;
+    a nested model that is ``None`` contributes ``None`` for each of its leaves."""
+    flat: dict[str, Any] = {}
+    for name, info in model.model_fields.items():
+        value = (values or {}).get(name)
+        nested = _nested_model(info.annotation)
+        if nested is None:
+            flat[name] = value
+            continue
+        inner = flatten(nested, value if isinstance(value, Mapping) else None)
+        flat.update({f"{name}.{key}": item for key, item in inner.items()})
+    return flat

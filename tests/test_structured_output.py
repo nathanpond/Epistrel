@@ -15,10 +15,11 @@ import openai
 import pytest
 
 from epistrel.core.errors import Unauthenticated
+from epistrel.core.settings_schema import StructuredSettings
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelParams
-from epistrel.orchestrator.models.config import StructuredSettings, structured_settings
+from epistrel.orchestrator.models.config import structured_settings
 from epistrel.orchestrator.models.errors import (
     BudgetExhausted,
     EmptyCompletion,

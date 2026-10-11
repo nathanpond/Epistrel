@@ -18,10 +18,10 @@ caller's, or a server-generated ULID: the key is optional everywhere). The call:
      operation already committed, in which case the retry gets the reference.
 
 2. **binds** its operation inside the operation's commit transaction (``Operation`` calls
-   ``bind``; configuration writes call ``bind_configuration``, which records a ``control``
-   operation for them). A late original whose token was taken over is refused there, so a key
-   never maps to two committed operations. A call may store its result in the same
-   transaction (``result_in_commit``: the Lite turn does).
+   ``bind``; configuration writes call ``bind_configuration`` with the ``control``
+   operation ``config_changes`` records for them). A late original whose token was taken over
+   is refused there, so a key never maps to two committed operations. A call may store its
+   result in the same transaction (``result_in_commit``: the Lite turn does).
 
 3. **finishes**: ``done`` with the result ``{status, body}`` and ``expires_at`` (the result
    window in force when the call started, ``idempotency_result_window`` hours). A failure
@@ -52,12 +52,12 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock
-from epistrel.core.enums import OperationKind, OperationStatus
+from epistrel.core.enums import OperationStatus
 from epistrel.core.errors import IdempotencyConflict, InvalidRequest, OriginalInFlightTimeout
 from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import IdempotencySettings
@@ -571,13 +571,13 @@ class IdempotentCall:
             self.committed_value = value
             self.stored_in_commit = True
 
-    async def bind_configuration(self, conn: AsyncConnection, *, story_id: str | None) -> None:
-        """Bind a configuration write (which runs no ``Operation``) in its own transaction:
-        the first change of the call records a ``control`` operation (committed, no events;
-        story-less for deployment configuration) and binds it to the key."""
+    async def bind_configuration(self, conn: AsyncConnection, *, operation_id: str) -> None:
+        """Bind a configuration write (which runs no ``Operation``) in its own transaction to
+        the write's ``control`` operation (``config_changes`` records it, committed and with
+        no events for deployment scope, at the write's first change). A key already bound by an
+        earlier write of the same call keeps that binding."""
         if not self.claimed:
             return
-        operation_id = new_ulid()
         bound = await conn.scalar(
             update(idempotency_keys)
             .where(
@@ -594,21 +594,6 @@ class IdempotentCall:
                 "committed",
                 {"reason": "superseded"},
             )
-        if bound != operation_id:
-            return
-        now = clock.now()
-        await conn.execute(
-            insert(operations).values(
-                operation_id=operation_id,
-                story_id=story_id,
-                kind=OperationKind.CONTROL.value,
-                principal=self.principal,
-                status=OperationStatus.COMMITTED.value,
-                membership_tx=now,
-                committed_at=now,
-                idempotency_key=self.key,
-            )
-        )
 
     # -- finish ---------------------------------------------------------------------------------
 

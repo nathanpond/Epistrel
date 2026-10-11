@@ -2,7 +2,8 @@
 prompt, one generation call per turn, input and reply stored with positions, several render
 characters in one combined generation, and generation settings by precedence (FR-LITE-1,4,5,
 FR-PROF-11); #60's slice edits pinned memories and custom instructions mid-turn (FR-LITE-3).
-#68, #69 and #72 add their slices here."""
+#64's slice (``test_i_18__no_bypass``) shows no story setting turns guardrails off
+(FR-PROF-14). #68, #69 and #72 add their slices here."""
 
 from __future__ import annotations
 
@@ -10,15 +11,28 @@ import asyncio
 from typing import Any
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.db import make_engine
+from epistrel.core.errors import GuardrailViolation
+from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import story_guidance
 from epistrel.core.settings_schema import GenerationSettings
+from epistrel.core.stories import StorySpec
+from epistrel.core.story_settings import update_story_settings
+from epistrel.engine import Engine
+from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.lite.schemas import RespondRequest
+from epistrel.orchestrator.policies.rebase import output_passes
+from epistrel.orchestrator.policies.store import guard_context
 from tests.auth_support import auth_settings
 from tests.concurrency_support import set_instructions, set_pins, summarise
 from tests.event_support import rows, scalar
 from tests.gate_support import input_policies
+from tests.policy_support import OPERATOR, global_policy, words
 from tests.respond_support import (
     FIRST,
     PLAYER,
@@ -231,3 +245,115 @@ async def test_i_18__pins(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert same.status_code == 200
         assert same.json()["operation_id"] is None
         assert same.json()["timeline_revision"] == stored["timeline_revision"]
+
+
+# -- FR-PROF-14: no story setting turns guardrails off (#64) ----------------------------------
+
+GENERATION_LAYERS = st.builds(
+    lambda t, p, n: {"temperature": t, "top_p": p, "length": n},
+    st.none() | st.floats(0.0, 2.0),
+    st.none() | st.floats(0.0, 1.0),
+    st.none() | st.sampled_from(["short", "medium", "long"]) | st.integers(1, 4_000),
+)
+
+
+def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
+    """Every ``StorySettings`` field at random allowed values (``None`` resets to default)."""
+    return st.fixed_dictionaries(
+        {
+            "regenerate_retry_budget": st.integers(0, 10),
+            "turn_concurrency": st.sampled_from(["reject", "queue"]),
+            "turn_queue_max": st.none() | st.integers(1, 50),
+            "turn_deadline": st.floats(0.5, 600.0),
+            "default_output_viewpoint": st.none()
+            | st.sampled_from([f"character:{c}" for c in cast]),
+            "generation_settings": st.none() | GENERATION_LAYERS,
+            "lite_window_messages": st.none() | st.integers(1, 500),
+        }
+    )
+
+
+async def _no_bypass_setup(url: str, word: str) -> tuple[str, list[str], str]:
+    engine = make_engine(auth_settings(url))
+    lib = Engine(auth_settings(url, model_adapter="stub"), db=engine)
+    try:
+        created = await lib.create_story(
+            OPERATOR,
+            StorySpec.model_validate(
+                {
+                    "name": "no bypass",
+                    "characters": [
+                        {"name": PLAYER, "definition": "The player.", "true_age": 30},
+                        {"name": FIRST, "definition": "A guide.", "true_age": 40},
+                    ],
+                }
+            ),
+        )
+        policy = await global_policy(lib, words(word))
+        return created.story_id, [c.id for c in created.characters], policy.id
+    finally:
+        await engine.dispose()
+
+
+async def _guardrails_hold(
+    url: str, story: str, actor: str, patch: dict[str, Any], word: str, *, expect_caught: bool
+) -> None:
+    """Apply ``patch`` to the story's settings, then: the output re-check and the input gate
+    both catch ``word`` (or, with the policy retired, both let it through)."""
+    engine = make_engine(auth_settings(url))
+    lib = Engine(auth_settings(url, model_adapter="stub"), db=engine)
+    try:
+        await update_story_settings(engine, story, patch, principal="p-author")
+        text = f"The {word} is here."
+        context = await guard_context(engine, story)
+        passes = await output_passes(lib.models, [text], context, budget=TurnBudget())
+        assert passes is not expect_caught
+        request = RespondRequest.model_validate(
+            {"actor_character_id": actor, "player_input": {"say": text}}
+        )
+        try:
+            await lib.respond(OPERATOR, story, request)
+        except GuardrailViolation:
+            assert expect_caught
+        else:
+            assert not expect_caught
+    finally:
+        await lib.stop_workers()
+        await engine.dispose()
+
+
+@pytest.mark.part("M2", "FR-PROF-14")
+def test_i_18__no_bypass(pg_url: str) -> None:
+    """With a guardrail policy defined, no story setting disables guardrail evaluation: for
+    every ``StorySettings`` field at random allowed values, a violating reply is still caught
+    by the output check and the same text as input is refused 422 ``guardrail_violation``.
+
+    Complement asserted: with the policy retired, the same reply passes and the same input
+    plays."""
+    word = f"zq{new_ulid().lower()[-8:]}"
+    story, cast, policy_id = asyncio.run(_no_bypass_setup(pg_url, word))
+    seen: list[dict[str, Any]] = []
+
+    @settings(
+        max_examples=25,
+        deadline=None,
+        derandomize=True,
+        suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
+    )
+    @given(patch=_story_settings(cast))
+    def every_setting(patch: dict[str, Any]) -> None:
+        seen.append(patch)
+        asyncio.run(_guardrails_hold(pg_url, story, cast[0], patch, word, expect_caught=True))
+
+    every_setting()
+    assert {p["turn_concurrency"] for p in seen} == {"reject", "queue"}
+
+    async def retire() -> None:
+        engine = make_engine(auth_settings(pg_url))
+        try:
+            await Engine(auth_settings(pg_url), db=engine).policies_retire(OPERATOR, policy_id)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(retire())
+    asyncio.run(_guardrails_hold(pg_url, story, cast[0], seen[-1], word, expect_caught=False))

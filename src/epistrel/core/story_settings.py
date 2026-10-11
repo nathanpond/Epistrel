@@ -8,11 +8,14 @@ default output viewpoint is checked against the cast (``validate_default_viewpoi
 ``character:<id>``.
 
 A write that changes anything moves the story's ``config_revision`` by one and records one
-``config_changes`` row per changed setting (scope ``story``, with the acting principal) through
-#48's ``record_config_change``, in one transaction under the story row lock; a write that
-changes nothing writes nothing. Every setting is prospective here (#64 tags each one): it
-applies to requests that start after the write, never to a turn already running. An archived
-story's settings are read-only (409 ``story_archived``).
+``config_changes`` row per changed leaf setting (scope ``story``, the setting's own class,
+FR-CONC-15, and the acting principal; ``generation_settings.temperature`` is a leaf) through
+``record_config_change``, in one transaction under the story row lock, which also records the
+write's ``control`` operation and a ``config_changed`` event per row (#64); a write that changes
+nothing writes nothing. A prospective setting applies to requests that start after the write;
+an interpretive one (``default_output_viewpoint``) also reaches a Lite turn in flight, which is
+re-checked at commit (FR-CONC-16). An archived story's settings are read-only (409
+``story_archived``).
 """
 
 from __future__ import annotations
@@ -25,10 +28,16 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.core.config_changes import ChangeClass, ConfigScope, record_config_change
+from epistrel.core.config_changes import ConfigScope, record_config_change
 from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import InvalidRequest, StoryArchived, StoryNotFound
-from epistrel.core.settings_schema import COLUMN_SETTINGS, StorySettings
+from epistrel.core.settings_schema import (
+    COLUMN_SETTINGS,
+    StorySettings,
+    flatten,
+    merge_patch,
+    setting_class,
+)
 from epistrel.core.stories import settings_of, split_settings
 from epistrel.core.tables import characters, stories
 from epistrel.core.viewpoint import validate_default_viewpoint
@@ -47,21 +56,6 @@ class StorySettingsWrite:
     changed: bool
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
-
-
-def merge_patch(target: Mapping[str, Any], patch: Mapping[str, Any]) -> dict[str, Any]:
-    """RFC 7396: ``null`` removes a key, an object merges into an object, anything else
-    replaces."""
-    merged = dict(target)
-    for key, value in patch.items():
-        if value is None:
-            merged.pop(key, None)
-        elif isinstance(value, Mapping):
-            current = merged.get(key)
-            merged[key] = merge_patch(current if isinstance(current, Mapping) else {}, value)
-        else:
-            merged[key] = value
-    return merged
 
 
 def check_keys(patch: Mapping[str, Any]) -> None:
@@ -147,15 +141,17 @@ async def update_story_settings(
                 **{name: columns.get(name) for name in COLUMN_SETTINGS},
             )
         )
-        for name in sorted(changed):
+        old_leaves = flatten(StorySettings, current)
+        new_leaves = flatten(StorySettings, wanted)
+        for name in sorted(k for k in new_leaves if new_leaves[k] != old_leaves.get(k)):
             await record_config_change(
                 conn,
                 config_revision=config_revision,
                 setting=name,
-                old=current.get(name),
-                new=wanted[name],
+                old=old_leaves.get(name),
+                new=new_leaves[name],
                 actor=principal,
-                change_class=ChangeClass.PROSPECTIVE,
+                change_class=setting_class(StorySettings, name),
                 scope=ConfigScope.STORY,
                 scope_id=story_id,
             )

@@ -3,14 +3,17 @@
 Two phases. ``begin()`` inserts the ``operations`` row (``in_flight``) without taking a lock,
 in one REPEATABLE READ read phase that also captures the story's ``timeline_revision`` as
 ``base_revision`` (and, given a read-set source, the read set, #47) and the configuration it
-runs under (``config_revisions``: the story rating's current version, FR-CONC-14, #48).
+runs under (``config_revisions``, FR-CONC-14: the story and deployment configuration
+revisions, the story rating's version and the interpretive settings its kind depends on,
+``core.config_dependencies``, #48/#64).
 ``append()`` validates each payload and buffers it, so model calls between them hold no lock
 (FR-CONC-2). ``commit()`` runs
 one transaction that does all of the following:
 
 1. takes ``SELECT … FOR UPDATE`` on the story row, with ``lock_timeout`` 5 s;
-2. with ``decide``, revalidates against the base (``epistrel.core.concurrency``): ``Regenerate``
-   and ``Abandon`` roll back and raise ``RevalidationRequired``;
+2. with ``decide``, revalidates against the base (``epistrel.core.concurrency``), including
+   whether a configuration dependency changed (``ConfigRecheck``, FR-CONC-16): ``Regenerate``,
+   ``Abandon`` and ``ConfigRecheck`` roll back and raise ``RevalidationRequired``;
 3. positions the operation: only ``turn`` operations allocate a turn index (FR-STORE-8,24); a
    ``turn`` at an existing index (regenerate) makes the old variant ``dormant``;
 4. assigns dense per-story ``seq`` values (``max(seq)+1`` under the lock), writes the events,
@@ -46,9 +49,10 @@ from typing import Any, Literal, Self
 from sqlalchemy import and_, delete, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency, projections, turn_gate
+from epistrel.core import config_dependencies, idempotency, projections, turn_gate
 from epistrel.core.concurrency import (
     Abandon,
+    ConfigRecheck,
     Decide,
     ReadSet,
     ReadSetSource,
@@ -77,7 +81,7 @@ from epistrel.core.errors import (
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import StorySettings
-from epistrel.core.tables import content_ratings, events, operations, stories, turn_queue
+from epistrel.core.tables import events, operations, stories, turn_queue
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +218,10 @@ class Operation:
         self.read_set: ReadSet | None = None
         self.read_set_source: ReadSetSource | None = None
         self.config_revisions: dict[str, Any] | None = None
-        """The configuration versions the operation runs under (``rating_version``, #48)."""
+        """The configuration the operation runs under (``core.config_dependencies``, #64)."""
+        self.config_captured = config_dependencies.captured_for(kind, origin)
+        self.config_dependencies = config_dependencies.dependencies_for(kind, origin)
+        """The members compared at commit: an interpretive change to one is re-checked."""
         self.story_settings = StorySettings()
         self.attempts: list[dict[str, Any]] = []
         self.timeline_revision: int | None = None
@@ -340,20 +347,39 @@ class Operation:
                     stories.c.timeline_revision,
                     stories.c.settings,
                     stories.c.status,
-                    content_ratings.c.current_version_id,
-                )
-                .outerjoin(content_ratings, content_ratings.c.id == stories.c.content_rating_id)
-                .where(stories.c.id == self.story_id)
+                ).where(stories.c.id == self.story_id)
             )
         ).one_or_none()
         if found is not None:
             self._refuse_archived(found.status)
             self.base_revision = int(found.timeline_revision)
             self.story_settings = StorySettings.from_row(found.settings)
-            self.config_revisions = {"rating_version": found.current_version_id}
+            self.config_revisions = await config_dependencies.capture(
+                conn, self.story_id, self.config_captured
+            )
             if self.read_set_source is not None:
                 self.read_set = await self.read_set_source.hashes(conn, self.story_id)
         return await read(conn) if read is not None else None
+
+    async def recapture_config(self) -> tuple[str, ...]:
+        """Re-capture the configuration the operation runs under (read committed, its own
+        transaction) before a re-check under it (FR-CONC-16); keeps keys the caller added
+        (``generation_settings``) and records the result on the row. Returns the dependency
+        members that changed."""
+        self._require_in_flight("re-capture the configuration of")
+        assert self.story_id is not None  # noqa: S101 - only story operations depend on config
+        async with self._connection() as conn, conn.begin():
+            current = await config_dependencies.capture(conn, self.story_id, self.config_captured)
+            moved = config_dependencies.changed(
+                self.config_revisions, current, self.config_dependencies
+            )
+            self.config_revisions = {**(self.config_revisions or {}), **(current or {})}
+            await conn.execute(
+                update(operations)
+                .where(operations.c.operation_id == self.operation_id)
+                .values(config_revisions=self.config_revisions)
+            )
+        return moved
 
     def append(
         self,
@@ -423,8 +449,9 @@ class Operation:
         self._wake()
 
     async def abandon(self) -> None:
-        """Give up without writing anything (status ``abandoned``)."""
+        """Give up without writing anything (status ``abandoned``); ``attempts`` is kept."""
         self._require_in_flight("abandon")
+        await self._record_attempts()
         await self._finish(OperationStatus.ABANDONED, None)
 
     async def fail(self, cause: BaseException | None = None) -> None:
@@ -558,6 +585,14 @@ class Operation:
             assert self.read_set_source is not None  # noqa: S101 - set together
             now = await self.read_set_source.hashes(conn, self.story_id)
             touched = touched_members(self.read_set, now)
+        config_changed: tuple[str, ...] = ()
+        if not control and not touched and self.config_dependencies:
+            current_config = await config_dependencies.capture(
+                conn, self.story_id, self.config_dependencies
+            )
+            config_changed = config_dependencies.changed(
+                self.config_revisions, current_config, self.config_dependencies
+            )
         state = RevalidationState(
             attempt=len(self.attempts) + 1,
             base_revision=base,
@@ -565,10 +600,11 @@ class Operation:
             control_since_base=control,
             control_operation_id=locked.last_control_operation_id if control else None,
             touched=touched,
+            config_changed=config_changed,
         )
         outcome = decide(state)
         self.attempts.append(attempt_record(state, outcome))
-        if isinstance(outcome, Regenerate | Abandon):
+        if isinstance(outcome, Regenerate | Abandon | ConfigRecheck):
             raise RevalidationRequired(outcome, state)
 
     async def _retire_variant(self, conn: AsyncConnection) -> None:

@@ -83,6 +83,8 @@ class PolicyWrite:
     policy: Policy
     config_revision: int
     changed: bool
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +92,8 @@ class StoryPoliciesWrite:
     policies: tuple[Policy, ...]
     config_revision: int
     changed: bool
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,10 +16,12 @@ one transaction that does all of the following:
 4. assigns dense per-story ``seq`` values (``max(seq)+1`` under the lock), writes the events,
    and maintains every projection for them (``projections.apply_events``, FR-STORE-4), then
    runs any commit steps the caller added;
-5. finalises the operation (``committed``, ``membership_tx`` = the commit's ``tx_time``), bumps
-   ``stories.timeline_revision`` by one when the operation ``bumps_revision`` (FR-CONC-1),
-   records a control action on the story, and checks the active variants are one chain
-   (FR-STORE-28, ``ChainBroken``).
+5. finalises the operation (``committed``, ``membership_tx`` = the commit's ``tx_time``, the
+   story's resulting ``timeline_revision``), bumps ``stories.timeline_revision`` by one when the
+   operation ``bumps_revision`` (FR-CONC-1), records a control action on the story, and checks
+   the active variants are one chain (FR-STORE-28, ``ChainBroken``);
+6. under an idempotent call (#61), binds the operation to the call's ``Idempotency-Key``: a late
+   original whose key a retry took over is refused, so a key never maps to two commits.
 
 Any failure rolls the transaction back, so no event row survives, and the operation is then
 marked ``failed`` in a separate transaction. Leaving the ``async with`` block without
@@ -43,7 +45,7 @@ from typing import Any, Literal, Self
 from sqlalchemy import and_, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import projections
+from epistrel.core import idempotency, projections
 from epistrel.core.concurrency import (
     Abandon,
     Decide,
@@ -502,6 +504,10 @@ class Operation:
             self.kind is OperationKind.TURN or self.control_action or self._commit_steps
         ):
             await self._check_chain(conn)
+        call = idempotency.current_call()
+        if call is not None:
+            # The key's operation commits with it (a late original is refused here, #61).
+            await call.bind(conn, self)
 
     async def _revalidate(self, conn: AsyncConnection, locked: Any, decide: Decide) -> None:
         """Run ``decide`` under the lock; raise ``RevalidationRequired`` unless it commits."""
@@ -652,6 +658,7 @@ class Operation:
                 membership_tx=now,
                 committed_at=now,
                 attempts=self.attempts,
+                timeline_revision=self.timeline_revision,
             )
             .returning(operations.c.membership_tx)
         )

@@ -67,7 +67,9 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
 async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
     """Every row that belongs to ``story_id``, as text, per table. The tables come from
     ``information_schema`` (every table with a ``story_id`` column), not from ``STORY_TABLES``,
-    so a table the deletion forgets shows up as rows left behind."""
+    so a table the deletion forgets shows up as rows left behind; plus the story-scoped rows of
+    ``config_changes`` and ``idempotency_keys`` (#61), which name the story by ``scope_id``, and
+    the key of the story's creation (#61), which names its operation."""
     owned: dict[str, set[str]] = {}
     async with engine.connect() as conn:
         scoped = await conn.scalars(
@@ -89,6 +91,17 @@ async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
             await conn.scalars(
                 text(
                     "SELECT t::text FROM config_changes t WHERE scope = 'story' AND scope_id = :s"
+                ),
+                {"s": story_id},
+            )
+        )
+        # Its own keys, and the deployment-scoped key of its creation (bound to its operation).
+        owned["idempotency_keys"] = set(
+            await conn.scalars(
+                text(
+                    "SELECT t::text FROM idempotency_keys t WHERE (scope = 'story' AND "
+                    "scope_id = :s) OR operation_id IN "
+                    "(SELECT operation_id FROM operations WHERE story_id = :s)"
                 ),
                 {"s": story_id},
             )
@@ -121,7 +134,20 @@ async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
     detached = removed.pop("audit_log")
     assert {t: r for t, r in removed.items() if r} == {t: r for t, r in owned.items() if r}
     added = {table: after[table] - before[table] for table in after}
-    assert {t for t, r in added.items() if r} == {"operations", "events", "audit_log"}
+    assert {t for t, r in added.items() if r} == {
+        "operations",
+        "events",
+        "audit_log",
+        "idempotency_keys",
+    }
+    # The deletion's own Idempotency-Key (#61): deployment-scoped, so it outlives the story.
+    (key,) = await rows(
+        engine,
+        "SELECT scope, scope_id, status, result->>'status' AS answered, operation_id "
+        "FROM idempotency_keys WHERE key = :k",
+        k=response.headers["Idempotency-Key"],
+    )
+    assert tuple(key[:4]) == ("deployment", "deployment", "done", "204")
     # The audit_log exception (#56): the victim's rows stay with story_id nulled, and the
     # deletion writes one story_deleted row; no other story's audit row changed.
     audit = await rows(
@@ -148,6 +174,7 @@ async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
     assert [tuple(r) for r in record] == [
         (None, OperationKind.CONTROL.value, "story_deleted", victim)
     ]
+    assert key.operation_id == next(iter(added["operations"])).split(",")[0].lstrip("(")
     assert (len(added["operations"]), len(added["events"])) == (1, 1)
     assert all(not r for r in (await _rows_of(engine, victim)).values())
 

@@ -28,7 +28,9 @@ from fastapi import status as http_status
 from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import MutationResponse
+from epistrel.core import idempotency
 from epistrel.core.enums import StoryStatus
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
@@ -147,7 +149,7 @@ class StorySettingsBody(BaseModel):
     guardrail_calls: GuardrailCallsBody
 
 
-IDEMPOTENT_REPLAY_HEADER = "Idempotent-Replay"
+IDEMPOTENT_REPLAY_HEADER = idempotency.IDEMPOTENT_REPLAY_HEADER
 
 INGEST_DESCRIPTION = (
     "Record events into the story's authoritative history without generating a reply: a "
@@ -192,12 +194,13 @@ async def create_story(
 ) -> StoryCreatedBody:
     created = await engine.create_story(ctx, body)
     response.headers["Location"] = f"/stories/{created.story_id}"
-    return StoryCreatedBody(
+    answer = StoryCreatedBody(
         story_id=created.story_id,
         characters=[CharacterRefBody(id=c.id, name=c.name) for c in created.characters],
         timeline_revision=created.timeline_revision,
         content_rating=RatingBody.of(created.content_rating),
     )
+    return answered(answer, ctx, response, replayed=created.replayed)
 
 
 @router.get("", response_model=StoryList)
@@ -231,9 +234,7 @@ async def ingest(
     result = await engine.ingest(ctx, story_id, body)
     if not result.created:
         response.status_code = http_status.HTTP_200_OK
-    if result.replayed:
-        response.headers[IDEMPOTENT_REPLAY_HEADER] = "true"
-    return IngestResponse(
+    answer = IngestResponse(
         results=[
             IngestedEventBody(
                 client_event_id=r.client_event_id,
@@ -245,6 +246,7 @@ async def ingest(
         ],
         timeline_revision=result.timeline_revision,
     )
+    return answered(answer, ctx, response, replayed=result.replayed)
 
 
 @router.get("/{story_id}/settings", response_model=StorySettingsBody)
@@ -261,18 +263,26 @@ async def story_settings(story_id: str, ctx: ContextDep, engine: EngineDep) -> S
 
 
 @router.post("/{story_id}/archive", response_model=StatusBody)
-async def archive_story(story_id: str, ctx: ContextDep, engine: EngineDep) -> StatusBody:
+async def archive_story(
+    story_id: str, response: Response, ctx: ContextDep, engine: EngineDep
+) -> StatusBody:
     change = await engine.archive_story(ctx, story_id)
-    return StatusBody(status=change.status, timeline_revision=change.timeline_revision)
+    answer = StatusBody(status=change.status, timeline_revision=change.timeline_revision)
+    return answered(answer, ctx, response, replayed=change.replayed)
 
 
 @router.post("/{story_id}/unarchive", response_model=StatusBody)
-async def unarchive_story(story_id: str, ctx: ContextDep, engine: EngineDep) -> StatusBody:
+async def unarchive_story(
+    story_id: str, response: Response, ctx: ContextDep, engine: EngineDep
+) -> StatusBody:
     change = await engine.unarchive_story(ctx, story_id)
-    return StatusBody(status=change.status, timeline_revision=change.timeline_revision)
+    answer = StatusBody(status=change.status, timeline_revision=change.timeline_revision)
+    return answered(answer, ctx, response, replayed=change.replayed)
 
 
 @router.delete("/{story_id}", status_code=http_status.HTTP_204_NO_CONTENT, response_class=Response)
 async def delete_story(story_id: str, ctx: ContextDep, engine: EngineDep) -> Response:
-    await engine.delete_story(ctx, story_id)
-    return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+    """Delete the story. A retry under the same ``Idempotency-Key`` is a 204 with
+    ``Idempotent-Replay: true`` (the deletion is not repeated)."""
+    deleted = await engine.delete_story(ctx, story_id)
+    return no_content(ctx, replayed=deleted.replayed)

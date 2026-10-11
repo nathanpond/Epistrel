@@ -32,6 +32,7 @@ from tests.story_support import count
 
 PLANTED = "PINEAPPLE-42"
 RESPONSE_FIELDS = {
+    "idempotency_key",
     "message",
     "beats",
     "turn",

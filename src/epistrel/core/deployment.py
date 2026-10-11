@@ -23,17 +23,25 @@ from epistrel.core.config_changes import (
     story_text_caps,
 )
 from epistrel.core.errors import InvalidRequest
+from epistrel.core.idempotency import idempotency_settings, read_idempotency_settings
 from epistrel.core.ratings import require_assignable
-from epistrel.core.settings_schema import GenerationSettings, LiteDefaults, StoryTextCaps
+from epistrel.core.settings_schema import (
+    GenerationSettings,
+    IdempotencySettings,
+    LiteDefaults,
+    StoryTextCaps,
+)
 from epistrel.core.tables import deployment_state
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
 __all__ = [
     "DeploymentSettings",
     "SettingsPatch",
+    "read_idempotency_settings",
     "read_lite_defaults",
     "read_settings",
     "read_story_text_caps",
+    "update_idempotency_settings",
     "update_lite_defaults",
     "update_settings",
     "update_story_text_caps",
@@ -199,4 +207,44 @@ async def update_story_text_caps(
                 actor=principal,
                 change_class=ChangeClass.PROSPECTIVE,
             )
+        return wanted
+
+
+async def update_idempotency_settings(
+    db: AsyncEngine, *, principal: str, result_window_hours: int
+) -> IdempotencySettings:
+    """Set the deployment's idempotency result window (hours, 1 to 720; #61).
+
+    Prospective (FR-CONC-15): a request keeps the window in force when it started. Recorded like
+    every deployment write: one revision and one prospective ``config_changes`` row when the
+    value changes; the same value writes nothing."""
+    async with db.begin() as conn:
+        current_settings = await lock_deployment(conn)
+        document = dict(
+            await conn.scalar(
+                select(deployment_state.c.settings).where(
+                    deployment_state.c.id == DEPLOYMENT_ROW_ID
+                )
+            )
+            or {}
+        )
+        current = idempotency_settings(document)
+        wanted = IdempotencySettings(idempotency_result_window=result_window_hours)
+        if wanted == current:
+            return current
+        revision = await bump_config_revision(conn, current_settings)
+        await conn.execute(
+            update(deployment_state)
+            .where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+            .values(settings={**document, **wanted.model_dump(mode="json")})
+        )
+        await record_config_change(
+            conn,
+            config_revision=revision,
+            setting="idempotency_result_window",
+            old=current.idempotency_result_window,
+            new=wanted.idempotency_result_window,
+            actor=principal,
+            change_class=ChangeClass.PROSPECTIVE,
+        )
         return wanted

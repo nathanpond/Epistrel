@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -20,6 +21,12 @@ from tests.event_support import STORY_SETUP_KIND, play_turn, rows
 from tests.story_support import READ, WRITE, count, create, rest, story_body
 
 AUTHOR = RequestContext(principal="p-author")
+
+
+def _unkeyed(body: dict[str, Any]) -> dict[str, Any]:
+    """A mutation's body without the echoed ``Idempotency-Key`` (a fresh ULID per call)."""
+    assert len(body.pop("idempotency_key")) == 26
+    return body
 
 
 async def _operations(engine: AsyncEngine, story_id: str) -> int:
@@ -98,10 +105,10 @@ async def test_i_10(engine: AsyncEngine, settings: Settings) -> None:
         # Archive: a control operation with no revision bump; idempotent.
         archived = await client.post(f"/stories/{story_id}/archive", headers=WRITE)
         assert archived.status_code == 200, archived.text
-        assert archived.json() == {"status": "archived", "timeline_revision": 1}
+        assert _unkeyed(archived.json()) == {"status": "archived", "timeline_revision": 1}
         ops = await _operations(engine, story_id)
         again = await client.post(f"/stories/{story_id}/archive", headers=WRITE)
-        assert again.json() == {"status": "archived", "timeline_revision": 1}
+        assert _unkeyed(again.json()) == {"status": "archived", "timeline_revision": 1}
         assert await _operations(engine, story_id) == ops
         assert (await client.get(f"/stories/{story_id}", headers=READ)).json()["status"] == (
             "archived"
@@ -124,7 +131,7 @@ async def test_i_10(engine: AsyncEngine, settings: Settings) -> None:
 
         # Complement: unarchived, the story plays again.
         unarchived = await client.post(f"/stories/{story_id}/unarchive", headers=WRITE)
-        assert unarchived.json() == {"status": "active", "timeline_revision": 1}
+        assert _unkeyed(unarchived.json()) == {"status": "active", "timeline_revision": 1}
         await play_turn(engine, story_id, "hello?")
         assert (await client.get(f"/stories/{story_id}", headers=READ)).json()[
             "timeline_revision"

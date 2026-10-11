@@ -194,11 +194,13 @@ class IngestResult:
 
     results: list[EventResult]
     timeline_revision: int
+    key_replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
     @property
     def replayed(self) -> bool:
-        """Every event was a replay: nothing was written."""
-        return all(r.replayed for r in self.results)
+        """Nothing was written: a key replay (#61), or every event was ingested before."""
+        return self.key_replayed or all(r.replayed for r in self.results)
 
     @property
     def created(self) -> bool:

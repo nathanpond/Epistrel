@@ -315,6 +315,7 @@ def test_settings_read_and_partial_update(client: TestClient, pg_url: str) -> No
         assert changed.status_code == 200, changed.text
         body = changed.json()
         assert body == {
+            "idempotency_key": changed.headers["Idempotency-Key"],
             "config_revision": start["config_revision"] + 1,
             "default_content_rating_id": TEEN_ID,
             "minor_age_threshold": 21,

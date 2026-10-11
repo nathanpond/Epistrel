@@ -123,6 +123,8 @@ class PinnedMemories:
     items: tuple[PinnedItem, ...]
     timeline_revision: int
     operation_id: str | None = None
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +134,8 @@ class CustomInstructions:
     text: str
     timeline_revision: int
     operation_id: str | None = None
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 @dataclass(frozen=True, slots=True)

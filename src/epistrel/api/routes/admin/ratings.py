@@ -14,6 +14,7 @@ from fastapi import APIRouter, Response, status
 from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse
 from epistrel.core.ratings import Rating, RatingFields, RatingReplacement, RatingWrite
 
@@ -80,8 +81,11 @@ class RatingMutation(RatingBody, DeploymentMutationResponse):
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=RatingMutation)
-async def create_rating(body: RatingFields, ctx: ContextDep, engine: EngineDep) -> RatingMutation:
-    return RatingMutation.written(await engine.create_content_rating(ctx, body))
+async def create_rating(
+    body: RatingFields, response: Response, ctx: ContextDep, engine: EngineDep
+) -> RatingMutation:
+    write = await engine.create_content_rating(ctx, body)
+    return answered(RatingMutation.written(write), ctx, response, replayed=write.replayed)
 
 
 @router.get("", response_model=RatingList)
@@ -112,9 +116,14 @@ async def list_versions(rating_id: str, ctx: ContextDep, engine: EngineDep) -> R
 
 @router.put("/{rating_id}", response_model=RatingMutation)
 async def update_rating(
-    rating_id: str, body: RatingReplacement, ctx: ContextDep, engine: EngineDep
+    rating_id: str,
+    body: RatingReplacement,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
 ) -> RatingMutation:
-    return RatingMutation.written(await engine.update_content_rating(ctx, rating_id, body))
+    write = await engine.update_content_rating(ctx, rating_id, body)
+    return answered(RatingMutation.written(write), ctx, response, replayed=write.replayed)
 
 
 @router.delete(
@@ -123,11 +132,11 @@ async def update_rating(
     responses={status.HTTP_204_NO_CONTENT: {"description": "Already retired; nothing changed."}},
 )
 async def retire_rating(
-    rating_id: str, ctx: ContextDep, engine: EngineDep
+    rating_id: str, response: Response, ctx: ContextDep, engine: EngineDep
 ) -> RatingMutation | Response:
     """Retire the rating (200 with the retired rating); 204 when it was already retired;
     409 when it is the deployment default."""
     write = await engine.retire_content_rating(ctx, rating_id)
     if not write.changed:
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-    return RatingMutation.written(write)
+        return no_content(ctx, replayed=write.replayed)
+    return answered(RatingMutation.written(write), ctx, response, replayed=write.replayed)

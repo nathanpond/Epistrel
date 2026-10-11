@@ -237,7 +237,12 @@ async def test_mixed_replay_and_new(stub_settings: Settings, engine: AsyncEngine
             "ORDER BY narrative_turn",
             s=story,
         )
-        assert [k.idempotency_key for k in keys] == [None, "batch-1", None]
+        # The first ingest sent no key: the server generated one (#61), echoed in the header.
+        assert [k.idempotency_key for k in keys] == [
+            first.headers["Idempotency-Key"],
+            "batch-1",
+            None,
+        ]
         assert (
             len(await rows(engine, "SELECT 1 FROM client_events WHERE story_id = :s", s=story)) == 3
         )

@@ -38,6 +38,8 @@ class RebuildResult:
     operation_id: str
     counts: dict[str, int] = field(default_factory=dict)
     timeline_revision: int = 0
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 async def apply_events(

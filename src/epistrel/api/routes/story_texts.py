@@ -13,10 +13,11 @@ the story's revision. Thin handlers over ``Engine``; the rules are in
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.core.story_texts import (
     CustomInstructions,
@@ -96,14 +97,19 @@ async def get_pinned_memories(
     ),
 )
 async def put_pinned_memories(
-    story_id: str, body: PinnedMemoriesRequest, ctx: ContextDep, engine: EngineDep
+    story_id: str,
+    body: PinnedMemoriesRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
 ) -> PinnedMemoriesWritten:
     pins = await engine.set_pinned_memories(ctx, story_id, body)
-    return PinnedMemoriesWritten(
+    written = PinnedMemoriesWritten(
         items=[PinnedItemBody(id=i.id, text=i.text) for i in pins.items],
         operation_id=pins.operation_id,
         timeline_revision=pins.timeline_revision,
     )
+    return answered(written, ctx, response, replayed=pins.replayed)
 
 
 @router.get(
@@ -129,11 +135,16 @@ async def get_custom_instructions(
     ),
 )
 async def put_custom_instructions(
-    story_id: str, body: CustomInstructionsRequest, ctx: ContextDep, engine: EngineDep
+    story_id: str,
+    body: CustomInstructionsRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
 ) -> CustomInstructionsWritten:
     written: CustomInstructions = await engine.set_custom_instructions(ctx, story_id, body)
-    return CustomInstructionsWritten(
+    answer = CustomInstructionsWritten(
         text=written.text,
         operation_id=written.operation_id,
         timeline_revision=written.timeline_revision,
     )
+    return answered(answer, ctx, response, replayed=written.replayed)

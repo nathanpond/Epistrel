@@ -417,6 +417,8 @@ class ConfigWrite:
 
     changed: bool
     config_revision: int
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 def _columns(row: ConfigRow | None) -> dict[str, Any]:

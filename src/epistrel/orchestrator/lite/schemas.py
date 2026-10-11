@@ -125,6 +125,8 @@ class RespondResult:
     elapsed_ms: int
     audience_filter: AudienceFilter = "none"
     degradation: list[str] = field(default_factory=list)
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 __all__ = [

@@ -113,6 +113,26 @@ class StoryTextCaps(BaseModel):
     )
 
 
+# -- the idempotency result window (FR-CONC-6; #61) ----------------------------------------------
+
+DEFAULT_IDEMPOTENCY_RESULT_WINDOW_HOURS = 24
+MAX_IDEMPOTENCY_RESULT_WINDOW_HOURS = 24 * 30
+
+
+class IdempotencySettings(BaseModel):
+    """How long a mutating request's full result is kept under its ``Idempotency-Key``, in
+    hours, stored under ``deployment_state.settings`` (#61). Prospective: a request keeps the
+    window in force when it started; after it only the tombstone remains."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    idempotency_result_window: int = Field(
+        default=DEFAULT_IDEMPOTENCY_RESULT_WINDOW_HOURS,
+        ge=1,
+        le=MAX_IDEMPOTENCY_RESULT_WINDOW_HOURS,
+    )
+
+
 TurnConcurrency = Literal["reject", "queue"]
 CHARACTER_VIEWPOINT_PREFIX = "character:"
 OMNISCIENT = "omniscient"

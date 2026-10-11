@@ -10,12 +10,17 @@ outcome of every release from what committed since that attempt's base. After ev
   settings work never move it);
 - no two turns were accepted against the same base without rebase or regeneration.
 
-The FR-CONC-5 (turn concurrency) and FR-CONC-6 (idempotency) parts land with #63 and #61.
+The FR-CONC-6 slice (``test_conc_linear__idempotency``, #61) interleaves keyed turns — duplicates
+sent together, retries, a different payload under a used key — with pins edits, and checks that
+every idempotency key maps to at most one committed operation. The FR-CONC-5 (turn concurrency)
+part lands with #63.
 """
 
 from __future__ import annotations
 
 import asyncio
+import random
+from collections import Counter, defaultdict
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
@@ -33,8 +38,18 @@ from hypothesis.stateful import (
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel import Engine
+from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
-from epistrel.core.errors import RevisionConflict, TimelineChanged
+from epistrel.core.errors import (
+    EpistrelError,
+    IdempotencyConflict,
+    RevisionConflict,
+    TimelineChanged,
+)
+from epistrel.core.idempotency import ReferenceReplay
+from epistrel.core.stories import StorySpec
+from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
 from tests.auth_support import auth_settings
 from tests.concurrency_support import (
     HeldTurn,
@@ -49,7 +64,7 @@ from tests.concurrency_support import (
     summarise,
     truth_outside_read_set,
 )
-from tests.event_support import execute_in_tx, new_story
+from tests.event_support import execute_in_tx, new_story, rows
 from tests.projection_support import swap, truncate, untruncate
 
 MAX_IN_FLIGHT = 3
@@ -298,3 +313,120 @@ def test_conc_linear(pg_url: str) -> None:
         seen
     )
     assert seen.get("revision_conflict", 0) > 0, seen
+
+
+# -- the FR-CONC-6 slice (#61) ---------------------------------------------------------------
+
+IDEMPOTENCY_ROUNDS = 12
+IDEMPOTENCY_SEED = 61
+
+
+async def _keyed_turn(
+    lib: Engine, story: str, actor: str, said: str, key: str
+) -> tuple[str, RespondResult | BaseException]:
+    try:
+        result = await lib.respond(
+            RequestContext(principal="p-conc", idempotency_key=key),
+            story,
+            RespondRequest.model_validate(
+                {"actor_character_id": actor, "player_input": {"say": said}}
+            ),
+        )
+    except (EpistrelError, ReferenceReplay) as exc:
+        return key, exc
+    return key, result
+
+
+@pytest.mark.part("M2", "FR-CONC-6")
+async def test_conc_linear__idempotency(pg_url: str, engine: AsyncEngine) -> None:
+    """Seeded interleavings of keyed turns — duplicates sent together, retries after the
+    original, a different payload under a used key — with pins edits in between: every key maps
+    to at most one committed operation and every answer under a key is that operation's
+    message; the chain stays single and the revision moves by exactly one per committed truth
+    change. Complement: the run committed turns, replayed duplicates and refused payloads."""
+    rng = random.Random(IDEMPOTENCY_SEED)  # noqa: S311 - a fixed seed, not a secret
+    lib = Engine(auth_settings(pg_url, model_adapter="stub"), db=engine)
+    created = await lib.create_story(
+        RequestContext(principal="p-conc"),
+        StorySpec.model_validate(
+            {
+                "name": "conc idempotency",
+                "characters": [
+                    {
+                        "name": "Wren",
+                        "definition": "The player.",
+                        "true_age": 30,
+                        "is_player": True,
+                    },
+                    {"name": "Ada", "definition": "A guide.", "true_age": 40},
+                ],
+            }
+        ),
+    )
+    story, actor = created.story_id, created.characters[0].id
+    start = await revision(engine, story)
+    answers: dict[str, set[str]] = defaultdict(set)
+    payloads: dict[str, str] = {}
+    tally: Counter[str] = Counter()
+    pins = 0
+    for round_ in range(IDEMPOTENCY_ROUNDS):
+        work = []
+        for k in range(rng.randint(1, 3)):
+            key = f"conc-{IDEMPOTENCY_SEED}-{round_}-{k}"
+            payloads[key] = f"round {round_} key {k}"
+            work += [
+                _keyed_turn(lib, story, actor, payloads[key], key) for _ in range(rng.randint(1, 4))
+            ]
+        if payloads and rng.random() < 0.5:  # a used key with a different payload
+            used = rng.choice(sorted(payloads))
+            work.append(_keyed_turn(lib, story, actor, payloads[used] + " (changed)", used))
+        if rng.random() < 0.4:
+            pins += 1
+            work.append(_as_pair(set_pins(engine, story, f"pin {round_}")))
+        rng.shuffle(work)
+        for key, outcome in await asyncio.gather(*work):
+            if isinstance(outcome, RespondResult):
+                tally["replayed" if outcome.replayed else "committed"] += 1
+                answers[key].add(outcome.message.message_id)
+            elif isinstance(outcome, IdempotencyConflict):
+                tally["refused"] += 1
+            elif isinstance(outcome, BaseException):
+                tally[type(outcome).__name__] += 1
+        # Retry every key once more after the dust settles: replay, or (after a failure) run.
+        for key, said in payloads.items():
+            _, outcome = await _keyed_turn(lib, story, actor, said, key)
+            if isinstance(outcome, RespondResult):
+                answers[key].add(outcome.message.message_id)
+
+    committed = await rows(
+        engine,
+        "SELECT o.idempotency_key, count(*) AS n, max(k.operation_id) AS bound, "
+        "max(o.operation_id) AS op FROM operations o LEFT JOIN idempotency_keys k "
+        "ON k.key = o.idempotency_key AND k.scope = 'story' AND k.scope_id = o.story_id "
+        "WHERE o.story_id = :s AND o.kind = 'turn' AND o.status = 'committed' "
+        "GROUP BY o.idempotency_key",
+        s=story,
+    )
+    assert all(r.n == 1 and r.bound == r.op for r in committed), committed
+    turn_messages = {
+        r.idempotency_key: r.id
+        for r in await rows(
+            engine,
+            "SELECT o.idempotency_key, e.id FROM events e JOIN operations o "
+            "ON o.operation_id = e.operation_id WHERE o.story_id = :s "
+            "AND e.type = 'message_rendered' AND o.status = 'committed'",
+            s=story,
+        )
+    }
+    for key, seen in answers.items():
+        assert seen == {turn_messages[key]}, (key, seen)
+    await assert_single_chain(engine, story)
+    turns = len(committed)
+    assert await revision(engine, story) == start + turns + pins
+    print(f"CONC-LINEAR idempotency tally={dict(tally)} turns={turns} pins={pins}")
+    assert all(tally[outcome] > 0 for outcome in ("committed", "replayed", "refused")), tally
+
+
+async def _as_pair(work: Coroutine[Any, Any, Any]) -> tuple[str, Any]:
+    await work
+    return "", None

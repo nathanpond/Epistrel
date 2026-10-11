@@ -4,10 +4,11 @@
 
 1. **Prechecks**, in #44's canonical order, before anything is written: the story exists and
    the request's characters are its cast (422 ``validation_error`` with ``unknown_actor`` /
-   ``unknown_render_ids`` / ``unknown_present_ids``), the story is not archived, an
-   ``Idempotency-Key`` already used is not reused for another viewpoint (409
-   ``idempotency_conflict``, #59's interim lookup until #61), the expected revision holds (409),
-   and the output viewpoint resolves (422 ``viewpoint_unresolved``). The requested viewpoint
+   ``unknown_render_ids`` / ``unknown_present_ids``), the story is not archived, the
+   ``Idempotency-Key`` is claimed (#61: the request hash covers the body, the actor, the
+   *resolved* viewpoint and the expected revision, so a retry replays the stored turn and a key
+   reused for another viewpoint is 409 ``idempotency_conflict``), the expected revision holds
+   (409), and the output viewpoint resolves (422 ``viewpoint_unresolved``). The requested viewpoint
    arrives on ``ctx.viewpoint``, the single carrier (``Engine.respond`` folds the body field and
    the keyword argument into it).
 2. **The input gate** (#56) over the actor's ``say``/``do`` joined with a newline, reserving the
@@ -20,7 +21,9 @@
    input as beat 1 and the reply as beat 2. A touched read set regenerates the same operation.
 4. **The result**: the finished message (never "verified": under ``lite`` no claim is
    checked), the turn's beats for the resolved viewpoint, the new revision, and the model calls
-   the turn made (``model_calls``, #54) with its ``elapsed_ms``.
+   the turn made (``model_calls``, #54) with its ``elapsed_ms`` (fixed at the commit). Under an
+   idempotent call it is built and stored ``done`` inside the turn's commit transaction, so a
+   committed turn always has its result for a retry.
 
 Scene context is validated by the request model and the cast check, then dropped (FR-RESP-4).
 This module must not import ``orchestrator.policies.admin`` (import-linter): the Engine passes
@@ -37,6 +40,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import idempotency
 from epistrel.core.concurrency import LiteReadSet, check_expected_revision, run_with_revalidation
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
@@ -54,7 +58,7 @@ from epistrel.core.turns import (
     read_turn_inputs,
     stage_turn,
 )
-from epistrel.core.viewpoint import check_key_viewpoint, resolve_viewpoint, try_resolve
+from epistrel.core.viewpoint import resolve_viewpoint, try_resolve
 from epistrel.orchestrator.budget import DEFAULT_TURN_DEADLINE_S, TurnBudget
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
 from epistrel.orchestrator.lite.schemas import FinishedMessage, RespondRequest, RespondResult
@@ -130,7 +134,17 @@ async def respond(
         story_default=story.settings.default_output_viewpoint,
         cast_ids=story.ids,
     )
-    await check_key_viewpoint(db, story_id, ctx.idempotency_key, try_resolve(resolution))
+    call = idempotency.current_call()
+    if call is not None:
+        await call.claim(
+            {
+                "story_id": story_id,
+                "body": request.model_dump(mode="json", exclude={"output_viewpoint"}),
+                "actor_character_id": cast.actor.id,
+                "viewpoint": try_resolve(resolution),
+                "expected_revision": ctx.expected_revision,
+            }
+        )
     await check_expected_revision(db, story_id, ctx.expected_revision)
     viewpoint = resolution()
     say, do = request.player_input.say_text, request.player_input.do_text
@@ -176,22 +190,33 @@ async def respond(
                 finish_reason=result.finish_reason,
             )
 
+        async def result(
+            conn: AsyncConnection | AsyncEngine, committed: Operation
+        ) -> RespondResult:
+            beats = await turn_beats(conn, story_id, committed.operation_id, viewpoint)
+            reply = next(item for item in beats if item.beat == REPLY_BEAT)
+            assert committed.narrative_turn is not None  # noqa: S101 - a committed turn's position
+            assert committed.turn_variant is not None  # noqa: S101
+            assert committed.timeline_revision is not None  # noqa: S101
+            return RespondResult(
+                message=FinishedMessage(message_id=reply.message_id, text=reply.text),
+                beats=beats,
+                turn=committed.narrative_turn,
+                variant=committed.turn_variant,
+                timeline_revision=committed.timeline_revision,
+                output_viewpoint=viewpoint,
+                model_calls=list(calls.calls),
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+
+        if call is not None:
+            # ``done`` and the result commit with the turn (#61).
+            call.result_in_commit = result
         await run_with_revalidation(op, begin=begin, generate=generate, read_set=LiteReadSet())
-    beats = await turn_beats(db, story_id, op.operation_id, viewpoint)
-    reply = next(item for item in beats if item.beat == REPLY_BEAT)
-    assert op.narrative_turn is not None  # noqa: S101 - a committed turn has a position
-    assert op.turn_variant is not None  # noqa: S101
-    assert op.timeline_revision is not None  # noqa: S101
-    return RespondResult(
-        message=FinishedMessage(message_id=reply.message_id, text=reply.text),
-        beats=beats,
-        turn=op.narrative_turn,
-        variant=op.turn_variant,
-        timeline_revision=op.timeline_revision,
-        output_viewpoint=viewpoint,
-        model_calls=list(calls.calls),
-        elapsed_ms=round((time.monotonic() - started) * 1000),
-    )
+    if call is not None and call.stored_in_commit:
+        stored: RespondResult = call.committed_value
+        return stored
+    return await result(db, op)
 
 
 async def _generate(

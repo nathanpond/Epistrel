@@ -23,10 +23,16 @@ from fastapi import APIRouter, Response, status
 from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse
 from epistrel.core.context import RequestContext
 from epistrel.engine import Engine
-from epistrel.orchestrator.models.config import ApiKeyBody, ConfigEntry, ConfigReplacement
+from epistrel.orchestrator.models.config import (
+    ApiKeyBody,
+    ConfigEntry,
+    ConfigReplacement,
+    ConfigWrite,
+)
 
 router = APIRouter(prefix="/model-config")
 
@@ -106,21 +112,24 @@ async def read_purpose_config(purpose: str, ctx: ContextDep, engine: EngineDep) 
 
 
 async def _mutation(
-    engine: Engine, ctx: RequestContext, purpose: str, revision: int
+    engine: Engine, ctx: RequestContext, purpose: str, write: ConfigWrite, response: Response
 ) -> ModelConfigMutation:
+    """The purpose's entry after a write (read back, so a replay shows the current entry with
+    the stored write's revision)."""
     _, entry = await engine.model_config_entry(ctx, purpose)
-    return ModelConfigMutation(
-        purpose=purpose, config_revision=revision, **ModelConfigEntry.fields_of(entry)
+    answer = ModelConfigMutation(
+        purpose=purpose, config_revision=write.config_revision, **ModelConfigEntry.fields_of(entry)
     )
+    return answered(answer, ctx, response, replayed=write.replayed)
 
 
 @router.put("/{purpose}", response_model=ModelConfigMutation)
 async def replace_purpose_config(
-    purpose: str, body: ConfigReplacement, ctx: ContextDep, engine: EngineDep
+    purpose: str, body: ConfigReplacement, response: Response, ctx: ContextDep, engine: EngineDep
 ) -> ModelConfigMutation:
     """Replace the purpose's own configuration; a PUT that changes nothing writes nothing."""
     write = await engine.replace_model_config(ctx, purpose, body)
-    return await _mutation(engine, ctx, purpose, write.config_revision)
+    return await _mutation(engine, ctx, purpose, write, response)
 
 
 @router.delete(
@@ -129,14 +138,14 @@ async def replace_purpose_config(
     responses={status.HTTP_204_NO_CONTENT: {"description": "No override; nothing changed."}},
 )
 async def remove_purpose_override(
-    purpose: str, ctx: ContextDep, engine: EngineDep
+    purpose: str, response: Response, ctx: ContextDep, engine: EngineDep
 ) -> ModelConfigMutation | Response:
     """Drop the override (200 with the now-inherited entry); 204 when there was none; 409 for
     ``default``."""
     write = await engine.remove_model_override(ctx, purpose)
     if not write.changed:
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-    return await _mutation(engine, ctx, purpose, write.config_revision)
+        return no_content(ctx, replayed=write.replayed)
+    return await _mutation(engine, ctx, purpose, write, response)
 
 
 @router.put("/{purpose}/api-key", status_code=status.HTTP_204_NO_CONTENT)
@@ -145,12 +154,12 @@ async def set_purpose_api_key(
 ) -> Response:
     """Store the purpose's API key (encrypted at rest; never returned). 503
     ``config_key_missing`` without ``EPISTREL_CONFIG_KEY``."""
-    await engine.set_model_api_key(ctx, purpose, body.api_key)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    write = await engine.set_model_api_key(ctx, purpose, body.api_key)
+    return no_content(ctx, replayed=write.replayed)
 
 
 @router.delete("/{purpose}/api-key", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_purpose_api_key(purpose: str, ctx: ContextDep, engine: EngineDep) -> Response:
     """Remove the purpose's own API key; it then inherits ``default``'s, if any."""
-    await engine.remove_model_api_key(ctx, purpose)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    write = await engine.remove_model_api_key(ctx, purpose)
+    return no_content(ctx, replayed=write.replayed)

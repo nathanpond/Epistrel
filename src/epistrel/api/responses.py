@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from epistrel.api.auth import MUTATING_METHODS
 
@@ -25,12 +25,18 @@ class MutationResponse(BaseModel):
     """Base of every story-scoped mutating response."""
 
     timeline_revision: int
+    idempotency_key: str | None = Field(default=None, exclude_if=lambda key: key is None)
+    """The request's ``Idempotency-Key``, echoed (server-generated when it sent none; #61).
+    Absent from reads that share the model."""
 
 
 class DeploymentMutationResponse(BaseModel):
     """Base of every deployment-scoped (admin) mutating response."""
 
     config_revision: int
+    idempotency_key: str | None = Field(default=None, exclude_if=lambda key: key is None)
+    """The request's ``Idempotency-Key``, echoed (server-generated when it sent none; #61).
+    Absent from reads that share the model."""
 
 
 def response_base_problems(app: FastAPI) -> list[str]:

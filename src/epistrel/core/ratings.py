@@ -131,6 +131,8 @@ class RatingWrite:
     rating: Rating
     config_revision: int
     changed: bool
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 @dataclass(frozen=True, slots=True)

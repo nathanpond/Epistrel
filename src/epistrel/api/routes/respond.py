@@ -5,10 +5,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.history import ItemModel, item_model
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
@@ -74,6 +75,7 @@ class RespondResponse(MutationResponse):
     description=RESPOND_DESCRIPTION,
 )
 async def respond(
-    story_id: str, body: RespondRequest, ctx: ContextDep, engine: EngineDep
+    story_id: str, body: RespondRequest, response: Response, ctx: ContextDep, engine: EngineDep
 ) -> RespondResponse:
-    return RespondResponse.of(await engine.respond(ctx, story_id, body))
+    result = await engine.respond(ctx, story_id, body)
+    return answered(RespondResponse.of(result), ctx, response, replayed=result.replayed)

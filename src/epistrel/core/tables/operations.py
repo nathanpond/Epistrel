@@ -37,6 +37,7 @@ MUTABLE_OPERATION_COLUMNS: tuple[str, ...] = (
     "attempts",
     "turn_report",
     "viewpoint",
+    "timeline_revision",
 )
 """The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list)."""
 
@@ -86,6 +87,8 @@ operations = Table(
         server_default=text("transaction_timestamp()"),
     ),
     Column("committed_at", TIMESTAMP(timezone=True), nullable=True),
+    # The story's revision once the operation committed (#61; ``GET /operations/{id}``).
+    Column("timeline_revision", BigInteger, nullable=True),
     CheckConstraint(ORIGIN_CHECK, name="origin"),
     CheckConstraint(
         "kind <> 'turn' OR status <> 'committed' OR narrative_turn IS NOT NULL",

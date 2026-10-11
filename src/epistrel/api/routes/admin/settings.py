@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 
 from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.idempotency import answered
 from epistrel.api.responses import DeploymentMutationResponse
 from epistrel.core.deployment import DeploymentSettings, SettingsPatch
 
@@ -31,5 +32,8 @@ async def read_settings(ctx: ContextDep, engine: EngineDep) -> SettingsBody:
 
 
 @router.put("", response_model=SettingsBody)
-async def update_settings(body: SettingsPatch, ctx: ContextDep, engine: EngineDep) -> SettingsBody:
-    return SettingsBody.of(await engine.update_deployment_settings(ctx, body))
+async def update_settings(
+    body: SettingsPatch, response: Response, ctx: ContextDep, engine: EngineDep
+) -> SettingsBody:
+    updated = await engine.update_deployment_settings(ctx, body)
+    return answered(SettingsBody.of(updated), ctx, response, replayed=updated.replayed)

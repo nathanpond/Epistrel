@@ -19,9 +19,10 @@ beat is returned in full and the result says ``audience_filter: "none"``. Privat
 records) need ``omniscient`` by name (``require_omniscient``, 403 ``omniscient_required``).
 
 **Stored results keep their viewpoint.** A turn records its resolved viewpoint on
-``operations.viewpoint``; reusing its ``Idempotency-Key`` for a request that resolves to
-another viewpoint is 409 ``idempotency_conflict`` (``check_key_viewpoint``). #61's store folds
-the resolved viewpoint into its request hash and replaces the interim check.
+``operations.viewpoint``, and the idempotency request hash (``core.idempotency``, #61) covers
+the resolved viewpoint: a retry resolving to the same one replays the stored result, and
+reusing the key for a request that resolves to another viewpoint (or to none) is 409
+``idempotency_conflict``.
 """
 
 from __future__ import annotations
@@ -30,18 +31,13 @@ import dataclasses
 from collections.abc import Callable, Collection
 from typing import Literal
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncEngine
-
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import (
-    IdempotencyConflict,
     InvalidRequest,
     OmniscientRequired,
     ViewpointUnresolved,
 )
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
-from epistrel.core.tables import operations
 
 PRIVATE_CHANNELS = frozenset({"think", "latent"})
 """Channels no character viewpoint ever receives, under every profile."""
@@ -158,44 +154,12 @@ def require_omniscient(viewpoint: str, *, field: str) -> None:
         )
 
 
-async def check_key_viewpoint(
-    db: AsyncEngine, story_id: str, idempotency_key: str | None, viewpoint: str | None
-) -> None:
-    """409 ``idempotency_conflict`` when ``idempotency_key`` already names an operation of the
-    story made for a viewpoint other than ``viewpoint`` (``None``: the request resolves to no
-    viewpoint, so it cannot be the same request). No stored result is returned.
-
-    Interim (#59): #61's ``idempotency_keys`` store hashes the resolved viewpoint with the rest
-    of the request and replaces this lookup; until then a same-viewpoint reuse is not replayed.
-    """
-    if idempotency_key is None:
-        return
-    async with db.connect() as conn:
-        stored = (
-            await conn.execute(
-                select(operations.c.operation_id, operations.c.viewpoint)
-                .where(
-                    operations.c.story_id == story_id,
-                    operations.c.idempotency_key == idempotency_key,
-                )
-                .order_by(operations.c.started_at)
-                .limit(1)
-            )
-        ).one_or_none()
-    if stored is not None and (viewpoint is None or stored.viewpoint != viewpoint):
-        raise IdempotencyConflict(
-            "this Idempotency-Key was used for a request with another output viewpoint",
-            {"reason": "viewpoint"},
-        )
-
-
 __all__ = [
     "AUDIENCE_FILTER",
     "OMNISCIENT",
     "PRIVATE_CHANNELS",
     "AudienceFilter",
     "character_viewpoint",
-    "check_key_viewpoint",
     "is_omniscient",
     "require_omniscient",
     "resolve_viewpoint",

@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from sqlalchemy import insert, null, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import idempotency
 from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import LiteDefaults, StoryTextCaps
 from epistrel.core.tables import config_changes, deployment_state
@@ -63,7 +64,15 @@ async def record_config_change(
     scope: ConfigScope = ConfigScope.DEPLOYMENT,
     scope_id: str | None = None,
 ) -> str:
-    """Append one change row in the caller's transaction; return its id."""
+    """Append one change row in the caller's transaction; return its id.
+
+    Under an idempotent call (#61) the first change also records the write's ``control``
+    operation and binds it to the call's key, in this transaction."""
+    call = idempotency.current_call()
+    if call is not None:
+        await call.bind_configuration(
+            conn, story_id=scope_id if scope is ConfigScope.STORY else None
+        )
     change_id = new_ulid()
     await conn.execute(
         insert(config_changes).values(
@@ -88,6 +97,8 @@ class DeploymentSettings:
     config_revision: int
     default_content_rating_id: str
     minor_age_threshold: int
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 def _settings(row: Any) -> DeploymentSettings:

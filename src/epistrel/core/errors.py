@@ -201,6 +201,15 @@ class IdempotencyConflict(EpistrelError):
     http_status = 409
 
 
+class OriginalInFlightTimeout(EpistrelError):
+    """A retry waited for the original request under its ``Idempotency-Key`` until the turn
+    deadline (+5 s) and the original is still running (FR-CONC-6). Nothing was started; retry
+    later. ``details``: ``operation_id`` (the original's operation, ``null`` before it began)."""
+
+    code = "original_in_flight_timeout"
+    http_status = 503
+
+
 class GuardrailViolation(EpistrelError):
     """Text breaks one or more policies that apply to it (FR-GUARD-10,11): the request is
     refused with no side effects.

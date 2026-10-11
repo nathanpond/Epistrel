@@ -29,7 +29,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints
-from sqlalchemy import Table, delete, func, insert, select, update
+from sqlalchemy import Table, and_, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import audit
@@ -49,6 +49,7 @@ from epistrel.core.events.types import (
     StoryDeletedEvent,
     StoryUnarchivedEvent,
 )
+from epistrel.core.idempotency import Scope
 from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import require_assignable
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, StorySettings
@@ -60,6 +61,7 @@ from epistrel.core.tables import (
     content_ratings,
     deployment_state,
     events,
+    idempotency_keys,
     operations,
     policies,
     stories,
@@ -92,7 +94,9 @@ STORY_TABLES: tuple[Table, ...] = (
 """Every table with a ``story_id`` column, in the order deletion empties them (events before the
 operations they belong to). ``tests/integration/test_s_delete.py`` checks it against
 ``information_schema``, so a new story-scoped table cannot be missed. The ``stories`` row goes
-last; story-scoped ``config_changes`` rows (``scope = 'story'``) go by ``scope_id``."""
+last; story-scoped ``config_changes`` and ``idempotency_keys`` rows (``scope = 'story'``) go by
+``scope_id``, and a deployment-scoped key bound to one of the story's operations (its creation)
+goes with that operation."""
 
 STORY_ID_EXCEPTIONS: frozenset[str] = frozenset({audit_log.name})
 """Deployment-level tables that carry a ``story_id`` but outlive the story: deletion nulls the
@@ -168,6 +172,8 @@ class CreatedStory:
     characters: tuple[CharacterRef, ...]
     timeline_revision: int
     content_rating: RatingRef
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +207,18 @@ class StatusChange:
     status: StoryStatus
     timeline_revision: int
     changed: bool
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+
+
+@dataclass(frozen=True, slots=True)
+class DeletedStory:
+    """What a deletion removed: rows per table (the story's ``config_changes`` and the
+    ``stories`` row included)."""
+
+    removed: dict[str, int]
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 # -- create ---------------------------------------------------------------------------------
@@ -538,6 +556,23 @@ async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, 
     story's events go."""
     await conn.execute(select(func.set_config(STORY_DELETE_SETTING, story_id, True)))
     removed: dict[str, int] = {}
+    # The story's idempotency keys go too (#61): its own (scope ``story``) and any
+    # deployment-scoped key bound to one of its operations (the creation's), so no stored
+    # result outlives the story.
+    result = await conn.execute(
+        delete(idempotency_keys).where(
+            or_(
+                and_(
+                    idempotency_keys.c.scope == Scope.STORY.value,
+                    idempotency_keys.c.scope_id == story_id,
+                ),
+                idempotency_keys.c.operation_id.in_(
+                    select(operations.c.operation_id).where(operations.c.story_id == story_id)
+                ),
+            )
+        )
+    )
+    removed[idempotency_keys.name] = result.rowcount
     for table in STORY_TABLES:
         result = await conn.execute(delete(table).where(table.c.story_id == story_id))
         removed[table.name] = result.rowcount

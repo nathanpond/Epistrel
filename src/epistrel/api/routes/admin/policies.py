@@ -16,6 +16,7 @@ from fastapi import APIRouter, Response, status
 from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
 from epistrel.core.policies.rows import rule_json
@@ -79,9 +80,12 @@ class PolicyMutation(PolicyBody, DeploymentMutationResponse):
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=PolicyMutation)
-async def create_policy(body: PolicyFields, ctx: ContextDep, engine: EngineDep) -> PolicyMutation:
+async def create_policy(
+    body: PolicyFields, response: Response, ctx: ContextDep, engine: EngineDep
+) -> PolicyMutation:
     write = await engine.policies_create(ctx, body)
-    return PolicyMutation.written(write.policy, write.config_revision)
+    answer = PolicyMutation.written(write.policy, write.config_revision)
+    return answered(answer, ctx, response, replayed=write.replayed)
 
 
 @router.get("", response_model=PolicyList)
@@ -105,10 +109,15 @@ async def get_policy(policy_id: str, ctx: ContextDep, engine: EngineDep) -> Poli
 
 @router.put("/{policy_id}", response_model=PolicyMutation)
 async def update_policy(
-    policy_id: str, body: PolicyReplacement, ctx: ContextDep, engine: EngineDep
+    policy_id: str,
+    body: PolicyReplacement,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
 ) -> PolicyMutation:
     write = await engine.policies_update(ctx, policy_id, body)
-    return PolicyMutation.written(write.policy, write.config_revision)
+    answer = PolicyMutation.written(write.policy, write.config_revision)
+    return answered(answer, ctx, response, replayed=write.replayed)
 
 
 @router.delete(
@@ -117,10 +126,11 @@ async def update_policy(
     responses={status.HTTP_204_NO_CONTENT: {"description": "Already retired; nothing changed."}},
 )
 async def retire_policy(
-    policy_id: str, ctx: ContextDep, engine: EngineDep
+    policy_id: str, response: Response, ctx: ContextDep, engine: EngineDep
 ) -> PolicyMutation | Response:
     """Retire the policy (200); 204 when it was already retired."""
     write = await engine.policies_retire(ctx, policy_id)
     if not write.changed:
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-    return PolicyMutation.written(write.policy, write.config_revision)
+        return no_content(ctx, replayed=write.replayed)
+    answer = PolicyMutation.written(write.policy, write.config_revision)
+    return answered(answer, ctx, response, replayed=write.replayed)

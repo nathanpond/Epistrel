@@ -5,7 +5,8 @@ one row keyed by the event id (``message_id``); #57's ``say`` and ``do`` stay on
 carries its operation's membership, and ``truncate``, ``untruncate`` and ``swap`` flip the rows
 of the operations they name, so no row is re-read from the log. A regenerated turn (variant
 > 1, #47) makes the rows of every other active variant at its index ``dormant``, as its commit
-does to their operations.
+does to their operations, and every turn makes the still-``discarded`` rows at or after its index
+``dormant`` (a rewound tail becomes a dormant continuation under the first new turn, #66).
 
 ``role`` comes from (provenance, character): ``player`` for a ``player_input`` (respond's or an
 ingested one, #58), ``narration``
@@ -17,8 +18,9 @@ narration, and ``message`` otherwise.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import Membership, OperationKind, Provenance
@@ -99,6 +101,13 @@ def regenerated_turn(event: LogEvent) -> int | None:
     return None
 
 
+def shelved_from(event: LogEvent) -> int | None:
+    """The turn index from which a turn's commit makes ``discarded`` rows ``dormant``."""
+    if event.kind is OperationKind.TURN and event.narrative_turn is not None:
+        return event.narrative_turn
+    return None
+
+
 class TranscriptProjection(Projection):
     table = transcript_messages
 
@@ -106,6 +115,9 @@ class TranscriptProjection(Projection):
         turn = regenerated_turn(event)
         if turn is not None:
             _retire(rows, turn, event.turn_variant)
+        shelved = shelved_from(event)
+        if shelved is not None:
+            _shelve(rows, shelved)
         if isinstance(event.payload, PlayerInput | MessageRendered | Think | Latent):
             rows.put(message_row(event, event.payload))
             return
@@ -115,15 +127,22 @@ class TranscriptProjection(Projection):
     async def load(self, conn: AsyncConnection, story_id: str, events: Sequence[LogEvent]) -> Rows:
         named = {op for e in events for ids, _ in membership_changes(e) for op in ids}
         turns = {turn for e in events if (turn := regenerated_turn(e)) is not None}
-        if not named and not turns:
+        shelved = [turn for e in events if (turn := shelved_from(e)) is not None]
+        if not named and not turns and not shelved:
             return Rows(self.table)
         t = transcript_messages
-        found = await conn.execute(
-            select(t).where(
-                t.c.story_id == story_id,
-                or_(t.c.operation_id.in_(sorted(named)), t.c.narrative_turn.in_(sorted(turns))),
+        wanted: list[Any] = [
+            t.c.operation_id.in_(sorted(named)),
+            t.c.narrative_turn.in_(sorted(turns)),
+        ]
+        if shelved:
+            wanted.append(
+                and_(
+                    t.c.narrative_turn >= min(shelved),
+                    t.c.membership == Membership.DISCARDED.value,
+                )
             )
-        )
+        found = await conn.execute(select(t).where(t.c.story_id == story_id, or_(*wanted)))
         return Rows(self.table, (dict(row._mapping) for row in found))
 
 
@@ -133,6 +152,16 @@ def _retire(rows: Rows, turn: int, variant: int | None) -> None:
             row["narrative_turn"] == turn
             and row["turn_variant"] != variant
             and row["membership"] == Membership.ACTIVE.value
+        ):
+            rows.put({**row, "membership": Membership.DORMANT.value})
+
+
+def _shelve(rows: Rows, turn: int) -> None:
+    for row in rows:
+        if (
+            row["narrative_turn"] is not None
+            and row["narrative_turn"] >= turn
+            and row["membership"] == Membership.DISCARDED.value
         ):
             rows.put({**row, "membership": Membership.DORMANT.value})
 

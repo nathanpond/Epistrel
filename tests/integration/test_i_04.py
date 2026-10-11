@@ -1,6 +1,7 @@
-"""docs/04 I-04, M2 truncate parts (FR-STORE-10,11,18; #65): truncation marks records after N
-discarded without deleting rows or touching valid-time, the view through N is right, and
-untruncation restores them; the REST surface, its refusals and the membership hooks."""
+"""docs/04 I-04, M2 truncate parts (FR-STORE-10,11,18; #65, #66): truncation marks records after
+N discarded without deleting rows or touching valid-time, the view through N is right, and
+untruncation restores them (by a swap when newer turns exist); the REST surface, its refusals
+and the membership hooks."""
 
 from __future__ import annotations
 
@@ -12,8 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core import timeline, turn_gate
-from epistrel.core.errors import InvalidRequest, NothingToUndo, SwapRequired
+from epistrel.core.errors import InvalidRequest, NothingToUndo
 from epistrel.core.ids import new_ulid
+from epistrel.core.variants import ChainRef
 from epistrel.core.views import corrected_history
 from tests.auth_support import auth_settings
 from tests.concurrency_support import assert_single_chain, chain, regenerate
@@ -145,9 +147,10 @@ async def test_i_04__truncate(engine: AsyncEngine) -> None:
 async def test_i_04__undo_stack(engine: AsyncEngine) -> None:
     """Undo is last in, first out: a stacked truncation discards only what is still active
     (earlier discards keep their stamp), and two untruncations restore both in reverse order.
-    Newer turns over a truncation make its undo a swap (409 ``swap_required``); a truncation
-    that is not the most recent, or none, is 409 ``nothing_to_undo``. Complement: a turn
-    regenerated before the truncation point does not block the reactivation."""
+    Newer turns over a truncation make its undo a swap (#66: the original tail active, the
+    newer turn dormant); a truncation that is not the most recent, or none, is 409
+    ``nothing_to_undo``. Complement: a turn regenerated before the truncation point does not
+    block the undo: the tail comes back with the variant it was built on (a swap)."""
     story = await new_story(engine)
     for n in range(1, 7):
         await play_turn(engine, story, f"turn {n}")
@@ -174,29 +177,36 @@ async def test_i_04__undo_stack(engine: AsyncEngine) -> None:
         await _untruncate(engine, story, first.operation_id)
     assert stale.value.http_status == 409
     await regenerate(engine, story)  # turn 2 gets a new variant; nothing after 2 is active
-    assert (await _untruncate(engine, story, second.operation_id)).next_turn_index == 5
-    assert [t for t, _ in await chain(engine, story)] == [1, 2, 3, 4]
-    assert (await _untruncate(engine, story)).truncate_operation_id == first.operation_id
+    over_regenerated = await _untruncate(engine, story, second.operation_id)
+    assert over_regenerated.next_turn_index == 5
+    assert over_regenerated.swapped  # the tail continues variant 1 of turn 2
+    assert await chain(engine, story) == [(1, 1), (2, 1), (3, 1), (4, 1)]
+    plain = await _untruncate(engine, story)
+    assert (plain.truncate_operation_id, plain.swapped) == (first.operation_id, False)
     assert [t for t, _ in await chain(engine, story)] == [1, 2, 3, 4, 5, 6]
-    with pytest.raises(NothingToUndo):
+    with pytest.raises(NothingToUndo) as empty:
         await _untruncate(engine, story)
+    # The regenerated variant of turn 2 is dormant: a swap, not an untruncate, reaches it.
+    assert empty.value.details["options"] == ["swap", "fork"]
+    assert empty.value.details["dormant_chains"] == [{"turn": 2, "variant": 2}]
 
     third = await _truncate(engine, story, 3)
     await play_turn(engine, story, "turn 4, played differently")
     state = await timeline.undo_state(engine, story)
     assert state.undo_available
     assert [
-        (c.truncate_operation_id, c.from_turn, c.through_turn) for c in state.dormant_chains
-    ] == [(third.operation_id, 4, 6)]
-    with pytest.raises(SwapRequired) as swap:
-        await _untruncate(engine, story)
-    assert swap.value.details == {
-        "truncate_operation_id": third.operation_id,
-        "to_turn": 3,
-        "options": ["swap", "fork"],
-    }
+        (c.truncate_operation_id, c.from_turn, c.variant, c.through_turn)
+        for c in state.dormant_chains
+    ] == [(None, 2, 2, 2), (third.operation_id, 4, 1, 6)]
+    swapped = await _untruncate(engine, story)
+    assert (swapped.truncate_operation_id, swapped.swapped) == (third.operation_id, True)
+    assert swapped.active_chain == ChainRef(turn=4, variant=1)
+    assert (swapped.restored_operations, swapped.dormant_operations) == (3, 1)
+    assert await chain(engine, story) == [(1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 1)]
+    state = await timeline.undo_state(engine, story)
+    assert [(c.from_turn, c.variant) for c in state.dormant_chains] == [(2, 2), (4, 2)]
     with pytest.raises(InvalidRequest):
-        await _truncate(engine, story, 4)  # the head
+        await _truncate(engine, story, 6)  # the head
     with pytest.raises(InvalidRequest):
         await _truncate(engine, story, -1)
     await _truncate(engine, story, 0)
@@ -342,11 +352,13 @@ async def test_i_04__rest(stub_settings: Settings, engine: AsyncEngine) -> None:
         read = await client.get(f"/stories/{story}", headers=READ)
         assert read.json()["undo_available"] is True
         (dormant,) = read.json()["dormant_chains"]
-        assert (dormant["from_turn"], dormant["through_turn"]) == (3, 3)
-        assert dormant["operations"] >= 1
+        assert (dormant["from_turn"], dormant["variant"], dormant["through_turn"]) == (3, 1, 3)
+        assert dormant["turns"] == 1
         swap = await client.post(f"/stories/{story}/untruncate", headers=WRITE)
-        assert (swap.status_code, _code(swap)) == (409, "swap_required")
-        assert swap.json()["error"]["details"]["options"] == ["swap", "fork"]
+        assert swap.status_code == 200, swap.text
+        assert swap.json()["swapped"] is True
+        assert swap.json()["active_chain"] == {"turn": 3, "variant": 1}
+        assert swap.json()["dormant_operations"] == 1
 
         archived = await client.post(f"/stories/{story}/archive", headers=WRITE)
         assert archived.status_code == 200

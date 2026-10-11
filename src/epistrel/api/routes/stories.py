@@ -33,6 +33,7 @@ from epistrel.api.config_changes import ConfigChangesBody
 from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import MutationResponse
+from epistrel.api.routes.timeline import VariantChainBody
 from epistrel.core import idempotency
 from epistrel.core.config_changes import ConfigScope
 from epistrel.core.enums import StoryStatus
@@ -103,13 +104,16 @@ class StorySummaryBody(BaseModel):
 
 
 class DormantChainBody(BaseModel):
-    """A discarded tail with newer turns written over it (turns ``from_turn``..
-    ``through_turn``): undoing its truncation is a swap (#66)."""
+    """A dormant continuation (#66): turns ``from_turn``..``through_turn`` of the chain
+    ``{from_turn, variant}``; ``POST /stories/{id}/swap`` makes it active.
+    ``truncate_operation_id`` names the truncation whose tail it is, when ``untruncate`` would
+    undo that truncation."""
 
-    truncate_operation_id: str
     from_turn: int
+    variant: int
     through_turn: int
-    operations: int
+    turns: int
+    truncate_operation_id: str | None
 
 
 class StoryBody(StorySummaryBody):
@@ -119,6 +123,8 @@ class StoryBody(StorySummaryBody):
     """Whether ``POST /stories/{id}/untruncate`` has a truncation to revert (by reactivation,
     or by a swap when newer turns exist)."""
     dormant_chains: list[DormantChainBody]
+    variant_chains: list[VariantChainBody]
+    """Every chain of the story, as ``GET /stories/{id}/variants`` lists them (#66)."""
 
 
 class StoryList(BaseModel):
@@ -263,6 +269,7 @@ async def list_stories(
 async def get_story(story_id: str, ctx: ContextDep, engine: EngineDep) -> StoryBody:
     story = await engine.get_story(ctx, story_id)
     undo = await engine.undo_state(ctx, story_id)
+    chains = await engine.variants(ctx, story_id)
     return StoryBody(
         **StorySummaryBody.fields_of(story),
         characters=[_character(c) for c in story.characters],
@@ -270,13 +277,15 @@ async def get_story(story_id: str, ctx: ContextDep, engine: EngineDep) -> StoryB
         undo_available=undo.undo_available,
         dormant_chains=[
             DormantChainBody(
-                truncate_operation_id=c.truncate_operation_id,
                 from_turn=c.from_turn,
+                variant=c.variant,
                 through_turn=c.through_turn,
-                operations=c.operations,
+                turns=c.turns,
+                truncate_operation_id=c.truncate_operation_id,
             )
             for c in undo.dormant_chains
         ],
+        variant_chains=[VariantChainBody.of(c) for c in chains],
     )
 
 

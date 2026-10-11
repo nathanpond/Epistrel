@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.core.history import DEFAULT_LIMIT, History, HistoryItem, TurnSummary
+from epistrel.core.variants import ChainRef
 
 router = APIRouter(tags=["stories"])
 
@@ -27,6 +28,11 @@ HISTORY_DESCRIPTION = (
     "`include_audit=1` adds the turns' audit records and requires `viewpoint=omniscient` "
     "(403 `omniscient_required`). Pages hold whole turns, newest first, up to `limit` items; "
     "pass `next_before_turn` as `before_turn` for the previous page."
+    "\n\n`variant=turn:variant` reads along another chain of the story (`GET "
+    "/stories/{id}/variants`), e.g. a dormant continuation or a regenerated reply's earlier "
+    "variant: the active history up to where it parts, then that chain's turns; `as_of` "
+    "defaults to its tip. A chain that names no variant, or continues in more than one way, is "
+    "409 `unknown_chain`."
 )
 
 
@@ -117,6 +123,7 @@ async def history(
     before_turn: int | None = None,
     actor_character_id: str | None = None,
     include_audit: bool = False,
+    variant: str | None = None,
 ) -> HistoryResponse:
     found = await engine.history(
         ctx,
@@ -126,5 +133,6 @@ async def history(
         limit=limit,
         before_turn=before_turn,
         include_audit=include_audit,
+        variant=None if variant is None else ChainRef.parse(variant),
     )
     return HistoryResponse.of(found)

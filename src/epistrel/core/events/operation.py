@@ -14,8 +14,12 @@ one transaction that does all of the following:
 2. with ``decide``, revalidates against the base (``epistrel.core.concurrency``), including
    whether a configuration dependency changed (``ConfigRecheck``, FR-CONC-16): ``Regenerate``,
    ``Abandon`` and ``ConfigRecheck`` roll back and raise ``RevalidationRequired``;
-3. positions the operation: only ``turn`` operations allocate a turn index (FR-STORE-8,24); a
-   ``turn`` at an existing index (regenerate) makes the old variant ``dormant``;
+3. positions the operation: only ``turn`` operations allocate a turn index (FR-STORE-8,24),
+   as variant ``max(existing) + 1`` at it, recording the active variant of the turn before it
+   as ``parent_variant`` (the variant tree, #66); a ``turn`` at the head's index (regenerate)
+   makes everything the old variant holds ``dormant``, and every turn makes the still-
+   ``discarded`` operations at or after its index ``dormant`` (a rewound tail becomes a
+   dormant continuation at the first new turn over it, #66);
 4. assigns dense per-story ``seq`` values (``max(seq)+1`` under the lock), writes the events,
    and maintains every projection for them (``projections.apply_events``, FR-STORE-4), then
    runs any commit steps the caller added;
@@ -48,6 +52,7 @@ from typing import Any, Literal, Self
 
 from sqlalchemy import and_, delete, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.orm import aliased
 
 from epistrel.core import config_dependencies, idempotency, projections, turn_gate
 from epistrel.core.concurrency import (
@@ -134,8 +139,9 @@ class Operation:
 
     ``async with Operation(db, story_id=..., kind=..., principal=...) as op:`` begins it;
     ``op.append(...)`` stages events; ``await op.commit()`` writes them. ``turn=`` positions a
-    ``turn`` operation at an existing turn as a new variant (regenerate), or a non-turn
-    operation at an existing turn's active variant; non-turn operations never allocate one.
+    ``turn`` operation at the head turn as a new variant (regenerate; any other turn is 422),
+    or a non-turn operation at an existing turn's active variant; non-turn operations never
+    allocate one.
 
     ``bumps_revision`` declares whether the commit changes story truth (``None``: only ``turn``
     and ``genesis`` do, plus any control action). ``control_action`` marks a timeline edit
@@ -212,6 +218,8 @@ class Operation:
         self.status: OperationStatus | None = None
         self.narrative_turn: int | None = None
         self.turn_variant: int | None = None
+        self.parent_variant: int | None = None
+        """The active variant of the turn before a ``turn`` operation's (#66), set at commit."""
         self.tx_time: datetime | None = None
         self.seqs: tuple[int, ...] = ()
         self.base_revision: int | None = None
@@ -486,7 +494,7 @@ class Operation:
             await self._finish(OperationStatus.FAILED, error)
 
     def _reset_position(self) -> None:
-        self.narrative_turn = self.turn_variant = self.tx_time = None
+        self.narrative_turn = self.turn_variant = self.parent_variant = self.tx_time = None
         self.timeline_revision = None
         self.seqs = ()
 
@@ -518,8 +526,11 @@ class Operation:
             self.narrative_turn, self.turn_variant, advance = await self._position(
                 conn, locked.next_turn_index
             )
-            if self.kind is OperationKind.TURN and self.requested_turn is not None:
-                await self._retire_variant(conn)
+            if self.kind is OperationKind.TURN:
+                self.parent_variant = await self._parent_variant(conn)
+                if self.requested_turn is not None:
+                    await self._retire_variant(conn)
+                await self._shelve_discarded(conn)
         else:
             await conn.execute(select(func.pg_advisory_xact_lock(DEPLOYMENT_LOCK_KEY)))
 
@@ -607,17 +618,48 @@ class Operation:
         if isinstance(outcome, Regenerate | Abandon | ConfigRecheck):
             raise RevalidationRequired(outcome, state)
 
+    async def _parent_variant(self, conn: AsyncConnection) -> int | None:
+        """The active variant of the turn before this one (``None`` for turn 1)."""
+        assert self.narrative_turn is not None  # noqa: S101 - a turn is positioned first
+        if self.narrative_turn <= 1:
+            return None
+        found = await conn.scalar(
+            select(operations.c.turn_variant).where(
+                operations.c.story_id == self.story_id,
+                operations.c.narrative_turn == self.narrative_turn - 1,
+                operations.c.kind == OperationKind.TURN.value,
+                operations.c.status == OperationStatus.COMMITTED.value,
+                operations.c.membership == Membership.ACTIVE.value,
+            )
+        )
+        return int(found) if found is not None else None
+
     async def _retire_variant(self, conn: AsyncConnection) -> None:
-        """A regenerated turn replaces the active variant at its index: the old one goes
-        ``dormant`` (kept, swappable, FR-STORE-12/28) in the same transaction."""
+        """A regenerated turn replaces the active variant at its index: everything positioned
+        at it (the old turn and the work hanging off it) goes ``dormant`` (kept, swappable,
+        FR-STORE-12/28) in the same transaction."""
         await conn.execute(
             update(operations)
             .where(
                 operations.c.story_id == self.story_id,
-                operations.c.narrative_turn == self.narrative_turn,
-                operations.c.kind == OperationKind.TURN.value,
+                operations.c.narrative_turn >= self.narrative_turn,
                 operations.c.status == OperationStatus.COMMITTED.value,
                 operations.c.membership == Membership.ACTIVE.value,
+            )
+            .values(membership=Membership.DORMANT.value, membership_tx=func.transaction_timestamp())
+        )
+
+    async def _shelve_discarded(self, conn: AsyncConnection) -> None:
+        """A rewound tail becomes a dormant continuation at the first turn written over it
+        (#66): the still-``discarded`` operations at or after this turn's index go ``dormant``.
+        The transcript projection makes the same change from the turn's events."""
+        await conn.execute(
+            update(operations)
+            .where(
+                operations.c.story_id == self.story_id,
+                operations.c.narrative_turn >= self.narrative_turn,
+                operations.c.status == OperationStatus.COMMITTED.value,
+                operations.c.membership == Membership.DISCARDED.value,
             )
             .values(membership=Membership.DORMANT.value, membership_tx=func.transaction_timestamp())
         )
@@ -644,7 +686,36 @@ class Operation:
         next_turn = await conn.scalar(
             select(stories.c.next_turn_index).where(stories.c.id == self.story_id)
         )
-        if not (count == distinct == highest and lowest == 1 and next_turn == highest + 1):
+        parent = aliased(operations)
+        orphans = await conn.scalar(
+            select(func.count())
+            .select_from(operations)
+            .outerjoin(
+                parent,
+                and_(
+                    parent.c.story_id == operations.c.story_id,
+                    parent.c.narrative_turn == operations.c.narrative_turn - 1,
+                    parent.c.kind == OperationKind.TURN.value,
+                    parent.c.status == OperationStatus.COMMITTED.value,
+                    parent.c.membership == Membership.ACTIVE.value,
+                ),
+            )
+            .where(
+                operations.c.story_id == self.story_id,
+                operations.c.kind == OperationKind.TURN.value,
+                operations.c.status == OperationStatus.COMMITTED.value,
+                operations.c.membership == Membership.ACTIVE.value,
+                operations.c.narrative_turn > 1,
+                operations.c.parent_variant.is_not(None),
+                parent.c.turn_variant.is_distinct_from(operations.c.parent_variant),
+            )
+        )
+        if not (
+            count == distinct == highest
+            and lowest == 1
+            and next_turn == highest + 1
+            and not orphans
+        ):
             raise ChainBroken(
                 "the active turn variants would not form a single chain",
                 {
@@ -652,6 +723,7 @@ class Operation:
                     "active_turns": count,
                     "highest_turn": highest,
                     "next_turn_index": next_turn,
+                    "orphaned_turns": int(orphans or 0),
                 },
             )
 
@@ -684,12 +756,17 @@ class Operation:
         turn = self.requested_turn
         if turn is None:
             if self.kind is OperationKind.TURN:
-                return next_turn_index, 1, True
+                return next_turn_index, await self._next_variant(conn, next_turn_index), True
             return None, None, False
         if turn >= next_turn_index:
             raise InvalidRequest(
                 f"turn {turn} has not happened yet (next turn is {next_turn_index})",
                 {"field": "turn"},
+            )
+        if self.kind is OperationKind.TURN and turn != next_turn_index - 1:
+            raise InvalidRequest(
+                f"only the latest turn ({next_turn_index - 1}) can be regenerated",
+                {"field": "turn", "head": next_turn_index - 1},
             )
         committed_turns = and_(
             operations.c.story_id == self.story_id,
@@ -698,10 +775,7 @@ class Operation:
             operations.c.status == OperationStatus.COMMITTED.value,
         )
         if self.kind is OperationKind.TURN:
-            last = await conn.scalar(
-                select(func.coalesce(func.max(operations.c.turn_variant), 0)).where(committed_turns)
-            )
-            return turn, int(last or 0) + 1, False
+            return turn, await self._next_variant(conn, turn), False
         active = await conn.scalar(
             select(func.max(operations.c.turn_variant)).where(
                 committed_turns, operations.c.membership == Membership.ACTIVE.value
@@ -710,6 +784,19 @@ class Operation:
         if active is None:
             raise InvalidRequest(f"turn {turn} has no active variant", {"field": "turn"})
         return turn, int(active), False
+
+    async def _next_variant(self, conn: AsyncConnection, turn: int) -> int:
+        """``max(existing variants at turn) + 1`` (#66): a turn written over a rewound tail,
+        like a regenerated one, never reuses a variant number."""
+        last = await conn.scalar(
+            select(func.coalesce(func.max(operations.c.turn_variant), 0)).where(
+                operations.c.story_id == self.story_id,
+                operations.c.narrative_turn == turn,
+                operations.c.kind == OperationKind.TURN.value,
+                operations.c.status == OperationStatus.COMMITTED.value,
+            )
+        )
+        return int(last or 0) + 1
 
     async def _finalise(self, conn: AsyncConnection, advance: bool, current_revision: int) -> None:
         """Mark the operation committed and move the story's counters, in the same transaction."""
@@ -728,6 +815,7 @@ class Operation:
                 status=OperationStatus.COMMITTED.value,
                 narrative_turn=self.narrative_turn,
                 turn_variant=self.turn_variant,
+                parent_variant=self.parent_variant,
                 membership_tx=now,
                 committed_at=now,
                 attempts=self.attempts,

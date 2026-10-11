@@ -1167,3 +1167,35 @@ Process:
   No pre-fix guard run was planned.
   **Why:** The test plan. FR-STORE-18 is not in TIME's M2 bracket, so `test_time__b` claims 10 and 11 only.
   **Issue:** #65
+- **Decision:** Migration `0016_variant_chains` adds `operations.parent_variant` (the active variant of turn N-1 a turn variant was built on; `NULL` for turn 1 and non-turn operations), set at commit and added to the operations guard's allow-list. Existing committed turns are backfilled from the active chain (falling back to 1). Every `turn` now takes variant `max(existing)+1` at its index (a turn written over a rewound tail used to reuse variant 1), and `_check_chain` also refuses an active turn whose `parent_variant` is not the active variant before it.
+  **Why:** Discretion ("chain = `parent_variant` pointer", "`parent_variant` is a column on `operations`", "variant = `max(existing)+1`"). A column, not a table, so Rule 4 does not apply.
+  **Issue:** #66
+- **Decision:** Every `turn` commit at index t makes the still-`discarded` operations at ≥ t `dormant` (a rewound tail becomes a dormant continuation at the first new turn over it), and a regenerate makes every active operation at ≥ N dormant (the old variant and the work positioned on it), not just the turn row. The transcript projection mirrors the shelving from the turn's own events (rows at ≥ t that are `discarded` become `dormant`), so the fold reproduces it with no extra event. Membership only; no event is updated (invariant 6).
+  **Why:** Discretion pass 2 ("a discarded tail becomes `dormant` at the first new turn over it"); FR-STORE-12 ("truncating to N-1").
+  **Issue:** #66
+- **Decision:** `core/variants.py` holds the variant tree. A chain starts at turn 1, where its parent has more than one child, or where membership changes, and it is named by `{turn, variant}` of its first node. `GET /stories/{id}/variants` (also `variant_chains` in `GET /stories/{id}`) lists `{turn, variant, membership, tip_turn, turn_count, membership_tx, parent}`. A selector resolves to its tip through the single same-membership child; several give 409 `unknown_chain` with `candidates`. A swap dormants every active operation after the branch turn and activates every non-active operation positioned on the selected path. It is one `control` operation with one `swap` event, built on `timeline._edit`, fails queued turns like truncate, and runs the membership hooks once per (old, new) pair. Swapping to the active chain writes nothing and answers 200 with `operation_id: null`.
+  **Why:** Discretion (chain identity, wire shapes, `unknown_chain`, swap-to-active idempotent). Failing queued turns on swap was not specified; it matches truncate and regenerate, which are both control actions.
+  **Issue:** #66
+- **Decision:** `untruncate` no longer raises `swap_required` (the error class is removed). It reactivates the tail when nothing is active after `to_turn` and the tail continues the active turn there. Otherwise it swaps to the tail's chain and answers `swapped: true, active_chain, dormant_operations`. A truncation stays undoable while none of its operations is active. When dormant chains exist, `nothing_to_undo` lists `options: ["swap","fork"]` and `dormant_chains`. `dormant_chains` in `GET /stories/{id}` is now `{from_turn, variant, through_turn, turns, truncate_operation_id|null}` for every dormant chain. `undo_available` is true while a truncation is undoable or a dormant chain exists.
+  **Why:** The #65 hand-off ("delegate untruncate→swap at SwapRequired"); FR-STORE-28 ("never silently rejects"). The changed `dormant_chains` shape is a deviation from #65's minimum shape; #65's REST test was updated.
+  **Issue:** #66
+- **Decision:** `POST /stories/{id}/regenerate {turn?, render_character_ids?, output_viewpoint?, prompt_params?}` → `lite.regenerate` with the new `EntryPoint.REGENERATE`. It reuses the head turn's recorded `player_input` (actor, say/do), render set, viewpoint and resolved generation settings unless overridden; re-gates the input; reads prompt inputs from before turn N; and runs one `turn` operation at N under `run_with_revalidation`. That operation is a control action that fails queued turns in its commit and dormants the old variant. A busy story is 423 `story_busy` in either concurrency mode (a regenerate is never queued). `Idempotency-Key` is optional, as for respond. The response is the respond body plus `previous_variant`. `Operation` now refuses `turn=` on a turn that is not the head (422).
+  **Why:** Discretion. "Requires the key" was read as "is keyed like respond"; queueing a control action behind the turns it would fail is contradictory.
+  **Issue:** #66
+- **Decision:** `GET /stories/{id}/history?variant=turn:variant` reads the active history up to the branch and that chain's operations above it; `as_of` defaults to and is bounded by the chain's tip. A malformed selector is 422.
+  **Why:** Discretion ("`history?variant=` reads along that chain above the divergence").
+  **Issue:** #66
+- **Decision:** AC3 (fork `variant_chain`) is only partly delivered. `/fork` does not exist yet (#67). `variants.fork_selection(db, story, variant_chain, at_turn)` is the selector #67 uses: the chain's operations through `at_turn`, which defaults to the tip; `at_turn` above the tip or below the divergence is 422. S-UNDO-SWAP asserts the selection. The two-independent-stories assertion is handed to #67, and AC3 stays unticked.
+  **Why:** #67 is not built, and building fork here would be #67's scope.
+  **Issue:** #66
+- **Decision:** "A still-leased dormant tip → 423" is not implemented. Leases are per story (`in_flight_turn`), not per chain. A swap during a turn proceeds and the turn abandons (#47), as Discretion also says.
+  **Why:** Nothing in M2 can lease a dormant tip.
+  **Issue:** #66
+- **Decision:** Tests:
+  - `tests/scenario/test_s_undo_swap.py::test_s_undo_swap` (`part("M2","FR-STORE-28")`) covers 1,000 turns, truncate to 800, and 801'–850'. Undo swaps the chains, with the original active, the primes dormant and one chain. Swapping back gives a row diff of operations and an equal projection snapshot. A second swap to the active chain is a no-op. It asserts the fork selection, and the complement is an undo with no new turns as a plain reactivation. It takes about 34 s.
+  - `test_time__regenerate` (`part("M2","FR-STORE-12")`) and `test_time__swap_chains` (`part("M2","FR-STORE-28")`) are in `tests/integration/test_time.py`, because the parts gate allows one file per test ID. They are not in a separate `test_regenerate.py`.
+  - `tests/projection_support.swap` now calls `timeline.swap`, and its stand-in and helpers are removed. `test_i_04__undo_stack`/`__rest` were updated to the swap semantics.
+  
+  No pre-fix guard run was planned.
+  **Why:** The test plan, and the part-uniqueness gate.
+  **Issue:** #66

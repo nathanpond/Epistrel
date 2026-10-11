@@ -1,4 +1,5 @@
-"""Truncate a story to a checkpoint and undo it (FR-STORE-10,11,18; docs/02 §4.6; #65).
+"""Truncate a story to a checkpoint, undo it, and swap continuations (FR-STORE-10,11,18,28;
+docs/02 §4.6; #65, #66).
 
 - **Truncate** to turn N is a ``control`` operation whose only mutation is timeline
   membership: every **active** committed operation positioned after N — any kind, so a Lite
@@ -12,16 +13,26 @@
   (#47), and turns waiting in the story's queue fail with the same error in the truncation's
   transaction. ``to_turn`` must be from 0 to the head - 1 (422 otherwise). The event records
   ``{to_turn, prior_head, operation_ids}``.
-- **Untruncate** reverts the most recent truncation (LIFO): the newest ``truncate`` whose
-  discarded operations are all still ``discarded``. With no active turn positioned after its
-  ``to_turn`` it reactivates exactly those operations (``membership_tx`` re-stamped) and
-  restores the head; with newer turns over the tail it is a swap, which is 409
-  ``swap_required`` (``options: ["swap", "fork"]``) until #66. No undoable truncation, or a
-  ``truncate_operation_id`` that is not the most recent one, is 409 ``nothing_to_undo``. The
-  event records ``{truncate_operation_id, operation_ids, restored_head}``.
+- **Untruncate** reverts the most recent truncation (LIFO): the newest ``truncate`` none of
+  whose operations is active again (they are ``discarded``, or ``dormant`` once a turn was
+  written over them, #66). When nothing is active after its ``to_turn`` and its tail continues
+  the active turn at ``to_turn``, it reactivates exactly those operations (``membership_tx``
+  re-stamped) and restores the head; the event records ``{truncate_operation_id,
+  operation_ids, restored_head}``. Otherwise (newer turns over the tail, or the turn it
+  continues was regenerated since) undoing it is a **swap** to the tail's chain (#66): the
+  original continuation becomes active, the newer one dormant, nothing lost, and the result
+  says ``swapped``. No undoable truncation, or a ``truncate_operation_id`` that is not the most
+  recent one, is 409 ``nothing_to_undo`` (with ``options: ["swap", "fork"]`` and the dormant
+  chains when there are any: a swap is undone by another swap).
+- **Swap** (``swap``, #66) makes the chain ``to_variant_chain`` active and the active
+  continuation above the branch dormant (``core.variants`` plans it). It is a control action
+  like truncate (queued turns fail with ``timeline_changed``; a turn generating meanwhile
+  abandons, #47). Swapping to the active chain writes nothing and answers the current
+  revision. The event records ``{turn, activated_operation_ids, dormant_operation_ids,
+  active_head}``.
 - **Undo state** (``undo_state``, read by ``GET /stories/{id}``): ``undo_available`` whenever
-  an undo (a reactivation or a swap) exists, and ``dormant_chains``: the discarded tails that
-  have newer turns over them.
+  an undo (a reactivation or a swap) exists, and ``dormant_chains``: the dormant continuations
+  (``core.variants`` chains), each with the truncation whose tail it is, if any.
 
 Both edits commit against current state: the payload staged from the read phase is
 recomputed under the story lock, and if the timeline moved meanwhile the same operation
@@ -60,13 +71,21 @@ from epistrel.core.errors import (
     NothingToUndo,
     RevisionConflict,
     StoryNotFound,
-    SwapRequired,
     TimelineChanged,
 )
 from epistrel.core.events.operation import Operation
-from epistrel.core.events.types import Head, Truncate, Untruncate
+from epistrel.core.events.types import Head, Swap, Truncate, Untruncate
 from epistrel.core.stories import require_writable
 from epistrel.core.tables import events, operations, stories
+from epistrel.core.variants import (
+    ChainRef,
+    SwapPlan,
+    SwapRequest,
+    Tree,
+    load_tree,
+    plan_path_swap,
+    plan_swap,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +93,8 @@ EDIT_RETRY_BUDGET = 3
 """How many times a truncate or untruncate re-reads after the timeline moved under it."""
 
 SWAP_OPTIONS: tuple[str, ...] = ("swap", "fork")
-"""What ``swap_required`` offers instead of a reactivation (#66 swap, #67 fork)."""
+"""The alternatives a refused undo lists while dormant continuations exist (#66 swap, #67
+fork)."""
 
 
 # -- requests and results ---------------------------------------------------------------------
@@ -114,25 +134,47 @@ class Truncation:
 @dataclass(frozen=True, slots=True)
 class Untruncation:
     """A committed untruncation: the truncation it reverted and how many operations it
-    reactivated."""
+    reactivated; ``swapped`` when undoing it was a swap (#66), with the chain it activated."""
 
     operation_id: str
     timeline_revision: int
     next_turn_index: int
     truncate_operation_id: str
     restored_operations: int
+    swapped: bool = False
+    active_chain: ChainRef | None = None
+    dormant_operations: int = 0
+    """How many operations a swap made dormant (0 for a reactivation)."""
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+
+
+@dataclass(frozen=True, slots=True)
+class Swapped:
+    """A swap (#66): the chain now active and the story's revision. ``operation_id`` is
+    ``None`` when the chain was already active and nothing was written."""
+
+    operation_id: str | None
+    timeline_revision: int
+    next_turn_index: int
+    active_chain: ChainRef
+    activated_operations: int = 0
+    dormant_operations: int = 0
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 @dataclass(frozen=True, slots=True)
 class DormantChain:
-    """A discarded tail with newer turns written over it: reachable by a swap (#66)."""
+    """A dormant continuation (#66): turns ``from_turn``..``through_turn`` of the chain
+    ``{from_turn, variant}``, reachable by a swap; ``truncate_operation_id`` names the
+    truncation whose tail it is, when it is one that ``untruncate`` would undo."""
 
-    truncate_operation_id: str
     from_turn: int
+    variant: int
     through_turn: int
-    operations: int
+    turns: int
+    truncate_operation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,8 +294,9 @@ class _Undoable:
 
 
 async def _undoable(conn: AsyncConnection, story_id: str) -> list[_Undoable]:
-    """Every committed truncation whose discarded operations are all still ``discarded``,
-    newest first (the LIFO stack of undoable truncations)."""
+    """Every committed truncation none of whose operations is active again (each is still
+    ``discarded``, or ``dormant`` under a newer turn), newest first (the LIFO stack of
+    undoable truncations)."""
     found = await conn.execute(
         select(events.c.operation_id, events.c.payload)
         .join(operations, operations.c.operation_id == events.c.operation_id)
@@ -282,22 +325,11 @@ async def _undoable(conn: AsyncConnection, story_id: str) -> list[_Undoable]:
     return [
         t
         for t in truncations
-        if t.operation_ids
-        and all(state.get(op) == Membership.DISCARDED.value for op in t.operation_ids)
+        if t.operation_ids and all(state.get(op) in _NOT_ACTIVE for op in t.operation_ids)
     ]
 
 
-async def _newer_turns(conn: AsyncConnection, story_id: str, to_turn: int) -> int:
-    """How many active turns are positioned after ``to_turn``."""
-    found = await conn.scalar(
-        select(func.count()).where(
-            _committed(story_id),
-            operations.c.kind == OperationKind.TURN.value,
-            operations.c.membership == Membership.ACTIVE.value,
-            operations.c.narrative_turn > to_turn,
-        )
-    )
-    return int(found or 0)
+_NOT_ACTIVE = frozenset({Membership.DISCARDED.value, Membership.DORMANT.value})
 
 
 async def undo_state(db: AsyncEngine | AsyncConnection, story_id: str) -> UndoState:
@@ -310,24 +342,33 @@ async def undo_state(db: AsyncEngine | AsyncConnection, story_id: str) -> UndoSt
 
 async def _undo_state(conn: AsyncConnection, story_id: str) -> UndoState:
     stack = await _undoable(conn, story_id)
-    chains: list[DormantChain] = []
-    for truncation in stack:
-        if not await _newer_turns(conn, story_id, truncation.to_turn):
+    chains = await _dormant_chains(conn, story_id, stack)
+    return UndoState(undo_available=bool(stack or chains), dormant_chains=chains)
+
+
+async def _dormant_chains(
+    conn: AsyncConnection, story_id: str, stack: Sequence[_Undoable]
+) -> tuple[DormantChain, ...]:
+    tree = await load_tree(conn, story_id)
+    tails: dict[str, str] = {}
+    for truncation in reversed(stack):  # the newest truncation naming an operation wins
+        for op in truncation.operation_ids:
+            tails[op] = truncation.truncate_operation_id
+    found: list[DormantChain] = []
+    for chain in tree.chains():
+        if chain.membership is not Membership.DORMANT:
             continue
-        through = await conn.scalar(
-            select(func.max(operations.c.narrative_turn)).where(
-                operations.c.operation_id.in_(truncation.operation_ids)
-            )
-        )
-        chains.append(
+        start = tree.nodes[(chain.turn, chain.variant)]
+        found.append(
             DormantChain(
-                truncate_operation_id=truncation.truncate_operation_id,
-                from_turn=truncation.to_turn + 1,
-                through_turn=int(through if through is not None else truncation.to_turn + 1),
-                operations=len(truncation.operation_ids),
+                from_turn=chain.turn,
+                variant=chain.variant,
+                through_turn=chain.tip_turn,
+                turns=chain.turn_count,
+                truncate_operation_id=tails.get(start.operation_id),
             )
         )
-    return UndoState(undo_available=bool(stack), dormant_chains=tuple(chains))
+    return tuple(found)
 
 
 # -- plans ------------------------------------------------------------------------------------
@@ -341,6 +382,14 @@ class _TruncatePlan:
 @dataclass(frozen=True, slots=True)
 class _UntruncatePlan:
     payload: Untruncate
+
+
+@dataclass(frozen=True, slots=True)
+class _UntruncateSwap:
+    """Undoing the truncation ``truncate_operation_id`` is a swap to its tail's chain."""
+
+    truncate_operation_id: str
+    swap: SwapPlan
 
 
 async def _plan_truncate(conn: AsyncConnection, story_id: str, to_turn: int) -> _TruncatePlan:
@@ -366,7 +415,7 @@ async def _plan_truncate(conn: AsyncConnection, story_id: str, to_turn: int) -> 
 
 async def _plan_untruncate(
     conn: AsyncConnection, story_id: str, named: str | None
-) -> _UntruncatePlan:
+) -> _UntruncatePlan | _UntruncateSwap:
     stack = await _undoable(conn, story_id)
     if not stack or (named is not None and named != stack[0].truncate_operation_id):
         details: dict[str, Any] = {"story_id": story_id}
@@ -377,17 +426,18 @@ async def _plan_untruncate(
             if not stack
             else "only the most recent truncation can be undone"
         )
+        dormant = await _dormant_chains(conn, story_id, stack)
+        if dormant:
+            details["options"] = list(SWAP_OPTIONS)
+            details["dormant_chains"] = [
+                {"turn": c.from_turn, "variant": c.variant} for c in dormant
+            ]
         raise NothingToUndo(message, details)
     latest = stack[0]
-    if await _newer_turns(conn, story_id, latest.to_turn):
-        raise SwapRequired(
-            "newer turns were written after the truncation; undoing it is a swap",
-            {
-                "truncate_operation_id": latest.truncate_operation_id,
-                "to_turn": latest.to_turn,
-                "options": list(SWAP_OPTIONS),
-            },
-        )
+    tree = await load_tree(conn, story_id)
+    swap = await _tail_swap(conn, story_id, tree, latest)
+    if swap is not None:
+        return _UntruncateSwap(latest.truncate_operation_id, swap)
     head = await _head(conn, story_id)
     restored = dict(head.active_variants)
     found = await conn.execute(
@@ -407,6 +457,30 @@ async def _plan_untruncate(
             restored_head=Head(next_turn_index=highest + 1, active_variants=ordered),
         )
     )
+
+
+async def _tail_swap(
+    conn: AsyncConnection, story_id: str, tree: Tree, truncation: _Undoable
+) -> SwapPlan | None:
+    """The swap that undoes ``truncation`` (#66), or ``None`` when reactivating its tail is
+    enough: nothing is active after its ``to_turn`` and the tail continues the active turn."""
+    leaf = tree.leaf_of(truncation.operation_ids)
+    if leaf is None:
+        return None
+    path = tree.path(leaf)
+    if not path.nodes:  # pragma: no cover - an undoable tail has no active turn
+        return None
+    if path.branch == truncation.to_turn:
+        newer = await conn.scalar(
+            select(func.count()).where(
+                _committed(story_id),
+                operations.c.membership == Membership.ACTIVE.value,
+                operations.c.narrative_turn > truncation.to_turn,
+            )
+        )
+        if not newer:
+            return None
+    return await plan_path_swap(conn, story_id, tree, path)
 
 
 # -- the edits --------------------------------------------------------------------------------
@@ -541,7 +615,8 @@ async def truncate(
                 },
             ),
         )
-        await _run_in_transaction(conn, _change(story_id, op, planned.payload))
+        for change in _changes(story_id, op, planned.payload):
+            await _run_in_transaction(conn, change)
 
     op, planned = await _edit(
         db,
@@ -554,7 +629,8 @@ async def truncate(
     )
     if failed_queue:
         turn_gate.wakeups.wake(story_id)
-    await _run_post_commit(db, _change(story_id, op, planned.payload))
+    for change in _changes(story_id, op, planned.payload):
+        await _run_post_commit(db, change)
     assert op.timeline_revision is not None  # noqa: S101 - set by a committed story operation
     return Truncation(
         operation_id=op.operation_id,
@@ -574,25 +650,36 @@ async def untruncate(
     idempotency_key: str | None = None,
     expected_revision: int | None = None,
 ) -> Untruncation:
-    """Revert the most recent truncation of ``story_id``; see the module docstring."""
+    """Revert the most recent truncation of ``story_id``, by a reactivation or a swap; see the
+    module docstring."""
     named = request.truncate_operation_id if request is not None else None
     await require_writable(db, story_id)
     await check_expected_revision(db, story_id, expected_revision)
+    failed_queue: list[str] = []
 
-    async def plan(conn: AsyncConnection) -> _UntruncatePlan:
+    async def plan(conn: AsyncConnection) -> _UntruncatePlan | _UntruncateSwap:
         return await _plan_untruncate(conn, story_id, named)
 
-    def stage(op: Operation, planned: _UntruncatePlan) -> None:
-        op.append("untruncate", planned.payload)
+    def stage(op: Operation, planned: _UntruncatePlan | _UntruncateSwap) -> None:
+        if isinstance(planned, _UntruncateSwap):
+            op.append("swap", planned.swap.payload)
+        else:
+            op.append("untruncate", planned.payload)
 
-    async def apply(op: Operation, conn: AsyncConnection, planned: _UntruncatePlan) -> None:
+    async def apply(
+        op: Operation, conn: AsyncConnection, planned: _UntruncatePlan | _UntruncateSwap
+    ) -> None:
+        if isinstance(planned, _UntruncateSwap):
+            failed_queue[:] = await _apply_swap(op, conn, story_id, planned.swap)
+            return
         await _flip(conn, story_id, planned.payload.operation_ids, Membership.ACTIVE)
         await conn.execute(
             update(stories)
             .where(stories.c.id == story_id)
             .values(next_turn_index=planned.payload.restored_head.next_turn_index)
         )
-        await _run_in_transaction(conn, _change(story_id, op, planned.payload))
+        for change in _changes(story_id, op, planned.payload):
+            await _run_in_transaction(conn, change)
 
     op, planned = await _edit(
         db,
@@ -603,8 +690,25 @@ async def untruncate(
         stage=stage,
         apply=apply,
     )
-    await _run_post_commit(db, _change(story_id, op, planned.payload))
+    if failed_queue:
+        turn_gate.wakeups.wake(story_id)
     assert op.timeline_revision is not None  # noqa: S101 - set by a committed story operation
+    if isinstance(planned, _UntruncateSwap):
+        for change in _changes(story_id, op, planned.swap):
+            await _run_post_commit(db, change)
+        payload = planned.swap.payload
+        return Untruncation(
+            operation_id=op.operation_id,
+            timeline_revision=op.timeline_revision,
+            next_turn_index=payload.active_head.next_turn_index,
+            truncate_operation_id=planned.truncate_operation_id,
+            restored_operations=len(payload.activated_operation_ids),
+            swapped=True,
+            active_chain=planned.swap.active_chain,
+            dormant_operations=len(payload.dormant_operation_ids),
+        )
+    for change in _changes(story_id, op, planned.payload):
+        await _run_post_commit(db, change)
     return Untruncation(
         operation_id=op.operation_id,
         timeline_revision=op.timeline_revision,
@@ -614,19 +718,147 @@ async def untruncate(
     )
 
 
-def _change(story_id: str, op: Operation, payload: Truncate | Untruncate) -> MembershipChange:
-    if isinstance(payload, Truncate):
-        old, new, cause = Membership.ACTIVE, Membership.DISCARDED, "truncate"
-    else:
-        old, new, cause = Membership.DISCARDED, Membership.ACTIVE, "untruncate"
-    return MembershipChange(
-        story_id=story_id,
-        operation_ids=tuple(payload.operation_ids),
-        old=old,
-        new=new,
-        cause=cause,
-        control_operation_id=op.operation_id,
+async def swap(
+    db: AsyncEngine,
+    story_id: str,
+    request: SwapRequest,
+    *,
+    principal: str,
+    idempotency_key: str | None = None,
+    expected_revision: int | None = None,
+) -> Swapped:
+    """Make ``request.to_variant_chain`` the active chain of ``story_id``; see the module
+    docstring. Swapping to the active chain writes nothing."""
+    target = request.to_variant_chain
+    await require_writable(db, story_id)
+    current = await check_expected_revision(db, story_id, expected_revision)
+    async with db.connect() as conn:
+        first = await plan_swap(conn, story_id, target)
+        if first is None:
+            head = await _next_turn_index(conn, story_id)
+    if first is None:
+        return Swapped(
+            operation_id=None, timeline_revision=current, next_turn_index=head, active_chain=target
+        )
+    failed_queue: list[str] = []
+
+    async def plan(conn: AsyncConnection) -> SwapPlan | None:
+        return await plan_swap(conn, story_id, target)
+
+    def stage(op: Operation, planned: SwapPlan | None) -> None:
+        if planned is None:  # it became the active chain meanwhile: record a no-op swap
+            raise _AlreadyActive
+        op.append("swap", planned.payload)
+
+    async def apply(op: Operation, conn: AsyncConnection, planned: SwapPlan | None) -> None:
+        assert planned is not None  # noqa: S101 - stage refused None
+        failed_queue[:] = await _apply_swap(op, conn, story_id, planned)
+
+    try:
+        op, planned = await _edit(
+            db,
+            story_id,
+            principal=principal,
+            idempotency_key=idempotency_key,
+            plan=plan,
+            stage=stage,
+            apply=apply,
+        )
+    except _AlreadyActive:
+        async with db.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(stories.c.timeline_revision, stories.c.next_turn_index).where(
+                        stories.c.id == story_id
+                    )
+                )
+            ).one()
+        return Swapped(
+            operation_id=None,
+            timeline_revision=int(row.timeline_revision),
+            next_turn_index=int(row.next_turn_index),
+            active_chain=target,
+        )
+    assert planned is not None  # noqa: S101 - _edit returns the committed plan
+    if failed_queue:
+        turn_gate.wakeups.wake(story_id)
+    for change in _changes(story_id, op, planned):
+        await _run_post_commit(db, change)
+    assert op.timeline_revision is not None  # noqa: S101 - set by a committed story operation
+    return Swapped(
+        operation_id=op.operation_id,
+        timeline_revision=op.timeline_revision,
+        next_turn_index=planned.payload.active_head.next_turn_index,
+        active_chain=planned.active_chain,
+        activated_operations=len(planned.payload.activated_operation_ids),
+        dormant_operations=len(planned.payload.dormant_operation_ids),
     )
+
+
+class _AlreadyActive(Exception):
+    """The swap's target became the active chain between the first read and the edit."""
+
+
+async def _apply_swap(
+    op: Operation, conn: AsyncConnection, story_id: str, planned: SwapPlan
+) -> list[str]:
+    """A swap's membership flips (dormant first: one active variant per index holds after
+    every statement), the head, the queue, and the in-transaction hooks."""
+    payload = planned.payload
+    await _flip(conn, story_id, payload.dormant_operation_ids, Membership.DORMANT)
+    await _flip(conn, story_id, payload.activated_operation_ids, Membership.ACTIVE)
+    await conn.execute(
+        update(stories)
+        .where(stories.c.id == story_id)
+        .values(next_turn_index=payload.active_head.next_turn_index)
+    )
+    revision = await conn.scalar(
+        select(stories.c.timeline_revision).where(stories.c.id == story_id)
+    )
+    failed = await turn_gate.fail_queued(
+        conn,
+        story_id,
+        TimelineChanged(
+            "a swap changed the timeline before the queued turn started",
+            {
+                "current_revision": int(revision or 0) + 1,
+                "control_operation_id": op.operation_id,
+            },
+        ),
+    )
+    for change in _changes(story_id, op, planned):
+        await _run_in_transaction(conn, change)
+    return failed
+
+
+def _changes(
+    story_id: str, op: Operation, payload: Truncate | Untruncate | SwapPlan
+) -> list[MembershipChange]:
+    """The membership changes an edit made, one per (old, new) pair."""
+
+    def change(ids: Sequence[str], old: Membership, new: Membership, cause: str) -> Any:
+        return MembershipChange(
+            story_id=story_id,
+            operation_ids=tuple(ids),
+            old=old,
+            new=new,
+            cause=cause,
+            control_operation_id=op.operation_id,
+        )
+
+    if isinstance(payload, Truncate):
+        return [change(payload.operation_ids, Membership.ACTIVE, Membership.DISCARDED, "truncate")]
+    if isinstance(payload, Untruncate):
+        return [
+            change(payload.operation_ids, Membership.DISCARDED, Membership.ACTIVE, "untruncate")
+        ]
+    swapped: Swap = payload.payload
+    found = [change(swapped.dormant_operation_ids, Membership.ACTIVE, Membership.DORMANT, "swap")]
+    for old in (Membership.DORMANT, Membership.DISCARDED):
+        ids = [op_id for op_id, was in payload.previous if was is old]
+        if ids:
+            found.append(change(ids, old, Membership.ACTIVE, "swap"))
+    return found
 
 
 __all__ = [
@@ -636,6 +868,8 @@ __all__ = [
     "HookPhase",
     "MembershipChange",
     "MembershipHook",
+    "SwapRequest",
+    "Swapped",
     "TruncateRequest",
     "Truncation",
     "UndoState",
@@ -643,6 +877,7 @@ __all__ = [
     "Untruncation",
     "on_membership_change",
     "remove_membership_hook",
+    "swap",
     "truncate",
     "undo_state",
     "untruncate",

@@ -32,6 +32,7 @@ from epistrel.core import (
     story_texts,
     timeline,
     turn_gate,
+    variants,
 )
 from epistrel.core import story_settings as settings_store
 from epistrel.core.concurrency import check_expected_revision
@@ -56,7 +57,12 @@ from epistrel.core.viewpoint import is_omniscient, resolve_viewpoint, with_reque
 from epistrel.orchestrator import queue_drainer
 from epistrel.orchestrator.budget import DEFAULT_TURN_DEADLINE_S, TurnBudget
 from epistrel.orchestrator.lite import pipeline as lite
-from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
+from epistrel.orchestrator.lite.schemas import (
+    RegenerateRequest,
+    RegenerateResult,
+    RespondRequest,
+    RespondResult,
+)
 from epistrel.orchestrator.models import ModelAccessLayer
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.policies import admin as policy_admin
@@ -95,6 +101,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     "truncate": ResultCodec.of(timeline.Truncation),
     "untruncate": ResultCodec.of(timeline.Untruncation),
+    "swap": ResultCodec.of(timeline.Swapped),
+    "regenerate": ResultCodec.of(RegenerateResult),
     "archive_story": ResultCodec.of(stories.StatusChange),
     "unarchive_story": ResultCodec.of(stories.StatusChange),
     "delete_story": ResultCodec.of(stories.DeletedStory, status=204),
@@ -472,13 +480,15 @@ class Engine:
         limit: int = DEFAULT_HISTORY_LIMIT,
         before_turn: int | None = None,
         include_audit: bool = False,
+        variant: variants.ChainRef | None = None,
     ) -> History:
         """The story's corrected history through ``as_of`` (default the head), produced for one
         output viewpoint (FR-RESP-12): ``viewpoint`` (or ``ctx.viewpoint``) when named, else
         ``actor_character_id``, else the story's default; 422 ``viewpoint_unresolved`` when none
         resolves. A character viewpoint never gets ``think``/``latent`` beats; audit records
         (``include_audit``) need ``omniscient`` by name (403 ``omniscient_required``). Pages of
-        whole turns, newest first, up to ``limit`` items; ``before_turn`` pages backwards."""
+        whole turns, newest first, up to ``limit`` items; ``before_turn`` pages backwards.
+        ``variant`` reads along that chain instead of the active one (#66)."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         return await read_history(
             self.db,
@@ -489,6 +499,7 @@ class Engine:
             limit=limit,
             before_turn=before_turn,
             include_audit=include_audit,
+            variant=variant,
         )
 
     async def get_operation(
@@ -905,7 +916,7 @@ class Engine:
         request: timeline.UntruncateRequest | None = None,
     ) -> timeline.Untruncation:
         """Revert the most recent truncation (FR-STORE-18, LIFO): 409 ``nothing_to_undo``
-        without one, 409 ``swap_required`` when newer turns were written over it."""
+        without one; a swap (#66) when newer turns were written over it."""
         principal = self.require_principal(ctx)
         request = request or timeline.UntruncateRequest()
 
@@ -925,6 +936,81 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def swap(
+        self, ctx: RequestContext, story_id: str, request: variants.SwapRequest
+    ) -> timeline.Swapped:
+        """Make the chain ``request.to_variant_chain`` active and the current continuation
+        dormant (FR-STORE-18,28; #66): membership only, reversible by swapping back. Swapping to
+        the active chain writes nothing; 409 ``unknown_chain`` for a chain that is not one."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> timeline.Swapped:
+            return await timeline.swap(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "swap",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def variants(self, ctx: RequestContext, story_id: str) -> list[variants.Chain]:
+        """The story's variant chains (``GET /stories/{id}/variants``, #66)."""
+        return await variants.list_chains(self.db, story_id)
+
+    async def regenerate(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: RegenerateRequest | None = None,
+        *,
+        output_viewpoint: str | None = None,
+    ) -> RegenerateResult:
+        """Play the latest turn again as a new variant from its recorded input (FR-STORE-12,
+        #66); the old variant goes dormant in the same commit and can be swapped back. The
+        input is re-gated (#56); a busy story is 423 ``story_busy``; queued turns fail with
+        ``timeline_changed``. Omitted overrides reuse the recorded render set, viewpoint and
+        generation settings."""
+        principal = self.require_principal(ctx)
+        request = request or RegenerateRequest()
+        ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
+
+        async def gate(budget: TurnBudget, text: str, actor: str) -> InputPass:
+            return await self.gate_input(
+                ctx,
+                story_id,
+                EntryPoint.REGENERATE,
+                [GateText(lite.INPUT_LOCATOR, text)],
+                actor=actor,
+                budget=budget,
+                reserved=1,
+            )
+
+        async def run(ctx: RequestContext) -> RegenerateResult:
+            return await lite.regenerate(
+                self.db, self.models, ctx, story_id, request, principal=principal, gate=gate
+            )
+
+        return await self._keyed(
+            ctx,
+            "regenerate",
+            run,
+            story_id=story_id,
+            material={
+                "story_id": story_id,
+                "body": _body(request),
+                "viewpoint": ctx.viewpoint,
+            },
         )
 
     async def list_stories(

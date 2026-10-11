@@ -247,17 +247,29 @@ class BudgetBelowSafetyMinimum(EpistrelError):
 
 class NothingToUndo(EpistrelError):
     """``untruncate`` found no truncation to revert, or the one it named is not the most recent
-    (undo is LIFO, FR-STORE-18; #65). Nothing is written. ``details``: ``story_id`` and, when
-    the request named one, ``truncate_operation_id``."""
+    (undo is LIFO, FR-STORE-18; #65). Nothing is written. ``details``: ``story_id``, when the
+    request named one ``truncate_operation_id``, and while dormant continuations exist
+    ``options`` (``["swap", "fork"]``) and ``dormant_chains`` (#66: a swap is undone by a
+    swap)."""
 
     code = "nothing_to_undo"
     http_status = 409
 
 
-class SwapRequired(EpistrelError):
-    """The most recent truncation cannot be reverted by reactivating it: newer turns were
-    written over its discarded tail (FR-STORE-18,28). Nothing is written. ``details``:
-    ``truncate_operation_id``, ``to_turn`` and ``options`` (``["swap", "fork"]``)."""
+class UnknownChain(EpistrelError):
+    """A ``{turn, variant}`` chain selector names no variant of the story, or names a chain
+    that continues in more than one way (#66). Nothing is written. ``details``:
+    ``variant_chain`` and, for an ambiguous chain, ``candidates`` (the chains it continues
+    into, each a ``{turn, variant}`` that resolves on its own)."""
 
-    code = "swap_required"
+    code = "unknown_chain"
     http_status = 409
+
+
+class NothingToRegenerate(EpistrelError):
+    """``regenerate`` found no reply to regenerate: the story has no turns, or its latest turn
+    is reply-less (an ingested player turn or a narration turn; FR-STORE-12, #66). Nothing is
+    written. ``details``: ``story_id`` and ``turn``."""
+
+    code = "nothing_to_regenerate"
+    http_status = 422

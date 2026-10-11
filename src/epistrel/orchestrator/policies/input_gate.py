@@ -61,6 +61,7 @@ class EntryPoint(StrEnum):
     """Where gated text entered (the audit row's ``details.entry_point``)."""
 
     RESPOND = "respond"
+    REGENERATE = "regenerate"
     INGEST = "ingest"
     PINNED_MEMORIES = "pinned_memories"
     CUSTOM_INSTRUCTIONS = "custom_instructions"

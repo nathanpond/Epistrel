@@ -33,6 +33,15 @@
    idempotent call it is built and stored ``done`` inside the turn's commit transaction, so a
    committed turn always has its result for a retry.
 
+``regenerate`` (#66, FR-STORE-12) plays the head turn N again as variant ``v + 1``: it reuses
+the recorded ``player_input`` (re-gated, #56), render set, output viewpoint and resolved
+generation settings unless the request overrides them, reads the prompt inputs from before turn
+N, takes the story's turn slot (a busy story is 423 ``story_busy`` whatever its concurrency
+mode: a regenerate is a control action and is never queued), and commits one ``turn``
+operation at N that makes everything the old variant held ``dormant`` and fails the story's
+queued turns with ``timeline_changed``, all in one transaction. A failure leaves the old variant
+active.
+
 Scene context is validated by the request model and the cast check, then dropped (FR-RESP-4).
 This module must not import ``orchestrator.policies.admin`` (import-linter): the Engine passes
 the gate in as ``gate``.
@@ -51,15 +60,21 @@ from epistrel.core import idempotency, turn_gate
 from epistrel.core.concurrency import LiteReadSet, check_expected_revision, run_with_revalidation
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
-from epistrel.core.errors import StoryArchived
+from epistrel.core.errors import StoryArchived, TimelineChanged
 from epistrel.core.events import Operation
 from epistrel.core.history import turn_beats
-from epistrel.core.settings_schema import ResolvedGeneration, resolve_generation
+from epistrel.core.settings_schema import (
+    GenerationSettings,
+    ResolvedGeneration,
+    resolve_generation,
+)
 from epistrel.core.turn_gate import Concurrency
 from epistrel.core.turns import (
     REPLY_BEAT,
+    RecordedTurn,
     TurnInputs,
     joined_input,
+    read_regenerable,
     read_story_cast,
     read_turn_inputs,
     stage_turn,
@@ -68,7 +83,14 @@ from epistrel.core.viewpoint import resolve_viewpoint, try_resolve
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
-from epistrel.orchestrator.lite.schemas import FinishedMessage, RespondRequest, RespondResult
+from epistrel.orchestrator.lite.schemas import (
+    FinishedMessage,
+    PlayerInputBody,
+    RegenerateRequest,
+    RegenerateResult,
+    RespondRequest,
+    RespondResult,
+)
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelResult
 from epistrel.orchestrator.models.errors import EmptyCompletion
@@ -200,6 +222,93 @@ async def run_queued(
         )
 
 
+async def regenerate(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    ctx: RequestContext,
+    story_id: str,
+    request: RegenerateRequest,
+    *,
+    principal: str,
+    gate: Gate,
+) -> RegenerateResult:
+    """Regenerate the head turn of ``story_id``; see the module docstring."""
+    started = time.monotonic()
+    story = await read_story_cast(db, story_id)
+    if story.status == StoryStatus.ARCHIVED.value:
+        raise StoryArchived(
+            f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
+        )
+    recorded = await read_regenerable(db, story_id, request.turn)
+    replay = _replayed_request(recorded, request)
+    cast = resolve_cast(story, replay)
+    await check_expected_revision(db, story_id, ctx.expected_revision)
+    viewpoint = resolve_viewpoint(
+        ctx.viewpoint or recorded.viewpoint,
+        actor_character_id=cast.actor.id,
+        story_default=story.settings.default_output_viewpoint,
+        cast_ids=story.ids,
+    )
+    concurrency = await turn_gate.read_concurrency(db, story_id)
+    budget = TurnBudget(deadline_s=concurrency.turn_deadline)
+    with recording() as calls:
+        await gate(budget, joined_input(recorded.say, recorded.do), cast.actor.id)
+        op = Operation(
+            db,
+            story_id=story_id,
+            kind=OperationKind.TURN,
+            principal=principal,
+            turn=recorded.turn,
+            idempotency_key=ctx.idempotency_key,
+            viewpoint=viewpoint,
+        )
+        held = await turn_gate.acquire(db, story_id, op.operation_id, lease_s=concurrency.lease_s)
+        if held is not None:
+            raise held.busy(story_id)
+        op.holds_turn_slot = True
+        try:
+            async with turn_gate.renewing(db, story_id, op.operation_id, concurrency.lease_s):
+                played = await _play(
+                    db,
+                    models,
+                    story_id,
+                    replay,
+                    cast,
+                    viewpoint,
+                    op,
+                    budget,
+                    calls,
+                    started,
+                    regenerating=recorded,
+                )
+        finally:
+            if op.status is None:  # took the slot but never began
+                await turn_gate.release_now(db, story_id, op.operation_id)
+    assert isinstance(played, RegenerateResult)  # noqa: S101 - _play built it for a regenerate
+    return played
+
+
+def _replayed_request(recorded: RecordedTurn, request: RegenerateRequest) -> RespondRequest:
+    """The respond request a regenerate replays: the recorded input, with the request's
+    overrides (render set, prompt parameters) or else the recorded resolved values."""
+    params = request.prompt_params
+    if params is None and recorded.generation_settings is not None:
+        params = GenerationSettings(
+            temperature=recorded.generation_settings.get("temperature"),
+            top_p=recorded.generation_settings.get("top_p"),
+            length=recorded.generation_settings.get("length"),
+        )
+    renders = request.render_character_ids
+    if renders is None and recorded.render_character_ids:
+        renders = list(recorded.render_character_ids)
+    return RespondRequest(
+        actor_character_id=recorded.actor_character_id,
+        player_input=PlayerInputBody(say=recorded.say, do=recorded.do),
+        render_character_ids=renders,
+        prompt_params=params,
+    )
+
+
 async def _play(
     db: AsyncEngine,
     models: ModelAccessLayer,
@@ -211,13 +320,16 @@ async def _play(
     budget: TurnBudget,
     calls: CallLog,
     started: float,
+    *,
+    regenerating: RecordedTurn | None = None,
 ) -> RespondResult:
     """The turn itself: one ``turn`` operation under #47's revision protocol (steps 3 and 4 of
-    the module docstring)."""
+    the module docstring). ``regenerating``: the head turn this one replaces (#66)."""
     say, do = request.player_input.say_text, request.player_input.do_text
+    before_turn = regenerating.turn if regenerating is not None else None
 
     async def begin(conn: AsyncConnection) -> tuple[TurnInputs, ResolvedGeneration]:
-        inputs = await read_turn_inputs(conn, story_id)
+        inputs = await read_turn_inputs(conn, story_id, before_turn=before_turn)
         resolved = resolve_generation(
             inputs.deployment_generation, inputs.story_generation, request.prompt_params
         )
@@ -245,6 +357,24 @@ async def _play(
             prompt_hash=prompt_hash(messages),
             finish_reason=result.finish_reason,
         )
+        if regenerating is not None:
+            op.add_commit_step(fail_queue)
+
+    failed_queue: list[str] = []
+
+    async def fail_queue(conn: AsyncConnection) -> None:
+        # A regenerate is a control action: the story's queued turns fail with it (#66).
+        failed_queue[:] = await turn_gate.fail_queued(
+            conn,
+            story_id,
+            TimelineChanged(
+                "a regenerate changed the timeline before the queued turn started",
+                {
+                    "current_revision": int(op.base_revision or 0) + 1,
+                    "control_operation_id": op.operation_id,
+                },
+            ),
+        )
 
     async def result(conn: AsyncConnection | AsyncEngine, committed: Operation) -> RespondResult:
         beats = await turn_beats(conn, story_id, committed.operation_id, viewpoint)
@@ -252,16 +382,19 @@ async def _play(
         assert committed.narrative_turn is not None  # noqa: S101 - a committed turn's position
         assert committed.turn_variant is not None  # noqa: S101
         assert committed.timeline_revision is not None  # noqa: S101
-        return RespondResult(
-            message=FinishedMessage(message_id=reply.message_id, text=reply.text),
-            beats=beats,
-            turn=committed.narrative_turn,
-            variant=committed.turn_variant,
-            timeline_revision=committed.timeline_revision,
-            output_viewpoint=viewpoint,
-            model_calls=list(calls.calls),
-            elapsed_ms=round((time.monotonic() - started) * 1000),
-        )
+        fields: dict[str, Any] = {
+            "message": FinishedMessage(message_id=reply.message_id, text=reply.text),
+            "beats": beats,
+            "turn": committed.narrative_turn,
+            "variant": committed.turn_variant,
+            "timeline_revision": committed.timeline_revision,
+            "output_viewpoint": viewpoint,
+            "model_calls": list(calls.calls),
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+        }
+        if regenerating is not None:
+            return RegenerateResult(**fields, previous_variant=regenerating.variant)
+        return RespondResult(**fields)
 
     call = idempotency.current_call()
     if call is not None:
@@ -274,6 +407,8 @@ async def _play(
         read_set=LiteReadSet(),
         config_recheck=output_recheck(db, models, budget),
     )
+    if failed_queue:
+        turn_gate.wakeups.wake(story_id)
     if call is not None and call.stored_in_commit:
         stored: RespondResult = call.committed_value
         return stored
@@ -290,4 +425,4 @@ async def _generate(
         return await models.call(GENERATION, payload, params, budget=budget)
 
 
-__all__ = ["Gate", "QueueTurn", "respond", "run_queued"]
+__all__ = ["Gate", "QueueTurn", "regenerate", "respond", "run_queued"]

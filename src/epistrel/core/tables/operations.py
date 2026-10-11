@@ -40,6 +40,7 @@ MUTABLE_OPERATION_COLUMNS: tuple[str, ...] = (
     "timeline_revision",
     "error_code",
     "error",
+    "parent_variant",
 )
 """The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list)."""
 
@@ -58,6 +59,9 @@ operations = Table(
     Column("kind", pg_enum(OperationKind, "operation_kind"), nullable=False),
     Column("narrative_turn", Integer, nullable=True),
     Column("turn_variant", SmallInteger, nullable=True),
+    # The active variant of turn N - 1 this turn variant continues (#66): the variant tree's
+    # parent pointer; ``NULL`` for turn 1 and for non-turn operations. Set at commit.
+    Column("parent_variant", SmallInteger, nullable=True),
     Column("slot_k", SmallInteger, nullable=True),
     Column(
         "status",

@@ -104,6 +104,25 @@ class RespondRequest(BaseModel):
     scene_context: SceneContext | None = None
 
 
+class RegenerateRequest(BaseModel):
+    """``POST /stories/{id}/regenerate`` and ``Engine.regenerate`` (#66, FR-STORE-12).
+
+    The recorded ``player_input`` of the head turn is reused, never re-sent. ``turn``, when
+    given, must be the head turn (422 otherwise). ``render_character_ids``,
+    ``output_viewpoint`` and ``prompt_params`` override the values the turn was played with;
+    omitted, the recorded (resolved) ones are reused.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    turn: int | None = Field(default=None, ge=1)
+    render_character_ids: list[Ulid] | None = Field(
+        default=None, min_length=1, max_length=MAX_RENDER_CHARACTERS
+    )
+    output_viewpoint: str | None = Field(default=None, max_length=MAX_ID_CHARS + 16)
+    prompt_params: GenerationSettings | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class FinishedMessage:
     """The finished reply: the ``message_rendered`` event's id and its text."""
@@ -134,11 +153,21 @@ class RespondResult:
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
+@dataclass(frozen=True, slots=True)
+class RegenerateResult(RespondResult):
+    """What a regenerate returns: the respond result of the new variant, and the variant it
+    replaced (now ``dormant``, swappable back)."""
+
+    previous_variant: int = 0
+
+
 __all__ = [
     "MAX_INPUT_CHARS",
     "FinishedMessage",
     "PlayerInputBody",
     "RecentMessage",
+    "RegenerateRequest",
+    "RegenerateResult",
     "RespondRequest",
     "RespondResult",
     "SceneContext",

@@ -20,6 +20,9 @@ Reads the ``transcript_messages`` projection (joined to each beat's event for a 
   is returned whole); ``before_turn`` pages backwards and ``next_before_turn`` names the next
   page (``null`` on the last). Items are ascending within a page. Position-less rows count as
   turn 0, as does ``as_of=0`` ("genesis only").
+- **Variant** (``variant``, #66): read along another chain (``core.variants``): the active
+  history up to where that chain parts from it, then the chain's own rows; ``as_of`` defaults to
+  the chain's tip and runs from 0 to it. 409 ``unknown_chain`` as a swap's selector.
 - **Audit** (``include_audit``): ``omniscient`` only (403 ``omniscient_required`` otherwise,
   after every 422); the ``audit`` category events of the page's turns from active, committed
   operations, as items on the ``audit`` channel whose text is the payload's canonical JSON.
@@ -40,6 +43,7 @@ from epistrel.core.enums import EventCategory, Membership, OperationStatus
 from epistrel.core.errors import InvalidRequest, StoryNotFound
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import characters, events, operations, stories, transcript_messages
+from epistrel.core.variants import ChainRef, ChainSelection, chain_operations
 from epistrel.core.viewpoint import (
     AUDIENCE_FILTER,
     PRIVATE_CHANNELS,
@@ -120,10 +124,19 @@ async def read_history(
     limit: int = DEFAULT_LIMIT,
     before_turn: int | None = None,
     include_audit: bool = False,
+    variant: ChainRef | None = None,
 ) -> History:
     """The corrected history of ``story_id`` for one viewpoint; see the module docstring."""
     async with _connection(db) as conn:
         story = await _story(conn, story_id)
+        chain = None if variant is None else await chain_operations(conn, story_id, variant)
+        if chain is not None:
+            story = _Story(
+                timeline_revision=story.timeline_revision,
+                head=chain.tip_turn,
+                settings=story.settings,
+                ages=story.ages,
+            )
         through = _check_window(story, as_of=as_of, limit=limit, before_turn=before_turn)
         if actor_character_id is not None and actor_character_id not in story.ages:
             raise InvalidRequest(
@@ -140,10 +153,12 @@ async def read_history(
         if include_audit:
             require_omniscient(resolved, field="query.include_audit")
         upper = through if before_turn is None else min(through, before_turn - 1)
-        lower, next_before = await _page(conn, story_id, resolved, upper, limit)
-        rows = await _rows(conn, story_id, lower=lower, upper=upper)
+        lower, next_before = await _page(conn, story_id, resolved, upper, limit, chain)
+        rows = await _rows(conn, story_id, lower=lower, upper=upper, chain=chain)
         items = _items(rows, resolved, story.ages)
-        audit = await _audit(conn, story_id, lower, upper, story.ages) if include_audit else None
+        audit = (
+            await _audit(conn, story_id, lower, upper, story.ages, chain) if include_audit else None
+        )
     return History(
         items=items,
         timeline_revision=story.timeline_revision,
@@ -217,8 +232,21 @@ def _bucket() -> Any:
     return func.coalesce(transcript_messages.c.narrative_turn, literal_column("0"))
 
 
+def _on_chain(chain: ChainSelection | None) -> Any:
+    """Transcript rows of the active history, or of ``chain`` (#66)."""
+    t = transcript_messages
+    if chain is None:
+        return t.c.membership == Membership.ACTIVE.value
+    return chain.visible(t.c.membership, _bucket(), t.c.operation_id)
+
+
 async def _page(
-    conn: AsyncConnection, story_id: str, viewpoint: str, upper: int, limit: int
+    conn: AsyncConnection,
+    story_id: str,
+    viewpoint: str,
+    upper: int,
+    limit: int,
+    chain: ChainSelection | None = None,
 ) -> tuple[int, int | None]:
     """The lowest turn of the page ending at ``upper`` and the next page's ``before_turn``."""
     t = transcript_messages
@@ -230,7 +258,7 @@ async def _page(
     query = (
         select(_bucket().label("turn"), func.sum(case((both, 2), else_=1)).label("items"))
         .join(events, events.c.id == t.c.message_id)
-        .where(t.c.story_id == story_id, t.c.membership == Membership.ACTIVE.value)
+        .where(t.c.story_id == story_id, _on_chain(chain))
         .where(_bucket() <= upper)
         .group_by(_bucket())
         .order_by(_bucket().desc())
@@ -253,13 +281,14 @@ async def _rows(
     lower: int | None = None,
     upper: int | None = None,
     operation_id: str | None = None,
+    chain: ChainSelection | None = None,
 ) -> Sequence[Any]:
     t = transcript_messages
     query = (
         select(t, operations.c.origin, events.c.payload)
         .join(operations, operations.c.operation_id == t.c.operation_id)
         .join(events, events.c.id == t.c.message_id)
-        .where(t.c.story_id == story_id, t.c.membership == Membership.ACTIVE.value)
+        .where(t.c.story_id == story_id, _on_chain(chain))
         .order_by(_bucket(), t.c.turn_variant.asc().nulls_first(), t.c.seq)
     )
     if operation_id is not None:
@@ -270,16 +299,26 @@ async def _rows(
 
 
 async def _audit(
-    conn: AsyncConnection, story_id: str, lower: int, upper: int, ages: Mapping[str, int]
+    conn: AsyncConnection,
+    story_id: str,
+    lower: int,
+    upper: int,
+    ages: Mapping[str, int],
+    chain: ChainSelection | None = None,
 ) -> list[HistoryItem]:
     bucket = func.coalesce(events.c.narrative_turn, literal_column("0"))
+    on_chain = (
+        operations.c.membership == Membership.ACTIVE.value
+        if chain is None
+        else chain.visible(operations.c.membership, bucket, operations.c.operation_id)
+    )
     found = await conn.execute(
         select(events, operations.c.origin)
         .join(operations, operations.c.operation_id == events.c.operation_id)
         .where(
             events.c.story_id == story_id,
             events.c.category == EventCategory.AUDIT.value,
-            operations.c.membership == Membership.ACTIVE.value,
+            on_chain,
             operations.c.status == OperationStatus.COMMITTED.value,
             bucket.between(lower, upper),
         )

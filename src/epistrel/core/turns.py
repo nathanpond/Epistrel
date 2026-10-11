@@ -7,6 +7,12 @@ the custom instructions and pinned memories (the ``story_texts`` projection, #60
 rolling-summary segments, the cast's definitions, and the latest ``window_messages`` transcript
 rows (FR-LITE-1). Nothing the consumer sends as scene context is read here (FR-RESP-4).
 
+``read_turn_inputs(before_turn=N)`` reads the inputs of a regenerated turn N (#66): everything
+positioned at N or later (the variant being replaced) is left out, so the new variant is built
+from what the old one was built from. ``read_regenerable`` reads what regenerating the head turn
+reuses: its recorded ``player_input`` (actor, ``say``/``do``), render set, output viewpoint and
+resolved generation settings.
+
 ``stage_turn`` stages the turn's beats: the actor's ``say``/``do`` as a ``player_input`` event
 at beat 1 (FR-RESP-9) and the reply as a ``message_rendered`` event at beat 2, so every input
 and final message is in the transcript with its position (FR-PROF-11).
@@ -17,12 +23,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.config_changes import read_lite_defaults
-from epistrel.core.enums import Authority, Membership, OperationStatus, Provenance
-from epistrel.core.errors import StoryNotFound
+from epistrel.core.enums import Authority, Membership, OperationKind, OperationStatus, Provenance
+from epistrel.core.errors import InvalidRequest, NothingToRegenerate, StoryNotFound
 from epistrel.core.events import Operation
 from epistrel.core.events.types import MessageRendered, PlayerInput
 from epistrel.core.ratings import story_guidance
@@ -143,19 +149,33 @@ def _active_committed(story_id: str) -> Any:
     )
 
 
-async def _payloads(conn: AsyncConnection, story_id: str, event_type: str) -> list[Any]:
+def _before(column: Any, before_turn: int | None) -> Any:
+    """Positioned before ``before_turn`` (or position-less); everything when ``None``."""
+    if before_turn is None:
+        return true()
+    return or_(column.is_(None), column < before_turn)
+
+
+async def _payloads(
+    conn: AsyncConnection, story_id: str, event_type: str, before_turn: int | None = None
+) -> list[Any]:
     found = await conn.scalars(
         select(events.c.payload)
         .join(operations, operations.c.operation_id == events.c.operation_id)
         .where(
-            events.c.story_id == story_id, events.c.type == event_type, _active_committed(story_id)
+            events.c.story_id == story_id,
+            events.c.type == event_type,
+            _active_committed(story_id),
+            _before(operations.c.narrative_turn, before_turn),
         )
         .order_by(events.c.seq)
     )
     return list(found)
 
 
-async def _window(conn: AsyncConnection, story_id: str, limit: int) -> tuple[WindowRow, ...]:
+async def _window(
+    conn: AsyncConnection, story_id: str, limit: int, before_turn: int | None = None
+) -> tuple[WindowRow, ...]:
     t = transcript_messages
     found = await conn.execute(
         select(
@@ -170,6 +190,7 @@ async def _window(conn: AsyncConnection, story_id: str, limit: int) -> tuple[Win
             t.c.story_id == story_id,
             t.c.membership == Membership.ACTIVE.value,
             t.c.channel.in_(PROMPT_CHANNELS),
+            _before(t.c.narrative_turn, before_turn),
         )
         .order_by(
             t.c.narrative_turn.desc().nulls_last(),
@@ -196,8 +217,11 @@ async def _window(conn: AsyncConnection, story_id: str, limit: int) -> tuple[Win
     return tuple(rows)
 
 
-async def read_turn_inputs(conn: AsyncConnection, story_id: str) -> TurnInputs:
-    """The prompt inputs of the next turn of ``story_id`` (call inside the read snapshot)."""
+async def read_turn_inputs(
+    conn: AsyncConnection, story_id: str, *, before_turn: int | None = None
+) -> TurnInputs:
+    """The prompt inputs of the next turn of ``story_id`` (call inside the read snapshot), or
+    of a regenerated turn ``before_turn`` (only what is positioned before it)."""
     defaults = await read_lite_defaults(conn)
     raw_settings = await conn.scalar(select(stories.c.settings).where(stories.c.id == story_id))
     settings = StorySettings.from_row(raw_settings)
@@ -210,7 +234,7 @@ async def read_turn_inputs(conn: AsyncConnection, story_id: str) -> TurnInputs:
             )
         )
     ).one_or_none()
-    segments = await _payloads(conn, story_id, "lite_summary_segment")
+    segments = await _payloads(conn, story_id, "lite_summary_segment", before_turn)
     cast = _cast((await conn.execute(_cast_query(story_id))).all())
     return TurnInputs(
         guidance=guidance.prompt_guidance or "",
@@ -218,10 +242,95 @@ async def read_turn_inputs(conn: AsyncConnection, story_id: str) -> TurnInputs:
         pins=tuple(str(item["text"]) for item in texts.pinned) if texts is not None else (),
         segments=tuple(str(s.get("text", "")) for s in segments),
         cast=cast,
-        window=await _window(conn, story_id, window_messages),
+        window=await _window(conn, story_id, window_messages, before_turn),
         deployment_generation=defaults.lite_generation_defaults,
         story_generation=settings.generation_settings,
         window_messages=window_messages,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedTurn:
+    """What regenerating the head turn reuses (#66): its position, its recorded input and the
+    resolved values it ran with."""
+
+    turn: int
+    variant: int
+    operation_id: str
+    actor_character_id: str
+    say: str | None
+    do: str | None
+    render_character_ids: tuple[str, ...]
+    viewpoint: str | None
+    generation_settings: dict[str, Any] | None
+
+
+async def read_regenerable(db: AsyncEngine, story_id: str, turn: int | None = None) -> RecordedTurn:
+    """The head turn of ``story_id`` as a regenerate reuses it. ``turn`` other than the head is
+    422; a story with no turn, or a head turn without a reply or without an actor's input (an
+    ingested player turn, a narration turn), is 422 ``nothing_to_regenerate``."""
+    async with db.connect() as conn:
+        head = await conn.scalar(select(stories.c.next_turn_index).where(stories.c.id == story_id))
+        if head is None:
+            raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+        latest = int(head) - 1
+        if turn is not None and turn != latest:
+            raise InvalidRequest(
+                f"only the latest turn ({latest}) can be regenerated",
+                {"field": "body.turn", "head": latest},
+            )
+        op = (
+            await conn.execute(
+                select(
+                    operations.c.operation_id,
+                    operations.c.turn_variant,
+                    operations.c.viewpoint,
+                    operations.c.config_revisions,
+                ).where(
+                    _active_committed(story_id),
+                    operations.c.kind == OperationKind.TURN.value,
+                    operations.c.narrative_turn == latest,
+                )
+            )
+        ).one_or_none()
+        found = (
+            []
+            if op is None
+            else (
+                await conn.execute(
+                    select(events.c.type, events.c.payload, events.c.character_id)
+                    .where(
+                        events.c.operation_id == op.operation_id,
+                        events.c.type.in_(("player_input", "message_rendered")),
+                    )
+                    .order_by(events.c.seq)
+                )
+            ).all()
+        )
+    inputs = [r for r in found if r.type == "player_input" and r.character_id is not None]
+    replies = [r for r in found if r.type == "message_rendered"]
+    if op is None or not inputs or not replies:
+        raise NothingToRegenerate(
+            "the latest turn has no reply to regenerate"
+            if op is not None
+            else "the story has no turn to regenerate",
+            {"story_id": story_id, "turn": latest},
+        )
+    said = inputs[0].payload
+    say, do = said.get("say"), said.get("do")
+    if not (say or do):
+        say = said.get("text")
+    recorded = (op.config_revisions or {}).get("generation_settings")
+    return RecordedTurn(
+        turn=latest,
+        variant=int(op.turn_variant),
+        operation_id=op.operation_id,
+        actor_character_id=inputs[0].character_id,
+        say=say,
+        do=do,
+        render_character_ids=tuple(replies[-1].payload.get("render_character_ids") or ()),
+        viewpoint=op.viewpoint,
+        generation_settings=recorded if isinstance(recorded, dict) else None,
     )
 
 
@@ -273,10 +382,12 @@ __all__ = [
     "INPUT_BEAT",
     "REPLY_BEAT",
     "CastEntry",
+    "RecordedTurn",
     "StoryCast",
     "TurnInputs",
     "WindowRow",
     "joined_input",
+    "read_regenerable",
     "read_story_cast",
     "read_turn_inputs",
     "stage_turn",

@@ -1,26 +1,38 @@
-"""Timeline edits over REST (FR-STORE-10,11,18; #65): truncate a story and undo it.
+"""Timeline edits over REST (FR-STORE-10,11,12,18,28; #65, #66): truncate a story, undo it,
+regenerate the latest reply, and swap continuations.
 
 - ``POST /stories/{id}/truncate`` with ``{to_turn}`` discards everything positioned after
   ``to_turn``; nothing is deleted and valid-times are untouched.
 - ``POST /stories/{id}/untruncate`` (body optional: ``{truncate_operation_id}``) reverts the
-  most recent truncation.
+  most recent truncation, by a swap when newer turns were written over it.
+- ``POST /stories/{id}/regenerate`` plays the latest turn again as a new variant; the old one
+  goes dormant.
+- ``POST /stories/{id}/swap`` with ``{to_variant_chain: {turn, variant}}`` makes that chain
+  active and the current continuation dormant.
+- ``GET /stories/{id}/variants`` lists the story's chains.
 
-Both answer ``{operation_id, timeline_revision, next_turn_index, …}``. ``GET /stories/{id}``
-reports ``undo_available`` and ``dormant_chains``; ``GET /stories/{id}/history?as_of=N`` reads
-the corrected history through N. Thin handlers over ``Engine``; the rules are in
-``epistrel.core.timeline``.
+The edits answer ``{operation_id, timeline_revision, next_turn_index, …}``. ``GET
+/stories/{id}`` reports ``undo_available``, ``dormant_chains`` and ``variant_chains``;
+``GET /stories/{id}/history?as_of=N&variant=turn:variant`` reads along a chain. Thin handlers
+over ``Engine``; the rules are in ``epistrel.core.timeline`` and ``epistrel.core.variants``.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Response
+from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
+from epistrel.api.routes.respond import RespondResponse
+from epistrel.core.enums import Membership
 from epistrel.core.timeline import TruncateRequest, UntruncateRequest
+from epistrel.core.variants import Chain, ChainRef, SwapRequest
+from epistrel.orchestrator.lite.schemas import RegenerateRequest, RegenerateResult
 
 router = APIRouter(prefix="/stories", tags=["timeline"])
 
@@ -39,12 +51,80 @@ class TruncatedBody(MutationResponse):
     """How many operations the truncation discarded."""
 
 
+class ChainRefBody(BaseModel):
+    """A chain: the ``{turn, variant}`` of its first (diverging) turn."""
+
+    turn: int
+    variant: int
+
+    @classmethod
+    def of(cls, ref: ChainRef) -> ChainRefBody:
+        return cls(turn=ref.turn, variant=ref.variant)
+
+
 class UntruncatedBody(MutationResponse):
     operation_id: str
     next_turn_index: int
     truncate_operation_id: str
     restored_operations: int
     """How many operations the untruncation reactivated."""
+    swapped: bool
+    """``true`` when newer turns made the undo a swap: the original continuation is active and
+    the newer one dormant (``dormant_operations``), nothing lost."""
+    active_chain: ChainRefBody | None
+    dormant_operations: int
+
+
+class SwappedBody(MutationResponse):
+    operation_id: str | None
+    """``null`` when the chain was already active and nothing was written."""
+    next_turn_index: int
+    active_chain: ChainRefBody
+    activated_operations: int
+    dormant_operations: int
+
+
+class RegeneratedBody(RespondResponse):
+    """The new variant of the latest turn (the respond body) and the variant it replaced."""
+
+    previous_variant: int
+
+    @classmethod
+    def of_regenerate(cls, result: RegenerateResult) -> RegeneratedBody:
+        return cls(
+            **RespondResponse.of(result).model_dump(), previous_variant=result.previous_variant
+        )
+
+
+class VariantChainBody(BaseModel):
+    """One chain of the story: its first turn and variant, its membership (``active``,
+    ``dormant``, or ``discarded`` for a rewound tail no turn was written over yet), its tip,
+    how many turns it holds, when its membership last changed, and the chain it diverges from
+    (``null`` for a chain starting at turn 1)."""
+
+    turn: int
+    variant: int
+    membership: Membership
+    tip_turn: int
+    turn_count: int
+    membership_tx: datetime | None
+    parent: ChainRefBody | None
+
+    @classmethod
+    def of(cls, chain: Chain) -> VariantChainBody:
+        return cls(
+            turn=chain.turn,
+            variant=chain.variant,
+            membership=chain.membership,
+            tip_turn=chain.tip_turn,
+            turn_count=chain.turn_count,
+            membership_tx=chain.membership_tx,
+            parent=None if chain.parent is None else ChainRefBody.of(chain.parent),
+        )
+
+
+class VariantsBody(BaseModel):
+    items: list[VariantChainBody]
 
 
 @router.post(
@@ -85,9 +165,11 @@ async def truncate(
     description=(
         "Reactivate exactly what the most recent truncation discarded (undo is last in, first "
         "out). Naming `truncate_operation_id` is optional; a truncation that is not the most "
-        "recent one, or none at all, is 409 `nothing_to_undo`. When newer turns were written "
-        "after the truncation, undoing it is a swap: 409 `swap_required` with "
-        '`options: ["swap", "fork"]`.' + CONTROL_RULES
+        "recent one, or none at all, is 409 `nothing_to_undo` (listing "
+        '`options: ["swap", "fork"]` and the `dormant_chains` when there are any). When newer '
+        "turns were written after the truncation, undoing it is a swap: the original "
+        "continuation becomes active and the newer one dormant, nothing is lost, and the "
+        "answer says `swapped: true` with the `active_chain`." + CONTROL_RULES
     ),
 )
 async def untruncate(
@@ -104,5 +186,88 @@ async def untruncate(
         next_turn_index=done.next_turn_index,
         truncate_operation_id=done.truncate_operation_id,
         restored_operations=done.restored_operations,
+        swapped=done.swapped,
+        active_chain=None if done.active_chain is None else ChainRefBody.of(done.active_chain),
+        dormant_operations=done.dormant_operations,
     )
     return answered(answer, ctx, response, replayed=done.replayed)
+
+
+@router.post(
+    "/{story_id}/swap",
+    response_model=SwappedBody,
+    summary="Make another continuation the active one",
+    description=(
+        "Make the chain `to_variant_chain` (`{turn, variant}` of its first turn, as "
+        "`GET /stories/{id}/variants` lists it) active: everything active after the turn where "
+        "it parts from the active chain becomes `dormant`, and the chain's turns (and the work "
+        "positioned on them) become `active`. Nothing is deleted; swapping back restores the "
+        "exact prior state. Swapping to the active chain writes nothing (200, `operation_id` "
+        "null). A chain that names no variant, or continues in more than one way, is 409 "
+        "`unknown_chain` (with the `candidates` to choose from). Turns waiting in the story's "
+        "queue fail with `timeline_changed`." + CONTROL_RULES
+    ),
+)
+async def swap(
+    story_id: str,
+    body: SwapRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> SwappedBody:
+    done = await engine.swap(ctx, story_id, body)
+    answer = SwappedBody(
+        operation_id=done.operation_id,
+        timeline_revision=done.timeline_revision,
+        next_turn_index=done.next_turn_index,
+        active_chain=ChainRefBody.of(done.active_chain),
+        activated_operations=done.activated_operations,
+        dormant_operations=done.dormant_operations,
+    )
+    return answered(answer, ctx, response, replayed=done.replayed)
+
+
+@router.post(
+    "/{story_id}/regenerate",
+    response_model=RegeneratedBody,
+    summary="Regenerate the latest reply",
+    description=(
+        "Play the latest turn again: its recorded input (never re-sent by you, and checked by "
+        "the input policies again) is answered anew as the next variant of the same turn, and "
+        "the old variant becomes `dormant` (swap back to it with `POST /stories/{id}/swap`). "
+        "`turn`, when given, must be the latest turn (422). `render_character_ids`, "
+        "`output_viewpoint` and `prompt_params` override the values the turn was played with; "
+        "omitted, the recorded ones are reused. A latest turn without a reply (an ingested "
+        "player turn, a narration turn) is 422 `nothing_to_regenerate`. The answer is the "
+        "respond body plus `previous_variant`. While another turn of the story runs the "
+        "regenerate is 423 `story_busy` (it is never queued); queued turns fail with "
+        "`timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional."
+    ),
+)
+async def regenerate(
+    story_id: str,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+    body: Annotated[RegenerateRequest | None, Body()] = None,
+) -> RegeneratedBody:
+    result = await engine.regenerate(ctx, story_id, body or RegenerateRequest())
+    return answered(RegeneratedBody.of_regenerate(result), ctx, response, replayed=result.replayed)
+
+
+@router.get(
+    "/{story_id}/variants",
+    response_model=VariantsBody,
+    summary="List the story's variant chains",
+    description=(
+        "Every chain of the story's variant tree: each turn variant continues the active "
+        "variant of the turn before it, and a chain is a run of variants continuing one "
+        "another with the same membership, named by the `{turn, variant}` of its first turn. "
+        "The `active` chains make up the story; `dormant` ones are continuations a swap can "
+        "bring back (a regenerated reply, a rewound tail newer turns were written over); "
+        "`discarded` ones are rewound tails `untruncate` can reactivate."
+    ),
+)
+async def variants(story_id: str, ctx: ContextDep, engine: EngineDep) -> VariantsBody:
+    found = await engine.variants(ctx, story_id)
+    return VariantsBody(items=[VariantChainBody.of(c) for c in found])

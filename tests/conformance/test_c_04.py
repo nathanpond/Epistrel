@@ -7,6 +7,7 @@ deterministic stub — run the same suite (``tests/conformance/suite.py``).
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
@@ -14,17 +15,29 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.engine import Engine
+from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
+from epistrel.orchestrator.models.prompts import example_instance
 from epistrel.orchestrator.models.registry import DELIVERED, GuardrailVerdict
-from tests.auth_support import auth_settings
+from tests.auth_support import auth_settings, bearer
 from tests.conformance.suite import (
     DEFAULT_KEY,
     GENERATION_MODEL,
     HOUSE_MODEL,
     run_suite,
 )
-from tests.model_support import MockOpenAI, config_key, mock_openai, restored_model_config
+from tests.model_support import (
+    MockOpenAI,
+    admin_client,
+    config_key,
+    mock_openai,
+    put,
+    put_key,
+    restored_model_config,
+)
 
 ADAPTERS = ("openai", "stub")
+PROBE = example_instance(DELIVERED["generation"].input_schema)
+SUMMARY = example_instance(DELIVERED["lite_summary"].input_schema)
 
 
 @pytest.fixture(params=ADAPTERS)
@@ -70,9 +83,11 @@ async def test_c_04(model_engine: Engine, adapter_settings: Settings, mock: Mock
     # FR-MODEL-2: the listing names exactly the delivered purposes, keys masked.
     purposes = observed.listing["purposes"]
     assert isinstance(purposes, dict)
-    assert set(purposes) == set(DELIVERED)
+    assert set(purposes) == {"default", *DELIVERED}
     assert purposes["lite_summary"]["model"] == HOUSE_MODEL
     assert purposes["generation"]["api_key"] == "***"
+    assert purposes["generation"]["sources"]["model"] == "own"
+    assert purposes["lite_summary"]["sources"]["model"] == "default"
     assert DEFAULT_KEY not in json.dumps(observed.listing)
 
     # FR-MODEL-7 (pass-through half) / FR-MODEL-11: the verdict is schema-conformant JSON.
@@ -101,3 +116,49 @@ async def test_c_04(model_engine: Engine, adapter_settings: Settings, mock: Mock
         assert set(observed.fields_outside_declared) == set(DELIVERED)
         assert all(not outside for outside in observed.fields_outside_declared.values())
         assert observed.results["generation"].text.startswith("[stub generation ")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M2", "FR-MODEL-4")
+async def test_c_04__runtime(
+    model_engine: Engine, adapter_settings: Settings, mock: MockOpenAI
+) -> None:
+    """An operator changes ``generation``'s model, endpoint and key through
+    ``/admin/model-config`` and the very next call uses each change, in the same process with
+    the same Engine (no restart). Complement asserted: a call made before a change used the
+    old value, so the test would see a stale cache."""
+    pid = os.getpid()
+    async with admin_client(adapter_settings, model_engine) as client:
+        await put(client, "default", {"base_url": f"{mock.root}/v1", "model": "model-a"})
+        await put_key(client, "default", "sk-runtime-key-a")
+        first = await model_engine.models.call("generation", PROBE)
+        assert first.model == "model-a"
+
+        revision = await put(client, "generation", {"model": "model-b"})
+        second = await model_engine.models.call("generation", PROBE)
+        assert second.model == "model-b"
+        # The unchanged purpose still inherits the default.
+        assert (await model_engine.models.call("lite_summary", SUMMARY)).model == "model-a"
+
+        await put(client, "generation", {"model": "model-b", "base_url": f"{mock.root}/gw/v1"})
+        await put_key(client, "generation", "sk-runtime-key-b")
+        third = await model_engine.models.call("generation", PROBE)
+        assert third.model == "model-b"
+        listing = (await client.get("/admin/model-config", headers=bearer())).json()
+        assert listing["config_revision"] > revision
+        assert listing["purposes"]["generation"]["sources"]["base_url"] == "own"
+
+    assert os.getpid() == pid
+    if adapter_settings.model_adapter == "openai":
+        calls = [(r.path, r.authorization, r.body["model"]) for r in mock.requests]
+        assert calls == [
+            ("/v1/chat/completions", "Bearer sk-runtime-key-a", "model-a"),
+            ("/v1/chat/completions", "Bearer sk-runtime-key-a", "model-b"),
+            ("/v1/chat/completions", "Bearer sk-runtime-key-a", "model-a"),
+            ("/gw/v1/chat/completions", "Bearer sk-runtime-key-b", "model-b"),
+        ]
+        adapter = model_engine.models.adapter
+        assert isinstance(adapter, OpenAICompatibleAdapter)
+        assert adapter.closed_clients >= 1  # superseded clients were closed once idle
+    else:
+        assert mock.requests == []

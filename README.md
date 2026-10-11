@@ -29,7 +29,7 @@ uv run --env-file .env epistrel serve    # http://127.0.0.1:8000
 
 ## Models
 
-Every model call goes through the Model Access Layer (`epistrel.orchestrator.models`, docs/02 §5) to an external OpenAI-compatible endpoint; Epistrel runs no model itself. Each purpose (`generation`, `guardrail_check`, `lite_summary` today; `GET /admin/model-config` lists them) has its own `{base_url, model, api_key, params}` in the `model_config` table and falls back field by field to the `default` row. API keys are stored encrypted with `EPISTREL_CONFIG_KEY`. `EPISTREL_MODEL_ADAPTER=stub` swaps in a deterministic stub that needs no endpoint. To check a model server directly:
+Every model call goes through the Model Access Layer (`epistrel.orchestrator.models`, docs/02 §5) to an external OpenAI-compatible endpoint; Epistrel runs no model itself. Each purpose (`generation`, `guardrail_check`, `lite_summary` today; `GET /admin/model-config` lists them) has its own `{base_url, model, api_key, params}` in the `model_config` table and falls back field by field to the `default` row. Operators change it at runtime with `PUT /admin/model-config/{purpose}` and set a key with `PUT /admin/model-config/{purpose}/api-key`; the next model call uses the change, without a restart. API keys are stored encrypted with `EPISTREL_CONFIG_KEY` and never returned (`GET` shows `***` and the first 8 hex of the key's SHA-256). `EPISTREL_MODEL_ADAPTER=stub` swaps in a deterministic stub that needs no endpoint. To check a model server directly:
 
 ```bash
 uv run python -m epistrel.tools.model_probe generation "Say hello" \

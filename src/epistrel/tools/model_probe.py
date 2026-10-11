@@ -29,7 +29,7 @@ from epistrel.config import ConfigError, Settings, load_settings
 from epistrel.core.db import make_engine
 from epistrel.orchestrator.models.access import build_inputs, get_delivered, payload_fields
 from epistrel.orchestrator.models.adapter import ModelParams
-from epistrel.orchestrator.models.config import EffectiveConfig, KeyBox, effective_config
+from epistrel.orchestrator.models.config import ConfigCache, EffectiveConfig, KeyBox
 from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
 from epistrel.orchestrator.models.prompts import render
 from epistrel.orchestrator.models.registry import (
@@ -85,7 +85,7 @@ async def _probe(args: argparse.Namespace) -> dict[str, Any]:
             model=args.model,
             api_key_ciphertext=keybox.encrypt(args.api_key),
             params=ModelParams(),
-            revision="probe",
+            revision=0,
         )
 
         async def fixed(_: str) -> EffectiveConfig:
@@ -121,8 +121,10 @@ def _stored_adapter(
     override_box = KeyBox(PROBE_KEY)
     keybox = override_box if args.api_key else KeyBox(settings.config_key)
 
+    cache = ConfigCache()
+
     async def resolve(purpose: str) -> EffectiveConfig:
-        stored = await effective_config(db, purpose)
+        stored = await cache.effective(db, purpose)
         config = replace(
             stored,
             base_url=args.base_url.rstrip("/") if args.base_url else stored.base_url,

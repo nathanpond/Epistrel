@@ -5,8 +5,9 @@ Each call resolves its purpose's effective configuration, then sends one Chat Co
 request (``stream=False``) to that purpose's ``base_url`` — a hosted provider, an enterprise
 gateway, or LM Studio at ``http://host.docker.internal:1234/v1``. The SDK's own retries are off
 (``max_retries=0``): the turn budget owns every attempt. The timeout comes from the effective
-params (default 60 s). One ``AsyncOpenAI`` client exists per distinct ``(base_url, api_key)``;
-the cache is dropped whenever the configuration revision changes.
+params (default 60 s). One ``AsyncOpenAI`` client exists per distinct ``(base_url, api_key)``
+at the current ``config_revision``; when the revision moves, the next call builds new clients and
+each old one is closed as soon as its in-flight calls finish (FR-MODEL-4).
 
 ``max_tokens`` is sent as ``max_completion_tokens``; an endpoint that answers that with a 400
 is retried once with the legacy ``max_tokens`` and remembered.
@@ -20,6 +21,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import openai
@@ -72,6 +74,15 @@ def request_body(
     return body
 
 
+@dataclass(eq=False)
+class _Client:
+    """One SDK client and the number of calls currently using it."""
+
+    sdk: openai.AsyncOpenAI
+    in_flight: int = 0
+    retired: bool = False
+
+
 class OpenAICompatibleAdapter:
     """Chat Completions over the ``openai`` SDK, configured per purpose from ``model_config``."""
 
@@ -80,22 +91,38 @@ class OpenAICompatibleAdapter:
     def __init__(self, resolve: ConfigResolver, keybox: KeyBox) -> None:
         self._resolve = resolve
         self._keybox = keybox
-        self._clients: dict[tuple[str, str], openai.AsyncOpenAI] = {}
-        self._revision: str | None = None
+        self._clients: dict[tuple[str, str], _Client] = {}
+        self._revision: int | None = None
         self._legacy_max_tokens: set[str] = set()
+        self.closed_clients = 0
+        """How many superseded clients have been closed (observable by tests)."""
 
-    def _client(self, config: EffectiveConfig, base_url: str, api_key: str) -> openai.AsyncOpenAI:
+    async def _acquire(self, config: EffectiveConfig, base_url: str, api_key: str) -> _Client:
         if config.revision != self._revision:
-            # A configuration write: rebuild clients from the new rows. Old clients are left
-            # to finish their in-flight calls (#52 closes them once idle).
-            self._clients = {}
+            # A configuration write: the next calls use new clients. A superseded client is
+            # closed now if idle, else by the last of its in-flight calls (``_release``).
+            superseded, self._clients = list(self._clients.values()), {}
             self._revision = config.revision
+            for old in superseded:
+                old.retired = True
+                if old.in_flight == 0:
+                    await self._close(old)
         key = (base_url, key_fingerprint(api_key))
         client = self._clients.get(key)
         if client is None:
-            client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0)
-            self._clients[key] = client
+            sdk = openai.AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0)
+            client = self._clients[key] = _Client(sdk)
+        client.in_flight += 1
         return client
+
+    async def _release(self, client: _Client) -> None:
+        client.in_flight -= 1
+        if client.retired and client.in_flight == 0:
+            await self._close(client)
+
+    async def _close(self, client: _Client) -> None:
+        await client.sdk.close()
+        self.closed_clients += 1
 
     async def complete(
         self,
@@ -111,23 +138,45 @@ class OpenAICompatibleAdapter:
             raise ModelUnavailable(purpose, "no_api_key")
         api_key = self._keybox.decrypt(config.api_key_ciphertext, purpose=purpose)
         secret = api_key.get_secret_value()
-        client = self._client(config, config.base_url, secret)
+        client = await self._acquire(config, config.base_url, secret)
+        try:
+            return await self._send(
+                client.sdk,
+                config,
+                messages,
+                params,
+                response_schema,
+                secret,
+                config.base_url,
+                config.model,
+            )
+        finally:
+            await self._release(client)
+
+    async def _send(
+        self,
+        client: openai.AsyncOpenAI,
+        config: EffectiveConfig,
+        messages: Sequence[Message],
+        params: ModelParams,
+        response_schema: type[BaseModel] | None,
+        secret: str,
+        base_url: str,
+        model: str,
+    ) -> ModelResult:
+        purpose = config.purpose
         effective = config.params.merged(params)
         timeout = effective.timeout or DEFAULT_TIMEOUT_S
-        legacy = config.base_url in self._legacy_max_tokens
+        legacy = base_url in self._legacy_max_tokens
         started = time.perf_counter()
-        body = request_body(
-            config.model, messages, effective, response_schema, legacy_max_tokens=legacy
-        )
+        body = request_body(model, messages, effective, response_schema, legacy_max_tokens=legacy)
         try:
             completion = await client.chat.completions.create(**body, timeout=timeout)
         except openai.BadRequestError:
             if legacy or effective.max_tokens is None:
                 raise
-            self._legacy_max_tokens.add(config.base_url)
-            body = request_body(
-                config.model, messages, effective, response_schema, legacy_max_tokens=True
-            )
+            self._legacy_max_tokens.add(base_url)
+            body = request_body(model, messages, effective, response_schema, legacy_max_tokens=True)
             completion = await client.chat.completions.create(**body, timeout=timeout)
         latency_ms = round((time.perf_counter() - started) * 1000)
         choice = completion.choices[0] if completion.choices else None
@@ -135,7 +184,7 @@ class OpenAICompatibleAdapter:
         result = ModelResult(
             text=(choice.message.content or "") if choice is not None else "",
             finish_reason=choice.finish_reason if choice is not None else None,
-            model=completion.model or config.model,
+            model=completion.model or model,
             latency_ms=latency_ms,
             tokens_in=usage.prompt_tokens if usage is not None else None,
             tokens_out=usage.completion_tokens if usage is not None else None,
@@ -154,7 +203,7 @@ class OpenAICompatibleAdapter:
     async def aclose(self) -> None:
         clients, self._clients = list(self._clients.values()), {}
         for client in clients:
-            await client.close()
+            await client.sdk.close()
 
 
 __all__ = ["OpenAICompatibleAdapter", "request_body"]

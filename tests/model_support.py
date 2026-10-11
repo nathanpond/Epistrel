@@ -12,9 +12,15 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+import httpx2 as httpx
 from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
+
+from epistrel.api import create_app
+from epistrel.config import Settings
+from epistrel.engine import Engine
+from tests.auth_support import bearer
 
 CONFIG_KEY = base64.urlsafe_b64encode(b"epistrel-test-config-key-0000000").decode()
 VERDICT = '{"violation": false, "confidence": 1.0, "reason": ""}'
@@ -119,9 +125,45 @@ async def restored_model_config(engine: AsyncEngine) -> AsyncIterator[None]:
                     "api_key_ciphertext = NULL, params = '{}'::jsonb, updated_by = 'system'"
                 )
             )
+            # Move the revision too, so no Model Access Layer keeps a cached copy of the rows.
+            await conn.execute(
+                text("UPDATE deployment_state SET config_revision = config_revision + 1")
+            )
 
     await reset()
     try:
         yield
     finally:
         await reset()
+
+
+OPERATOR_HEADERS = {**bearer(), "X-Epistrel-Principal": "p-operator"}
+
+
+@asynccontextmanager
+async def admin_client(settings: Settings, engine: Engine) -> AsyncIterator[httpx.AsyncClient]:
+    """The REST app serving ``engine`` itself (no lifespan), so a test can change the
+    configuration over REST and call models through the same Engine."""
+    app = create_app(settings)
+    app.state.epistrel = engine
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+async def put(client: httpx.AsyncClient, purpose: str, body: dict[str, Any]) -> int:
+    """``PUT /admin/model-config/{purpose}``; returns the ``config_revision`` it reports."""
+    response = await client.put(
+        f"/admin/model-config/{purpose}", json=body, headers=OPERATOR_HEADERS
+    )
+    assert response.status_code == 200, response.text
+    return int(response.json()["config_revision"])
+
+
+async def put_key(client: httpx.AsyncClient, purpose: str, api_key: str) -> None:
+    response = await client.put(
+        f"/admin/model-config/{purpose}/api-key",
+        json={"api_key": api_key},
+        headers=OPERATOR_HEADERS,
+    )
+    assert response.status_code == 204, response.text

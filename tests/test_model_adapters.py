@@ -118,14 +118,14 @@ def test_effective_config_inherits_per_field_from_default() -> None:
     at = datetime(2026, 10, 11, tzinfo=UTC)
     default = ConfigRow("default", "http://gw/v1", "house", "cipher", {"temperature": 0.7}, at)
     own = ConfigRow("generation", None, "special", None, {"top_p": 0.5}, at)
-    config = resolve("generation", own, default, at.isoformat())
+    config = resolve("generation", own, default, 1)
     assert (config.base_url, config.model, config.api_key_ciphertext) == (
         "http://gw/v1",
         "special",
         "cipher",
     )
     assert config.params.wire() == {"temperature": 0.7, "top_p": 0.5}
-    alone = resolve("lite_summary", None, default, at.isoformat())
+    alone = resolve("lite_summary", None, default, 1)
     assert alone.model == "house"
 
 
@@ -161,7 +161,7 @@ def configured(base_url: str | None, model: str | None, key: str | None) -> Effe
         model=model,
         api_key_ciphertext=keybox.encrypt(key) if key else None,
         params=ModelParams(max_tokens=20, timeout=5),
-        revision="r1",
+        revision=1,
     )
 
 

@@ -27,7 +27,7 @@ from epistrel.orchestrator.models.adapter import (
     UndeclaredInput,
     UnknownPurpose,
 )
-from epistrel.orchestrator.models.config import EffectiveConfig, KeyBox
+from epistrel.orchestrator.models.config import ConfigCache, ConfigEntry, EffectiveConfig, KeyBox
 from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
 from epistrel.orchestrator.models.prompts import render
 from epistrel.orchestrator.models.registry import (
@@ -118,6 +118,7 @@ class ModelAccessLayer:
     def __init__(self, settings: Settings, adapter: ModelAdapter | None = None) -> None:
         self.settings = settings
         self.keybox = KeyBox(settings.config_key)
+        self.cache = ConfigCache()
         self._db: AsyncEngine | None = None
         self.adapter: ModelAdapter = adapter or self._make_adapter(settings)
 
@@ -134,6 +135,7 @@ class ModelAccessLayer:
 
     def bind(self, db: AsyncEngine | None) -> None:
         self._db = db
+        self.cache.clear()
 
     @property
     def db(self) -> AsyncEngine:
@@ -149,7 +151,8 @@ class ModelAccessLayer:
         return self.adapter
 
     async def resolve(self, purpose: str) -> EffectiveConfig:
-        return await model_config.effective_config(self.db, purpose)
+        """``purpose``'s effective configuration as of the current ``config_revision``."""
+        return await self.cache.effective(self.db, purpose)
 
     async def _configured_model(self, purpose: str) -> str | None:
         if self._db is None:
@@ -185,9 +188,9 @@ class ModelAccessLayer:
         finally:
             REQUEST_FIELDS.reset(token)
 
-    async def configuration(self) -> tuple[EffectiveConfig, dict[str, EffectiveConfig]]:
-        """The ``default`` row and every delivered purpose's effective configuration."""
-        return await model_config.all_effective(self.db)
+    async def configuration(self) -> tuple[int, dict[str, ConfigEntry]]:
+        """``config_revision`` and every configurable purpose (``default`` included)."""
+        return await model_config.listing(self.db, self.keybox)
 
     async def aclose(self) -> None:
         await self.adapter.aclose()

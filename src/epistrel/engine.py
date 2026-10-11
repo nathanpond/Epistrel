@@ -7,6 +7,7 @@ the database it was bound to (the REST app binds it for the life of the server).
 
 from __future__ import annotations
 
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
@@ -18,7 +19,7 @@ from epistrel.core.errors import PrincipalRequired
 from epistrel.core.history import History, read_history
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.orchestrator.models import ModelAccessLayer
-from epistrel.orchestrator.models.config import EffectiveConfig
+from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.policies import admin as policy_admin
 from epistrel.orchestrator.policies import store as policy_store
 from epistrel.orchestrator.policies.schemas import (
@@ -228,10 +229,49 @@ class Engine:
         await self.check_expected_revision(ctx, story_id)
         return await policy_admin.set_story_policies(self.db, story_id, items, principal=principal)
 
-    # -- model configuration (FR-MODEL-1..3; #52 adds the writes) ------------------------------
+    # -- model configuration (FR-MODEL-1..4; NFR-SEC-3) ---------------------------------------
+    # Deployment-scoped: every write bumps ``config_revision`` and records a prospective
+    # ``config_changes`` row; the next model call reads the new configuration (no restart).
 
     async def model_configuration(
         self, ctx: RequestContext
-    ) -> tuple[EffectiveConfig, dict[str, EffectiveConfig]]:
-        """The ``default`` row and the effective configuration of every delivered purpose."""
+    ) -> tuple[int, dict[str, model_config.ConfigEntry]]:
+        """``config_revision`` and every configurable purpose, ``default`` included."""
         return await self.models.configuration()
+
+    async def model_config_entry(
+        self, ctx: RequestContext, purpose: str
+    ) -> tuple[int, model_config.ConfigEntry]:
+        return await model_config.entry(self.db, self.models.keybox, purpose)
+
+    async def replace_model_config(
+        self, ctx: RequestContext, purpose: str, body: model_config.ConfigReplacement
+    ) -> model_config.ConfigWrite:
+        principal = self.require_principal(ctx)
+        return await model_config.replace_config(
+            self.db, purpose, body, keybox=self.models.keybox, principal=principal
+        )
+
+    async def remove_model_override(
+        self, ctx: RequestContext, purpose: str
+    ) -> model_config.ConfigWrite:
+        principal = self.require_principal(ctx)
+        return await model_config.remove_override(
+            self.db, purpose, keybox=self.models.keybox, principal=principal
+        )
+
+    async def set_model_api_key(
+        self, ctx: RequestContext, purpose: str, api_key: SecretStr
+    ) -> model_config.ConfigWrite:
+        principal = self.require_principal(ctx)
+        return await model_config.set_api_key(
+            self.db, purpose, api_key, keybox=self.models.keybox, principal=principal
+        )
+
+    async def remove_model_api_key(
+        self, ctx: RequestContext, purpose: str
+    ) -> model_config.ConfigWrite:
+        principal = self.require_principal(ctx)
+        return await model_config.remove_api_key(
+            self.db, purpose, keybox=self.models.keybox, principal=principal
+        )

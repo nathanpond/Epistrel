@@ -84,7 +84,7 @@ async def test_stored_key_without_config_key_refuses_to_start(
 
 
 async def test_writes_validate_purpose_and_base_url(engine: AsyncEngine) -> None:
-    from epistrel.core.errors import InvalidRequest
+    from epistrel.core.errors import ConfigConflict, InvalidRequest
 
     keybox = KeyBox(None)
     async with restored_model_config(engine):
@@ -101,6 +101,6 @@ async def test_writes_validate_purpose_and_base_url(engine: AsyncEngine) -> None
         await model_config.write_config(
             engine, "generation", keybox=keybox, principal="p", model="g"
         )
-        await model_config.remove_override(engine, "generation")
-        with pytest.raises(InvalidRequest):
-            await model_config.remove_override(engine, "default")
+        await model_config.remove_override(engine, "generation", keybox=keybox, principal="p")
+        with pytest.raises(ConfigConflict):
+            await model_config.remove_override(engine, "default", keybox=keybox, principal="p")

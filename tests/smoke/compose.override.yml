@@ -1,0 +1,13 @@
+# The deployment smoke's stack (C-10, #77): docker-compose.yml as shipped, with the engine pinned
+# to the image already built or loaded as `epistrel:dev` (never pulled) and the real `openai`
+# adapter, pointed by the smoke at tests/smoke/fake_openai.py on the host — one model endpoint,
+# nothing else. Same project name (`epistrel`), services, ports and dev-only credential:
+#   docker compose -f docker-compose.yml -f tests/smoke/compose.override.yml up -d --no-build --wait
+#   EPISTREL_SMOKE_BASE_URL=http://127.0.0.1:8000 uv run pytest -m smoke tests/smoke
+#   docker compose -f docker-compose.yml -f tests/smoke/compose.override.yml down -v
+services:
+  engine:
+    image: epistrel:dev
+    pull_policy: never
+    environment:
+      EPISTREL_MODEL_ADAPTER: openai

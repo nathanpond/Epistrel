@@ -7,8 +7,12 @@ Images live at `ghcr.io/nathanpond/epistrel`. Two channels:
 | `edge`, `sha-<7>` | whatever is on `main` right now; **unstable**, for Console integration and testing | every merge to `main` (`publish-edge.yml`) |
 | `X.Y.Z`, `X.Y`, `X`, `latest` | a published release | a `vX.Y.Z` tag (`release.yml`) |
 
-Every publish runs the same gate as a pull request (`ci.yml`) first; nothing is published from a
-commit that did not pass it. Images are `linux/amd64` and `linux/arm64`.
+Every publish runs the same gate as a pull request (`ci.yml`) first, then the deployment smoke
+(C-10): a `smoke` job builds the amd64 image, starts it with `docker-compose.yml` and
+`tests/smoke/compose.override.yml`, and runs `pytest -m smoke` against it with
+`tests/smoke/fake_openai.py` as the one model endpoint. Nothing is published from a commit that did
+not pass both; a red smoke uploads the compose logs as the `smoke-compose-logs` artifact. Images are
+`linux/amd64` and `linux/arm64`.
 
 ## Edge rollback
 
@@ -21,7 +25,8 @@ gh workflow run publish-edge.yml -f ref=<full 40-hex sha or branch/tag>
 
 The ref must be reachable from `main` (a branch that never merged is refused before anything is
 built) and short SHAs are rejected. The run re-runs the gate, rebuilds, and moves `edge` only; the
-original `sha-<7>` tag stays addressable. Watch it with `gh run watch`.
+original `sha-<7>` tag stays addressable. The smoke it runs is current `main`'s suite against the
+image built from the old ref. Watch it with `gh run watch`.
 
 ## Cutting a release
 

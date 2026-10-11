@@ -30,15 +30,17 @@ ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 INTEGRATION_DIR = Path(__file__).resolve().parent / "integration"
 CHAOS_DIR = Path(__file__).resolve().parent / "chaos"
 DETERMINISM_DIR = Path(__file__).resolve().parent / "determinism"
+SMOKE_DIR = Path(__file__).resolve().parent / "smoke"
 SCENARIO_DIR = Path(__file__).resolve().parent / "scenario"
 P05_FILE = "test_p_05.py"
 PG_IMAGE = "pgvector/pgvector:pg16"
 OVERRIDE_VAR = "EPISTREL_TEST_DATABASE_URL"
 LIVE_MODEL_MARKER = "live_model"
 PERF_LONG_MARKER = "perf_long"
-OPT_IN_MARKERS = (LIVE_MODEL_MARKER, PERF_LONG_MARKER)
-"""Markers whose tests run only when ``-m`` names them: a real endpoint (#54), or minutes of
-seeding and measuring (#76)."""
+SMOKE_MARKER = "smoke"
+OPT_IN_MARKERS = (LIVE_MODEL_MARKER, PERF_LONG_MARKER, SMOKE_MARKER)
+"""Markers whose tests run only when ``-m`` names them: a real endpoint (#54), minutes of
+seeding and measuring (#76), or a live compose stack (C-10, #77)."""
 DUMMY_DSN = "postgresql+psycopg://u:p@localhost:5432/epistrel_test"
 
 NO_DOCKER_MESSAGE = (
@@ -50,15 +52,19 @@ NO_DOCKER_MESSAGE = (
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Everything under tests/integration/, tests/chaos/ and tests/determinism/ is an
-    integration test, and everything under tests/chaos/ a ``chaos`` test (#75). ``live_model``
-    and ``perf_long`` tests run only when ``-m`` names their marker: they need a real endpoint
-    (#54) or minutes (#76). P-05 runs last, over the turn census of everything before it (#69)."""
+    integration test, everything under tests/chaos/ a ``chaos`` test (#75), and everything
+    under tests/smoke/ a ``smoke`` test (#77). ``live_model``, ``perf_long`` and ``smoke`` tests
+    run only when ``-m`` names their marker: they need a real endpoint (#54), minutes (#76) or a
+    running compose stack (#77). P-05 runs last, over the turn census of everything before it
+    (#69)."""
     for item in items:
         parents = Path(str(item.fspath)).parents
         if INTEGRATION_DIR in parents or CHAOS_DIR in parents or DETERMINISM_DIR in parents:
             item.add_marker(pytest.mark.integration)
         if CHAOS_DIR in parents:
             item.add_marker(pytest.mark.chaos)
+        if SMOKE_DIR in parents:
+            item.add_marker(pytest.mark.smoke)
     census = [item for item in items if Path(str(item.fspath)).name == P05_FILE]
     if census:
         items[:] = [item for item in items if item not in census] + census

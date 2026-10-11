@@ -16,6 +16,26 @@ curl localhost:8000/health   # {"status":"ok","checks":{"database":"ok","workers
 docker compose down -v       # stop and drop the database volume
 ```
 
+**One model endpoint is all it needs** (NFR-OPS-1): every model call goes to an OpenAI-compatible server you point it at; nothing else is required (no broker, cache or scheduler). With [LM Studio](https://lmstudio.ai) on the host, load a model, start its server (port 1234), then tell the engine where it is and play a turn:
+
+```bash
+CRED='Authorization: Bearer dev-only-credential-change-me-00000000'   # the compose file's dev-only credential
+WHO='X-Epistrel-Principal: me'
+curl -X PUT localhost:8000/admin/model-config/default -H "$CRED" -H "$WHO" -H 'Content-Type: application/json' \
+     -d '{"base_url": "http://host.docker.internal:1234/v1", "model": "<the model LM Studio has loaded>"}'
+curl -X PUT localhost:8000/admin/model-config/default/api-key -H "$CRED" -H "$WHO" -H 'Content-Type: application/json' \
+     -d '{"api_key": "lm-studio"}'
+curl -X POST localhost:8000/stories -H "$CRED" -H "$WHO" -H 'Content-Type: application/json' -d '{"name": "The Lantern Road",
+     "characters": [{"name": "Wren", "definition": "A traveller.", "true_age": 24, "is_player": true},
+                    {"name": "Ada", "definition": "An innkeeper who trusts no one.", "true_age": 41}]}'
+# → {"story_id": "<story>", "characters": [{"id": "<wren>", ...}, ...], ...}
+curl -X POST localhost:8000/stories/<story>/respond -H "$CRED" -H "$WHO" -H 'Content-Type: application/json' \
+     -d '{"actor_character_id": "<wren>", "player_input": {"say": "Is there a room for the night?"}}'
+docker compose ps --services   # engine, db — the whole deployment
+```
+
+Every purpose (`generation`, `guardrail_check`, `lite_summary`) falls back to `default`, so one entry configures them all; any other OpenAI-compatible server (Ollama, vLLM, a hosted provider) works the same way with its own `base_url`, model and key. See [Models](#models).
+
 The engine runs in `all` mode: the API and the background workers (`EPISTREL_WORKER_CONCURRENCY` loops, default 2) in one process. The workers own every timer and sweep (idempotency-result purge hourly, audit-record retention daily, the turn-queue safety net every 30 s), so no scheduler, cron, broker or cache is needed. Larger deployments run `epistrel serve --mode api` and `epistrel serve --mode worker` (alias `epistrel worker`, which serves only `/health` and `/metrics`) as separate processes. `/health` answers `degraded` (still HTTP 200) when no worker has sent a heartbeat for `worker_heartbeat_timeout` (60 s) or timed work is overdue by more than `timer_lag_alert` (5 min). It answers `unavailable` (503) while the database is down.
 
 Logs are JSON lines on stdout carrying identifiers, counts and durations, never story text; `GET /metrics` serves Prometheus metrics (worker processes serve it too); setting `EPISTREL_OTLP_ENDPOINT` exports OpenTelemetry traces over OTLP/HTTP. `EPISTREL_CONTENT_DEBUG_LOGGING=1` (refused unless `EPISTREL_DEBUG` is on) lets story content into the logs for at most 24 hours and shows as `content_logging: true` on `/health`; keep such logs at most 7 days (docs/02 §11).
@@ -68,6 +88,18 @@ uv run python -m tools.gates check-assignment   # docs/03 §22: every requiremen
 Every pull request runs the same five checks in CI (lint, types, tests with core coverage ≥ 90 %, Docker build); the `gate` check is required by the `main` ruleset, so a red gate blocks the merge for everyone.
 
 The chaos suite (`tests/chaos/`, marker `chaos`) kills the engine at named crash points (X-03), cuts its database (X-06, which needs Docker even when `EPISTREL_TEST_DATABASE_URL` is set) and storms it with retries. Pull requests run its `chaos_quick` tests at their quick defaults; the weekly `chaos.yml` workflow runs all of it with `EPISTREL_CHAOS_ITERATIONS=500` (`EPISTREL_CHAOS_SEED`, printed by each test, replays a run). `tests/determinism/` replays a committed script twice on fresh databases and compares the Engine Core state (NFR-DETERM-1).
+
+The deployment smoke (C-10, `tests/smoke/`, marker `smoke`) runs against a live compose stack, with `tests/smoke/fake_openai.py` as the one model endpoint; it is opt-in, and without `EPISTREL_SMOKE_BASE_URL` it fails rather than skips. `publish-edge.yml` and `release.yml` run it on the built image before publishing anything:
+
+```bash
+docker compose -f docker-compose.yml -f tests/smoke/compose.override.yml up -d --build --wait
+EPISTREL_SMOKE_BASE_URL=http://127.0.0.1:8000 uv run pytest -m smoke tests/smoke   # EPISTREL_SMOKE_FAKE_PORT if 1234 is taken
+docker compose -f docker-compose.yml -f tests/smoke/compose.override.yml down -v
+```
+
+It stops `db` (expecting 503 `database_unavailable`, then recovery) and restarts `engine` (expecting the start-up recovery pass to fail an orphaned operation), so run it on a stack you can disturb. `tests/test_c_11.py` (C-11) proves each `tools.gates` check fails on a fixture violation and passes on the repository, and that `ci.yml` wires every one into the required `gate` check.
+
+P-04's reference workload (`python -m perf.lite_smoke`, #76) is run by hand, and `tests/perf/test_p_04.py` fails the gate once the newest committed report in `perf/results/` is more than 30 days old: rerun `uv sync --group perf && uv run python -m perf.lite_smoke --minutes 30 --host-class mac` and commit the report before then (the first one is dated 2026-10-11).
 
 Integration tests live under `tests/integration/`. Set `EPISTREL_TEST_DATABASE_URL` to reuse a running PostgreSQL 16 + pgvector server instead of a container (its role needs `CREATEDB`); with neither Docker nor that variable they fail with a message, never skip. Schema changes go through Alembic: edit `epistrel.core.schema`, run `uv run alembic revision --autogenerate -m "..."`, and a test fails until metadata and migrations agree.
 

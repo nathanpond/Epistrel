@@ -1,4 +1,5 @@
-# Every merge to main publishes ghcr.io/<repo>:edge (and :sha-<7>) after the same gate PRs pass.
+# Every merge to main publishes ghcr.io/<repo>:edge (and :sha-<7>) after the same gate PRs pass
+# and after the image itself passes the deployment smoke (C-10, #77): compose + one model endpoint.
 # A maintainer re-points edge at an earlier commit with `gh workflow run publish-edge.yml -f ref=<sha>`
 # (RELEASING.md → Edge rollback); the ref must be reachable from main.
 name: Publish edge
@@ -26,6 +27,8 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
   # Exact binfmt image (resolved 2026-10-08 from Docker Hub): setup-qemu's default floats to :latest.
   BINFMT_IMAGE: docker.io/tonistiigi/binfmt:qemu-v10.2.3-68
+  # Exact uv release, as in ci.yml (setup-uv's default `version` floats to latest).
+  UV_VERSION: "0.12.23"
 
 jobs:
   resolve:
@@ -71,8 +74,71 @@ jobs:
     with:
       ref: ${{ needs.resolve.outputs.sha }}
 
-  publish:
+  smoke:
+    # C-10 (#77, NFR-OPS-1,2): `edge` is never published from an image that cannot pass its own
+    # smoke. The image is built for amd64 only (the runner; arm64 is covered by a maintainer's
+    # Mac compose), loaded as `epistrel:dev`, and started with the shipped docker-compose.yml
+    # plus tests/smoke/compose.override.yml (never pulled, never rebuilt). The suite starts
+    # tests/smoke/fake_openai.py on the runner as the one model endpoint.
     needs: [resolve, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The suite, the fake and the compose files come from this workflow's own commit, and the
+      # image from the resolved ref: on a rollback dispatch that is current main's smoke run
+      # against the old image. On a push both are the same commit.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          path: image-src
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - name: Build the image (amd64) and load it as epistrel:dev
+        uses: docker/build-push-action@v7
+        with:
+          context: image-src
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: epistrel:dev
+          # Reads the publish job's layers; writes its own scope so publish's multi-arch cache
+          # is never replaced by an amd64-only one.
+          cache-from: |
+            type=gha,scope=publish
+            type=gha,scope=smoke
+          cache-to: type=gha,mode=max,scope=smoke
+      - uses: astral-sh/setup-uv@v10.3.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Start the stack (compose up, the loaded image, nothing pulled or built)
+        run: docker compose -f docker-compose.yml -f tests/smoke/compose.override.yml up -d --no-build --wait --wait-timeout 180
+      # The `smoke` marker is opt-in (conftest): it runs only because -m names it, and it fails,
+      # never skips, without EPISTREL_SMOKE_BASE_URL.
+      - name: Smoke suite (C-10)
+        env:
+          EPISTREL_SMOKE_BASE_URL: http://127.0.0.1:8000
+        run: uv run pytest -m smoke tests/smoke
+      - name: Compose logs
+        if: failure()
+        run: docker compose -f docker-compose.yml -f tests/smoke/compose.override.yml logs --no-color --timestamps > compose-logs.txt 2>&1 || true
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: smoke-compose-logs
+          path: compose-logs.txt
+          retention-days: 14
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f tests/smoke/compose.override.yml down -v
+
+  publish:
+    needs: [resolve, ci, smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -132,17 +198,19 @@ jobs:
 
   summary:
     if: always()
-    needs: [resolve, ci, publish]
+    needs: [resolve, ci, smoke, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - env:
           RESOLVE: ${{ needs.resolve.result }}
           CI: ${{ needs.ci.result }}
+          SMOKE: ${{ needs.smoke.result }}
           PUBLISH: ${{ needs.publish.result }}
         run: |
           if [ "$PUBLISH" = "success" ]; then echo "edge published" >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
           stage="publish"
+          [ "$SMOKE" = "success" ] || stage="deployment smoke (C-10; compose logs are an artifact)"
           [ "$CI" = "success" ] || stage="gate (ci.yml)"
           [ "$RESOLVE" = "success" ] || stage="resolve (ref/reachability)"
-          printf '%s\n' "## Nothing published" "" "Stage that failed or was skipped: **$stage** (resolve=$RESOLVE ci=$CI publish=$PUBLISH)." >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "## Nothing published" "" "Stage that failed or was skipped: **$stage** (resolve=$RESOLVE ci=$CI smoke=$SMOKE publish=$PUBLISH)." >> "$GITHUB_STEP_SUMMARY"

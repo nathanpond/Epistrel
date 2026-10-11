@@ -1,6 +1,7 @@
 # Pushing vX.Y.Z (or vX.Y.Z-rc.N) runs the gate, publishes semver image tags and creates the GitHub
 # release. `latest`, `X.Y` and `X` move only when the new version is the highest in their line; a
-# pre-release gets only its own tag. See RELEASING.md → Cutting a release.
+# pre-release gets only its own tag. Nothing is published unless the tagged commit's image passes
+# the deployment smoke (C-10, #77). See RELEASING.md → Cutting a release.
 name: Release
 
 on:
@@ -59,8 +60,57 @@ jobs:
     with:
       ref: ${{ github.sha }}
 
-  publish:
+  smoke:
+    # C-10 (#77, NFR-OPS-1,2): the tagged commit's image (amd64, loaded as `epistrel:dev`) must
+    # pass the deployment smoke — compose plus tests/smoke/fake_openai.py as the one model
+    # endpoint — before any tag is published. Same job as publish-edge.yml's.
     needs: [validate, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - name: Build the image (amd64) and load it as epistrel:dev
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: epistrel:dev
+          cache-from: |
+            type=gha,scope=publish
+            type=gha,scope=smoke
+          cache-to: type=gha,mode=max,scope=smoke
+      - uses: astral-sh/setup-uv@v10.3.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Start the stack (compose up, the loaded image, nothing pulled or built)
+        run: docker compose -f docker-compose.yml -f tests/smoke/compose.override.yml up -d --no-build --wait --wait-timeout 180
+      - name: Smoke suite (C-10)
+        env:
+          EPISTREL_SMOKE_BASE_URL: http://127.0.0.1:8000
+        run: uv run pytest -m smoke tests/smoke
+      - name: Compose logs
+        if: failure()
+        run: docker compose -f docker-compose.yml -f tests/smoke/compose.override.yml logs --no-color --timestamps > compose-logs.txt 2>&1 || true
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: smoke-compose-logs
+          path: compose-logs.txt
+          retention-days: 14
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f tests/smoke/compose.override.yml down -v
+
+  publish:
+    needs: [validate, ci, smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

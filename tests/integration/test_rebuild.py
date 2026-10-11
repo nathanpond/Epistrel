@@ -73,7 +73,11 @@ async def test_rebuild_no_revision_bump(engine: AsyncEngine) -> None:
         o=result.operation_id,
     )
     assert tuple(op) == ("maintenance", "committed", "p-operator", None)
-    assert result.counts == {"transcript_messages": 3 * 2, "story_heads": 1}
+    assert result.counts == {
+        "transcript_messages": 3 * 2,
+        "story_heads": 1,
+        "story_texts": 1,
+    }
 
     await play_turn(engine, story_id, "turn 3, again")
     assert (await story_row(engine, story_id))[0] == before[0] + 1
@@ -149,7 +153,11 @@ def test_history_survives_dropping_and_rebuilding_projections(pg_url: str) -> No
             f"/admin/stories/{story_id}/rebuild", headers={**bearer(), **PRINCIPAL}
         )
         assert rebuilt.status_code == 200
-        assert rebuilt.json()["counts"] == {"transcript_messages": 6, "story_heads": 1}
+        assert rebuilt.json()["counts"] == {
+            "transcript_messages": 6,
+            "story_heads": 1,
+            "story_texts": 1,
+        }
         assert len(rebuilt.json()["operation_id"]) == 26
 
         after = client.get(url, headers=bearer())

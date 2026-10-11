@@ -3,9 +3,9 @@
 ``read_turn_inputs`` runs inside ``Operation.begin``'s REPEATABLE READ snapshot, so the inputs
 the prompt is built from are exactly the ones the read set hashed (FR-CONC-2,4). Every input is
 the Engine's own record (FR-RESP-2): the story rating's current prompt guidance (FR-RATE-4),
-the latest custom instructions and pinned memories, the active rolling-summary segments, the
-cast's definitions, and the latest ``window_messages`` transcript rows (FR-LITE-1). Nothing the
-consumer sends as scene context is read here (FR-RESP-4).
+the custom instructions and pinned memories (the ``story_texts`` projection, #60), the active
+rolling-summary segments, the cast's definitions, and the latest ``window_messages`` transcript
+rows (FR-LITE-1). Nothing the consumer sends as scene context is read here (FR-RESP-4).
 
 ``stage_turn`` stages the turn's beats: the actor's ``say``/``do`` as a ``player_input`` event
 at beat 1 (FR-RESP-9) and the reply as a ``message_rendered`` event at beat 2, so every input
@@ -27,7 +27,14 @@ from epistrel.core.events import Operation
 from epistrel.core.events.types import MessageRendered, PlayerInput
 from epistrel.core.ratings import story_guidance
 from epistrel.core.settings_schema import GenerationSettings, StorySettings
-from epistrel.core.tables import characters, events, operations, stories, transcript_messages
+from epistrel.core.tables import (
+    characters,
+    events,
+    operations,
+    stories,
+    story_texts,
+    transcript_messages,
+)
 
 INPUT_BEAT = 1
 REPLY_BEAT = 2
@@ -188,14 +195,19 @@ async def read_turn_inputs(conn: AsyncConnection, story_id: str) -> TurnInputs:
     settings = StorySettings.from_row(raw_settings)
     window_messages = settings.lite_window_messages or defaults.lite_window_messages
     guidance = await story_guidance(conn, story_id)
-    instructions = await _payloads(conn, story_id, "custom_instructions_set")
-    pins = await _payloads(conn, story_id, "pinned_memories_set")
+    texts = (
+        await conn.execute(
+            select(story_texts.c.pinned, story_texts.c.custom_instructions).where(
+                story_texts.c.story_id == story_id
+            )
+        )
+    ).one_or_none()
     segments = await _payloads(conn, story_id, "lite_summary_segment")
     cast = _cast((await conn.execute(_cast_query(story_id))).all())
     return TurnInputs(
         guidance=guidance.prompt_guidance or "",
-        instructions=str(instructions[-1].get("text", "")) if instructions else "",
-        pins=tuple(str(m) for m in pins[-1].get("memories", [])) if pins else (),
+        instructions=texts.custom_instructions if texts is not None else "",
+        pins=tuple(str(item["text"]) for item in texts.pinned) if texts is not None else (),
         segments=tuple(str(s.get("text", "")) for s in segments),
         cast=cast,
         window=await _window(conn, story_id, window_messages),

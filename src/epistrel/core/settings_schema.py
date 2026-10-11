@@ -88,6 +88,31 @@ class LiteDefaults(BaseModel):
     )
 
 
+# -- story-level text caps (FR-LITE-3; #60) ------------------------------------------------------
+
+DEFAULT_MAX_PINNED_MEMORIES = 50
+MAX_PINNED_MEMORIES_LIMIT = 500
+DEFAULT_MAX_CUSTOM_INSTRUCTIONS_CHARS = 4_000
+MAX_CUSTOM_INSTRUCTIONS_CHARS_LIMIT = 20_000
+PINNED_ITEM_MAX_CHARS = 2_000
+"""The longest pinned memory, in code points after NFC normalisation and trimming."""
+
+
+class StoryTextCaps(BaseModel):
+    """The deployment's caps on pinned memories and custom instructions, stored under
+    ``deployment_state.settings`` (#60). Prospective: an edit is checked against the caps in
+    force when it starts, and a lowered cap never touches what is already stored."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    max_pinned_memories: int = Field(
+        default=DEFAULT_MAX_PINNED_MEMORIES, ge=1, le=MAX_PINNED_MEMORIES_LIMIT
+    )
+    max_custom_instructions_chars: int = Field(
+        default=DEFAULT_MAX_CUSTOM_INSTRUCTIONS_CHARS, ge=1, le=MAX_CUSTOM_INSTRUCTIONS_CHARS_LIMIT
+    )
+
+
 TurnConcurrency = Literal["reject", "queue"]
 CHARACTER_VIEWPOINT_PREFIX = "character:"
 OMNISCIENT = "omniscient"

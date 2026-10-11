@@ -6,7 +6,7 @@ import asyncio
 from collections import Counter
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -16,6 +16,7 @@ from epistrel.core.events import Operation
 from epistrel.core.projections import rebuild
 from epistrel.core.views import corrected_history
 from tests.auth_support import auth_settings
+from tests.concurrency_support import set_instructions, set_pins
 from tests.event_support import execute_in_tx, new_story, play_turn, record, scalar
 from tests.projection_support import snapshot, swap, truncate, untruncate
 
@@ -46,6 +47,8 @@ actions = st.lists(
                 "rewind_and_restore",
                 "rewind_play_and_swap",
                 "regenerate",
+                "pins",
+                "instructions",
             ]
         ),
         st.integers(min_value=0, max_value=20),
@@ -110,6 +113,13 @@ async def _perform(engine: AsyncEngine, story_id: str, action: Action, n: int) -
         # A new variant of the head turn; the old one goes dormant in the same commit (#47).
         await play_turn(engine, story_id, f"line {n}, again", turn=head - 1)
         OCCURRED["regenerate"] += 1
+    elif name == "pins":
+        # #60's story-level text: the latest snapshot wins in ``story_texts``.
+        await set_pins(engine, story_id, *(f"pin {n}.{i}" for i in range(number % 4)))
+        OCCURRED["pins"] += 1
+    elif name == "instructions":
+        await set_instructions(engine, story_id, f"instructions {n}" if number % 3 else "")
+        OCCURRED["instructions"] += 1
     elif name == "untruncate":
         OCCURRED["untruncate"] += await untruncate(engine, story_id) is not None
     elif name == "swap":
@@ -135,6 +145,11 @@ async def _corrupt(engine: AsyncEngine, story_id: str) -> None:
         (
             "UPDATE story_heads SET next_turn_index = 99, active_variants = '{\"7\": 3}' "
             "WHERE story_id = :s",
+            {"s": story_id},
+        ),
+        (
+            "UPDATE story_texts SET custom_instructions = 'corrupted', "
+            'pinned = \'[{"id": "x", "text": "never pinned"}]\' WHERE story_id = :s',
             {"s": story_id},
         ),
     )
@@ -175,9 +190,11 @@ async def _scenario(url: str, steps: list[Action]) -> None:
         assert result.counts == {
             "transcript_messages": len(incremental.transcript),
             "story_heads": 1,
+            "story_texts": 1,
         }
         # The corrupted row is replaced and the invented row is gone, not kept.
         assert all("corrupted" not in row and BOGUS_ID not in row for row in rebuilt.transcript)
+        assert all("corrupted" not in row for row in rebuilt.texts)
     finally:
         await engine.dispose()
 
@@ -188,6 +205,19 @@ async def _scenario(url: str, steps: list[Action]) -> None:
     suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
 )
 @given(steps=actions)
+# Always run once: random draws favour the list's first entries, and a run whose draws never
+# reached the later ones would fail the occurrence check for want of trying (#60).
+@example(
+    steps=[
+        ("turn", 0),
+        ("turn", 1),
+        ("pins", 3),
+        ("instructions", 1),
+        ("regenerate", 0),
+        ("pins", 0),
+        ("instructions", 0),
+    ]
+)
 def _every_sequence(pg_url: str, steps: list[Action]) -> None:
     asyncio.run(_scenario(pg_url, steps))
 
@@ -195,12 +225,12 @@ def _every_sequence(pg_url: str, steps: list[Action]) -> None:
 @pytest.mark.part("M2", "FR-STORE-4; FR-ADMIN-3")
 def test_i_02(pg_url: str) -> None:
     """For any sequence of turns, background and control work, truncations, untruncations,
-    swaps and regenerations, the projection rebuilt by folding the log equals the
-    incrementally maintained one. Complement: a projection corrupted before the rebuild
-    differs from it, and the rebuild replaces the corrupted rows rather than keeping them. The
-    run must have exercised every membership change, or the equality says nothing about them."""
+    swaps, regenerations and story-level text edits (#60), the projection rebuilt by folding
+    the log equals the incrementally maintained one. Complement: a projection corrupted before
+    the rebuild differs from it, and the rebuild replaces the corrupted rows rather than keeping
+    them. The run must have exercised every membership change and text edit, or the equality
+    says nothing about them."""
     OCCURRED.clear()
     _every_sequence(pg_url)
-    assert all(OCCURRED[kind] > 0 for kind in ("truncate", "untruncate", "swap", "regenerate")), (
-        OCCURRED
-    )
+    kinds = ("truncate", "untruncate", "swap", "regenerate", "pins", "instructions")
+    assert all(OCCURRED[kind] > 0 for kind in kinds), OCCURRED

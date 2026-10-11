@@ -13,7 +13,7 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core import deployment, ingest, projections, ratings, stories
+from epistrel.core import deployment, ingest, projections, ratings, stories, story_texts
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import StoryStatus
@@ -269,6 +269,63 @@ class Engine:
             expected_revision=ctx.expected_revision,
             deadline_s=DEFAULT_TURN_DEADLINE_S,
         )
+
+    # -- story-level text: pinned memories and custom instructions (FR-LITE-3) ---------------
+
+    async def pinned_memories(
+        self, ctx: RequestContext, story_id: str
+    ) -> story_texts.PinnedMemories:
+        """The story's pinned memories in order, with its revision (viewpoint-free)."""
+        return await story_texts.read_pinned_memories(self.db, story_id)
+
+    async def set_pinned_memories(
+        self, ctx: RequestContext, story_id: str, request: story_texts.PinnedMemoriesRequest
+    ) -> story_texts.PinnedMemories:
+        """Replace the story's pinned memories: every item passes the input gate first; the
+        edit bumps the revision (FR-CONC-1), so a turn generating meanwhile regenerates before
+        it commits. An edit that changes nothing writes nothing."""
+        principal = self.require_principal(ctx)
+        return await story_texts.set_pinned_memories(
+            self.db,
+            story_id,
+            request,
+            principal=principal,
+            gate=self._text_gate(ctx, story_id, EntryPoint.PINNED_MEMORIES),
+            idempotency_key=ctx.idempotency_key,
+            expected_revision=ctx.expected_revision,
+        )
+
+    async def custom_instructions(
+        self, ctx: RequestContext, story_id: str
+    ) -> story_texts.CustomInstructions:
+        """The story's custom instructions (``""`` when never set), with its revision."""
+        return await story_texts.read_custom_instructions(self.db, story_id)
+
+    async def set_custom_instructions(
+        self, ctx: RequestContext, story_id: str, request: story_texts.CustomInstructionsRequest
+    ) -> story_texts.CustomInstructions:
+        """Replace the story's custom instructions (``""`` clears them), under the same rules
+        as ``set_pinned_memories``. Instructions are guidance, never facts."""
+        principal = self.require_principal(ctx)
+        return await story_texts.set_custom_instructions(
+            self.db,
+            story_id,
+            request,
+            principal=principal,
+            gate=self._text_gate(ctx, story_id, EntryPoint.CUSTOM_INSTRUCTIONS),
+            idempotency_key=ctx.idempotency_key,
+            expected_revision=ctx.expected_revision,
+        )
+
+    def _text_gate(
+        self, ctx: RequestContext, story_id: str, entry_point: EntryPoint
+    ) -> story_texts.Gate:
+        async def gate(texts: Sequence[tuple[str, str]]) -> None:
+            await self.gate_input(
+                ctx, story_id, entry_point, [GateText(locator, text) for locator, text in texts]
+            )
+
+        return gate
 
     async def story_settings(
         self, ctx: RequestContext, story_id: str

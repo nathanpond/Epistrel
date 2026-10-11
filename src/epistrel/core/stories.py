@@ -64,6 +64,7 @@ from epistrel.core.tables import (
     policies,
     stories,
     story_heads,
+    story_texts,
     transcript_messages,
 )
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
@@ -83,6 +84,7 @@ STORY_TABLES: tuple[Table, ...] = (
     events,
     transcript_messages,
     story_heads,
+    story_texts,
     policies,
     characters,
     operations,

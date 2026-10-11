@@ -54,7 +54,11 @@ def log_event(
 
 
 def test_m2_projections_are_registered_once() -> None:
-    assert [p.name for p in registered_projections()] == ["transcript_messages", "story_heads"]
+    assert [p.name for p in registered_projections()] == [
+        "transcript_messages",
+        "story_heads",
+        "story_texts",
+    ]
     with pytest.raises(ValueError, match="already registered"):
         register_projection(HeadsProjection())
 

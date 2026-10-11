@@ -165,18 +165,29 @@ class Fork(EventPayload):
     through_turn: int
 
 
+class PinnedItem(EventPayload):
+    """One pinned memory: its server-minted id and its normalised text (#60)."""
+
+    id: str
+    text: str
+
+
 @register("pinned_memories_set", category=EventCategory.CONTROL)
 class PinnedMemoriesSet(EventPayload):
-    """The story's pinned memories (shell; #60 extends)."""
+    """The story's pinned memories after an edit (FR-LITE-3, #60): the full ordered snapshot,
+    plus the snapshot it replaced (``previous``) for audit."""
 
-    memories: list[str]
+    items: tuple[PinnedItem, ...] = ()
+    previous: tuple[PinnedItem, ...] = ()
 
 
 @register("custom_instructions_set", category=EventCategory.CONTROL)
 class CustomInstructionsSet(EventPayload):
-    """The story's custom instructions (shell; #60 extends)."""
+    """The story's custom instructions after an edit (FR-LITE-3, #60); ``""`` clears them.
+    ``previous`` is the text it replaced, for audit. Instructions are guidance, never facts."""
 
     text: str
+    previous: str = ""
 
 
 @register("config_changed", category=EventCategory.CONTROL)

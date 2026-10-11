@@ -22,7 +22,7 @@ from sqlalchemy import insert, null, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.ids import new_ulid
-from epistrel.core.settings_schema import LiteDefaults
+from epistrel.core.settings_schema import LiteDefaults, StoryTextCaps
 from epistrel.core.tables import config_changes, deployment_state
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
@@ -150,3 +150,25 @@ async def read_lite_defaults(db: AsyncEngine | AsyncConnection) -> LiteDefaults:
         return lite_defaults(await db.scalar(query))
     async with db.connect() as conn:
         return lite_defaults(await conn.scalar(query))
+
+
+# -- the deployment's story-level text caps (FR-LITE-3; #60) ----------------------------------
+
+
+def story_text_caps(document: Mapping[str, Any] | None) -> StoryTextCaps:
+    """The pinned-memory and custom-instruction caps in a ``deployment_state.settings``
+    document; an invalid stored value falls back to the defaults, as ``lite_defaults`` does."""
+    values = {k: v for k, v in (document or {}).items() if k in StoryTextCaps.model_fields}
+    try:
+        return StoryTextCaps.model_validate(values)
+    except ValidationError:
+        log.warning("invalid story text caps %s; using the defaults", sorted(values))
+        return StoryTextCaps()
+
+
+async def read_story_text_caps(db: AsyncEngine | AsyncConnection) -> StoryTextCaps:
+    query = select(deployment_state.c.settings).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+    if isinstance(db, AsyncConnection):
+        return story_text_caps(await db.scalar(query))
+    async with db.connect() as conn:
+        return story_text_caps(await conn.scalar(query))

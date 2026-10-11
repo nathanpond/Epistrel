@@ -8,6 +8,8 @@ timestamps of their own: every value is a function of the log and the ``operatio
   reply's ``render_character_ids`` (#57; null on input and narration beats).
 - ``story_heads``: one row per story, created at genesis: the next turn index and the active
   variant of every turn (``{"<turn>": variant}``).
+- ``story_texts``: one row per story, created at genesis (#60): the pinned memories
+  (``[{id, text}]`` in order) and the custom instructions (``""`` when never set).
 """
 
 from __future__ import annotations
@@ -45,4 +47,12 @@ story_heads = Table(
     Column("story_id", ulid_type(), primary_key=True),
     Column("next_turn_index", Integer, nullable=False),
     Column("active_variants", JSONB, nullable=False),
+)
+
+story_texts = Table(
+    "story_texts",
+    metadata,
+    Column("story_id", ulid_type(), primary_key=True),
+    Column("pinned", JSONB, nullable=False),
+    Column("custom_instructions", Text, nullable=False),
 )

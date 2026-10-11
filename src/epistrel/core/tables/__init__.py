@@ -9,7 +9,7 @@ from epistrel.core.tables.events import events
 from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.operations import operations
 from epistrel.core.tables.policies import policies
-from epistrel.core.tables.projections import story_heads, transcript_messages
+from epistrel.core.tables.projections import story_heads, story_texts, transcript_messages
 from epistrel.core.tables.ratings import content_rating_versions, content_ratings
 from epistrel.core.tables.stories import stories
 
@@ -29,5 +29,6 @@ __all__ = [
     "policies",
     "stories",
     "story_heads",
+    "story_texts",
     "transcript_messages",
 ]

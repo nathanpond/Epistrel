@@ -39,6 +39,7 @@ from epistrel.core.tables import (
     events,
     operations,
     stories,
+    story_texts,
 )
 
 if TYPE_CHECKING:
@@ -275,17 +276,21 @@ async def _payloads(conn: AsyncConnection, story_id: str, event_type: str) -> li
     return list(found)
 
 
-async def _latest(conn: AsyncConnection, story_id: str, event_type: str) -> Any:
-    found = await _payloads(conn, story_id, event_type)
-    return found[-1] if found else None
-
-
 async def _pins(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
-    return await _latest(conn, story_id, "pinned_memories_set")
+    """The pinned memories' texts in order, from the ``story_texts`` projection (#60). Texts
+    only: an item's id is not a prompt input, so only a text or order change touches it."""
+    pinned = await conn.scalar(
+        select(story_texts.c.pinned).where(story_texts.c.story_id == story_id)
+    )
+    return [item["text"] for item in pinned or ()]
 
 
 async def _instructions(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
-    return await _latest(conn, story_id, "custom_instructions_set")
+    """The custom instructions' text from the ``story_texts`` projection (#60)."""
+    found = await conn.scalar(
+        select(story_texts.c.custom_instructions).where(story_texts.c.story_id == story_id)
+    )
+    return found or ""
 
 
 async def _definitions(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:

@@ -1,9 +1,9 @@
 """Helpers for the concurrency tests (#47): a stub model held on latches, turns driven through
 ``run_with_revalidation``, and the test-only truth-changing operations.
 
-The respond pipeline (#57), pins (#60), settings (#64) and the timeline controls (#65/#66) are
-not built yet, so their operations are written here through ``Operation`` with the flags the
-real ones will declare. #61/#63/#64 reuse these.
+Settings (#64) and the timeline controls (#65/#66) are not built yet, so their operations are
+written here through ``Operation`` with the flags the real ones will declare; ``set_pins`` and
+``set_instructions`` write #60's events raw (no caps or gate). #61/#63/#64 reuse these.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.concurrency import LiteReadSet, RevalidationResult, run_with_revalidation
 from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.events import Operation
+from epistrel.core.ids import new_ulid
 from tests.event_support import play_turn, rows, scalar
 
 TURN_PRINCIPAL = "p-player"
@@ -135,13 +136,17 @@ async def edit(
 
 
 async def set_pins(engine: AsyncEngine, story_id: str, *memories: str) -> Operation:
-    """A pinned-memory edit: truth-changing (FR-CONC-1) and a read-set member."""
+    """A raw pinned-memory event: truth-changing (FR-CONC-1) and a read-set member. Bypasses
+    #60's caps, gate and id rules (``PUT /stories/{id}/pinned-memories`` is the real path), so
+    a test can pin more than any cap allows; ``previous`` is not recorded."""
+    items = [{"id": new_ulid(), "text": memory} for memory in memories]
     return await edit(
-        engine, story_id, "pinned_memories_set", {"memories": list(memories)}, bumps_revision=True
+        engine, story_id, "pinned_memories_set", {"items": items}, bumps_revision=True
     )
 
 
 async def set_instructions(engine: AsyncEngine, story_id: str, text: str) -> Operation:
+    """A raw custom-instructions event (see ``set_pins``)."""
     return await edit(
         engine, story_id, "custom_instructions_set", {"text": text}, bumps_revision=True
     )

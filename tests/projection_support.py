@@ -36,6 +36,7 @@ class Snapshot:
 
     transcript: tuple[str, ...]
     heads: tuple[str, ...]
+    texts: tuple[str, ...] = ()
 
 
 async def snapshot(engine: AsyncEngine, story_id: str) -> Snapshot:
@@ -54,7 +55,12 @@ async def snapshot(engine: AsyncEngine, story_id: str) -> Snapshot:
             ),
             {"s": story_id},
         )
-        return Snapshot(transcript=transcript_rows, heads=tuple(heads))
+        heads_rows = tuple(heads)
+        texts = await conn.scalars(
+            text("SELECT to_jsonb(x)::text FROM story_texts x WHERE story_id = :s"),
+            {"s": story_id},
+        )
+        return Snapshot(transcript=transcript_rows, heads=heads_rows, texts=tuple(texts))
 
 
 async def committed_operations(engine: AsyncEngine, story_id: str) -> list[OpRow]:

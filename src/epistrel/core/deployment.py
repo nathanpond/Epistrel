@@ -1,5 +1,6 @@
 """Deployment-wide settings: ``GET/PUT /admin/settings`` (#48; #64 adds fields), and the Lite
-defaults under ``deployment_state.settings`` (#57; a library write until #64's settings surface)."""
+defaults (#57) and story-level text caps (#60) under ``deployment_state.settings`` (library
+writes until #64's settings surface)."""
 
 from __future__ import annotations
 
@@ -17,11 +18,13 @@ from epistrel.core.config_changes import (
     lock_deployment,
     read_lite_defaults,
     read_settings,
+    read_story_text_caps,
     record_config_change,
+    story_text_caps,
 )
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ratings import require_assignable
-from epistrel.core.settings_schema import GenerationSettings, LiteDefaults
+from epistrel.core.settings_schema import GenerationSettings, LiteDefaults, StoryTextCaps
 from epistrel.core.tables import deployment_state
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
@@ -30,8 +33,10 @@ __all__ = [
     "SettingsPatch",
     "read_lite_defaults",
     "read_settings",
+    "read_story_text_caps",
     "update_lite_defaults",
     "update_settings",
+    "update_story_text_caps",
 ]
 
 MINOR_AGE_THRESHOLD_MIN = 0
@@ -117,6 +122,61 @@ async def update_lite_defaults(
         wanted = LiteDefaults(
             lite_generation_defaults=generation or current.lite_generation_defaults,
             lite_window_messages=window_messages or current.lite_window_messages,
+        )
+        old = current.model_dump(mode="json")
+        new = wanted.model_dump(mode="json")
+        changed = sorted(key for key in new if old[key] != new[key])
+        if not changed:
+            return current
+        revision = await bump_config_revision(conn, current_settings)
+        await conn.execute(
+            update(deployment_state)
+            .where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+            .values(settings={**document, **new})
+        )
+        for key in changed:
+            await record_config_change(
+                conn,
+                config_revision=revision,
+                setting=key,
+                old=old[key],
+                new=new[key],
+                actor=principal,
+                change_class=ChangeClass.PROSPECTIVE,
+            )
+        return wanted
+
+
+async def update_story_text_caps(
+    db: AsyncEngine,
+    *,
+    principal: str,
+    max_pinned_memories: int | None = None,
+    max_custom_instructions_chars: int | None = None,
+) -> StoryTextCaps:
+    """Replace the deployment's caps on pinned memories and custom instructions (#60).
+
+    Bounded 1 to 500 and 1 to 20,000 (0 is refused). Recorded like every deployment write: one
+    revision, one prospective ``config_changes`` row per changed key; a value equal to the
+    current one writes nothing."""
+    async with db.begin() as conn:
+        current_settings = await lock_deployment(conn)
+        document = dict(
+            await conn.scalar(
+                select(deployment_state.c.settings).where(
+                    deployment_state.c.id == DEPLOYMENT_ROW_ID
+                )
+            )
+            or {}
+        )
+        current = story_text_caps(document)
+        wanted = StoryTextCaps(
+            max_pinned_memories=current.max_pinned_memories
+            if max_pinned_memories is None
+            else max_pinned_memories,
+            max_custom_instructions_chars=current.max_custom_instructions_chars
+            if max_custom_instructions_chars is None
+            else max_custom_instructions_chars,
         )
         old = current.model_dump(mode="json")
         new = wanted.model_dump(mode="json")

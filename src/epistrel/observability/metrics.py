@@ -14,8 +14,11 @@ The registry holds:
 - #54's model counters (``epistrel_model_*``) and #56/#68's guardrail counters;
 - gauges computed at scrape on a dedicated sync connection: ``epistrel_jobs_queued{kind}``,
   ``epistrel_jobs_running``, ``epistrel_timers_overdue_seconds`` (the oldest overdue timer or
-  recurring task, 0 when none) and ``epistrel_workers_alive`` (heartbeats within
-  ``worker_heartbeat_timeout``).
+  recurring task, 0 when none), ``epistrel_workers_alive`` (heartbeats within
+  ``worker_heartbeat_timeout``) and ``epistrel_turn_queue_depth{story_id}`` (turns waiting
+  behind the running one, per story with any; #76);
+- ``epistrel_turn_stage_seconds{stage}`` (``observability.stages``, #76): Lite turn latency by
+  stage.
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -83,6 +86,14 @@ _GAUGES_SQL = text(
     """
 )
 _QUEUED_SQL = text("SELECT kind, count(*) AS n FROM jobs WHERE status = 'queued' GROUP BY kind")
+_TURN_QUEUE_SQL = text(
+    """
+    SELECT q.story_id, count(*) AS n FROM turn_queue q
+      JOIN operations o ON o.operation_id = q.operation_id
+     WHERE o.status = 'queued'
+     GROUP BY q.story_id
+    """
+)
 
 
 class SchedulerGauges(Collector):
@@ -131,6 +142,7 @@ class SchedulerGauges(Collector):
                     _GAUGES_SQL, {"timeout": settings.worker_heartbeat_timeout}
                 ).one()
                 queued = conn.execute(_QUEUED_SQL).all()
+                waiting = conn.execute(_TURN_QUEUE_SQL).all()
         except Exception:
             return
         family = GaugeMetricFamily(
@@ -139,6 +151,15 @@ class SchedulerGauges(Collector):
         for kind, count in queued:
             family.add_metric([str(kind)], float(count))
         yield family
+        turns = GaugeMetricFamily(
+            "epistrel_turn_queue_depth",
+            "Turns waiting in a story's turn queue behind the one in progress (stories with "
+            "none waiting are absent).",
+            labels=["story_id"],
+        )
+        for story_id, count in waiting:
+            turns.add_metric([str(story_id)], float(count))
+        yield turns
         yield GaugeMetricFamily(
             "epistrel_jobs_running", "Background jobs running now.", value=float(row.running)
         )

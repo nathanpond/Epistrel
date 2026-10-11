@@ -46,7 +46,10 @@ RESPOND_DESCRIPTION = (
     "(`details.minimum_required`) before any model call. The response reports `model_calls` "
     "(every attempt, failed ones included), `call_counts` by purpose, `elapsed_ms`, `budget` "
     "`{max_calls, reserved, used}` and each `degradation` step with its cause; a 503 carries "
-    "`model_calls` and `elapsed_ms` in `details`."
+    "`model_calls` and `elapsed_ms` in `details`. `queued_ms` is how long the turn waited in "
+    "the story's turn queue (null when it never queued) and `first_call_offset_ms` the delay "
+    "from the turn reaching the front (a queued turn starting, else the request arriving) to "
+    "its first model call; `elapsed_ms` starts at that same moment."
     "\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and "
     "`X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written)."
     "\n\nWhile another turn of the story runs, a story with `turn_concurrency: reject` (the "
@@ -102,7 +105,7 @@ class DegradationBody(BaseModel):
 
 class RespondResponse(MutationResponse):
     """One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,
-    the story's new revision, and the model calls it made."""
+    the story's new revision, the model calls it made, and where its time went."""
 
     message: MessageBody
     beats: list[ItemModel]
@@ -117,6 +120,8 @@ class RespondResponse(MutationResponse):
     guardrail: GuardrailBody
     call_counts: dict[str, int]
     budget: BudgetBody | None
+    queued_ms: int | None = None
+    first_call_offset_ms: int | None = None
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -135,6 +140,8 @@ class RespondResponse(MutationResponse):
                 DegradationBody(step=d.step, cause=d.cause) for d in result.degradation_details
             ],
             call_counts=result.call_counts,
+            queued_ms=result.queued_ms,
+            first_call_offset_ms=result.first_call_offset_ms,
             budget=(
                 None
                 if result.budget is None

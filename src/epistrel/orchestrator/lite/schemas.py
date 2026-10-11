@@ -244,6 +244,12 @@ class RespondResult:
     """The turn's budget and what it spent (#69)."""
     degradation_details: list[DegradationStep] = field(default_factory=list)
     """Each ``degradation`` step with its cause (#69)."""
+    queued_ms: int | None = None
+    """How long the turn waited in its story's queue before it started (#76); ``None`` when it
+    was never queued."""
+    first_call_offset_ms: int | None = None
+    """From the turn reaching the front (a queued turn starting, else the request arriving) to
+    its first model call starting (#76); ``elapsed_ms`` starts at the same moment."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 

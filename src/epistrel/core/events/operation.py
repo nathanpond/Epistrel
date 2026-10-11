@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -94,7 +95,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import events, operations, stories, turn_queue
 from epistrel.observability import context as telemetry
-from epistrel.observability import tracing
+from epistrel.observability import stages, tracing
 from epistrel.testing import crash
 
 logger = logging.getLogger(__name__)
@@ -464,6 +465,7 @@ class Operation:
         self._require_in_flight("commit")
         if decide is not None and (self.story_id is None or self.base_revision is None):
             raise InvalidRequest("only a story operation with a base revision revalidates")
+        started = time.perf_counter()
         try:
             with tracing.span("commit", self._span_attributes()):
                 async with self._connection() as conn, conn.begin():
@@ -478,8 +480,15 @@ class Operation:
             await self._finish(OperationStatus.FAILED, exc)
             raise
         self.status = OperationStatus.COMMITTED
+        if self.kind is OperationKind.TURN:
+            # The turn's atomic commit (NFR-PERF-3; #76), as P-03 times it.
+            stages.observe("commit", time.perf_counter() - started)
         self._wake()
+        posted = time.perf_counter()
         await self._after_commit()
+        if self.kind is OperationKind.TURN:
+            # After the transaction: the summary port's scheduling (#72), reported apart.
+            stages.observe("post_commit", time.perf_counter() - posted)
 
     async def _after_commit(self) -> None:
         """A committed turn may leave the Lite summary behind its window: ask the summary port

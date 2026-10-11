@@ -69,10 +69,11 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import idempotency, turn_gate
@@ -101,6 +102,7 @@ from epistrel.core.turns import (
     stage_turn,
 )
 from epistrel.core.viewpoint import resolve_viewpoint, try_resolve
+from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, plan_lite_budget
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
@@ -152,6 +154,36 @@ raising on a violation; it reserves the generation call and the first output che
 QueueTurn = Callable[[str, dict[str, Any], str, Concurrency], Awaitable[RespondResult]]
 """``queue_turn(operation_id, request, viewpoint, concurrency)``: queue the turn (#63) and
 wait for its result (or raise ``TurnAccepted``); the Engine provides it."""
+
+
+@dataclass
+class TurnTiming:
+    """Where a turn's time went, for its stage histogram and report (#76): ``front`` is when it
+    reached the front (``time.monotonic()``: a queued turn starting, else the request arriving),
+    ``queued_ms`` its wait in the queue (``None``: never queued), and the seconds its read phase
+    and prompt assembly, its gates (generation excluded) took."""
+
+    front: float
+    queued_ms: int | None = None
+    assemble_s: float = 0.0
+    policy_check_s: float = 0.0
+
+    def first_call_offset_ms(self, calls: CallLog) -> int | None:
+        if calls.first_started is None:
+            return None
+        return max(0, round((calls.first_started - self.front) * 1000))
+
+    def observe(self, calls: CallLog) -> None:
+        """Record the committed turn's stages (``commit`` is the ``Operation``'s own)."""
+        if self.queued_ms is not None:
+            stages.observe("queue_wait", self.queued_ms / 1000)
+        offset = self.first_call_offset_ms(calls)
+        if offset is not None:
+            stages.observe("front_to_first_call", offset / 1000)
+        stages.observe("assemble", self.assemble_s)
+        generated = [c.latency_ms for c in calls.calls if c.purpose == GENERATION]
+        stages.observe("generate", sum(generated) / 1000)
+        stages.observe("policy_check", self.policy_check_s)
 
 
 async def respond(
@@ -206,13 +238,16 @@ async def respond(
         override=request.budget,
         started=started,
     )
+    timing = TurnTiming(front=started)
     with recording() as calls, reporting_costs(calls, budget):
+        gating = time.perf_counter()
         await gate(
             budget,
             joined_input(request.player_input.say_text, request.player_input.do_text),
             cast.actor.id,
             cast.render_ids,
         )
+        timing.policy_check_s += time.perf_counter() - gating
         budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))
         op = Operation(
             db,
@@ -236,7 +271,7 @@ async def respond(
         try:
             async with turn_gate.renewing(db, story_id, op.operation_id, concurrency.lease_s):
                 return await _play(
-                    db, models, story_id, request, cast, viewpoint, op, budget, calls
+                    db, models, story_id, request, cast, viewpoint, op, budget, calls, timing=timing
                 )
         finally:
             if op.status is None:  # took the slot but never began
@@ -277,6 +312,8 @@ async def run_queued(
     )
     op.holds_turn_slot = True
     planned = planned or {}
+    front = time.monotonic()
+    timing = TurnTiming(front=front, queued_ms=await queued_ms(db, operation_id))
     budget = await plan_budget(
         db,
         story_id,
@@ -285,11 +322,13 @@ async def run_queued(
         deployment_max_calls=concurrency.deployment_max_calls,
         turn_deadline=planned.get("deadline_s") or concurrency.turn_deadline,
         override=None,
-        started=time.monotonic(),
+        started=front,
     )
     budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))  # gated when queued
     with recording() as calls, reporting_costs(calls, budget):
-        return await _play(db, models, story_id, request, cast, viewpoint, op, budget, calls)
+        return await _play(
+            db, models, story_id, request, cast, viewpoint, op, budget, calls, timing=timing
+        )
 
 
 async def regenerate(
@@ -330,8 +369,11 @@ async def regenerate(
         override=request.budget,
         started=started,
     )
+    timing = TurnTiming(front=started)
     with recording() as calls, reporting_costs(calls, budget):
+        gating = time.perf_counter()
         await gate(budget, joined_input(recorded.say, recorded.do), cast.actor.id, cast.render_ids)
+        timing.policy_check_s += time.perf_counter() - gating
         budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))
         op = Operation(
             db,
@@ -358,6 +400,7 @@ async def regenerate(
                     op,
                     budget,
                     calls,
+                    timing=timing,
                     regenerating=recorded,
                 )
         finally:
@@ -399,15 +442,20 @@ async def _play(
     budget: TurnBudget,
     calls: CallLog,
     *,
+    timing: TurnTiming | None = None,
     regenerating: RecordedTurn | None = None,
 ) -> RespondResult:
     """The turn itself: one ``turn`` operation under #47's revision protocol (steps 3 and 4 of
-    the module docstring). ``regenerating``: the head turn this one replaces (#66)."""
+    the module docstring). ``regenerating``: the head turn this one replaces (#66); ``timing``:
+    where its time went so far (#76)."""
+    timing = timing if timing is not None else TurnTiming(front=budget.started)
     say, do = request.player_input.say_text, request.player_input.do_text
     before_turn = regenerating.turn if regenerating is not None else None
 
     async def begin(conn: AsyncConnection) -> tuple[TurnInputs, ResolvedGeneration]:
+        reading = time.perf_counter()
         inputs = await read_turn_inputs(conn, story_id, before_turn=before_turn)
+        timing.assemble_s += time.perf_counter() - reading
         resolved = resolve_generation(
             inputs.deployment_generation, inputs.story_generation, request.prompt_params
         )
@@ -421,6 +469,8 @@ async def _play(
     gated: list[Gated] = []
     rounds: list[int] = []
     fixed: dict[str, Any] = {}
+    produced: list[float] = [0.0]
+    """Seconds spent producing drafts (assembly and generation) inside the output gate."""
 
     async def generate(op: Operation, read: tuple[TurnInputs, ResolvedGeneration]) -> None:
         inputs, resolved = read
@@ -446,11 +496,20 @@ async def _play(
             budget.hold(cost)
 
         async def produce(constraints: tuple[str, ...], attempt: int) -> Draft:
+            producing = time.perf_counter()
+            try:
+                return await _produce(constraints, attempt)
+            finally:
+                produced[0] += time.perf_counter() - producing
+
+        async def _produce(constraints: tuple[str, ...], attempt: int) -> Draft:
+            assembling = time.perf_counter()
             payload = assemble(inputs, cast, say=say, do=do, constraints=constraints)
             settings = resolved.model_copy(
                 update={"temperature": raised_temperature(resolved.temperature, attempt)}
             )
             _, _, messages = models.prepare(GENERATION, payload)
+            timing.assemble_s += time.perf_counter() - assembling
             result = await _generate(models, payload, model_params(settings, cast), budget)
             # Content: the ContentFilter drops ``prompt`` and ``text`` unless operator-only
             # content debug logging is on (NFR-SEC-4; #74).
@@ -467,6 +526,7 @@ async def _play(
                 finish_reason=result.finish_reason,
             )
 
+        gating, before = time.perf_counter(), produced[0]
         outcome = await gate_output(
             models,
             context,
@@ -476,6 +536,7 @@ async def _play(
             retry_budget=op.story_settings.guardrail_retry_budget,
             fallback=_fallback_lines(inputs, cast),
         )
+        timing.policy_check_s += time.perf_counter() - gating - (produced[0] - before)
         gated[:] = [outcome]
         op.add_commit_step(write_report)
         stage_turn(
@@ -500,7 +561,14 @@ async def _play(
         # ``elapsed_ms`` is fixed here, in the commit transaction, and the turn report is
         # stored on the operation (#69).
         fixed["elapsed_ms"] = budget.elapsed_ms()
-        report = turn_report(calls, budget, gated[0] if gated else None, fixed["elapsed_ms"])
+        report = turn_report(
+            calls,
+            budget,
+            gated[0] if gated else None,
+            fixed["elapsed_ms"],
+            queued_ms=timing.queued_ms,
+            first_call_offset_ms=timing.first_call_offset_ms(calls),
+        )
         await conn.execute(
             update(operations)
             .where(operations.c.operation_id == op.operation_id)
@@ -538,6 +606,8 @@ async def _play(
             "elapsed_ms": fixed.get("elapsed_ms", budget.elapsed_ms()),
             "call_counts": calls.by_purpose(),
             "budget": BudgetReport(**budget.report()),
+            "queued_ms": timing.queued_ms,
+            "first_call_offset_ms": timing.first_call_offset_ms(calls),
             **_guardrail_fields(gated[0] if gated else None),
         }
         if regenerating is not None:
@@ -555,6 +625,7 @@ async def _play(
         read_set=LiteReadSet(),
         config_recheck=output_recheck(db, models, budget),
     )
+    timing.observe(calls)
     if failed_queue:
         turn_gate.wakeups.wake(story_id)
     if call is not None and call.stored_in_commit:
@@ -620,11 +691,18 @@ def _degradation_details(outcome: Gated | None) -> list[DegradationStep]:
 
 
 def turn_report(
-    calls: CallLog, budget: TurnBudget, outcome: Gated | None, elapsed_ms: int
+    calls: CallLog,
+    budget: TurnBudget,
+    outcome: Gated | None,
+    elapsed_ms: int,
+    *,
+    queued_ms: int | None = None,
+    first_call_offset_ms: int | None = None,
 ) -> dict[str, Any]:
     """What ``operations.turn_report`` stores for a committed turn (#69): its model calls,
-    their counts by purpose, the degradation steps with their causes, the budget and the
-    elapsed time. Ids, purposes and counts only: never story text (invariant 3)."""
+    their counts by purpose, the degradation steps with their causes, the budget, the elapsed
+    time, and (#76) its wait in the queue and the delay to its first model call. Ids, purposes
+    and counts only: never story text (invariant 3)."""
     return {
         "model_calls": [call.model_dump(mode="json") for call in calls.calls],
         "call_counts": calls.by_purpose(),
@@ -634,7 +712,21 @@ def turn_report(
         ],
         "budget": budget.report(),
         "elapsed_ms": elapsed_ms,
+        "queued_ms": queued_ms,
+        "first_call_offset_ms": first_call_offset_ms,
     }
+
+
+async def queued_ms(db: AsyncEngine, operation_id: str) -> int:
+    """How long the queued turn ``operation_id`` waited: from its enqueue (its ``operations``
+    row's ``started_at``) to now, on the database's clock (#76)."""
+    async with db.connect() as conn:
+        waited = await conn.scalar(
+            select(func.extract("epoch", func.clock_timestamp() - operations.c.started_at)).where(
+                operations.c.operation_id == operation_id
+            )
+        )
+    return max(0, round(float(waited or 0) * 1000))
 
 
 async def plan_budget(
@@ -696,7 +788,9 @@ async def _generate(
 __all__ = [
     "Gate",
     "QueueTurn",
+    "TurnTiming",
     "plan_budget",
+    "queued_ms",
     "regenerate",
     "reporting_costs",
     "respond",

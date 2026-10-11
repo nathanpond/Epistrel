@@ -58,7 +58,13 @@ from epistrel.orchestrator.models.errors import (
     ModelUnavailable,
     map_provider_error,
 )
-from epistrel.orchestrator.models.metrics import ModelCall, Outcome, outcome_of, record
+from epistrel.orchestrator.models.metrics import (
+    ModelCall,
+    Outcome,
+    call_started,
+    outcome_of,
+    record,
+)
 from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
 from epistrel.orchestrator.models.prompts import payload_fields, render
 from epistrel.orchestrator.models.registry import (
@@ -251,6 +257,7 @@ class ModelAccessLayer:
             limit, reason = budget.clamp(limit)
             budget.debit(claim=first)
         model = await self._model_name(purpose)
+        call_started()
         started = time.perf_counter()
         bound = asyncio.timeout(limit)
         try:

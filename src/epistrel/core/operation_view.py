@@ -3,7 +3,9 @@
 The view answers "what happened to my request": the operation's kind, status, position (turn
 and variant), the story's revision once it committed, who asked, when, the viewpoint its result
 was produced for, its revalidation attempts (#47), its origin and, for an ingested batch, every
-operation the batch committed together (#58). Within the result window the stored result of
+operation the batch committed together (#58). A committed Lite turn also reports its wait in its
+story's queue and its delay to the first model call (``queued_ms``, ``first_call_offset_ms``,
+from its turn report; #76). Within the result window the stored result of
 the operation's ``Idempotency-Key`` is included — for a viewpoint-bound result (a turn) only
 when the read names that same viewpoint; another named viewpoint is 409
 ``idempotency_conflict``, and a read naming none gets the view without the result.
@@ -49,6 +51,10 @@ class OperationView:
     config_revisions: dict[str, Any] | None
     idempotency_key: str | None
     result: StoredResult | None = None
+    queued_ms: int | None = None
+    """A committed turn's wait in its story's queue (``None``: not queued, or not a turn; #76)."""
+    first_call_offset_ms: int | None = None
+    """A committed turn's delay from reaching the front to its first model call (#76)."""
 
 
 INGESTED = "ingested"
@@ -106,7 +112,15 @@ async def read_operation(
         config_revisions=row.config_revisions,
         idempotency_key=row.idempotency_key,
         result=result,
+        queued_ms=_report_ms(row.turn_report, "queued_ms"),
+        first_call_offset_ms=_report_ms(row.turn_report, "first_call_offset_ms"),
     )
+
+
+def _report_ms(report: Any, name: str) -> int | None:
+    """An integer field of the turn report (``operations.turn_report``), if recorded."""
+    value = report.get(name) if isinstance(report, dict) else None
+    return value if isinstance(value, int) else None
 
 
 __all__ = ["OperationNotFound", "OperationView", "read_operation"]

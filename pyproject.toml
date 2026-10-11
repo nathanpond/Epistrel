@@ -30,12 +30,16 @@ dev = [
     "pip-licenses>=5.5",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pytest-benchmark>=5.3.0",
     "pytest-cov>=6",
     "pyyaml>=6",
     "ruff>=0.8",
     "schemathesis>=4.28.0",
     "testcontainers[postgres]>=4",
     "types-pyyaml>=6.0.12.20260906",
+]
+perf = [
+    "locust>=2.46.7",
 ]
 
 [project.scripts]
@@ -113,7 +117,7 @@ packages = ["src/epistrel"]
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-src = ["src", "tests", "tools"]
+src = ["src", "tests", "tools", "perf"]
 extend-exclude = ["tests/gates/fixtures"]
 
 [tool.ruff.lint]
@@ -128,9 +132,21 @@ select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "RUF", "ASYNC", "PT"]
 [tool.mypy]
 strict = true
 python_version = "3.14"
-files = ["src", "tests", "migrations", "tools"]
+files = ["src", "tests", "migrations", "tools", "perf"]
 exclude = ["^tests/gates/fixtures/"]
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# The `perf` dependency group (#76: P-04's Locust driver) is installed only for the workload run,
+# so the gate's mypy may not see it.
+module = ["locust", "locust.*", "gevent", "gevent.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Without the `perf` group, Locust is `Any`: the driver still subclasses `User` and uses `@task`.
+module = ["perf.lite_smoke.locustfile"]
+disallow_subclassing_any = false
+disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -142,6 +158,8 @@ markers = [
     "live_model: needs a real OpenAI-compatible endpoint (EPISTREL_LIVE_BASE_URL/_MODEL/_API_KEY); deselected unless -m names it, and fails when those are unset (#54)",
     "chaos: chaos suite (docs/04 §12, X-xx); every test under tests/chaos/ (auto-marked). PR CI runs only the chaos_quick ones, at their default EPISTREL_CHAOS_ITERATIONS; the weekly chaos.yml runs them all at 500 (#75)",
     "chaos_quick: the chaos tests PR CI runs (quick at their default iteration count; #75)",
+    "perf_quick: the performance tests PR CI runs (P-03's quick subset; #76); the nightly perf.yml runs them with the perf_long ones",
+    "perf_long: long performance tests (P-03 on the 20,000-event reference story; #76); deselected unless -m names the marker, run nightly by perf.yml. P-04's reference workload itself is `python -m perf.lite_smoke`, not a test",
     "part(milestone, requirements, interim_until=None): milestone part (docs/04 §13) — gates from <milestone>, covers <requirements>; see tests/README.md",
 ]
 # tests/gates/fixtures holds deliberately broken test trees for the gate checks; pytest must not collect them.

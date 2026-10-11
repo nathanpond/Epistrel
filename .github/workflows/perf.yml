@@ -1,0 +1,85 @@
+# The nightly performance run (#76, docs/04 §11): P-03's turn-commit latency on the reference
+# story (20,000 events, 1,000 commits; `perf_long`) and its quick subset (`perf_quick`, which PR CI
+# also runs). P-03 gates itself (p95 <= 250 ms, no commit over 2 s), so a regression turns this
+# run red; the run reports in the step summary, uploads the timings, and on a red run opens (or
+# comments on) a "Nightly perf run failed" issue. P-04's reference workload (`python -m
+# perf.lite_smoke`, 30 minutes on a compose stack) is run by hand and its report committed.
+name: Perf
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One perf run at a time; a run in progress is never cancelled (its issue step must run).
+concurrency:
+  group: perf
+  cancel-in-progress: false
+
+env:
+  # The gate's uv (ci.yml), so the perf run tests the toolchain the merge gate uses.
+  UV_VERSION: "0.12.23"
+
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.0  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      # pytest-benchmark is in the dev group (PR CI runs the quick subset with it).
+      - run: uv sync --frozen
+      # Integration fixtures start pgvector/pgvector:pg16 through testcontainers on the runner's
+      # Docker. P-03 writes its figures to build/perf/p_03_<events>_events.json.
+      - name: P-03 commit latency
+        id: perf
+        run: |
+          mkdir -p build/perf
+          set -o pipefail
+          uv run pytest tests/perf/test_p_03.py -m "perf_quick or perf_long" -s -rA --benchmark-json=build/perf/benchmark.json --junitxml=build/perf/junit.xml 2>&1 | tee build/perf/perf.log
+      - name: Summarise
+        if: always()
+        env:
+          OUTCOME: ${{ steps.perf.outcome }}
+        run: |
+          {
+            printf '%s\n' "## Nightly perf run: $OUTCOME" '' 'P-03 (budget: p95 <= 250 ms, no commit over 2 s):' '' '```'
+            grep -E '^P-03 commit latency' build/perf/perf.log || printf '%s\n' '(no figures printed)'
+            printf '%s\n' '```' '' '```'
+            grep -E '^(FAILED|ERROR|PASSED) |[0-9]+ (passed|failed)' build/perf/perf.log | tail -20 || true
+            printf '%s\n' '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: perf-results
+          path: build/perf/
+          if-no-files-found: warn
+      - name: Report a red run
+        if: failure() && steps.perf.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          failed=$(grep -E '^(FAILED|ERROR) ' build/perf/perf.log | head -20 || true)
+          figures=$(grep -E '^P-03 commit latency' build/perf/perf.log || true)
+          body=$(printf '%s\n' "The nightly perf run failed: $RUN_URL" '' 'Failed:' '```' "$failed" '```' '' 'Figures:' '```' "$figures" '```')
+          open=$(gh issue list --state open --search 'in:title "Nightly perf run failed"' --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "$body"
+          else
+            gh issue create --title "Nightly perf run failed $(date -u +%F)" --label bug --label needs-triage --body "$body"
+          fi

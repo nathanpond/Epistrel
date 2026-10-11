@@ -35,6 +35,10 @@ P05_FILE = "test_p_05.py"
 PG_IMAGE = "pgvector/pgvector:pg16"
 OVERRIDE_VAR = "EPISTREL_TEST_DATABASE_URL"
 LIVE_MODEL_MARKER = "live_model"
+PERF_LONG_MARKER = "perf_long"
+OPT_IN_MARKERS = (LIVE_MODEL_MARKER, PERF_LONG_MARKER)
+"""Markers whose tests run only when ``-m`` names them: a real endpoint (#54), or minutes of
+seeding and measuring (#76)."""
 DUMMY_DSN = "postgresql+psycopg://u:p@localhost:5432/epistrel_test"
 
 NO_DOCKER_MESSAGE = (
@@ -47,8 +51,8 @@ NO_DOCKER_MESSAGE = (
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Everything under tests/integration/, tests/chaos/ and tests/determinism/ is an
     integration test, and everything under tests/chaos/ a ``chaos`` test (#75). ``live_model``
-    tests run only when ``-m`` names that marker: they need a real endpoint (#54). P-05 runs
-    last, over the turn census of everything before it (#69)."""
+    and ``perf_long`` tests run only when ``-m`` names their marker: they need a real endpoint
+    (#54) or minutes (#76). P-05 runs last, over the turn census of everything before it (#69)."""
     for item in items:
         parents = Path(str(item.fspath)).parents
         if INTEGRATION_DIR in parents or CHAOS_DIR in parents or DETERMINISM_DIR in parents:
@@ -59,12 +63,14 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if census:
         items[:] = [item for item in items if item not in census] + census
     CENSUS.s_tests_collected = any(SCENARIO_DIR in Path(str(item.fspath)).parents for item in items)
-    if LIVE_MODEL_MARKER in (config.getoption("markexpr", "") or ""):
-        return
-    live = [item for item in items if item.get_closest_marker(LIVE_MODEL_MARKER)]
-    if live:
-        config.hook.pytest_deselected(items=live)
-        items[:] = [item for item in items if not item.get_closest_marker(LIVE_MODEL_MARKER)]
+    named = config.getoption("markexpr", "") or ""
+    for marker in OPT_IN_MARKERS:
+        if marker in named:
+            continue
+        opt_in = [item for item in items if item.get_closest_marker(marker)]
+        if opt_in:
+            config.hook.pytest_deselected(items=opt_in)
+            items[:] = [item for item in items if not item.get_closest_marker(marker)]
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -24,6 +24,7 @@ content (invariant 3).
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -95,6 +96,8 @@ class CallLog:
 
     def __init__(self) -> None:
         self.calls: list[ModelCall] = []
+        self.first_started: float | None = None
+        """When the operation's first model call started (``time.monotonic()``; #76)."""
 
     def by_purpose(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -115,6 +118,14 @@ def recording() -> Iterator[CallLog]:
         yield log
     finally:
         CALL_LOG.reset(token)
+
+
+def call_started() -> None:
+    """A model call is starting: the operation's log keeps the first such moment (#76's
+    ``first_call_offset_ms``)."""
+    log = CALL_LOG.get()
+    if log is not None and log.first_started is None:
+        log.first_started = time.monotonic()
 
 
 def model_label(model: str | None) -> str:
@@ -172,6 +183,7 @@ __all__ = [
     "CallLog",
     "ModelCall",
     "Outcome",
+    "call_started",
     "model_label",
     "outcome_of",
     "record",

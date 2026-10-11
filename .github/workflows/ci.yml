@@ -112,8 +112,10 @@ jobs:
       # `live_model` tests (E-06, P-08) need a real endpoint; the model matrix tool runs them
       # locally and records the result, reported not gated (#54). Of the chaos suite only the
       # `chaos_quick` tests run here, at their quick defaults, inside the one coverage gate; the
-      # weekly chaos.yml runs every `chaos` test at full strength (#75).
-      - run: uv run pytest -m "not live_model and (not chaos or chaos_quick)" --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90
+      # weekly chaos.yml runs every `chaos` test at full strength (#75). Of the performance tests
+      # only the `perf_quick` ones run here (P-03's quick subset); the `perf_long` ones (P-03 on
+      # the 20,000-event story) run in the nightly perf.yml (#76).
+      - run: uv run pytest -m "not live_model and (not chaos or chaos_quick) and (not perf_long or perf_quick)" --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90
 
   docker:
     runs-on: ubuntu-latest

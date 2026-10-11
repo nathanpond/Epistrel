@@ -126,9 +126,30 @@ def test_chaos_runs_weekly_and_on_dispatch_and_reports_a_red_run() -> None:
     assert "Weekly chaos run failed" in report["run"]
 
 
+def test_perf_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
+    """#76: P-03 at full size and its quick subset every night (03:00 UTC) and on dispatch, with
+    the benchmark timings uploaded; a red run files or comments on an issue."""
+    wf = _workflow("perf.yml")
+    triggers = _on(wf)
+    assert triggers["schedule"] == [{"cron": "0 3 * * *"}]
+    assert "workflow_dispatch" in triggers
+    assert wf["permissions"] == {"contents": "read"}
+    job = wf["jobs"]["perf"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    run = next(s for s in _steps(wf, "perf") if s.get("id") == "perf")
+    assert '-m "perf_quick or perf_long"' in run["run"]
+    assert "--benchmark-json=" in run["run"]
+    report = next(s for s in _steps(wf, "perf") if s.get("name") == "Report a red run")
+    assert "Nightly perf run failed" in report["run"]
+
+
 def test_pr_ci_runs_only_the_quick_chaos_tests() -> None:
-    """Complement of the weekly run: the gate deselects `chaos` tests not marked `chaos_quick`."""
+    """Complement of the weekly run: the gate deselects `chaos` tests not marked `chaos_quick`,
+    and (#76) `perf_long` tests not marked `perf_quick`."""
     (pytest_step,) = [
         s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
     ]
-    assert '-m "not live_model and (not chaos or chaos_quick)"' in pytest_step["run"]
+    assert (
+        '-m "not live_model and (not chaos or chaos_quick) and (not perf_long or perf_quick)"'
+        in pytest_step["run"]
+    )

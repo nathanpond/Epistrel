@@ -2287,7 +2287,7 @@
         "type": "object"
       },
       "OperationBody": {
-        "description": "One operation: kind, status, position, revision, attribution, timestamps, attempts,\nconfiguration revisions, origin and, within the result window, its stored result.",
+        "description": "One operation: kind, status, position, revision, attribution, timestamps, attempts,\nconfiguration revisions, origin, a turn's queue wait and first-call delay and, within the\nresult window, its stored result.",
         "properties": {
           "attempts": {
             "items": {
@@ -2335,6 +2335,17 @@
             ],
             "title": "Config Revisions"
           },
+          "first_call_offset_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Call Offset Ms"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -2372,6 +2383,17 @@
           "principal": {
             "title": "Principal",
             "type": "string"
+          },
+          "queued_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queued Ms"
           },
           "result": {
             "anyOf": [
@@ -3882,6 +3904,17 @@
             "title": "Elapsed Ms",
             "type": "integer"
           },
+          "first_call_offset_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Call Offset Ms"
+          },
           "guardrail": {
             "$ref": "#/components/schemas/GuardrailBody"
           },
@@ -3913,6 +3946,17 @@
           "previous_variant": {
             "title": "Previous Variant",
             "type": "integer"
+          },
+          "queued_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queued Ms"
           },
           "timeline_revision": {
             "title": "Timeline Revision",
@@ -4075,7 +4119,7 @@
         "type": "object"
       },
       "RespondResponse": {
-        "description": "One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,\nthe story's new revision, and the model calls it made.",
+        "description": "One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,\nthe story's new revision, the model calls it made, and where its time went.",
         "properties": {
           "audience_filter": {
             "enum": [
@@ -4136,6 +4180,17 @@
             "title": "Elapsed Ms",
             "type": "integer"
           },
+          "first_call_offset_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Call Offset Ms"
+          },
           "guardrail": {
             "$ref": "#/components/schemas/GuardrailBody"
           },
@@ -4163,6 +4218,17 @@
           "output_viewpoint": {
             "title": "Output Viewpoint",
             "type": "string"
+          },
+          "queued_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queued Ms"
           },
           "timeline_revision": {
             "title": "Timeline Revision",
@@ -8833,7 +8899,7 @@
     },
     "/operations/{operation_id}": {
       "get": {
-        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`.\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
+        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when it was not queued) and `first_call_offset_ms` (from reaching the front to its first model call).\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
         "operationId": "get_operation",
         "parameters": [
           {
@@ -11254,7 +11320,7 @@
     },
     "/stories/{story_id}/respond": {
       "post": {
-        "description": "Play one turn of a story. The request names the acting character (any character of the story; who acts as whom is your decision), what they say and/or do (`player_input`, the turn's first beat and only ever the actor's own words), who answers (`render_character_ids`: default every other character, voiced in the order given and composed into one message), the output viewpoint (`character:<id>` or `omniscient`; default the actor, then the story's default; echoed as `output_viewpoint`, and `beats` are produced for it), prompt parameters (`length`, `temperature`, `top_p`) and optional scene context.\n\nThe consumer does no retrieval or memory work: the prompt is assembled from the story's own records. Scene context is checked against the cast and then ignored: it is never stored and never placed in the model's context.\n\nThe response is the **finished** reply: under the `lite` profile it is generated in one model call (plus one `guardrail_check` per model-assisted output policy) and none of its claims is checked against the story's facts. Before it is released the reply is checked against the story's output policies: a reply that breaks one is generated again with the policy's message as a constraint, up to the story's `guardrail_retry_budget`, and then the character's safe fallback line is returned instead (`guardrail.fallback_used`, `degradation: [\"safe_fallback\"]`). Rejected drafts are audit records only. Several characters are voiced in one generation, and their knowledge is kept apart only by instructions in that shared prompt.\n\nEvery turn runs under a model-call budget and a deadline: the story's `max_model_calls_per_turn` (default `9 + G`, where G is one call per model-assisted input policy plus one per model-assisted output policy) and `turn_deadline`, or a smaller `budget: {max_calls, deadline_s}` in the request (above the story's is 422). A budget below one generation plus G is refused with 422 `budget_below_safety_minimum` (`details.minimum_required`) before any model call. The response reports `model_calls` (every attempt, failed ones included), `call_counts` by purpose, `elapsed_ms`, `budget` `{max_calls, reserved, used}` and each `degradation` step with its cause; a 503 carries `model_calls` and `elapsed_ms` in `details`.\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and `X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written).\n\nWhile another turn of the story runs, a story with `turn_concurrency: reject` (the default) answers 423 `story_busy` with `Retry-After`, and one with `queue` queues the turn and plays the queued turns in order, each after the previous one finished. The request waits for its queued turn up to the story's `turn_deadline`, then answers 202 `{operation_id, position}` with `Location: /operations/{id}` while the turn stays queued; `Prefer: respond-async` answers 202 at once. A retry under the same `Idempotency-Key` waits for the same turn. A full queue (`turn_queue_max`) is 423.",
+        "description": "Play one turn of a story. The request names the acting character (any character of the story; who acts as whom is your decision), what they say and/or do (`player_input`, the turn's first beat and only ever the actor's own words), who answers (`render_character_ids`: default every other character, voiced in the order given and composed into one message), the output viewpoint (`character:<id>` or `omniscient`; default the actor, then the story's default; echoed as `output_viewpoint`, and `beats` are produced for it), prompt parameters (`length`, `temperature`, `top_p`) and optional scene context.\n\nThe consumer does no retrieval or memory work: the prompt is assembled from the story's own records. Scene context is checked against the cast and then ignored: it is never stored and never placed in the model's context.\n\nThe response is the **finished** reply: under the `lite` profile it is generated in one model call (plus one `guardrail_check` per model-assisted output policy) and none of its claims is checked against the story's facts. Before it is released the reply is checked against the story's output policies: a reply that breaks one is generated again with the policy's message as a constraint, up to the story's `guardrail_retry_budget`, and then the character's safe fallback line is returned instead (`guardrail.fallback_used`, `degradation: [\"safe_fallback\"]`). Rejected drafts are audit records only. Several characters are voiced in one generation, and their knowledge is kept apart only by instructions in that shared prompt.\n\nEvery turn runs under a model-call budget and a deadline: the story's `max_model_calls_per_turn` (default `9 + G`, where G is one call per model-assisted input policy plus one per model-assisted output policy) and `turn_deadline`, or a smaller `budget: {max_calls, deadline_s}` in the request (above the story's is 422). A budget below one generation plus G is refused with 422 `budget_below_safety_minimum` (`details.minimum_required`) before any model call. The response reports `model_calls` (every attempt, failed ones included), `call_counts` by purpose, `elapsed_ms`, `budget` `{max_calls, reserved, used}` and each `degradation` step with its cause; a 503 carries `model_calls` and `elapsed_ms` in `details`. `queued_ms` is how long the turn waited in the story's turn queue (null when it never queued) and `first_call_offset_ms` the delay from the turn reaching the front (a queued turn starting, else the request arriving) to its first model call; `elapsed_ms` starts at that same moment.\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and `X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written).\n\nWhile another turn of the story runs, a story with `turn_concurrency: reject` (the default) answers 423 `story_busy` with `Retry-After`, and one with `queue` queues the turn and plays the queued turns in order, each after the previous one finished. The request waits for its queued turn up to the story's `turn_deadline`, then answers 202 `{operation_id, position}` with `Location: /operations/{id}` while the turn stays queued; `Prefer: respond-async` answers 202 at once. A retry under the same `Idempotency-Key` waits for the same turn. A full queue (`turn_queue_max`) is 423.",
         "operationId": "respond",
         "parameters": [
           {

@@ -99,9 +99,12 @@ REPLY = "The innkeeper sets down a mug and says nothing."
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 DROPPED = frozenset({"idempotency_key"})
 """Transport fields: the key REST echoes (generated per request)."""
-ZEROED = frozenset({"elapsed_ms", "latency_ms", "request_id", "policy_set"})
-"""Durations, and hashes over ids: the stub's request id (of the prompt) and an operation's
-``config_revisions.policy_set`` (of the policy ids in force)."""
+ZEROED = frozenset(
+    {"elapsed_ms", "latency_ms", "queued_ms", "first_call_offset_ms", "request_id", "policy_set"}
+)
+"""Durations (#76: a turn's queue wait and first-call delay too), and hashes over ids: the
+stub's request id (of the prompt) and an operation's ``config_revisions.policy_set`` (of the
+policy ids in force)."""
 
 Ids = dict[str, Any]
 Rendered = tuple[int, dict[str, Any]]

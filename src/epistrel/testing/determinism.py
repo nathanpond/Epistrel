@@ -41,9 +41,12 @@ OPERATIONAL_TABLES = frozenset(
 )
 """Excluded: background work, timers, heartbeats, the turn queue and idempotency bookkeeping."""
 
-VOLATILE_KEYS = frozenset({"elapsed_ms", "latency_ms", "worker_id", "attempt"})
+VOLATILE_KEYS = frozenset(
+    {"elapsed_ms", "latency_ms", "queued_ms", "first_call_offset_ms", "worker_id", "attempt"}
+)
 """Keys dropped wherever they appear (columns, ``jsonb`` and response bodies): wall-clock
-durations and which worker or attempt ran a job."""
+durations (a turn's queue wait and first-call delay too, #76) and which worker or attempt ran a
+job."""
 
 ID_PATTERN = re.compile(rf"(?<![{CROCKFORD}])[{CROCKFORD}]{{{ULID_LENGTH}}}(?![{CROCKFORD}])")
 TIMESTAMP_PATTERN = re.compile(

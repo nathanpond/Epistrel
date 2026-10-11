@@ -59,6 +59,8 @@ RESPONSE_FIELDS = {
     "guardrail",
     "call_counts",
     "budget",
+    "queued_ms",
+    "first_call_offset_ms",
 }
 
 

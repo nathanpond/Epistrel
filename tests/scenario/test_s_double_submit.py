@@ -95,6 +95,10 @@ async def test_s_double_submit(stub_settings: Settings, engine: AsyncEngine, pg_
             assert pending.exception() is not None or pending.result().status_code >= 500
         assert await committed_turns(engine, story) == []
         assert (await key_row(engine, "dbl-c")).status == "in_flight"
+        # Both of the crashed attempt's leases (idempotency claim and turn slot) are lease_s
+        # long but start at different moments; a retry between their expiries is a 423
+        # story_busy. Wait both out so the retry always takes over (seen on a slow CI runner).
+        await asyncio.sleep(2 * child.lease_s + 0.5)
         retried = await keyed(client, story, request, "dbl-c")
         assert retried.status_code == 200, retried.text
         replayed = await keyed(client, story, request, "dbl-c")

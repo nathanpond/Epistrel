@@ -1649,3 +1649,6 @@ Process:
 - **Decision (orchestrator):** CLAUDE.md's guard annotations now read `guard: #74 (merged)` (invariant 3) and `guard: #44 (merged)` (invariant 4), committed on the milestone branch so they land on `main` with the guard code in the milestone PR.
   **Why:** n8-exec rewrites `(planned)` to `(merged)` when the guard lands; landing both in the same squash keeps the annotation true at every commit on `main`.
   **Issue:** #74, #44
+- **Decision (Rule 1, orchestrator, PR #284 CI attempt 1):** CI's C-08 guard re-runs the scenario suite in a subprocess, and there `test_s_double_submit` (c) got 423 `story_busy` on the retry after the child engine was killed. The crashed attempt's idempotency claim and its turn slot both have `lease_s` (1 s) leases, started at different moments; a retry landing between the two expiries meets the still-leased slot. The test now waits `2·lease_s + 0.5` s before the retry. The assertions are unchanged; the product's 423 is the documented #63 behaviour for a slot still leased.
+  **Why:** A timing race in the test, seen only on the slower CI runner under C-08's extra load; the same test passed in CI's main run.
+  **Issue:** #61, #74

@@ -552,3 +552,58 @@ Process:
   - #276: outside CI, `test_i_02`'s action-occurrence check sometimes draws no `regenerate`. It failed 2 of 9 local full runs, never in isolation, and never under the CI profile. The equality the test checks never failed.
   **Why:** Both are outside #49's scope. The CI gate (`CI=1`, derandomized) passed every run.
   **Issue:** #49
+- **Decision:** Creation is validate-then-write. Validation covers the cast, settings, viewpoint and rating, and then the story row is inserted. A single `genesis` operation then writes `story_created` and inserts the `characters` rows in a commit step. If genesis fails, a compensating transaction removes the story row and its operation row. The two writes are not one transaction, because `Operation.begin()` needs the story row for its foreign key. A crash between them leaves a story with `timeline_revision` 0 and an `in_flight` genesis; #70's recovery pass should remove those. #45's `create_story(db, principal=…, title=…, content_rating_id=…)` helper stays, now with a one-character player cast, so earlier tests are unchanged. The full API is `create_story_from(db, StorySpec, principal)`.
+  **Why:** Discretion: "#50 builds atomic creation" on #45's helper. The compensation gives "nothing at all" for every failure except a crash, and `test_library_create_and_failed_genesis` induces a failure inside the commit to prove it. Changing `Operation` to accept a story-row insert would have widened #45's contract.
+  **Issue:** #50
+- **Decision:** `story_created`'s payload is now `{name, characters: [{id, name, is_player}], settings, content_rating_id, rating_version_id}`; the shell's `title` was renamed to `name`. `story_archived`, `story_unarchived` (control) and `story_deleted` (audit, `{story_id}`) are new registered types. The Lite read-set member `definitions` now reads `[id, name, definition]` from `characters` in cast order, not `character_defined` events.
+  **Why:** Discretion: "one `story_created` event carrying the cast; `characters` is a primary table; never ages". Nothing writes `character_defined` (characters are fixed at creation in M2), so the old loader would always have hashed an empty list.
+  **Issue:** #50
+- **Decision:** `stories.status` is checked text (`ck_stories_status`: `active|archived|paused`, default `active`), with `StoryStatus` in `core/enums.py`, not a Postgres enum. `0007` rewrites existing `ready` rows to `active`. `characters` has a unique `(story_id, lower(name))` index and a unique `(story_id, ordinal)` index, plus CHECK `true_age BETWEEN 0 AND 150`. It has no foreign key.
+  **Why:** #45 left the status as text for #50's vocabulary. Checked text avoids a Postgres enum migration when M3 adds statuses. Pydantic compares names with `casefold()` and the index with `lower()`, so the index is the backstop.
+  **Issue:** #50
+- **Decision:** Archived stories. `Operation` refuses any operation that bumps the revision with 409 `story_archived`: in `begin()`'s read phase, so no operations row is written, and again under the story lock at commit. A commit-time refusal (a race with archive) marks the operation `failed`. Archive, unarchive, maintenance (rebuild) and consolidation still run. Story policy writes (`set_story_policies`, #63's settings path) are refused on an archived story too (Rule 2: an archived story is read-only).
+  **Why:** Discretion: "`story_archived` enforced in `Operation.begin()`; maintenance/consolidation still run". "Truth-changing" is read as "bumps the revision", the definition #47 established. Archive itself does not bump, so unarchive is never refused.
+  **Issue:** #50
+- **Decision:** Archive, unarchive and delete return 423 `story_busy` `{reason: in_flight, operation_id, story_id}` (new `StoryBusy` error). Archive and unarchive check for an `in_flight` **turn** before beginning and again in their commit step. Delete checks for **any** `in_flight` operation under the story lock. A repeated archive or unarchive returns 200 with the current state and writes nothing. Unarchiving a story that is not archived (including `paused`) is a no-op.
+  **Why:** Discretion (423 via `operations.status = in_flight`; idempotent 200). The code `story_busy` is the one #63 plans for 423s. Until #70's recovery pass exists, a crashed operation left `in_flight` blocks delete.
+  **Issue:** #50
+- **Decision:** Delete runs as a story-less `control` operation. Its commit step locks the story, checks for in-flight work, sets `epistrel.allow_story_delete`, and deletes from `STORY_TABLES` in order (events, transcript_messages, story_heads, policies, characters, operations), then the story's `config_changes` (`scope='story'`, by `scope_id`), then the `stories` row. Its `story_deleted` audit event and the operation's principal are the deletion record. `STORY_ID_EXCEPTIONS` is empty.
+  **Why:** The AC's `audit_log` (null the `story_id`, write a deletion row) is created by #56 (`0010_audit_log`), `idempotency_keys` by #61, and `jobs` by #70. None exists yet, and creating a table here would be Rule 4. Running the record and the delete in one operation makes them atomic. Story-scoped `config_changes` rows are removed because they are the story's data (FR-STORE-16), although the table has no `story_id` column (Rule 2). Hand-offs:
+  - #56 adds `audit_log` to `STORY_ID_EXCEPTIONS`, nulls its `story_id` in `_delete_story_rows`, and may move the deletion record there.
+  - #61 deletes `idempotency_keys` by `scope_id`.
+  - #70 deletes queued jobs and adds "running job → 423".
+  **Issue:** #50
+- **Decision:** Settings. `StorySettings` gains `turn_concurrency` (`reject|queue`, default `reject`) and `default_output_viewpoint` (`character:<id>` or null), both stored in `stories.settings`. Creation validates `CreationSettings`, a subclass of `StorySettings` with `extra="forbid"`, so an unknown key is 422 naming `body.settings.<key>`. The viewpoint is given by character name (case-insensitive) and stored as `character:<id>`. `omniscient` or an unknown name is 422 `viewpoint_unresolved` (new error). With no name, the default is the sole `is_player` character, or null when there are zero or several.
+  **Why:** Discretion lines. #63 plans dedicated `turn_concurrency`/`turn_queue_max` columns mirrored in `StorySettings`, so #63 moves the value into its column then. Storing the id rather than the name survives a later rename (M3).
+  **Issue:** #50
+- **Decision:** An unknown `content_rating_id` at creation is 422 `rating_retired` with `reason: unknown`, not the Discretion's `validation_error`.
+  **Why:** #48 already settled this through `require_assignable`, and `test_unknown_rating_refused_for_a_new_story` asserts it. Two codes for one refusal would split consumers' handling. Low cost to change.
+  **Issue:** #50
+- **Decision:** REST.
+  - `POST /stories` returns 201 with `Location`, `{story_id, characters: [{id, name}], timeline_revision, content_rating: {id, version_id, name}}`.
+  - `GET /stories?status=` returns summaries without the cast, newest first, with no paging.
+  - `GET /stories/{id}` returns the AC's fields plus `created_at`/`archived_at`. Each character carries `true_age` only under `?viewpoint=omniscient`: the key is absent otherwise, not null, because a separate `OmniscientCharacterBody` model is used. Any other viewpoint value is treated as non-omniscient; #59 owns viewpoint validation.
+  - `DELETE` returns 204.
+
+  `api/responses.py`'s rule gains `STORY_CREATING_ROUTES` (`POST /stories` needs `MutationResponse`) and skips 204 routes, which have no body.
+  **Why:** The AC fixes the create response, and its `timeline_revision` is the new story's. The route has no `{story_id}`, so the #47 rule would otherwise demand `config_revision`. A deleted story has no revision to report.
+  **Issue:** #50
+- **Decision:** Validation-error field paths now render list indexes in brackets (`body.characters[0].true_age`), not as dotted segments (`body.characters.0.true_age`). The change is in `api/errors.field_path`.
+  **Why:** The test plan names `characters[0].true_age`, and the Engine's own errors already use bracket paths (`body.policies[0].effect`). No existing test asserted the dotted form.
+  **Issue:** #50
+- **Decision:** #49's hand-off: a `character`-scope story policy must name a character of its own story (422 `validation_error`, `reason: unknown_character`). The check runs after the `cannot_relax` target check, so relax attempts still report `cannot_relax`. An `entity_list` rule may now omit `names` (default `()`). At story scope the empty list is filled with the cast's names in cast order when the rule is saved, and at character scope with that character's name. At global and rating scope an empty list is refused (`names_required`). Explicit names are kept as given. `test_story_policies_upsert` now uses a real character id.
+  **Why:** The #49 Discretion lines "`entity_list` names frozen into `rule` at save" and "character-scope validation lands with #50". Freezing keeps `evaluate` pure: it never reads the cast.
+  **Issue:** #50
+- **Decision:** Deleting a story removes its `policies` rows directly from `core/stories.py`, not through `orchestrator.policies.admin`.
+  **Why:** `core` may not import the orchestrator (import-linter contract). The policy-store contract protects edits that relax or override a policy. Removing a deleted story's own rows together with the story is FR-STORE-16, and no remaining story's effective set can change.
+  **Issue:** #50
+- **Decision:** Tests.
+  - `test_i_10` carries `part("M2","FR-ADMIN-1")`. It covers REST create, archive, the archived-turn refusal with no operation row, unarchive, and delete.
+  - `test_s_delete` carries `part("M2","FR-STORE-14,16")`. It compares every row of every table as `row::text` before and after deleting one of three populated stories; the only additions are the deletion's own operation and event. The story's rows are found through `information_schema`, not `STORY_TABLES`.
+  - `test_i_22__stories` carries `part("M2","FR-RATE-1")`. It is in `tests/integration/test_i_22__ratings.py`, because `check-traceability` refuses one test ID's M2 slices across two files.
+  - `test_u_13__characters` carries `part("M2","FR-GUARD-2,8")`.
+  - Unmarked tests: `test_story_isolation_schema` (enumeration, FKs, story-like columns, `characters.story_id` NOT NULL, no cross-story events), the bad-request negatives (missing `true_age` → `body.characters[0].true_age`, and seven more, with no story or operation written), 423 busy, viewpoint defaults, and library creation with a failed genesis.
+
+  A mutation check removed `policies` from `STORY_TABLES`. The first draft of `test_s_delete` still passed, because it found the story's rows through `STORY_TABLES`. After the fix, both S-DELETE tests fail under that mutation. The `test_i_10` part body avoids the M3 lexicon word "genesis".
+  **Why:** The test plan and Discretion ("schema isolation test folded into `test_s_delete`"). `test_story_isolation_schema` has no marker because it maps to no docs/04 test ID (#44's constraint). REST tests use `httpx2.ASGITransport` with the Engine bound directly (`tests/story_support.py`).
+  **Issue:** #50

@@ -104,10 +104,15 @@ class RegexRule(_Rule):
 
 
 class EntityListRule(_Rule):
-    """Named entities; any whole-word mention matches, under the wordlist rules."""
+    """Named entities; any whole-word mention matches, under the wordlist rules.
+
+    At story and character scope an empty ``names`` means "the story's characters": the names
+    are frozen into the rule when it is saved (the whole cast for a story policy, the character
+    itself for a character policy, #50). Every stored rule has names.
+    """
 
     type: Literal["entity_list"]
-    names: tuple[Word, ...] = Field(min_length=1, max_length=WORDS_MAX)
+    names: tuple[Word, ...] = Field(default=(), max_length=WORDS_MAX)
 
 
 class ModelAssistedRule(_Rule):

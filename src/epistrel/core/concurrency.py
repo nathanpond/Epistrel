@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.errors import RevisionConflict, StoryNotFound, TimelineChanged
 from epistrel.core.tables import (
+    characters,
     content_rating_versions,
     content_ratings,
     events,
@@ -286,7 +287,14 @@ async def _instructions(conn: AsyncConnection, story_id: str, spec: LiteReadSet)
 
 
 async def _definitions(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
-    return await _payloads(conn, story_id, "character_defined")
+    """The cast's definitions as the prompt renders them: ``[id, name, definition]`` in cast
+    order, read from ``characters`` (#50; the cast is fixed at creation in M2)."""
+    found = await conn.execute(
+        select(characters.c.id, characters.c.name, characters.c.definition)
+        .where(characters.c.story_id == story_id)
+        .order_by(characters.c.ordinal)
+    )
+    return [list(row) for row in found.all()]
 
 
 async def _guidance_text(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:

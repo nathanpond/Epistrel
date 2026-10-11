@@ -23,6 +23,9 @@ from epistrel.core.ids import CROCKFORD, ULID_LENGTH, new_ulid
 
 EXPECTED_M2_TYPES = {
     "story_created": "control",
+    "story_archived": "control",
+    "story_unarchived": "control",
+    "story_deleted": "audit",
     "character_defined": "control",
     "player_input": "input",
     "message_rendered": "narrative_state",

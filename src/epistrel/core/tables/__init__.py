@@ -1,6 +1,7 @@
 """Every table the engine owns, declared against one ``metadata`` (imported by ``core.schema``)."""
 
 from epistrel.core.tables.base import NAMING_CONVENTION, metadata
+from epistrel.core.tables.characters import characters
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.events import events
 from epistrel.core.tables.operations import operations
@@ -11,6 +12,7 @@ from epistrel.core.tables.stories import stories
 
 __all__ = [
     "NAMING_CONVENTION",
+    "characters",
     "config_changes",
     "content_rating_versions",
     "content_ratings",

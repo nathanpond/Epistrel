@@ -67,6 +67,18 @@ class OperationStatus(StrEnum):
     FAILED = "failed"
 
 
+class StoryStatus(StrEnum):
+    """Where a story is in its lifecycle (#50). Stored as checked text, not a Postgres enum.
+
+    ``archived`` is read-only: truth-changing work is refused with ``story_archived``.
+    ``paused`` is reserved for M3's rating and reactivation checks.
+    """
+
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+    PAUSED = "paused"
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,

@@ -139,3 +139,30 @@ class CannotRelax(EpistrelError):
 
     code = "cannot_relax"
     http_status = 422
+
+
+class StoryArchived(EpistrelError):
+    """The story is archived (read-only); truth-changing calls are refused with no side effects
+    until it is unarchived (FR-ADMIN-1). ``details``: ``story_id``."""
+
+    code = "story_archived"
+    http_status = 409
+
+
+class StoryBusy(EpistrelError):
+    """The story has work in flight that the call would race (#50: archive, unarchive and
+    delete wait for a running turn; #63 adds turn concurrency).
+
+    ``details``: ``reason`` (``in_flight``) and ``operation_id``.
+    """
+
+    code = "story_busy"
+    http_status = 423
+
+
+class ViewpointUnresolved(EpistrelError):
+    """An output viewpoint names no character of the story, or is not allowed where it is used
+    (a story's default viewpoint may only be a character, FR-RESP-12). ``details.field``."""
+
+    code = "viewpoint_unresolved"
+    http_status = 422

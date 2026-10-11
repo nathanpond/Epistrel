@@ -62,8 +62,15 @@ from epistrel.core.enums import (
     OperationKind,
     OperationStatus,
     Provenance,
+    StoryStatus,
 )
-from epistrel.core.errors import ChainBroken, InvalidRequest, PrincipalRequired, StoryNotFound
+from epistrel.core.errors import (
+    ChainBroken,
+    InvalidRequest,
+    PrincipalRequired,
+    StoryArchived,
+    StoryNotFound,
+)
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import StorySettings
@@ -274,6 +281,7 @@ class Operation:
                 select(
                     stories.c.timeline_revision,
                     stories.c.settings,
+                    stories.c.status,
                     content_ratings.c.current_version_id,
                 )
                 .outerjoin(content_ratings, content_ratings.c.id == stories.c.content_rating_id)
@@ -281,6 +289,7 @@ class Operation:
             )
         ).one_or_none()
         if found is not None:
+            self._refuse_archived(found.status)
             self.base_revision = int(found.timeline_revision)
             self.story_settings = StorySettings.from_row(found.settings)
             self.config_revisions = {"rating_version": found.current_version_id}
@@ -379,6 +388,7 @@ class Operation:
                         stories.c.timeline_revision,
                         stories.c.last_control_revision,
                         stories.c.last_control_operation_id,
+                        stories.c.status,
                     )
                     .where(stories.c.id == self.story_id)
                     .with_for_update()
@@ -386,6 +396,7 @@ class Operation:
             ).one_or_none()
             if locked is None:
                 raise StoryNotFound(f"story {self.story_id} does not exist")
+            self._refuse_archived(locked.status)
             current_revision = int(locked.timeline_revision)
             if decide is not None:
                 await self._revalidate(conn, locked, decide)
@@ -614,6 +625,17 @@ class Operation:
             )
 
     # -- helpers -----------------------------------------------------------------------------
+
+    def _refuse_archived(self, status: str) -> None:
+        """An archived story is read-only: work that changes story truth (bumps the revision)
+        is refused with ``story_archived``; archive, unarchive, maintenance and derived work
+        still run (#50). Checked at ``begin()``, before the operations row is written, and again
+        under the story lock at commit."""
+        if self.bumps_revision and status == StoryStatus.ARCHIVED.value:
+            raise StoryArchived(
+                f"story {self.story_id} is archived; unarchive it to change it",
+                {"story_id": self.story_id},
+            )
 
     @asynccontextmanager
     async def _connection(self) -> AsyncIterator[AsyncConnection]:

@@ -7,12 +7,13 @@ the credential and principal dependencies; that includes the ``/admin`` operator
 
 from fastapi import APIRouter
 
-from epistrel.api.routes import admin, health, history
+from epistrel.api.routes import admin, health, history, stories
 
 public_router = APIRouter()
 public_router.include_router(health.router)
 
 router = APIRouter()
+router.include_router(stories.router)
 router.include_router(history.router)
 router.include_router(admin.router)
 

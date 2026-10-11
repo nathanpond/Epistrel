@@ -38,11 +38,13 @@ from epistrel.core.config_changes import (
     lock_deployment,
     record_config_change,
 )
+from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import (
     CannotRelax,
     ConfigConflict,
     InvalidRequest,
     PolicyNotFound,
+    StoryArchived,
     StoryNotFound,
 )
 from epistrel.core.ids import new_ulid
@@ -59,7 +61,7 @@ from epistrel.core.policies.model import (
     kind_of,
 )
 from epistrel.core.policies.rows import content_of, rule_json
-from epistrel.core.tables import content_ratings, policies, stories
+from epistrel.core.tables import characters, content_ratings, policies, stories
 from epistrel.orchestrator.policies.schemas import (
     PolicyContent,
     PolicyFields,
@@ -147,6 +149,41 @@ def _check_rule(scope: Scope, rule: Rule, *, field: str) -> None:
         raise InvalidRequest(
             "entity_list rules name a story's characters and cannot be global",
             {"field": field, "reason": "entity_list_on_global"},
+        )
+    if isinstance(rule, EntityListRule) and not rule.names and scope not in STORY_SCOPES:
+        raise InvalidRequest(
+            "only a story or character entity_list may leave its names to the cast",
+            {"field": f"{field}.names", "reason": "names_required"},
+        )
+
+
+async def _freeze_entity_names(
+    conn: AsyncConnection, story_id: str, scope: Scope, scope_id: str, rule: Rule
+) -> Rule:
+    """An ``entity_list`` with no names takes the story's characters' names, frozen now: the
+    whole cast (in cast order) for a story policy, the character itself for a character one."""
+    if not isinstance(rule, EntityListRule) or rule.names:
+        return rule
+    query = select(characters.c.name).where(characters.c.story_id == story_id)
+    if scope is Scope.CHARACTER:
+        query = query.where(characters.c.id == scope_id)
+    names = (await conn.execute(query.order_by(characters.c.ordinal))).scalars().all()
+    return rule.model_copy(update={"names": tuple(names)})
+
+
+async def _check_character(
+    conn: AsyncConnection, story_id: str, character_id: str, *, field: str
+) -> None:
+    """A character policy names a character of its own story (FR-STORE-14)."""
+    found = await conn.scalar(
+        select(characters.c.id).where(
+            characters.c.id == character_id, characters.c.story_id == story_id
+        )
+    )
+    if found is None:
+        raise InvalidRequest(
+            "a character policy names a character of its story in scope_id",
+            {"field": field, "reason": "unknown_character"},
         )
 
 
@@ -400,11 +437,17 @@ async def set_story_policies(
     async with db.begin() as conn:
         story = (
             await conn.execute(
-                select(stories.c.config_revision).where(stories.c.id == story_id).with_for_update()
+                select(stories.c.config_revision, stories.c.status)
+                .where(stories.c.id == story_id)
+                .with_for_update()
             )
         ).one_or_none()
         if story is None:
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+        if story.status == StoryStatus.ARCHIVED.value:
+            raise StoryArchived(
+                f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
+            )
         revision = int(story.config_revision) + 1
         written: list[Policy] = []
         changes: list[tuple[str, Any, Any]] = []
@@ -447,10 +490,16 @@ async def _upsert_story_item(
     scope = Scope(item.scope)
     scope_id = _story_scope_id(story_id, scope, item.scope_id, field=field)
     _check_rule(scope, item.rule, field=f"{field}.rule")
-    content = _Content.given(item, scope)
     current = None if item.id is None else await load_policy(conn, item.id)
     if current is not None:
         _check_target(current, story_id, scope, scope_id, field=field)
+    if scope is Scope.CHARACTER:
+        await _check_character(conn, story_id, scope_id, field=f"{field}.scope_id")
+    rule = await _freeze_entity_names(conn, story_id, scope, scope_id, item.rule)
+    if rule is not item.rule:
+        item = item.model_copy(update={"rule": rule})
+    content = _Content.given(item, scope)
+    if current is not None:
         _live(current)
         await _check_name(
             conn, scope, scope_id, content.name, policy_id=current.id, field=f"{field}.name"

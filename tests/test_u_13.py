@@ -26,8 +26,8 @@ from epistrel.core.errors import (
     StoryNotFound,
 )
 from epistrel.core.policies.evaluate import evaluate
-from epistrel.core.policies.model import Policy, Scope, Target
-from epistrel.core.stories import create_story
+from epistrel.core.policies.model import EntityListRule, Policy, Scope, Target
+from epistrel.core.stories import StorySpec, create_story
 from epistrel.orchestrator.policies import admin as policy_admin
 from tests.concurrency_support import set_instructions, set_pins
 from tests.event_support import play_turn, rows
@@ -168,7 +168,8 @@ async def test_story_policies_upsert(engine: AsyncEngine, settings: Settings) ->
     assert first.changed
     assert first.policies[0].scope_id == story_id
     assert first.policies[0].applies_to == (Target.TEXT_OUTPUT,)
-    character = story_item(words("beta"), scope="character", scope_id="char-1")
+    char_id = (await lib.get_story(AUTHOR, story_id)).characters[0].id
+    character = story_item(words("beta"), scope="character", scope_id=char_id)
     edited = item.model_copy(update={"message": "Edited."})
     second = await lib.policies_set_story(AUTHOR, story_id, [edited, character])
     assert second.config_revision == first.config_revision + 1
@@ -246,3 +247,66 @@ async def test_effective_set_follows_writes(engine: AsyncEngine, settings: Setti
     assert {p.id for p in await lib.policies_effective(AUTHOR, story_id)} == before - {rated.id}
     with pytest.raises(StoryNotFound):
         await lib.policies_effective(AUTHOR, "0" * 26)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M2", "FR-GUARD-2,8")
+async def test_u_13__characters(engine: AsyncEngine, settings: Settings) -> None:
+    """Story policies over the cast (#50). An ``entity_list`` with no names takes the cast's
+    names when saved (the whole cast for a story policy, the character itself for a character
+    policy), and a mention of one is a violation on any text. A character policy must name a
+    character of its own story. Complements: a name outside the cast is not flagged, and an
+    operator policy cannot leave its entity names to a cast it does not have."""
+    lib = library(settings, engine)
+    spec = StorySpec.model_validate(
+        {
+            "characters": [
+                {"name": "Ada Quill", "definition": "A courier.", "true_age": 34},
+                {"name": "Brann", "definition": "A smith.", "true_age": 52},
+            ]
+        }
+    )
+    created = await lib.create_story(AUTHOR, spec)
+    other = await lib.create_story(AUTHOR, spec)
+    story_id = created.story_id
+    brann = created.characters[1].id
+    written = await lib.policies_set_story(
+        AUTHOR,
+        story_id,
+        [
+            story_item({"type": "entity_list"}),
+            story_item({"type": "entity_list"}, scope="character", scope_id=brann),
+        ],
+    )
+    cast_policy, brann_policy = written.policies
+    assert isinstance(cast_policy.rule, EntityListRule)
+    assert isinstance(brann_policy.rule, EntityListRule)
+    assert cast_policy.rule.names == ("Ada Quill", "Brann")
+    assert brann_policy.rule.names == ("Brann",)
+    stored = await rows(engine, "SELECT rule FROM policies WHERE id = :p", p=cast_policy.id)
+    assert stored[0].rule["names"] == ["Ada Quill", "Brann"]
+
+    effective = await lib.policies_effective(AUTHOR, story_id)
+    probes = ["ada quill waves", "Brann nods", "a stranger arrives"]
+    found = [
+        sorted(v.policy_id for v in evaluate(p, effective, Target.TEXT_OUTPUT)) for p in probes
+    ]
+    assert [[i for i in f if i in {cast_policy.id, brann_policy.id}] for f in found] == [
+        [cast_policy.id],
+        sorted([cast_policy.id, brann_policy.id]),
+        [],
+    ]
+
+    before = await row_hashes(engine)
+    for scope_id in ("0" * 26, other.characters[0].id):
+        with pytest.raises(InvalidRequest) as refused:
+            await lib.policies_set_story(
+                AUTHOR,
+                story_id,
+                [story_item(words("x"), scope="character", scope_id=scope_id)],
+            )
+        assert refused.value.details["reason"] == "unknown_character"
+    with pytest.raises(InvalidRequest) as rating_refused:
+        await rated_policy_rating(lib, engine, {"type": "entity_list"})
+    assert rating_refused.value.details["reason"] == "names_required"
+    assert await row_hashes(engine) == before

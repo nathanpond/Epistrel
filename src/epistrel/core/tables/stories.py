@@ -4,25 +4,34 @@ Minimal here (#45); #50 extends it with the rest of the story's columns. #47 add
 control-action marker (``last_control_revision``/``last_control_operation_id``: the revision and
 operation of the latest truncate, untruncate, swap or regenerate, so an in-flight turn can tell
 "history was edited" from "someone else played") and the story ``settings`` (``StorySettings``).
-#48 adds ``content_rating_id``.
+#48 adds ``content_rating_id``. #50 adds ``name``, ``archived_at`` and the status vocabulary
+(``StoryStatus``: ``active``, ``archived``, ``paused``).
+
+Nothing references ``stories`` from another story, and story deletion enumerates every table
+with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import TIMESTAMP, BigInteger, Column, Integer, Table, Text, text
+from sqlalchemy import TIMESTAMP, BigInteger, CheckConstraint, Column, Integer, Table, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 
+from epistrel.core.enums import StoryStatus
 from epistrel.core.seeds.ratings import DEFAULT_RATING_ID
 from epistrel.core.tables.base import metadata, ulid_type
 
 INITIAL_TURN_INDEX = 1
 """``stories.next_turn_index`` of a new story: the first turn is turn 1."""
 
+STATUS_CHECK = "status IN ({})".format(", ".join(f"'{s.value}'" for s in StoryStatus))
+
 stories = Table(
     "stories",
     metadata,
     Column("id", ulid_type(), primary_key=True),
-    Column("status", Text, nullable=False, server_default=text("'ready'")),
+    Column("name", Text, nullable=True),
+    Column("status", Text, nullable=False, server_default=text(f"'{StoryStatus.ACTIVE.value}'")),
+    Column("archived_at", TIMESTAMP(timezone=True), nullable=True),
     Column("timeline_revision", BigInteger, nullable=False, server_default=text("0")),
     Column("config_revision", BigInteger, nullable=False, server_default=text("0")),
     Column(
@@ -48,4 +57,5 @@ stories = Table(
         nullable=False,
         server_default=text("transaction_timestamp()"),
     ),
+    CheckConstraint(STATUS_CHECK, name="status"),
 )

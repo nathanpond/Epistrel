@@ -14,11 +14,47 @@ from epistrel.core.enums import EventCategory
 from epistrel.core.events.registry import EventPayload, register
 
 
+class CastMember(EventPayload):
+    """A character as the genesis event records it: never its age (FR-CAT-12)."""
+
+    id: str
+    name: str
+    is_player: bool
+
+
 @register("story_created", category=EventCategory.CONTROL)
 class StoryCreated(EventPayload):
-    """The genesis event of every story (shell; #50 extends)."""
+    """The genesis event of every story (#50): its name, cast, settings and rating version.
 
-    title: str | None = None
+    The cast carries ids, names and ``is_player`` only. True ages live only in
+    ``characters.true_age``, so no view built from the log can disclose them.
+    """
+
+    name: str | None = None
+    characters: list[CastMember] = Field(default_factory=list)
+    settings: dict[str, JsonValue] = Field(default_factory=dict)
+    content_rating_id: str | None = None
+    rating_version_id: str | None = None
+
+
+@register("story_archived", category=EventCategory.CONTROL)
+class StoryArchivedEvent(EventPayload):
+    """The story became read-only (#50); a control event with no revision bump."""
+
+
+@register("story_unarchived", category=EventCategory.CONTROL)
+class StoryUnarchivedEvent(EventPayload):
+    """The story is writable again (#50)."""
+
+
+@register("story_deleted", category=EventCategory.AUDIT)
+class StoryDeletedEvent(EventPayload):
+    """A story was deleted (#50): written by a story-less operation, so it outlives the story;
+    the operation carries the acting principal. Holds no story content. #56's deployment
+    ``audit_log`` becomes the home for this record.
+    """
+
+    story_id: str
 
 
 @register("character_defined", category=EventCategory.CONTROL)

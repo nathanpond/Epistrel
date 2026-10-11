@@ -57,7 +57,7 @@ async def test_unregistered_event_type_raises_before_any_row(engine: AsyncEngine
 
 async def test_story_starts_with_one_setup_operation(engine: AsyncEngine) -> None:
     story = await new_story(engine)
-    assert await story_row(engine, story) == (1, 0, 1, "ready")
+    assert await story_row(engine, story) == (1, 0, 1, "active")
     view = await corrected_history(engine, story, through_turn=1)
     assert [e.type for e in view] == ["story_created"]
     assert all(is_story_setup(e) and e.narrative_turn is None for e in view)

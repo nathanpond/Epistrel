@@ -10,9 +10,10 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core import deployment, projections, ratings
+from epistrel.core import deployment, projections, ratings, stories
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
+from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import PrincipalRequired
 from epistrel.core.history import History, read_history
 from epistrel.core.policies.model import Policy, Scope
@@ -85,6 +86,42 @@ class Engine:
     async def history(self, ctx: RequestContext, story_id: str) -> History:
         """The story's active transcript, read from the projection (#59 adds viewpoints)."""
         return await read_history(self.db, story_id)
+
+    # -- story lifecycle (FR-ADMIN-1, FR-STORE-14,16, FR-CAT-12) ----------------------------
+
+    async def create_story(
+        self, ctx: RequestContext, spec: stories.StorySpec
+    ) -> stories.CreatedStory:
+        """Create a blank story with its cast, rating and settings in one genesis operation."""
+        principal = self.require_principal(ctx)
+        return await stories.create_story_from(self.db, spec, principal=principal)
+
+    async def get_story(self, ctx: RequestContext, story_id: str) -> stories.StoryView:
+        """The story and its cast; true ages only when ``ctx.viewpoint`` is ``omniscient``."""
+        omniscient = ctx.viewpoint == stories.OMNISCIENT
+        return await stories.get_story(self.db, story_id, omniscient=omniscient)
+
+    async def list_stories(
+        self, ctx: RequestContext, *, status: StoryStatus | None = None
+    ) -> list[stories.StoryView]:
+        return await stories.list_stories(self.db, status=status)
+
+    async def archive_story(self, ctx: RequestContext, story_id: str) -> stories.StatusChange:
+        """Make the story read-only; idempotent; 423 while a turn is in flight."""
+        principal = self.require_principal(ctx)
+        await self.check_expected_revision(ctx, story_id)
+        return await stories.archive_story(self.db, story_id, principal=principal)
+
+    async def unarchive_story(self, ctx: RequestContext, story_id: str) -> stories.StatusChange:
+        principal = self.require_principal(ctx)
+        await self.check_expected_revision(ctx, story_id)
+        return await stories.unarchive_story(self.db, story_id, principal=principal)
+
+    async def delete_story(self, ctx: RequestContext, story_id: str) -> dict[str, int]:
+        """Remove every row of the story and nothing else; returns rows removed per table."""
+        principal = self.require_principal(ctx)
+        await self.check_expected_revision(ctx, story_id)
+        return await stories.delete_story(self.db, story_id, principal=principal)
 
     # -- content ratings and deployment settings (FR-RATE-1,2; deployment-scoped) --------------
 

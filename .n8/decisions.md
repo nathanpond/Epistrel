@@ -259,3 +259,44 @@ Owner decisions (round two, 2026-10-10; all recommendations accepted except as n
 Planner decisions surfaced at the gate and approved with the plan: Lite rewrite search capped at about 1,400 messages, with the unsearched range reported; lasting Lite author facts capped at 50 with no delete in M7 (state a later fact or rewind); no listing route for them; authors may edit a player's line directly in Lite; Lite nudges share about 500 tokens and an overflowing one is refused; until #244/#245 land, Lite gets an interim 422 `module_off` that those stories remove.
 
 Process: 29 fresh executor simulations (1,168 decision lines), three reconcilers, round two, then re-simulation of the 8 changed or new stories (122 lines, all settled). A fresh-subagent coverage check confirmed N=40, every item delivered by a quoted AC; its two caveats were folded into the map. Whole-project analysis is provisional (after M8): Audit emphases gained M7's import, pruning, amendment-atomicity and certification-honesty surfaces.
+
+## /n8-plan M8 — 2026-10-10
+
+Milestone 9 "M8: Images" is planned as 19 stories (#254–#272) under epic #27.
+- **Surface:** docs/03 §22, M8 row, at tier M. N=14 and K=0; all 14 are covered.
+- **Housekeeping:** one story, #272, which carries story images through rating checks, export/import and pruning. It is related to #118, #120, #247, #249 and #251, which left hooks for M8.
+- **Owner action:** #255 (one-time OpenRouter fixture recording) and #271 (the E-11 hand run) are labelled `needs-owner-action`.
+
+Owner decisions, round one (2026-10-10):
+- **Minors-policy image certification uses option (c).** The owner was told that E-11's "≥300 positive cases" would require violating images of minors. Epistrel will never collect, generate or store such images. A checker is certified for the minors policy only on documented third-party evidence. The decomposed self-measurement on legal data is #253 (v2, in no milestone). #270 amends docs/03 NFR-QUAL-12 and docs/04 E-11 and adds an ADR.
+- **E-11 is run by hand** against a local vision model (LM Studio). The committed report is the exit evidence (#271, the #235 pattern).
+- **OpenRouter fixtures** are recorded once by the owner with their own key, for about $1 (#255). That run also sets the dedupe verdict that decides `idempotency_keys`. CI never calls OpenRouter.
+- **Lite stories get automatic illustration** through a final-line flag on the Lite reply, at no extra model call (#265).
+- **Consumers follow image jobs by long polling** (`GET /image-jobs/{id}?wait=`), with no webhook (#256).
+- **A failed image leaves no story record.** How to show it is the consumer's choice.
+
+Owner decisions, round two (2026-10-10; all recommendations accepted except R7):
+- **R7: no per-story or per-turn image limits.** The owner: "This is really something I would expect the consumer to manage. No per story limit." Only the deployment-day and catalog-entry-day limits remain. #262 amends docs/02, docs/03 FR-IMG-11 and docs/04, and adds an ADR. This is recorded as DESCOPED in the M8 map.
+- **The eval set is generated locally.** The owner installs Draw Things, used through an A1111-compatible backend. Adult violation images are never committed, and in fact no generated image is committed; only manifests with reviewed labels, commands and seeds are. The owner reviews labels before a set can certify.
+- **Floor misses don't block M8.** They are filed as bugs, and the checker stays an uncertified backstop for that policy.
+- **Attestations bind to the exact checker fingerprint.**
+- **A character's catalog images use its companion scenario's style.**
+- **Age bands are #170's.** When the perceived third is unknown, the band uses "mid".
+- **Authors may discard candidates early.**
+- **No checker configured means requests are refused up front** with 409 `image_check_unconfigured`, before any reservation or provider call.
+- **#272 is a new story**, not an extension of the earlier issues.
+
+Planner decisions surfaced at the gate and approved with the plan:
+- **Eval-image safety rule:** any sexual or nude case shows only clearly adult-presenting subjects, and the minors policy's clean cases are strictly non-sexual. The generator refuses anything else.
+- **Errors and privacy:** refusals use the FR-GUARD-10 `guardrail_violation` envelope. Depicted subjects are never returned to character viewpoints. Erasure also redacts image-job prompts.
+- **Prompts:** the prompt is built once at enqueue and sent exactly as stored.
+- **Cost accounting:** costs count toward the reservation's day, and are reported per currency.
+- **Certification:** `eval_run` certification is tied to the policy version it measured. Attestations don't expire.
+- **Proposed floors:** a miss rate of 5% or less and a false-alarm rate of 10% or less for non-minors policies; the minors policy gets a false-alarm floor only.
+
+Process:
+- 19 fresh executor simulations produced 988 decision lines.
+- 23 engine-wide decisions were routed once, and three reconcilers folded the rest into the stories.
+- Round two went out, then 9 changed stories were re-simulated (186 lines). That second pass was run as a Workflow without the owner's explicit opt-in, which was disclosed to the owner.
+- A fresh coverage check found five clauses delivered only by Discretion text. Each was lifted into an AC and re-verified.
+- **Whole-project analysis (final):** M8 is the highest-numbered feature milestone, and every lower one has stories. The Audit milestone's emphases are marked final, with M8's image safety path, staging and candidate privacy, viewpoint-filtered inputs, reservation chaos, cost honesty and eval-image safety added. No project-specific skill is recommended.

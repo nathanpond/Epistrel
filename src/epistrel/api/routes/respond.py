@@ -8,7 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
-from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.history import ItemModel, item_model
@@ -34,6 +34,13 @@ RESPOND_DESCRIPTION = (
     "their knowledge is kept apart only by instructions in that shared prompt."
     "\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and "
     "`X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written)."
+    "\n\nWhile another turn of the story runs, a story with `turn_concurrency: reject` (the "
+    "default) answers 423 `story_busy` with `Retry-After`, and one with `queue` queues the turn "
+    "and plays the queued turns in order, each after the previous one finished. The request "
+    "waits for its queued turn up to the story's `turn_deadline`, then answers 202 "
+    "`{operation_id, position}` with `Location: /operations/{id}` while the turn stays queued; "
+    "`Prefer: respond-async` answers 202 at once. A retry under the same `Idempotency-Key` "
+    "waits for the same turn. A full queue (`turn_queue_max`) is 423."
 )
 
 
@@ -81,7 +88,12 @@ class RespondResponse(MutationResponse):
     description=RESPOND_DESCRIPTION,
 )
 async def respond(
-    story_id: str, body: RespondRequest, response: Response, ctx: ContextDep, engine: EngineDep
+    story_id: str,
+    body: RespondRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+    respond_async: RespondAsyncDep,
 ) -> RespondResponse:
-    result = await engine.respond(ctx, story_id, body)
+    result = await engine.respond(ctx, story_id, body, respond_async=respond_async)
     return answered(RespondResponse.of(result), ctx, response, replayed=result.replayed)

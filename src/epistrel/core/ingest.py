@@ -25,18 +25,19 @@ a replay.
 **Order of checks** (#44/#56): the kinds (422) → the story (404) → the actors against the cast
 (422) → replay or conflict (before anything else may refuse a retry) → archived (409) → the
 expected revision (409) → the input gate, each event's text on its own (``gate``, passed in by
-the Engine because Core never imports the Orchestrator) → the turn slot under
+the Engine because Core never imports the Orchestrator) → the story's turn slot under
 ``turn_concurrency`` → one batch commit, which honours ``timeline_changed`` but skips the
 read-set decision (an ingest generates nothing that could be stale).
 
-**Turn concurrency** (FR-CONC-5, ahead of #63's lease and queue): under ``reject`` a turn being
-generated is 423 ``story_busy`` with nothing written; under ``queue`` the ingest waits for it
-and then takes the next index. Another ingest in flight is only waited for: its commit is short.
+**Turn concurrency** (FR-CONC-5, #63): the batch is one turn of ``core.turn_gate``; its first
+operation holds the story's turn slot. Under ``reject`` a generated turn holding the slot is
+423 ``story_busy`` with nothing written, while another ingest is only waited for (its commit is
+short; a duplicate then replays). Under ``queue`` the batch becomes one ``turn_queue`` row
+(``queue_batch``, from the Engine) that the drainer records later (``run_queued``).
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
 import unicodedata
 from collections.abc import Awaitable, Callable, Sequence
@@ -47,6 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import turn_gate
 from epistrel.core.concurrency import (
     Abandon,
     Commit,
@@ -59,7 +61,6 @@ from epistrel.core.concurrency import (
 from epistrel.core.enums import (
     Authority,
     OperationKind,
-    OperationStatus,
     Provenance,
     StoryStatus,
 )
@@ -73,7 +74,9 @@ from epistrel.core.errors import (
 from epistrel.core.events import Operation, OperationBatch, UnregisteredEventType
 from epistrel.core.events.operation import Withdrawn
 from epistrel.core.events.types import MessageRendered, PlayerInput
-from epistrel.core.tables import client_events, operations
+from epistrel.core.ids import new_ulid
+from epistrel.core.tables import client_events
+from epistrel.core.turn_gate import Concurrency
 from epistrel.core.turns import INPUT_BEAT, StoryCast, joined_input, read_story_cast
 
 MAX_EVENTS = 50
@@ -94,8 +97,6 @@ INGESTED: Literal["ingested"] = "ingested"
 LOCATOR = "events[{index}]"
 COMMIT_ATTEMPTS = 3
 """How many times a batch is rebuilt after a concurrent duplicate committed first."""
-
-TurnConcurrency = Literal["reject", "queue"]
 
 
 def normalised(value: str | None) -> str | None:
@@ -348,60 +349,6 @@ def gate_groups(new: Sequence[tuple[int, IngestEvent]]) -> list[GateGroup]:
     return [GateGroup(actor=actor, texts=tuple(texts)) for actor, texts in groups.items()]
 
 
-# -- the turn slot (FR-CONC-5) --------------------------------------------------------------
-
-
-async def _in_flight_turns(
-    conn: AsyncConnection, story_id: str, *, exclude: Sequence[str] = ()
-) -> list[tuple[str, str]]:
-    """(operation_id, origin) of the story's in-flight ``turn`` operations."""
-    query = select(operations.c.operation_id, operations.c.origin).where(
-        operations.c.story_id == story_id,
-        operations.c.kind == OperationKind.TURN.value,
-        operations.c.status == OperationStatus.IN_FLIGHT.value,
-    )
-    if exclude:
-        query = query.where(operations.c.operation_id.notin_(exclude))
-    return [(r.operation_id, r.origin) for r in await conn.execute(query)]
-
-
-def _busy(story_id: str, operation_id: str) -> StoryBusy:
-    return StoryBusy(
-        "a turn of the story is in flight; retry when it finishes",
-        {"reason": "in_flight", "operation_id": operation_id, "story_id": story_id},
-    )
-
-
-async def await_turn_slot(
-    db: AsyncEngine,
-    story_id: str,
-    *,
-    mode: TurnConcurrency,
-    deadline_s: float,
-    poll_s: float = 0.05,
-) -> None:
-    """Return once no other turn of the story is in flight.
-
-    Under ``reject`` a generated turn in flight is 423 ``story_busy`` at once; under ``queue``
-    it is waited for. Another ingest in flight is always waited for. Past ``deadline_s`` the
-    wait ends in 423 too (an operation left ``in_flight`` by a crash blocks until #63/#70's
-    lease reclaims it)."""
-    deadline = time.monotonic() + deadline_s
-    delay = poll_s
-    while True:
-        async with db.connect() as conn:
-            found = await _in_flight_turns(conn, story_id)
-        if not found:
-            return
-        generated = [op_id for op_id, origin in found if origin != INGESTED]
-        if mode == "reject" and generated:
-            raise _busy(story_id, generated[0])
-        if time.monotonic() >= deadline:
-            raise _busy(story_id, found[0][0])
-        await asyncio.sleep(delay)
-        delay = min(delay * 2, 0.5)
-
-
 # -- recording -------------------------------------------------------------------------------
 
 
@@ -447,9 +394,12 @@ async def _record(
     *,
     principal: str,
     idempotency_key: str | None,
-    mode: TurnConcurrency,
+    first_operation_id: str,
+    queued: bool = False,
 ) -> tuple[dict[int, EventResult], int]:
-    """Record the new events as one all-or-nothing batch of ``turn`` operations."""
+    """Record the new events as one all-or-nothing batch of ``turn`` operations. The first
+    operation holds the story's turn slot (``first_operation_id``; a queued batch's first
+    operation is its ``queued`` row) and answers for the batch (idempotency, lease, 202)."""
     ops = [
         Operation(
             db,
@@ -457,12 +407,14 @@ async def _record(
             kind=OperationKind.TURN,
             principal=principal,
             provenance=Provenance.CONSUMER,
-            # The batch answers to its first operation (idempotency, lease, 202).
             idempotency_key=idempotency_key if position == 0 else None,
             origin=INGESTED,
+            operation_id=first_operation_id if position == 0 else None,
+            queued=queued and position == 0,
         )
         for position in range(len(new))
     ]
+    ops[0].holds_turn_slot = True
     batch = OperationBatch(db, story_id, ops)
     await batch.begin()
     try:
@@ -471,18 +423,9 @@ async def _record(
     except BaseException as exc:
         await batch.abandon(exc)
         raise
-    own = [op.operation_id for op in ops]
     ids = [event.client_event_id for _, event in new]
 
     async def before(conn: AsyncConnection) -> None:
-        if mode == "reject":
-            generated = [
-                op_id
-                for op_id, origin in await _in_flight_turns(conn, story_id, exclude=own)
-                if origin != INGESTED
-            ]
-            if generated:
-                raise _busy(story_id, generated[0])
         if await _priors(conn, story_id, ids):
             raise _DuplicateArrived
 
@@ -529,6 +472,11 @@ async def _record(
     return results, batch.last.timeline_revision
 
 
+QueueBatch = Callable[[str, dict[str, Any], Concurrency], Awaitable["IngestResult"]]
+"""``queue_batch(operation_id, request, concurrency)``: queue the batch as one turn (#63) and
+wait for its result (or raise ``TurnAccepted``); the Engine provides it."""
+
+
 async def ingest(
     db: AsyncEngine,
     story_id: str,
@@ -538,12 +486,14 @@ async def ingest(
     gate: Gate,
     idempotency_key: str | None = None,
     expected_revision: int | None = None,
-    deadline_s: float,
+    queue_batch: QueueBatch | None = None,
 ) -> IngestResult:
     """Record ``request``'s events; see the module docstring for the rules and their order."""
     check_kinds(request)
     gated: set[int] = set()
-    for _ in range(COMMIT_ATTEMPTS):
+    duplicates = 0
+    deadline: float | None = None
+    while True:
         prepared = await _prepare(db, story_id, request, expected_revision)
         if not prepared.new:
             return _replayed(request, prepared)
@@ -551,26 +501,83 @@ async def ingest(
         if ungated:
             await gate(gate_groups(ungated))
             gated.update(i for i, _ in ungated)
-        mode = prepared.story.settings.turn_concurrency
-        await await_turn_slot(db, story_id, mode=mode, deadline_s=deadline_s)
+        concurrency = await turn_gate.read_concurrency(db, story_id)
+        if deadline is None:
+            deadline = time.monotonic() + concurrency.turn_deadline
+        first = new_ulid()
+        held = await turn_gate.acquire(db, story_id, first, lease_s=concurrency.lease_s)
+        if held is not None:
+            if concurrency.mode == "queue" and queue_batch is not None:
+                return await queue_batch(
+                    first, {"body": request.model_dump(mode="json")}, concurrency
+                )
+            starting = held.operation_id is not None and held.origin in (INGESTED, None)
+            if starting and time.monotonic() < deadline:
+                # Another ingest's commit is short (a holder with no operation row yet is just
+                # starting): wait for it, then look again (a duplicate becomes a replay).
+                await turn_gate.wakeups.wait(story_id, turn_gate.POLL_S)
+                continue
+            raise held.busy(story_id)
         try:
-            recorded, revision = await _record(
-                db,
-                story_id,
-                prepared.new,
-                principal=principal,
-                idempotency_key=idempotency_key,
-                mode=mode,
-            )
-        except _DuplicateArrived:
+            async with turn_gate.renewing(db, story_id, first, concurrency.lease_s):
+                recorded, revision = await _record(
+                    db,
+                    story_id,
+                    prepared.new,
+                    principal=principal,
+                    idempotency_key=idempotency_key,
+                    first_operation_id=first,
+                )
+        except BaseException as exc:
+            await turn_gate.release_now(db, story_id, first)
+            if not isinstance(exc, _DuplicateArrived):
+                raise
+            duplicates += 1
+            if duplicates >= COMMIT_ATTEMPTS:  # pragma: no cover - three collisions in a row
+                raise StoryBusy(
+                    "concurrent ingests of the same events kept colliding; retry",
+                    {"reason": "contended", "story_id": story_id},
+                ) from None
             continue
         merged = {**{i: r for i, (r, _) in prepared.replays.items()}, **recorded}
         return IngestResult(
             results=[merged[i] for i in range(len(request.events))], timeline_revision=revision
         )
-    raise StoryBusy(  # pragma: no cover - three concurrent duplicates in a row
-        "concurrent ingests of the same events kept colliding; retry",
-        {"reason": "contended", "story_id": story_id},
+
+
+async def run_queued(
+    db: AsyncEngine,
+    story_id: str,
+    request: IngestRequest,
+    *,
+    principal: str,
+    idempotency_key: str | None,
+    operation_id: str,
+) -> IngestResult:
+    """Record a queued ingest (#63): the drainer took the story's turn slot for it. The batch
+    passed its prechecks and the input gate when it was queued; events another ingest recorded
+    meanwhile replay. The batch's first operation is the queued one."""
+    prepared = await _prepare(db, story_id, request, None)
+    if not prepared.new:
+        return _replayed(request, prepared)
+    try:
+        recorded, revision = await _record(
+            db,
+            story_id,
+            prepared.new,
+            principal=principal,
+            idempotency_key=idempotency_key,
+            first_operation_id=operation_id,
+            queued=True,
+        )
+    except _DuplicateArrived:  # pragma: no cover - only past an expired lease
+        raise StoryBusy(
+            "another ingest of the same events committed meanwhile; retry",
+            {"reason": "contended", "story_id": story_id},
+        ) from None
+    merged = {**{i: r for i, (r, _) in prepared.replays.items()}, **recorded}
+    return IngestResult(
+        results=[merged[i] for i in range(len(request.events))], timeline_revision=revision
     )
 
 
@@ -592,9 +599,9 @@ __all__ = [
     "IngestEvent",
     "IngestRequest",
     "IngestResult",
-    "await_turn_slot",
     "check_kinds",
     "gate_groups",
     "ingest",
+    "run_queued",
     "stage_event",
 ]

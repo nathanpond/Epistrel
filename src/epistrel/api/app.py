@@ -30,9 +30,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         raise ConfigError([problem])
     app.state.engine = engine
     app.state.epistrel.bind(engine)
+    # Queued turns left by a stopped process are drained here (#63; #70's worker loop later).
+    await app.state.epistrel.start_workers()
     try:
         yield
     finally:
+        await app.state.epistrel.stop_workers()
         app.state.epistrel.bind(None)
         await app.state.epistrel.models.aclose()
         await engine.dispose()

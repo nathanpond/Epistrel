@@ -7,12 +7,15 @@ the database it was bound to (the REST app binds it for the life of the server).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import dataclasses
 import hashlib
+import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
@@ -25,16 +28,19 @@ from epistrel.core import (
     ratings,
     stories,
     story_texts,
+    turn_gate,
 )
+from epistrel.core import story_settings as settings_store
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import StoryStatus
-from epistrel.core.errors import PrincipalRequired
+from epistrel.core.errors import InvalidRequest, PrincipalRequired
 from epistrel.core.history import DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT
 from epistrel.core.history import History, read_history
 from epistrel.core.idempotency import (
     DEPLOYMENT_SCOPE_ID,
     IdempotentCall,
+    QueuedOriginal,
     Replayed,
     ResultCodec,
 )
@@ -42,7 +48,9 @@ from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.settings_schema import StorySettings
+from epistrel.core.turn_gate import Concurrency, QueueItem
 from epistrel.core.viewpoint import is_omniscient, resolve_viewpoint, with_requested
+from epistrel.orchestrator import queue_drainer
 from epistrel.orchestrator.budget import DEFAULT_TURN_DEADLINE_S, TurnBudget
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
@@ -58,6 +66,8 @@ from epistrel.orchestrator.policies.schemas import (
     PolicyReplacement,
     StoryPolicyItem,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _changed_status(created: int = 200) -> Callable[[Any], int]:
@@ -77,6 +87,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     "set_pinned_memories": ResultCodec.of(story_texts.PinnedMemories),
     "set_custom_instructions": ResultCodec.of(story_texts.CustomInstructions),
+    "update_story_settings": ResultCodec.of(
+        settings_store.StorySettingsWrite, revision_field=_CONFIG
+    ),
     "archive_story": ResultCodec.of(stories.StatusChange),
     "unarchive_story": ResultCodec.of(stories.StatusChange),
     "delete_story": ResultCodec.of(stories.DeletedStory, status=204),
@@ -119,6 +132,23 @@ def _body(model: Any) -> Any:
     return model.model_dump(mode="json")
 
 
+_POLICY_ITEMS: TypeAdapter[list[StoryPolicyItem]] = TypeAdapter(list[StoryPolicyItem])
+
+
+def _policy_items(raw: Any) -> list[StoryPolicyItem]:
+    """A settings patch's ``policies`` list (422 ``validation_error`` at its field)."""
+    try:
+        return _POLICY_ITEMS.validate_python(raw)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        where = "".join(
+            f"[{part}]" if isinstance(part, int) else f".{part}" for part in first["loc"]
+        )
+        raise InvalidRequest(
+            str(first["msg"]), {"field": f"body.policies{where}", "errors": exc.error_count()}
+        ) from None
+
+
 class Engine:
     """The async entry point to Epistrel.
 
@@ -142,6 +172,12 @@ class Engine:
         # EPISTREL_MODEL_ADAPTER. Tests reach the stub through ``engine.models.stub``.
         self.models = models or ModelAccessLayer.from_settings(settings)
         self.models.bind(db)
+        # Queued turns (FR-CONC-5, #63) are drained in this process until #70's worker loop.
+        self._recovery: asyncio.Task[None] | None = None
+        self.drainer = queue_drainer.QueueDrainer(
+            lambda: self.db,
+            {turn_gate.RESPOND: self._drain_respond, turn_gate.INGEST: self._drain_ingest},
+        )
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Engine:
@@ -151,6 +187,27 @@ class Engine:
         """Use ``db`` for every operation (``None`` unbinds)."""
         self._db = db
         self.models.bind(db)
+
+    async def start_workers(self) -> None:
+        """Start the in-process background work (the app's start-up): drain every story's turn
+        queue a stopped process left behind (#63's recovery pass, ahead of #70). It runs in
+        the background, so an unreachable database never stops the server starting."""
+        self._recovery = asyncio.create_task(self._recover())
+
+    async def _recover(self) -> None:
+        try:
+            await self.drainer.recover()
+        except Exception as exc:
+            logger.warning("queued turns were not recovered at start-up: %s", type(exc).__name__)
+
+    async def stop_workers(self) -> None:
+        """Stop the background work; a queued turn stopped mid-run goes back to its queue."""
+        recovery, self._recovery = self._recovery, None
+        if recovery is not None and not recovery.done():
+            recovery.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await recovery
+        await self.drainer.stop()
 
     @property
     def db(self) -> AsyncEngine:
@@ -166,13 +223,16 @@ class Engine:
         *,
         story_id: str | None = None,
         material: Mapping[str, Any] | None = None,
+        respond_async: bool = False,
     ) -> T:
         """Run ``run`` as one idempotent call (see the class docstring).
 
         ``story_id`` keys the call per story (else per deployment). ``material`` is what the
         request hash covers besides the operation name and the expected revision; ``None``
         means ``run`` claims the key itself at its slot in the precheck order (respond, whose
-        hash needs the resolved viewpoint)."""
+        hash needs the resolved viewpoint). A retry whose original waits in the story's turn
+        queue waits for that turn (#63), like the original: up to ``turn_deadline``, or not at
+        all with ``respond_async`` (then ``TurnAccepted``, REST 202)."""
         principal = self.require_principal(ctx)
         key = ctx.idempotency_key
         key = new_ulid() if key is None else idempotency.validate_key(key)
@@ -195,6 +255,17 @@ class Engine:
                 value = await run(ctx)
             except Replayed as replay:
                 return codec.load(replay.stored)
+            except QueuedOriginal as queued:
+                assert story_id is not None  # noqa: S101 - only story calls queue
+                found: T = await self._await_queued(
+                    story_id,
+                    queued.operation_id,
+                    operation,
+                    key,
+                    respond_async=respond_async,
+                    replayed=True,
+                )
+                return found
             except BaseException:
                 await call.release()
                 raise
@@ -207,6 +278,148 @@ class Engine:
         if ctx.principal is None or not ctx.principal.strip():
             raise PrincipalRequired("a mutating call needs a requesting principal")
         return ctx.principal
+
+    # -- the turn queue (FR-CONC-5; #63) ---------------------------------------------------------
+
+    async def _queue[T](
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        kind: str,
+        operation: str,
+        operation_id: str,
+        request: dict[str, Any],
+        viewpoint: str | None,
+        origin: str,
+        concurrency: Concurrency,
+        respond_async: bool,
+    ) -> T:
+        """Queue a turn that found its story busy under ``queue``, hand it the request's
+        ``Idempotency-Key``, start the drainer, and wait for the turn (long-poll up to
+        ``turn_deadline``; ``respond_async``: not at all) — then its result, its error, or 202
+        (``TurnAccepted``) with the turn still queued."""
+        principal = self.require_principal(ctx)
+        call = idempotency.current_call()
+        await turn_gate.enqueue(
+            self.db,
+            story_id,
+            operation_id=operation_id,
+            kind=kind,
+            request=request,
+            principal=principal,
+            idempotency_key=ctx.idempotency_key,
+            viewpoint=viewpoint,
+            origin=origin,
+            queue_max=concurrency.queue_max,
+            hand_over=call.hand_over if call is not None else None,
+        )
+        self.drainer.kick(story_id)
+        assert ctx.idempotency_key is not None  # noqa: S101 - every call is keyed (#61)
+        found: T = await self._await_queued(
+            story_id,
+            operation_id,
+            operation,
+            ctx.idempotency_key,
+            respond_async=respond_async,
+            replayed=False,
+            concurrency=concurrency,
+        )
+        return found
+
+    async def _await_queued(
+        self,
+        story_id: str,
+        operation_id: str,
+        operation: str,
+        key: str,
+        *,
+        respond_async: bool,
+        replayed: bool,
+        concurrency: Concurrency | None = None,
+    ) -> Any:
+        codec = CODECS[operation]
+        if concurrency is None:
+            concurrency = await turn_gate.read_concurrency(self.db, story_id)
+        wait_s = 0.0 if respond_async else concurrency.turn_deadline
+        outcome = await queue_drainer.await_turn(
+            self.db, story_id, operation_id, wait_s=wait_s, key=key
+        )
+        stored = await queue_drainer.answer(
+            self.db,
+            story_id,
+            operation_id,
+            outcome,
+            key=key,
+            revision_field=codec.revision_field,
+        )
+        return codec.load(stored) if replayed else codec.adapter.validate_python(stored.body)
+
+    async def _as_queued(
+        self, item: QueueItem, operation: str, run: Callable[[], Awaitable[Any]]
+    ) -> None:
+        """Run a queued turn under the ``Idempotency-Key`` its request handed to the queue:
+        the turn's commit binds it and its result is stored there for the waiting requests."""
+        if item.idempotency_key is None:  # pragma: no cover - every call is keyed (#61)
+            await run()
+            return
+        call = IdempotentCall.owned_by(
+            self.db,
+            turn_gate.queue_owner(item.operation_id),
+            scope=KeyScope.STORY,
+            scope_id=item.story_id,
+            key=item.idempotency_key,
+            operation=operation,
+            principal=item.principal,
+            codec=CODECS[operation],
+        )
+        await call.load_window()
+        with idempotency.calling(call):
+            try:
+                value = await run()
+            except asyncio.CancelledError:
+                raise  # the turn goes back to the queue with its key
+            except BaseException:
+                await call.release()
+                raise
+            await call.finish(value)
+
+    async def _drain_respond(self, item: QueueItem, concurrency: Concurrency) -> None:
+        request = RespondRequest.model_validate(item.request["body"])
+        ctx = RequestContext(
+            principal=item.principal,
+            idempotency_key=item.idempotency_key,
+            viewpoint=item.request.get("viewpoint"),
+        )
+        await self._as_queued(
+            item,
+            "respond",
+            lambda: lite.run_queued(
+                self.db,
+                self.models,
+                ctx,
+                item.story_id,
+                request,
+                operation_id=item.operation_id,
+                principal=item.principal,
+                concurrency=concurrency,
+            ),
+        )
+
+    async def _drain_ingest(self, item: QueueItem, concurrency: Concurrency) -> None:
+        request = ingest.IngestRequest.model_validate(item.request["body"])
+        await self._as_queued(
+            item,
+            "ingest",
+            lambda: ingest.run_queued(
+                self.db,
+                item.story_id,
+                request,
+                principal=item.principal,
+                idempotency_key=item.idempotency_key,
+                operation_id=item.operation_id,
+            ),
+        )
 
     async def noop(self, ctx: RequestContext) -> str:
         """A mutating call that changes nothing and returns the recorded principal.
@@ -365,6 +578,7 @@ class Engine:
         request: RespondRequest,
         *,
         output_viewpoint: str | None = None,
+        respond_async: bool = False,
     ) -> RespondResult:
         """Play one Lite turn: the actor's input in, one finished reply out (FR-RESP-1).
 
@@ -376,7 +590,13 @@ class Engine:
 
         The output viewpoint (FR-RESP-12) is ``output_viewpoint``, the request's
         ``output_viewpoint`` or ``ctx.viewpoint`` (one value; two different ones are 422), else
-        the actor; the result echoes it and the turn records it."""
+        the actor; the result echoes it and the turn records it.
+
+        Turn concurrency (FR-CONC-5, #63): while another turn of the story runs, a story under
+        ``reject`` answers 423 ``story_busy``; one under ``queue`` queues the turn and waits
+        for it up to ``turn_deadline`` — with ``respond_async`` it does not wait — and then
+        raises ``turn_gate.TurnAccepted`` (REST 202) with the turn still queued. An idle story
+        always plays the turn at once."""
         principal = self.require_principal(ctx)
         ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
 
@@ -392,23 +612,58 @@ class Engine:
             )
 
         async def run(ctx: RequestContext) -> RespondResult:
+            async def queue_turn(
+                operation_id: str,
+                queued: dict[str, Any],
+                viewpoint: str,
+                concurrency: Concurrency,
+            ) -> RespondResult:
+                return await self._queue(
+                    ctx,
+                    story_id,
+                    kind=turn_gate.RESPOND,
+                    operation="respond",
+                    operation_id=operation_id,
+                    request={**queued, "viewpoint": viewpoint},
+                    viewpoint=viewpoint,
+                    origin="generated",
+                    concurrency=concurrency,
+                    respond_async=respond_async,
+                )
+
             return await lite.respond(
-                self.db, self.models, ctx, story_id, request, principal=principal, gate=gate
+                self.db,
+                self.models,
+                ctx,
+                story_id,
+                request,
+                principal=principal,
+                gate=gate,
+                queue_turn=queue_turn,
             )
 
         # Respond claims its key itself, after the cast and archived checks: the hash covers
         # the resolved viewpoint (FR-RESP-12; #59's hand-off).
-        return await self._keyed(ctx, "respond", run, story_id=story_id)
+        return await self._keyed(
+            ctx, "respond", run, story_id=story_id, respond_async=respond_async
+        )
 
     async def ingest(
-        self, ctx: RequestContext, story_id: str, request: ingest.IngestRequest
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: ingest.IngestRequest,
+        *,
+        respond_async: bool = False,
     ) -> ingest.IngestResult:
         """Record consumer events into authoritative history without generating (FR-RESP-10).
 
         Each event is its own ``turn`` at the next index (revision +1), all or nothing; a
         ``client_event_id`` the story has seen returns the original result (same payload) or
         409 ``client_event_conflict`` (different payload), writing nothing. Every new event's
-        text passes the input gate on its own before anything is recorded."""
+        text passes the input gate on its own before anything is recorded. Under turn
+        concurrency (#63) the batch is one turn: refused while a generated turn runs under
+        ``reject``, queued as one ``turn_queue`` row under ``queue`` (as ``respond``)."""
         principal = self.require_principal(ctx)
 
         async def gate(groups: Sequence[ingest.GateGroup]) -> None:
@@ -422,6 +677,22 @@ class Engine:
                 )
 
         async def run(ctx: RequestContext) -> ingest.IngestResult:
+            async def queue_batch(
+                operation_id: str, queued: dict[str, Any], concurrency: Concurrency
+            ) -> ingest.IngestResult:
+                return await self._queue(
+                    ctx,
+                    story_id,
+                    kind=turn_gate.INGEST,
+                    operation="ingest",
+                    operation_id=operation_id,
+                    request=queued,
+                    viewpoint=None,
+                    origin=ingest.INGESTED,
+                    concurrency=concurrency,
+                    respond_async=respond_async,
+                )
+
             return await ingest.ingest(
                 self.db,
                 story_id,
@@ -430,7 +701,7 @@ class Engine:
                 gate=gate,
                 idempotency_key=ctx.idempotency_key,
                 expected_revision=ctx.expected_revision,
-                deadline_s=DEFAULT_TURN_DEADLINE_S,
+                queue_batch=queue_batch,
             )
 
         return await self._keyed(
@@ -439,6 +710,7 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
+            respond_async=respond_async,
         )
 
     # -- story-level text: pinned memories and custom instructions (FR-LITE-3) ---------------
@@ -526,6 +798,48 @@ class Engine:
         story = await stories.get_story(self.db, story_id)
         guardrails = await policy_store.story_guardrails(self.db, story_id)
         return StorySettings.from_row(story.settings), guardrails
+
+    async def update_story_settings(
+        self, ctx: RequestContext, story_id: str, patch: Mapping[str, Any]
+    ) -> settings_store.StorySettingsWrite:
+        """Change the story's settings (``PATCH /stories/{id}/settings``, FR-CONC-5,15): a JSON
+        merge patch over ``StorySettings`` (``null`` resets a setting to its default; an
+        unknown key is 422; the default viewpoint must be a cast member, never
+        ``omniscient``), plus an optional ``policies`` list that upserts the story's own
+        policies (refused whole with 422 ``cannot_relax`` before anything is written if any
+        item relaxes). Prospective: the next request runs under the new settings, a turn
+        already running keeps its own. Each write moves the story's ``config_revision``."""
+        principal = self.require_principal(ctx)
+        body = dict(patch)
+        items: list[StoryPolicyItem] | None = None
+        if "policies" in body:
+            items = _policy_items(body.pop("policies"))
+            for index, item in enumerate(items):
+                policy_admin.refuse_relaxing(item.effect, field=f"body.policies[{index}].effect")
+        settings_store.check_keys(body)
+
+        async def run(ctx: RequestContext) -> settings_store.StorySettingsWrite:
+            await self.check_expected_revision(ctx, story_id)
+            write = await settings_store.update_story_settings(
+                self.db, story_id, body, principal=principal
+            )
+            if items is not None:
+                policies = await policy_admin.set_story_policies(
+                    self.db, story_id, items, principal=principal
+                )
+                write = dataclasses.replace(
+                    write,
+                    config_revision=max(write.config_revision, policies.config_revision),
+                    changed=write.changed or policies.changed,
+                )
+            return write
+
+        material: dict[str, Any] = {"story_id": story_id, "body": body}
+        if items is not None:
+            material["policies"] = [_body(item) for item in items]
+        return await self._keyed(
+            ctx, "update_story_settings", run, story_id=story_id, material=material
+        )
 
     async def get_story(
         self, ctx: RequestContext, story_id: str, *, viewpoint: str | None = None

@@ -12,8 +12,9 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-DEFAULT_TURN_DEADLINE_S = 45.0
-"""``turn_deadline``'s default (NFR-PERF-6); #63/#69 make it a story setting."""
+from epistrel.core.settings_schema import DEFAULT_TURN_DEADLINE_S
+
+# ``turn_deadline``'s default (NFR-PERF-6) is the story setting's (``StorySettings``, #63).
 
 
 @dataclass

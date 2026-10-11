@@ -5,8 +5,9 @@ serve``) against a test database with the stub adapter, so a test can kill it ou
 (``SIGKILL``: no shutdown, no rollback hooks, exactly a crash) and start it again on the same
 port. Options the child applies to itself before serving:
 
-- ``lease_s``: the idempotency claim lease (``core.idempotency.LEASE_S``), short so a retry
-  takes over a crashed original quickly;
+- ``lease_s``: the idempotency claim lease (``core.idempotency.LEASE_S``) and the turn slot's
+  lease (``core.turn_gate.lease_override_s``, #63), short so a retry takes over a crashed
+  original, and the next turn the story's slot, quickly;
 - ``pause_before_commit``: every ``turn`` operation prints ``EPISTREL-FAULT before-commit
   <operation id>`` and then waits forever instead of committing, so a test can kill the engine
   *between generation and commit* (S-DOUBLE-SUBMIT (c)).
@@ -185,9 +186,10 @@ def serve(argv: list[str] | None = None) -> int:
     import uvicorn
 
     from epistrel.api import create_app
-    from epistrel.core import idempotency
+    from epistrel.core import idempotency, turn_gate
 
     idempotency.LEASE_S = args.lease_s
+    turn_gate.lease_override_s = args.lease_s
     if args.pause_before_commit:
         _pause_turn_commits()
     uvicorn.run(create_app(), host=HOST, port=args.port, log_level="warning")

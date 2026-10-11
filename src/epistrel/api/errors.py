@@ -10,9 +10,10 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from epistrel.api.idempotency import reference_handler
+from epistrel.api.idempotency import accepted_handler, reference_handler
 from epistrel.core.errors import EpistrelError, InvalidRequest
 from epistrel.core.idempotency import ReferenceReplay
+from epistrel.core.turn_gate import TurnAccepted
 
 
 def field_path(loc: tuple[int | str, ...] | list[int | str]) -> str:
@@ -51,3 +52,4 @@ def install(app: FastAPI) -> None:
     app.add_exception_handler(EpistrelError, epistrel_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(ReferenceReplay, reference_handler)
+    app.add_exception_handler(TurnAccepted, accepted_handler)

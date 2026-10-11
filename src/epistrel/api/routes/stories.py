@@ -12,8 +12,9 @@
 - ``GET /stories/{id}/settings``: the settings with defaults filled in, and the story's
   guardrails — ``effective_policies`` (scope, source, applies_to, age_condition, kind),
   ``inactive_policies`` (age-conditioned ones whose condition is false for the cast) and
-  ``guardrail_calls`` — so the model-call cost of guardrails is predictable (FR-GUARD-9). #63
-  adds ``PATCH``.
+  ``guardrail_calls`` — so the model-call cost of guardrails is predictable (FR-GUARD-9).
+- ``PATCH /stories/{id}/settings``: a JSON merge patch over the settings (#63), plus the story's
+  own ``policies``; answers the read's shape with the revisions.
 
 ``POST /stories`` gates every character definition through the input gate first (#56).
 """
@@ -21,13 +22,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Body, Response
 from fastapi import status as http_status
 from pydantic import BaseModel
 
-from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import MutationResponse
 from epistrel.core import idempotency
@@ -149,6 +150,31 @@ class StorySettingsBody(BaseModel):
     guardrail_calls: GuardrailCallsBody
 
 
+class StorySettingsWriteBody(MutationResponse):
+    """The settings after the write, in the read's shape, with the story's ``config_revision``
+    (moved by a write that changed something) and its unchanged ``timeline_revision``."""
+
+    settings: dict[str, Any]
+    effective_policies: list[EffectivePolicyBody]
+    inactive_policies: list[EffectivePolicyBody]
+    guardrail_calls: GuardrailCallsBody
+    config_revision: int
+
+
+SETTINGS_PATCH_DESCRIPTION = (
+    "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that "
+    "setting, `null` resets it to its default, and `generation_settings` merges the same way. "
+    "`turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's "
+    "default, 5), `turn_deadline` (seconds), `default_output_viewpoint` (`character:<id>` of the "
+    "cast, never `omniscient`), `regenerate_retry_budget`, `generation_settings` and "
+    "`lite_window_messages`. An unknown key is 422. `policies` (optional) upserts the story's "
+    "own policies; an item that would relax a policy refuses the whole request with 422 "
+    "`cannot_relax` before anything is written.\n\nEvery setting is prospective: it applies to "
+    "requests that arrive after the write, never to a turn already running. A write that changes "
+    "something moves the story's `config_revision`."
+)
+
+
 IDEMPOTENT_REPLAY_HEADER = idempotency.IDEMPOTENT_REPLAY_HEADER
 
 INGEST_DESCRIPTION = (
@@ -161,6 +187,10 @@ INGEST_DESCRIPTION = (
     "different payload is 409 `client_event_conflict`. The response is 201 when every event is "
     "new and 200 when any was replayed (`Idempotent-Replay: true` when all were). "
     "`outcome` and `state_change` events arrive in M6 (422 `unsupported_event_kind`)."
+    "\n\nThe batch is one turn for turn concurrency: while a generated turn runs, a story with "
+    "`turn_concurrency: reject` answers 423 `story_busy`, and one with `queue` queues the batch "
+    "(waiting for it up to the story's `turn_deadline`, then 202 `{operation_id, position}`; "
+    "`Prefer: respond-async` answers 202 at once)."
 )
 
 
@@ -229,9 +259,14 @@ async def get_story(story_id: str, ctx: ContextDep, engine: EngineDep) -> StoryB
     description=INGEST_DESCRIPTION,
 )
 async def ingest(
-    story_id: str, body: IngestRequest, response: Response, ctx: ContextDep, engine: EngineDep
+    story_id: str,
+    body: IngestRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+    respond_async: RespondAsyncDep,
 ) -> IngestResponse:
-    result = await engine.ingest(ctx, story_id, body)
+    result = await engine.ingest(ctx, story_id, body, respond_async=respond_async)
     if not result.created:
         response.status_code = http_status.HTTP_200_OK
     answer = IngestResponse(
@@ -260,6 +295,34 @@ async def story_settings(story_id: str, ctx: ContextDep, engine: EngineDep) -> S
             input=guardrails.calls_input, output=guardrails.calls_output
         ),
     )
+
+
+@router.patch(
+    "/{story_id}/settings",
+    response_model=StorySettingsWriteBody,
+    summary="Change the story's settings",
+    description=SETTINGS_PATCH_DESCRIPTION,
+)
+async def update_story_settings(
+    story_id: str,
+    body: Annotated[dict[str, Any], Body()],
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> StorySettingsWriteBody:
+    write = await engine.update_story_settings(ctx, story_id, body)
+    _, guardrails = await engine.story_settings(ctx, story_id)
+    answer = StorySettingsWriteBody(
+        settings=write.settings,
+        effective_policies=[EffectivePolicyBody.of(p, guardrails) for p in guardrails.active],
+        inactive_policies=[EffectivePolicyBody.of(p, guardrails) for p in guardrails.inactive],
+        guardrail_calls=GuardrailCallsBody(
+            input=guardrails.calls_input, output=guardrails.calls_output
+        ),
+        config_revision=write.config_revision,
+        timeline_revision=write.timeline_revision,
+    )
+    return answered(answer, ctx, response, replayed=write.replayed)
 
 
 @router.post("/{story_id}/archive", response_model=StatusBody)

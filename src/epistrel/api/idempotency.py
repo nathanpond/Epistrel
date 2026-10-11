@@ -19,8 +19,10 @@ from epistrel.core.context import RequestContext
 from epistrel.core.idempotency import (
     IDEMPOTENCY_HEADER,
     IDEMPOTENT_REPLAY_HEADER,
+    OPERATIONS_PATH,
     ReferenceReplay,
 )
+from epistrel.core.turn_gate import TurnAccepted
 
 
 class _Keyed(Protocol):
@@ -53,4 +55,14 @@ async def reference_handler(request: Request, exc: Exception) -> JSONResponse:
     )
 
 
-__all__ = ["answered", "no_content", "reference_handler"]
+async def accepted_handler(request: Request, exc: Exception) -> JSONResponse:
+    """A queued turn the caller is not waiting for (#63): 202 ``{operation_id, position}``
+    with ``Location: /operations/{id}`` and the request's key."""
+    assert isinstance(exc, TurnAccepted)  # noqa: S101 - registered for it only
+    headers = {"Location": OPERATIONS_PATH.format(exc.operation_id)}
+    if exc.key is not None:
+        headers[IDEMPOTENCY_HEADER] = exc.key
+    return JSONResponse(exc.body(), status_code=202, headers=headers)
+
+
+__all__ = ["accepted_handler", "answered", "no_content", "reference_handler"]

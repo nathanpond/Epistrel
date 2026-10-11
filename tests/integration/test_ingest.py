@@ -22,6 +22,7 @@ from epistrel.core.events import Operation, OperationBatch
 from epistrel.core.ingest import IngestRequest
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
 from tests.auth_support import auth_settings
+from tests.concurrency_support import set_pins
 from tests.event_support import rows
 from tests.policy_support import unique, words
 from tests.projection_support import truncate
@@ -324,7 +325,8 @@ async def test_timeline_changed_abandons(
 ) -> None:
     """A control action committed between the batch's begin and its commit makes the ingest
     409 ``timeline_changed``; its operations end ``abandoned`` and nothing is recorded.
-    Complement: a plain turn committed in the same window does not stop the ingest."""
+    Complement: a truth change that is not a control action, committed in the same window,
+    does not stop the ingest."""
     async with respond_client(stub_settings, engine) as (client, _):
         story, ids = await new_story(client)
         await played(client, story, body(ids[PLAYER], "One."))
@@ -350,10 +352,12 @@ async def test_timeline_changed_abandons(
         assert [s.status for s in statuses] == ["abandoned"]
         assert await rows(engine, "SELECT 1 FROM client_events WHERE story_id = :s", s=story) == []
 
-        interloper.append(lambda: played(client, story, body(ids[PLAYER], "Three.")))
+        # A turn cannot commit in that window (the ingest holds the turn slot, #63); a pins
+        # edit moves the revision without a control action.
+        interloper.append(lambda: set_pins(engine, story, "A truth change."))
         recorded = await ingest(client, story, narration("t"))
         assert recorded.status_code == 201, recorded.text
-        assert recorded.json()["results"][0]["turn"] == 3
+        assert recorded.json()["results"][0]["turn"] == 2
 
 
 async def test_library_ingest(stub_settings: Settings, engine: AsyncEngine) -> None:

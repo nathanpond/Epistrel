@@ -158,13 +158,25 @@ class StoryArchived(EpistrelError):
 
 class StoryBusy(EpistrelError):
     """The story has work in flight that the call would race (#50: archive, unarchive and
-    delete wait for a running turn; #63 adds turn concurrency).
+    delete wait for a running turn; #63: a second turn under ``turn_concurrency = reject``, or
+    a full queue under ``queue``, FR-CONC-5).
 
-    ``details``: ``reason`` (``in_flight``) and ``operation_id``.
+    ``details``: ``reason`` (``in_flight`` or ``queue_full``), ``operation_id`` (the turn
+    holding the story, when one does) and, for turn concurrency, ``queue_depth``. A turn
+    refusal carries ``Retry-After``: the seconds left on the running turn's lease.
     """
 
     code = "story_busy"
     http_status = 423
+
+    def __init__(
+        self, message: str, details: dict[str, Any] | None = None, *, retry_after: int | None = None
+    ) -> None:
+        super().__init__(message, details)
+        self.retry_after = retry_after
+
+    def response_headers(self) -> dict[str, str]:
+        return {"Retry-After": str(self.retry_after)} if self.retry_after is not None else {}
 
 
 class ClientEventConflict(EpistrelError):

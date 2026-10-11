@@ -3,6 +3,7 @@ respond calls, and reads of what the stub was sent and what the turn recorded.""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -34,8 +35,12 @@ async def respond_client(
     epistrel: Engine = app.state.epistrel
     epistrel.bind(engine)
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client, epistrel
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client, epistrel
+    finally:
+        # Queued turns (#63) are drained by tasks of this loop: let them finish first.
+        await asyncio.wait_for(epistrel.drainer.idle(), 60)
 
 
 async def new_story(

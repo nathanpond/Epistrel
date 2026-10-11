@@ -59,5 +59,21 @@ def get_request_context(
     )
 
 
+PREFER_HEADER = "Prefer"
+RESPOND_ASYNC = "respond-async"
+
+
+def prefers_async(request: Request) -> bool:
+    """``Prefer: respond-async`` (RFC 7240): answer a queued turn with 202 at once instead of
+    waiting for it (#63). Other preferences are ignored."""
+    tokens = (
+        part.split("=", 1)[0].strip().lower()
+        for header in request.headers.getlist(PREFER_HEADER)
+        for part in header.replace(";", ",").split(",")
+    )
+    return RESPOND_ASYNC in tokens
+
+
 EngineDep = Annotated[Engine, Depends(get_engine)]
 ContextDep = Annotated[RequestContext, Depends(get_request_context)]
+RespondAsyncDep = Annotated[bool, Depends(prefers_async)]

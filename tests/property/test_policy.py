@@ -94,7 +94,7 @@ steps = st.lists(
         st.integers(min_value=0, max_value=2),
         # NUL is excluded: PostgreSQL's jsonb cannot hold it (a payload with one fails as a
         # database error; filed as #275).
-        st.text(st.characters(exclude_characters="\x00"), max_size=80),
+        st.text(st.characters(codec="utf-8", exclude_characters="\x00"), max_size=80),
     ),
     min_size=1,
     max_size=4,

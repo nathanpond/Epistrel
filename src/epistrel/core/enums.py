@@ -59,8 +59,12 @@ class Authority(StrEnum):
 
 
 class OperationStatus(StrEnum):
-    """Where an operation is in its life: inserted ``in_flight`` at begin, finalised once."""
+    """Where an operation is in its life: inserted ``in_flight`` at begin, finalised once.
 
+    ``queued``: a turn waiting in its story's ``turn_queue`` (#63); it becomes ``in_flight``
+    when the queue's drainer starts it."""
+
+    QUEUED = "queued"
     IN_FLIGHT = "in_flight"
     COMMITTED = "committed"
     ABANDONED = "abandoned"

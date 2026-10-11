@@ -38,6 +38,8 @@ MUTABLE_OPERATION_COLUMNS: tuple[str, ...] = (
     "turn_report",
     "viewpoint",
     "timeline_revision",
+    "error_code",
+    "error",
 )
 """The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list)."""
 
@@ -89,6 +91,10 @@ operations = Table(
     Column("committed_at", TIMESTAMP(timezone=True), nullable=True),
     # The story's revision once the operation committed (#61; ``GET /operations/{id}``).
     Column("timeline_revision", BigInteger, nullable=True),
+    # Why a queued turn failed, for the requests waiting on it (#63): the error's code, and
+    # ``{status, message, details}`` so the waiter answers with the same error.
+    Column("error_code", Text, nullable=True),
+    Column("error", JSONB, nullable=True),
     CheckConstraint(ORIGIN_CHECK, name="origin"),
     CheckConstraint(
         "kind <> 'turn' OR status <> 'committed' OR narrative_turn IS NOT NULL",

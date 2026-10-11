@@ -52,7 +52,11 @@ from epistrel.core.events.types import (
 from epistrel.core.idempotency import Scope
 from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import require_assignable
-from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, StorySettings
+from epistrel.core.settings_schema import (
+    CHARACTER_VIEWPOINT_PREFIX,
+    COLUMN_SETTINGS,
+    StorySettings,
+)
 from epistrel.core.tables import (
     audit_log,
     characters,
@@ -68,6 +72,7 @@ from epistrel.core.tables import (
     story_heads,
     story_texts,
     transcript_messages,
+    turn_queue,
 )
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -89,6 +94,7 @@ STORY_TABLES: tuple[Table, ...] = (
     story_texts,
     policies,
     characters,
+    turn_queue,
     operations,
 )
 """Every table with a ``story_id`` column, in the order deletion empties them (events before the
@@ -262,11 +268,16 @@ async def create_story_from(
     story_id = story_id or new_ulid()
     cast = [(new_ulid(), character) for character in spec.characters]
     settings = _stored_settings(spec, cast)
+    document, columns = split_settings(settings)
     async with _transaction(db) as conn:
         rating = await _rating_ref(conn, await resolve_story_rating(conn, spec.content_rating_id))
         await conn.execute(
             insert(stories).values(
-                id=story_id, name=spec.name, settings=settings, content_rating_id=rating.id
+                id=story_id,
+                name=spec.name,
+                settings=document,
+                content_rating_id=rating.id,
+                **columns,
             )
         )
 
@@ -368,6 +379,23 @@ def _stored_settings(spec: StorySpec, cast: Sequence[tuple[str, CharacterSpec]])
     values = spec.settings.model_dump(mode="json")
     values["default_output_viewpoint"] = viewpoint
     return StorySettings.model_validate(values).model_dump(mode="json")
+
+
+def split_settings(settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(document, columns)``: the ``stories.settings`` document and the column-backed
+    settings (``turn_concurrency``, ``turn_queue_max``; #63), from one settings dump."""
+    document = {k: v for k, v in settings.items() if k not in COLUMN_SETTINGS}
+    columns = {k: settings[k] for k in COLUMN_SETTINGS if k in settings}
+    return document, columns
+
+
+def settings_of(row: Any) -> dict[str, Any]:
+    """A story row's settings as one document: ``settings`` plus the column-backed ones."""
+    return {
+        **dict(row.settings or {}),
+        "turn_concurrency": row.turn_concurrency,
+        "turn_queue_max": row.turn_queue_max,
+    }
 
 
 async def resolve_story_rating(conn: AsyncConnection, content_rating_id: str | None) -> str:
@@ -599,6 +627,8 @@ def _story_columns() -> tuple[Any, ...]:
         stories.c.timeline_revision,
         stories.c.next_turn_index,
         stories.c.settings,
+        stories.c.turn_concurrency,
+        stories.c.turn_queue_max,
         stories.c.created_at,
         stories.c.archived_at,
         stories.c.content_rating_id,
@@ -617,7 +647,7 @@ def _view(row: Any, cast: tuple[CharacterView, ...] = ()) -> StoryView:
         content_rating=RatingRef(
             id=row.content_rating_id, version_id=row.current_version_id, name=row.rating_name
         ),
-        settings=dict(row.settings or {}),
+        settings=settings_of(row),
         created_at=row.created_at,
         archived_at=row.archived_at,
         characters=cast,

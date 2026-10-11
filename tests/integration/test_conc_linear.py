@@ -12,13 +12,16 @@ outcome of every release from what committed since that attempt's base. After ev
 
 The FR-CONC-6 slice (``test_conc_linear__idempotency``, #61) interleaves keyed turns — duplicates
 sent together, retries, a different payload under a used key — with pins edits, and checks that
-every idempotency key maps to at most one committed operation. The FR-CONC-5 (turn concurrency)
-part lands with #63.
+every idempotency key maps to at most one committed operation. The FR-CONC-5 slice
+(``test_conc_linear__turn_concurrency``, #63) fires seeded bursts of overlapping turns at one
+story while its ``turn_concurrency`` flips between ``reject`` and ``queue``, and checks that
+the story's turns never overlap: each committed against the revision the one before it left.
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import random
 from collections import Counter, defaultdict
 from collections.abc import Coroutine
@@ -45,10 +48,13 @@ from epistrel.core.errors import (
     EpistrelError,
     IdempotencyConflict,
     RevisionConflict,
+    StoryBusy,
     TimelineChanged,
 )
 from epistrel.core.idempotency import ReferenceReplay
+from epistrel.core.ingest import IngestRequest, IngestResult
 from epistrel.core.stories import StorySpec
+from epistrel.core.turn_gate import TurnAccepted
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
 from tests.auth_support import auth_settings
 from tests.concurrency_support import (
@@ -430,3 +436,103 @@ async def test_conc_linear__idempotency(pg_url: str, engine: AsyncEngine) -> Non
 async def _as_pair(work: Coroutine[Any, Any, Any]) -> tuple[str, Any]:
     await work
     return "", None
+
+
+TURN_CONCURRENCY_ROUNDS = 12
+TURN_CONCURRENCY_SEED = 63
+
+
+async def _turn_attempt(
+    lib: Engine, story: str, actor: str, n: int, rng: random.Random
+) -> RespondResult | IngestResult | BaseException:
+    """One respond (sometimes ``respond_async``) or one single-event ingest."""
+    ctx = RequestContext(principal="p-conc")
+    try:
+        if rng.random() < 0.3:
+            event = {"client_event_id": f"cc-{n}", "kind": "narration", "text": f"Beat {n}."}
+            return await lib.ingest(ctx, story, IngestRequest.model_validate({"events": [event]}))
+        request = RespondRequest.model_validate(
+            {"actor_character_id": actor, "player_input": {"say": f"Move {n}."}}
+        )
+        return await lib.respond(ctx, story, request, respond_async=rng.random() < 0.3)
+    except (StoryBusy, TurnAccepted) as exc:
+        return exc
+
+
+@pytest.mark.part("M2", "FR-CONC-5")
+async def test_conc_linear__turn_concurrency(pg_url: str, engine: AsyncEngine) -> None:
+    """Seeded bursts of overlapping turns (respond, ``respond_async``, ingest) at one story whose
+    ``turn_concurrency`` flips between ``reject`` and ``queue`` between bursts: every request
+    commits exactly one turn, is refused busy with nothing written, or is accepted queued and
+    commits later; the story's turns never overlap — each one committed against the revision
+    the turn before it left, with no regeneration — and the active turns are one chain.
+    Complement: the run refused turns under ``reject`` and queued turns under ``queue``."""
+    rng = random.Random(TURN_CONCURRENCY_SEED)  # noqa: S311 - a fixed seed, not a secret
+    lib = Engine(auth_settings(pg_url, model_adapter="stub"), db=engine)
+    assert lib.models.stub is not None
+    lib.models.stub.latency_s = 0.05
+    ctx = RequestContext(principal="p-conc")
+    created = await lib.create_story(
+        ctx,
+        StorySpec.model_validate(
+            {
+                "name": "conc turn concurrency",
+                "characters": [
+                    {
+                        "name": "Wren",
+                        "definition": "The player.",
+                        "true_age": 30,
+                        "is_player": True,
+                    },
+                    {"name": "Ada", "definition": "A guide.", "true_age": 40},
+                ],
+            }
+        ),
+    )
+    story, actor = created.story_id, created.characters[0].id
+    start = await revision(engine, story)
+    tally: Counter[str] = Counter()
+    expected = 0
+    n = 0
+    for _ in range(TURN_CONCURRENCY_ROUNDS):
+        mode = rng.choice(["reject", "queue"])
+        await lib.update_story_settings(ctx, story, {"turn_concurrency": mode})
+        burst = []
+        for _ in range(rng.randint(2, 5)):
+            n += 1
+            burst.append(_turn_attempt(lib, story, actor, n, rng))
+        for outcome in await asyncio.gather(*burst):
+            if isinstance(outcome, StoryBusy):
+                tally[f"busy_{mode}"] += 1
+                continue
+            assert not isinstance(outcome, BaseException) or isinstance(outcome, TurnAccepted), (
+                outcome
+            )
+            tally["accepted" if isinstance(outcome, TurnAccepted) else f"played_{mode}"] += 1
+            expected += 1
+        await asyncio.wait_for(lib.drainer.idle(), 30)
+
+    turns = await rows(
+        engine,
+        "SELECT narrative_turn, base_revision, timeline_revision, attempts, started_at, "
+        "committed_at FROM operations WHERE story_id = :s AND kind = 'turn' "
+        "AND status = 'committed' ORDER BY narrative_turn",
+        s=story,
+    )
+    assert [t.narrative_turn for t in turns] == list(range(1, expected + 1)), tally
+    for turn in turns:  # never two at once: each turn started from its predecessor's revision
+        assert turn.timeline_revision == turn.base_revision + 1, turn
+        assert all(a.get("outcome") == "commit" for a in turn.attempts), turn
+    leftovers = await rows(
+        engine,
+        "SELECT status FROM operations WHERE story_id = :s AND kind = 'turn' "
+        "AND status IN ('queued', 'in_flight')",
+        s=story,
+    )
+    assert leftovers == []
+    await assert_single_chain(engine, story)
+    assert await revision(engine, story) == start + expected
+    queued = sum(1 for a, b in itertools.pairwise(turns) if b.started_at < a.committed_at)
+    print(f"CONC-LINEAR turn concurrency tally={dict(tally)} turns={expected} queued={queued}")
+    assert tally["busy_reject"] > 0, tally
+    assert queued > 0, tally

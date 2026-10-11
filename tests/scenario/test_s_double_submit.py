@@ -102,7 +102,8 @@ async def test_s_double_submit(stub_settings: Settings, engine: AsyncEngine, pg_
         (turn,) = await committed_turns(engine, story)
         assert (await key_row(engine, "dbl-c")).operation_id == turn.operation_id
         assert message_of(retried)[0] in {b["message_id"] for b in retried.json()["beats"]}
-        # The crashed attempt never committed: it is left in flight for recovery (#70).
-        assert sorted(await turn_statuses(engine, story)) == ["committed", "in_flight"]
+        # The crashed attempt never committed: the retry reclaimed its expired turn lease and
+        # marked it failed (#63), so a late commit of it would be refused.
+        assert sorted(await turn_statuses(engine, story)) == ["committed", "failed"]
         rejected = await keyed(client, story, body(ids[PLAYER], "Different words."), "dbl-c")
         assert rejected.status_code == 409

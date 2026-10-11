@@ -118,13 +118,21 @@ async def read_story_cast(db: AsyncEngine, story_id: str) -> StoryCast:
     async with db.connect() as conn:
         row = (
             await conn.execute(
-                select(stories.c.status, stories.c.settings).where(stories.c.id == story_id)
+                select(
+                    stories.c.status,
+                    stories.c.settings,
+                    stories.c.turn_concurrency,
+                    stories.c.turn_queue_max,
+                ).where(stories.c.id == story_id)
             )
         ).one_or_none()
         if row is None:
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
         cast = _cast((await conn.execute(_cast_query(story_id))).all())
-    return StoryCast(status=row.status, settings=StorySettings.from_row(row.settings), cast=cast)
+    settings = StorySettings.from_row(
+        row.settings, turn_concurrency=row.turn_concurrency, turn_queue_max=row.turn_queue_max
+    )
+    return StoryCast(status=row.status, settings=settings, cast=cast)
 
 
 def _active_committed(story_id: str) -> Any:

@@ -34,6 +34,7 @@ advisory lock instead of a story row.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -42,10 +43,10 @@ from datetime import datetime
 from types import TracebackType
 from typing import Any, Literal, Self
 
-from sqlalchemy import and_, func, insert, select, text, update
+from sqlalchemy import and_, delete, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency, projections
+from epistrel.core import idempotency, projections, turn_gate
 from epistrel.core.concurrency import (
     Abandon,
     Decide,
@@ -76,7 +77,7 @@ from epistrel.core.errors import (
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import StorySettings
-from epistrel.core.tables import content_ratings, events, operations, stories
+from epistrel.core.tables import content_ratings, events, operations, stories, turn_queue
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,8 @@ class Operation:
         idempotency_key: str | None = None,
         viewpoint: str | None = None,
         origin: Origin = "generated",
+        operation_id: str | None = None,
+        queued: bool = False,
     ) -> None:
         if principal is None or not principal.strip():
             raise PrincipalRequired("an operation needs a requesting principal")
@@ -178,8 +181,16 @@ class Operation:
             )
         if (bumps_revision or control_action) and story_id is None:
             raise InvalidRequest("only a story has a timeline revision", {"field": "story_id"})
+        if queued and operation_id is None:
+            raise InvalidRequest("a queued operation is started by its id", {"field": "turn"})
         self.db = db
-        self.operation_id = new_ulid()
+        self.operation_id = operation_id or new_ulid()
+        self.queued = queued
+        """Starts the ``queued`` row a story's turn queue holds (#63) instead of inserting one;
+        its commit removes the turn from the queue in the same transaction."""
+        self.holds_turn_slot = False
+        """Set once the operation took the story's turn slot (#63): its commit or failure gives
+        the slot back in the same transaction."""
         self.bumps_revision = bumps_revision
         self.control_action = control_action
         self.story_id = story_id
@@ -252,6 +263,10 @@ class Operation:
             # the story row, which a REPEATABLE READ transaction cannot do once a concurrent
             # commit has updated it.
             async with conn.begin():
+                if self.queued:
+                    await self._start_queued(conn)
+                    self.status = OperationStatus.IN_FLIGHT
+                    return result
                 await conn.execute(
                     insert(operations).values(
                         operation_id=self.operation_id,
@@ -268,6 +283,26 @@ class Operation:
                 )
         self.status = OperationStatus.IN_FLIGHT
         return result
+
+    async def _start_queued(self, conn: AsyncConnection) -> None:
+        """``queued`` → ``in_flight`` with the base just read (the row was inserted at enqueue
+        with the request's key, viewpoint and origin)."""
+        started = await conn.scalar(
+            update(operations)
+            .where(
+                operations.c.operation_id == self.operation_id,
+                operations.c.status == OperationStatus.QUEUED.value,
+            )
+            .values(
+                status=OperationStatus.IN_FLIGHT.value,
+                base_revision=self.base_revision,
+                read_set=self.read_set,
+                config_revisions=self.config_revisions,
+            )
+            .returning(operations.c.operation_id)
+        )
+        if started is None:
+            raise RuntimeError(f"operation {self.operation_id} is not queued")
 
     async def restart(self, read: Callable[[AsyncConnection], Awaitable[Any]] | None = None) -> Any:
         """Start a regeneration attempt: the same operation with a new base (FR-CONC-4c).
@@ -385,6 +420,7 @@ class Operation:
             await self._finish(OperationStatus.FAILED, exc)
             raise
         self.status = OperationStatus.COMMITTED
+        self._wake()
 
     async def abandon(self) -> None:
         """Give up without writing anything (status ``abandoned``)."""
@@ -411,6 +447,7 @@ class Operation:
         without ``error``; else ``abandoned`` (a revalidation or ``Withdrawn``) or ``failed``."""
         if error is None:
             self.status = OperationStatus.COMMITTED
+            self._wake()
             return
         self._reset_position()
         if isinstance(error, RevalidationRequired):
@@ -668,6 +705,12 @@ class Operation:
         self.tx_time = row.membership_tx
         if self.story_id is None:
             return
+        if self.holds_turn_slot:
+            await turn_gate.release(conn, self.story_id, self.operation_id)
+        if self.queued:
+            await conn.execute(
+                delete(turn_queue).where(turn_queue.c.operation_id == self.operation_id)
+            )
         changes: dict[str, Any] = {}
         if advance:
             changes["next_turn_index"] = stories.c.next_turn_index + 1
@@ -731,6 +774,9 @@ class Operation:
         If that write fails while another exception is propagating, the original stays the
         error and the failure to record the status is attached as a note.
         """
+        if self.queued and isinstance(cause, asyncio.CancelledError):
+            # A drainer stopped (shutdown) mid-turn: the turn goes back to the queue.
+            status = OperationStatus.QUEUED
         try:
             async with self._connection() as conn, conn.begin():
                 await conn.execute(
@@ -741,6 +787,8 @@ class Operation:
                     )
                     .values(status=status.value)
                 )
+                if self.holds_turn_slot and self.story_id is not None:
+                    await turn_gate.release(conn, self.story_id, self.operation_id)
         except Exception as exc:
             if cause is None:
                 raise
@@ -752,3 +800,9 @@ class Operation:
             )
             cause.add_note(f"operation {self.operation_id} could not be marked {status.value}")
         self.status = status
+        self._wake()
+
+    def _wake(self) -> None:
+        """Wake this process's waiters and drainer for the story (#63)."""
+        if self.story_id is not None and (self.holds_turn_slot or self.queued):
+            turn_gate.wakeups.wake(self.story_id)

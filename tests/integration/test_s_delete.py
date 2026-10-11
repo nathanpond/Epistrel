@@ -8,9 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel import Engine
 from epistrel.config import Settings
+from epistrel.core import turn_gate
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind
 from epistrel.core.errors import GuardrailViolation
+from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
@@ -25,7 +27,7 @@ AUTHOR = RequestContext(principal="p-author")
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:
     """Turns, background work between them, story and character policies, a rebuild, an
     ingested narration (a ``client_events`` row, #58), and a rejected input (an ``audit_log``
-    row naming the story)."""
+    row naming the story). The victim also gets a queued turn (``turn_queue``, #63)."""
     for n in range(1, 3):
         await play_turn(engine, story_id, f"turn {n} of {story_id}")
         await interleave(engine, story_id, after_turn=n)
@@ -121,6 +123,19 @@ async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
             await _populate(engine, lib, story["story_id"], story["characters"][1]["id"])
         await lib.archive_story(AUTHOR, created[2]["story_id"])
         victim = created[1]["story_id"]
+        # A turn waiting in the victim's queue (#63): the deletion takes it too.
+        await turn_gate.enqueue(
+            engine,
+            victim,
+            operation_id=new_ulid(),
+            kind=turn_gate.RESPOND,
+            request={"body": {}},
+            principal="p-author",
+            idempotency_key=None,
+            viewpoint=None,
+            origin="generated",
+            queue_max=5,
+        )
 
         owned = await _rows_of(engine, victim)
         assert all(owned.values()), {t: len(r) for t, r in owned.items() if not r}

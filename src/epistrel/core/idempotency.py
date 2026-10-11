@@ -76,6 +76,9 @@ KEY_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,255}")
 DEPLOYMENT_SCOPE_ID = "deployment"
 """``scope_id`` of every deployment-scoped key."""
 
+QUEUE_OWNER_PREFIX = "queue:"
+"""An ``owner_token`` naming a queued turn (``queue:<operation id>``, #63)."""
+
 LEASE_S = 60.0
 """How long a claim lives without renewal; the running call renews it every third of it."""
 POLL_FIRST_S = 0.05
@@ -165,6 +168,15 @@ class Replayed(Exception):
     def __init__(self, stored: StoredResult) -> None:
         super().__init__("replayed")
         self.stored = stored
+
+
+class QueuedOriginal(Exception):
+    """Internal: the key's original request waits in its story's turn queue (#63); the retry
+    waits for that queued turn too (and is answered 202 like it when the wait runs out)."""
+
+    def __init__(self, operation_id: str) -> None:
+        super().__init__(f"queued as {operation_id}")
+        self.operation_id = operation_id
 
 
 class ReferenceReplay(Exception):
@@ -336,6 +348,9 @@ class IdempotentCall:
                 )
             if row.status == KeyStatus.DONE.value:
                 self._answer(row)
+            if row.owner_token.startswith(QUEUE_OWNER_PREFIX):
+                # Owned by the queue, not by a process: no lease applies.
+                raise QueuedOriginal(row.owner_token.removeprefix(QUEUE_OWNER_PREFIX))
             if row.lease_until <= clock.now():
                 if row.operation_id is not None:
                     await self._settle_dead(row)
@@ -461,6 +476,66 @@ class IdempotentCall:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._renewal
             self._renewal = None
+
+    # -- the turn queue (#63) ---------------------------------------------------------------
+
+    async def hand_over(self, conn: AsyncConnection, owner: str) -> None:
+        """Hand the claimed key to ``owner`` (a queued turn, ``queue:<operation id>``) in the
+        caller's transaction: the turn's drainer binds and finishes it, and this call no
+        longer renews, binds, stores or releases it."""
+        if not self.claimed:
+            return
+        handed = await conn.scalar(
+            update(idempotency_keys)
+            .where(
+                self._where(),
+                idempotency_keys.c.owner_token == self.token,
+                idempotency_keys.c.status == KeyStatus.IN_FLIGHT.value,
+            )
+            .values(owner_token=owner)
+            .returning(idempotency_keys.c.key)
+        )
+        if handed is None:
+            raise IdempotencyConflict(
+                "a retry under the same Idempotency-Key took this request over; it was not queued",
+                {"reason": "superseded"},
+            )
+        self.claimed = False
+        if self._renewal is not None:
+            self._renewal.cancel()
+            self._renewal = None
+
+    @classmethod
+    def owned_by(
+        cls,
+        db: AsyncEngine,
+        owner: str,
+        *,
+        scope: Scope,
+        scope_id: str,
+        key: str,
+        operation: str,
+        principal: str,
+        codec: ResultCodec[Any],
+    ) -> IdempotentCall:
+        """The call a queued turn's drainer runs under: the key it was handed, already
+        claimed (no lease: a queued key is owned by the queue, not a process)."""
+        call = cls(
+            db,
+            scope=scope,
+            scope_id=scope_id,
+            key=key,
+            operation=operation,
+            principal=principal,
+            codec=codec,
+            wait_s=0,
+        )
+        call.token = owner
+        call.claimed = True
+        return call
+
+    async def load_window(self) -> None:
+        self.window = await read_idempotency_settings(self.db)
 
     # -- bind (inside the commit transaction) --------------------------------------------------
 
@@ -636,8 +711,10 @@ __all__ = [
     "IDEMPOTENT_REPLAY_HEADER",
     "KEY_MAX",
     "LEASE_S",
+    "QUEUE_OWNER_PREFIX",
     "IdempotentCall",
     "KeyStatus",
+    "QueuedOriginal",
     "ReferenceReplay",
     "Replayed",
     "ResultCodec",

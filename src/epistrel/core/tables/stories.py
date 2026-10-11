@@ -5,7 +5,8 @@ control-action marker (``last_control_revision``/``last_control_operation_id``: 
 operation of the latest truncate, untruncate, swap or regenerate, so an in-flight turn can tell
 "history was edited" from "someone else played") and the story ``settings`` (``StorySettings``).
 #48 adds ``content_rating_id``. #50 adds ``name``, ``archived_at`` and the status vocabulary
-(``StoryStatus``: ``active``, ``archived``, ``paused``).
+(``StoryStatus``: ``active``, ``archived``, ``paused``). #63 adds the turn-concurrency columns and
+the in-flight turn marker.
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -13,7 +14,17 @@ with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascadin
 
 from __future__ import annotations
 
-from sqlalchemy import TIMESTAMP, BigInteger, CheckConstraint, Column, Integer, Table, Text, text
+from sqlalchemy import (
+    TIMESTAMP,
+    BigInteger,
+    CheckConstraint,
+    Column,
+    Integer,
+    SmallInteger,
+    Table,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 
 from epistrel.core.enums import StoryStatus
@@ -24,6 +35,8 @@ INITIAL_TURN_INDEX = 1
 """``stories.next_turn_index`` of a new story: the first turn is turn 1."""
 
 STATUS_CHECK = "status IN ({})".format(", ".join(f"'{s.value}'" for s in StoryStatus))
+TURN_CONCURRENCY_CHECK = "turn_concurrency IN ('reject', 'queue')"
+TURN_QUEUE_MAX_CHECK = "turn_queue_max IS NULL OR turn_queue_max BETWEEN 1 AND 50"
 
 stories = Table(
     "stories",
@@ -43,6 +56,14 @@ stories = Table(
     Column("last_control_revision", BigInteger, nullable=False, server_default=text("0")),
     Column("last_control_operation_id", ulid_type(), nullable=True),
     Column("settings", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    # FR-CONC-5 (#63): same-story turn concurrency and the queue's bound (null: the
+    # deployment's ``turn_queue_max``), mirrored in ``StorySettings``; and the durable in-flight
+    # marker: the turn holding the story's turn slot and its lease (never a lock held across
+    # model calls). An expired lease is reclaimed by the next request.
+    Column("turn_concurrency", Text, nullable=False, server_default=text("'reject'")),
+    Column("turn_queue_max", SmallInteger, nullable=True),
+    Column("in_flight_turn", ulid_type(), nullable=True),
+    Column("in_flight_lease_until", TIMESTAMP(timezone=True), nullable=True),
     # FR-RATE-1: every story has exactly one rating (#48). The server default is the seeded
     # default; story creation resolves the deployment's current default explicitly.
     Column(
@@ -58,4 +79,6 @@ stories = Table(
         server_default=text("transaction_timestamp()"),
     ),
     CheckConstraint(STATUS_CHECK, name="status"),
+    CheckConstraint(TURN_CONCURRENCY_CHECK, name="turn_concurrency"),
+    CheckConstraint(TURN_QUEUE_MAX_CHECK, name="turn_queue_max"),
 )

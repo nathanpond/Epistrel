@@ -1479,3 +1479,6 @@ Process:
 - **Decision (Rule 3, tests):** `tests/chaos/test_x_07.py`'s `registry` fixture now reconciles and then pushes every recurring row 30 days out, restoring them afterwards, as its `quiet` fixture does. With `lite_summary` registered, the first reconcile creates that row due now, and step 3's `queue.claim` picked up the story-less summary job instead of the test's own job.
   **Why:** A new recurring task broke an assumption of #71's test, not its behaviour.
   **Issue:** #72
+- **Decision (Rule 1, tests):** `test_a_second_run_over_written_segments_is_dropped` failed once in the coordinator's full run (`[0, 2] == [2, 0]`). The test released two concurrent runs from one stub latch, then listed the job results in creation order, which assumes the first-created job wins the commit. Nothing promises that: whichever run takes the story lock first commits both segments, and the other is dropped, requeued, and finds nothing on its rerun. The test now compares the sorted results (`[0, 2]`), as it already did for the outcomes. It still asserts exactly one winner with 2 segments and one empty rerun. No product code depends on that order.
+  **Why:** The order was a race in the test, not in the product. The failure did not reproduce in 6 isolated runs; the full suite passed afterwards (752).
+  **Issue:** #72

@@ -111,7 +111,8 @@ async def test_a_second_run_over_written_segments_is_dropped(
     assert outcomes == ["committed", "dropped"]  # both made the same segments; one is kept
     assert [r.covers_to for r in await segment_rows(engine, story)] == [1, 2]
     assert await run_due_jobs(engine, models, story) == [queue.CommitOutcome.COMMITTED]
-    assert [j.result["segments"] for j in await summary_jobs(engine, story)] == [2, 0]
+    # Either run may win the commit race; the winner wrote both segments, the loser's rerun none.
+    assert sorted(j.result["segments"] for j in await summary_jobs(engine, story)) == [0, 2]
     assert [r.covers_to for r in await segment_rows(engine, story)] == [1, 2]
 
 

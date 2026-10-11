@@ -134,11 +134,16 @@ def calls_needed(policies: Sequence[Policy], texts: Sequence[GateText]) -> int:
     return len(model_assisted(policies)) * len(texts)
 
 
-def input_budget(policies: Sequence[Policy], texts: Sequence[GateText]) -> TurnBudget:
+def input_budget(
+    policies: Sequence[Policy],
+    texts: Sequence[GateText],
+    *,
+    deadline_s: float = DEFAULT_TURN_DEADLINE_S,
+) -> TurnBudget:
     """The budget of a gate outside a turn (ingest, pins, instructions, story creation):
-    exactly G calls under the default turn deadline. #63/#69 bound it by the story's
-    ``max_model_calls_per_turn`` and ``turn_deadline`` once those settings exist."""
-    return TurnBudget(max_calls=calls_needed(policies, texts), deadline_s=DEFAULT_TURN_DEADLINE_S)
+    exactly G calls, under the story's ``turn_deadline`` (#69; the default for a story not
+    created yet). It makes no generation call, so it is never below its safety minimum."""
+    return TurnBudget(max_calls=calls_needed(policies, texts), deadline_s=deadline_s)
 
 
 async def input_gate(
@@ -209,12 +214,14 @@ async def enforce_input(
     budget: TurnBudget | None = None,
     actor: str | None = None,
     reserved: int = 0,
+    deadline_s: float = DEFAULT_TURN_DEADLINE_S,
 ) -> InputPass:
     """Run the gate; on a violation write the ``audit_log`` row (no text) and raise 422
-    ``guardrail_violation``. Without ``budget`` the gate gets ``input_budget``."""
+    ``guardrail_violation``. Without ``budget`` the gate gets ``input_budget`` under
+    ``deadline_s``."""
     started = time.monotonic()
     if budget is None:
-        budget = input_budget(input_policies(context, actor=actor), texts)
+        budget = input_budget(input_policies(context, actor=actor), texts, deadline_s=deadline_s)
     used_before = budget.used
     found = await input_gate(models, context, texts, budget=budget, actor=actor, reserved=reserved)
     if found is None:

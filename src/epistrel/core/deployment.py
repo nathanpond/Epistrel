@@ -3,8 +3,9 @@
 The settings are ``DeploymentSettings`` (``core/settings_schema.py``): the two
 ``deployment_state`` columns (``default_content_rating_id``, ``minor_age_threshold``) and the
 sections of its ``settings`` document — the Lite defaults (#57), the story-level text caps
-(#60), the idempotency result window (#61), the default ``turn_queue_max`` (#63) and the
-structured-result settings (#53).
+(#60), the idempotency result window (#61), the default ``turn_queue_max`` (#63), the
+structured-result settings (#53), the safe fallback (#68) and the default
+``max_model_calls_per_turn`` (#69).
 
 A write is a JSON merge over them (``PUT /admin/settings``; the library helpers below take a
 section's values): the merged document is validated as a whole, and when anything changed the
@@ -69,11 +70,16 @@ __all__ = [
 ]
 
 
+NULLABLE = frozenset({"max_model_calls_per_turn"})
+"""Top-level settings whose ``null`` resets them to their default instead of being refused."""
+
+
 class SettingsPatch(BaseModel):
     """A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,
     ``lite_generation_defaults`` merges key by key, and ``null`` is refused for a top-level
-    field. Bounds are ``DeploymentSettings``'s, checked on the merged settings (422
-    ``validation_error`` at ``body.<field>``)."""
+    field (except ``max_model_calls_per_turn``, whose ``null`` restores the formula). Bounds
+    are ``DeploymentSettings``'s, checked on the merged settings (422 ``validation_error`` at
+    ``body.<field>``)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -85,6 +91,7 @@ class SettingsPatch(BaseModel):
     max_custom_instructions_chars: int | None = None
     idempotency_result_window: int | None = None
     turn_queue_max: int | None = None
+    max_model_calls_per_turn: int | None = None
     structured_retry_budget: int | None = None
     uncertain_below: float | None = None
     default_safe_fallback: str | None = None
@@ -93,6 +100,9 @@ class SettingsPatch(BaseModel):
         present: dict[str, Any] = {}
         for name in self.model_fields_set:
             value = getattr(self, name)
+            if value is None and name in NULLABLE:
+                present[name] = None  # back to the default (the Lite formula, #69)
+                continue
             if value is None:
                 raise InvalidRequest(f"{name} cannot be null", {"field": f"body.{name}"})
             present[name] = (

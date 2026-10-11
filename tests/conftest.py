@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from epistrel.core.db import make_engine, make_sync_engine, normalize_url
 from tests.auth_support import auth_settings
+from tests.perf.census import CENSUS, installed
 
 pytest_plugins = ("pytester",)
 
@@ -27,6 +28,8 @@ if os.environ.get("CI"):
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
 INTEGRATION_DIR = Path(__file__).resolve().parent / "integration"
+SCENARIO_DIR = Path(__file__).resolve().parent / "scenario"
+P05_FILE = "test_p_05.py"
 PG_IMAGE = "pgvector/pgvector:pg16"
 OVERRIDE_VAR = "EPISTREL_TEST_DATABASE_URL"
 LIVE_MODEL_MARKER = "live_model"
@@ -41,16 +44,28 @@ NO_DOCKER_MESSAGE = (
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Everything under tests/integration/ is an integration test. ``live_model`` tests run
-    only when ``-m`` names that marker: they need a real endpoint (#54)."""
+    only when ``-m`` names that marker: they need a real endpoint (#54). P-05 runs last, over
+    the turn census of everything before it (#69)."""
     for item in items:
         if INTEGRATION_DIR in Path(str(item.fspath)).parents:
             item.add_marker(pytest.mark.integration)
+    census = [item for item in items if Path(str(item.fspath)).name == P05_FILE]
+    if census:
+        items[:] = [item for item in items if item not in census] + census
+    CENSUS.s_tests_collected = any(SCENARIO_DIR in Path(str(item.fspath)).parents for item in items)
     if LIVE_MODEL_MARKER in (config.getoption("markexpr", "") or ""):
         return
     live = [item for item in items if item.get_closest_marker(LIVE_MODEL_MARKER)]
     if live:
         config.hook.pytest_deselected(items=live)
         items[:] = [item for item in items if not item.get_closest_marker(LIVE_MODEL_MARKER)]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _turn_census() -> Iterator[None]:
+    """Record every Lite turn of the session for P-05 (``tests/perf/census.py``)."""
+    with installed():
+        yield
 
 
 @pytest.fixture(autouse=True)

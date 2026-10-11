@@ -41,6 +41,7 @@ from epistrel.core.ingest import IngestRequest
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
 from epistrel.core.settings_schema import ConfigClass
 from epistrel.core.stories import CharacterView, RatingRef, StorySpec, StoryView
+from epistrel.engine import EffectiveBudget
 from epistrel.orchestrator.policies.store import StoryGuardrails
 
 router = APIRouter(prefix="/stories", tags=["stories"])
@@ -167,11 +168,34 @@ class GuardrailCallsBody(BaseModel):
     output: int
 
 
+class EffectiveBudgetBody(BaseModel):
+    """The budget the story's next turn plans with (#69): `max_model_calls_per_turn` and its
+    `source` (`story`, `deployment` or `formula`: `9 + G`), `turn_deadline`, the guardrail calls
+    G it reserves (`guardrail_input`, `guardrail_output`) and `minimum_required` (`1 + G`)."""
+
+    max_model_calls_per_turn: int
+    source: str
+    turn_deadline: float
+    reserved: dict[str, int]
+    minimum_required: int
+
+    @classmethod
+    def of(cls, budget: EffectiveBudget) -> EffectiveBudgetBody:
+        return cls(
+            max_model_calls_per_turn=budget.max_model_calls_per_turn,
+            source=budget.source,
+            turn_deadline=budget.turn_deadline,
+            reserved=dict(budget.reserved),
+            minimum_required=budget.minimum_required,
+        )
+
+
 class StorySettingsBody(BaseModel):
     settings: dict[str, Any]
     effective_policies: list[EffectivePolicyBody]
     inactive_policies: list[EffectivePolicyBody]
     guardrail_calls: GuardrailCallsBody
+    effective_budget: EffectiveBudgetBody
 
 
 class StorySettingsWriteBody(MutationResponse):
@@ -182,6 +206,7 @@ class StorySettingsWriteBody(MutationResponse):
     effective_policies: list[EffectivePolicyBody]
     inactive_policies: list[EffectivePolicyBody]
     guardrail_calls: GuardrailCallsBody
+    effective_budget: EffectiveBudgetBody
     config_revision: int
 
 
@@ -189,7 +214,8 @@ SETTINGS_PATCH_DESCRIPTION = (
     "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that "
     "setting, `null` resets it to its default, and `generation_settings` merges the same way. "
     "`turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's "
-    "default, 5), `turn_deadline` (seconds), `default_output_viewpoint` (`character:<id>` of the "
+    "default, 5), `turn_deadline` (seconds), `max_model_calls_per_turn` (1-50; `null`: the "
+    "deployment's default, else `9 + G`), `default_output_viewpoint` (`character:<id>` of the "
     "cast, never `omniscient`), `regenerate_retry_budget`, `generation_settings` and "
     "`lite_window_messages`. An unknown key is 422. `policies` (optional) upserts the story's "
     "own policies; an item that would relax a policy refuses the whole request with 422 "
@@ -332,6 +358,7 @@ async def story_settings(story_id: str, ctx: ContextDep, engine: EngineDep) -> S
         guardrail_calls=GuardrailCallsBody(
             input=guardrails.calls_input, output=guardrails.calls_output
         ),
+        effective_budget=EffectiveBudgetBody.of(await engine.effective_budget(ctx, story_id)),
     )
 
 
@@ -383,6 +410,7 @@ async def update_story_settings(
         guardrail_calls=GuardrailCallsBody(
             input=guardrails.calls_input, output=guardrails.calls_output
         ),
+        effective_budget=EffectiveBudgetBody.of(await engine.effective_budget(ctx, story_id)),
         config_revision=write.config_revision,
         timeline_revision=write.timeline_revision,
     )

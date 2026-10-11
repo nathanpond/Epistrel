@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from epistrel import __version__
 from epistrel.api import errors, routes
@@ -42,6 +44,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.engine = None
 
 
+RECEIVED_AT = "received_at"
+"""``scope["state"]`` key holding the request's arrival time (``time.monotonic()``, #69)."""
+
+
+class ReceiptStamp:
+    """The outermost ASGI middleware: stamps when each HTTP request arrived, before anything
+    else runs, so a turn's deadline and ``elapsed_ms`` cover the whole request (#69)."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            scope.setdefault("state", {})[RECEIVED_AT] = time.monotonic()
+        await self.app(scope, receive, send)
+
+
 def include_protected(app: FastAPI, router: APIRouter) -> None:
     """Include ``router`` behind the service credential and the principal rule (invariant 4)."""
     app.include_router(router, dependencies=PROTECTED_DEPENDENCIES)
@@ -67,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = None
     app.state.epistrel = Engine.from_settings(settings)
     errors.install(app)
+    app.add_middleware(ReceiptStamp)
     app.include_router(routes.public_router)
     include_protected(app, routes.router)
     return app

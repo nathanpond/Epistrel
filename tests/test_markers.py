@@ -40,8 +40,10 @@ def _collected(pytester: pytest.Pytester, *args: str) -> list[str]:
 
 def test_live_model_tests_run_only_when_selected(pytester: pytest.Pytester) -> None:
     """``live_model`` tests (E-06, P-08) are deselected by default and collected when ``-m``
-    names the marker (#54)."""
-    assert _collected(pytester) == []
+    names the marker (#54). The other tests there (P-05, P-09: #69) run by default."""
+    default = _collected(pytester)
+    assert not any("test_e_06" in line or "test_p_08" in line for line in default)
+    assert any("test_p_05" in line for line in default)
     selected = _collected(pytester, "-m", "live_model")
     assert any("test_e_06" in line for line in selected)
     assert any("test_p_08" in line for line in selected)

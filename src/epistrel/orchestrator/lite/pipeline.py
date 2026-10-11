@@ -12,8 +12,13 @@
    (409), and the output viewpoint resolves (422 ``viewpoint_unresolved``). The requested viewpoint
    arrives on ``ctx.viewpoint``, the single carrier (``Engine.respond`` folds the body field and
    the keyword argument into it).
-2. **The input gate** (#56) over the actor's ``say``/``do`` joined with a newline, reserving the
-   generation call in the turn's budget (``turn_deadline``, a story setting). A violation is 422
+2. **The budget** (#69, ``budget.plan_lite_budget``): ``max_model_calls_per_turn`` (the
+   request's ``budget.max_calls``, else the story's, else the deployment's, else ``9 + G``) and
+   ``turn_deadline`` (or the request's ``budget.deadline_s``), its clock started when the request
+   arrived. It reserves the generation call and G, the model-assisted guardrail calls (one per
+   input policy for the input, one per output policy for the first output check); a cap below
+   ``1 + G`` is 422 ``budget_below_safety_minimum`` before any model call. Then **the input
+   gate** (#56) over the actor's ``say``/``do`` joined with a newline. A violation is 422
    with only the audit row written. Then, last, **the turn gate** (FR-CONC-5, #63): the turn
    takes the story's turn slot (``core.turn_gate``); while another turn holds it, a ``reject``
    story answers 423 ``story_busy`` and a ``queue`` story queues the turn (``queue_turn``, from
@@ -22,7 +27,8 @@
    read phase reads the prompt inputs in the snapshot the read set hashes (so the read set *is*
    the prompt's inputs) and resolves the generation settings, deployment → story → request
    (FR-LITE-4); the generate step makes one ``generation`` call (FR-LITE-7) — an empty
-   reply is asked once more, then 503 ``model_unavailable`` ``reason=empty`` — and passes the
+   reply is asked once more if the budget's unreserved remainder can pay for it, then 503
+   ``model_unavailable`` ``reason=empty`` — and passes the
    reply through **the output gate** (#68, ``policies.output_gate``): the story's output
    policies, deterministic first, then one ``guardrail_check`` per model-assisted policy; a
    violation generates again with the policy's message as a constraint, within the story's
@@ -31,12 +37,16 @@
    event, and the released reply as beat 2. A touched read set regenerates the same operation;
    an interpretive configuration change the turn depends on (a rating's guardrails, a policy,
    ``minor_age_threshold``, the default output viewpoint) re-checks the reply under the new
-   configuration before it commits (``policies.rebase``, #64).
+   configuration before it commits (``policies.rebase``, #64). A regeneration the budget's
+   unreserved remainder cannot pay for is 409 ``revision_conflict`` (``reason=budget``).
 4. **The result**: the finished message (never "verified": under ``lite`` no claim is
    checked), the turn's beats for the resolved viewpoint, the new revision, and the model calls
-   the turn made (``model_calls``, #54) with its ``elapsed_ms`` (fixed at the commit), and the
+   the turn made (``model_calls``, #54, and ``call_counts`` by purpose) with its ``elapsed_ms``
+   (fixed at the commit), its ``budget`` ``{max_calls, reserved, used}`` (#69), and the
    output gate's ``guardrail`` report (``degradation`` ``["safe_fallback"]`` when the reply is
-   the fallback). Under an
+   the fallback, with its cause in ``degradation_details``). The same report is stored on the
+   operation's ``turn_report``; a model failure that ends the turn (503) carries
+   ``model_calls`` and ``elapsed_ms`` in its details. Under an
    idempotent call it is built and stored ``done`` inside the turn's commit transaction, so a
    committed turn always has its result for a retry.
 
@@ -57,17 +67,19 @@ the gate in as ``gate``.
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from functools import partial
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import idempotency, turn_gate
 from epistrel.core.concurrency import LiteReadSet, check_expected_revision, run_with_revalidation
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
-from epistrel.core.errors import StoryArchived, TimelineChanged
+from epistrel.core.errors import RevisionConflict, StoryArchived, TimelineChanged
 from epistrel.core.events import Operation
 from epistrel.core.events.types import GuardrailOutputRejected, RejectedViolation
 from epistrel.core.history import turn_beats
@@ -76,6 +88,7 @@ from epistrel.core.settings_schema import (
     ResolvedGeneration,
     resolve_generation,
 )
+from epistrel.core.tables import operations
 from epistrel.core.turn_gate import Concurrency
 from epistrel.core.turns import (
     REPLY_BEAT,
@@ -88,11 +101,14 @@ from epistrel.core.turns import (
     stage_turn,
 )
 from epistrel.core.viewpoint import resolve_viewpoint, try_resolve
-from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, plan_lite_budget
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
 from epistrel.orchestrator.lite.schemas import (
     SAFE_FALLBACK,
+    BudgetOverride,
+    BudgetReport,
+    DegradationStep,
     FinishedMessage,
     GuardrailReport,
     GuardrailViolationItem,
@@ -104,8 +120,9 @@ from epistrel.orchestrator.lite.schemas import (
 )
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelResult
-from epistrel.orchestrator.models.errors import EmptyCompletion
+from epistrel.orchestrator.models.errors import EmptyCompletion, ModelError
 from epistrel.orchestrator.models.metrics import CallLog, recording
+from epistrel.orchestrator.policies.input_gate import input_policies, model_assisted
 from epistrel.orchestrator.policies.output_gate import (
     Draft,
     FallbackLines,
@@ -113,7 +130,9 @@ from epistrel.orchestrator.policies.output_gate import (
     Rejected,
     gate_output,
     output_policies,
+    output_reservation,
     raised_temperature,
+    regeneration_cost,
 )
 from epistrel.orchestrator.policies.rebase import output_recheck
 from epistrel.orchestrator.policies.store import guard_context
@@ -143,7 +162,7 @@ async def respond(
     queue_turn: QueueTurn,
 ) -> RespondResult:
     """Play one Lite turn; see the module docstring."""
-    started = time.monotonic()
+    started = ctx.received_at if ctx.received_at is not None else time.monotonic()
     story = await read_story_cast(db, story_id)
     cast = resolve_cast(story, request)
     if story.status == StoryStatus.ARCHIVED.value:
@@ -172,14 +191,25 @@ async def respond(
     await check_expected_revision(db, story_id, ctx.expected_revision)
     viewpoint = resolution()
     concurrency = await turn_gate.read_concurrency(db, story_id)
-    budget = TurnBudget(deadline_s=concurrency.turn_deadline)
-    with recording() as calls:
+    # The budget is planned, and refused below its safety minimum, before the input gate (#69).
+    budget = await plan_budget(
+        db,
+        story_id,
+        cast,
+        story_max_calls=concurrency.max_model_calls_per_turn,
+        deployment_max_calls=concurrency.deployment_max_calls,
+        turn_deadline=concurrency.turn_deadline,
+        override=request.budget,
+        started=started,
+    )
+    with recording() as calls, reporting_costs(calls, budget):
         await gate(
             budget,
             joined_input(request.player_input.say_text, request.player_input.do_text),
             cast.actor.id,
             cast.render_ids,
         )
+        budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))
         op = Operation(
             db,
             story_id=story_id,
@@ -193,13 +223,16 @@ async def respond(
         if held is not None:
             if concurrency.mode == "reject":
                 raise held.busy(story_id)
-            queued = {"body": request.model_dump(mode="json")}
+            queued = {
+                "body": request.model_dump(mode="json"),
+                "turn_budget": {"max_calls": budget.max_calls, "deadline_s": budget.deadline_s},
+            }
             return await queue_turn(op.operation_id, queued, viewpoint, concurrency)
         op.holds_turn_slot = True
         try:
             async with turn_gate.renewing(db, story_id, op.operation_id, concurrency.lease_s):
                 return await _play(
-                    db, models, story_id, request, cast, viewpoint, op, budget, calls, started
+                    db, models, story_id, request, cast, viewpoint, op, budget, calls
                 )
         finally:
             if op.status is None:  # took the slot but never began
@@ -216,12 +249,13 @@ async def run_queued(
     operation_id: str,
     principal: str,
     concurrency: Concurrency,
+    planned: dict[str, Any] | None = None,
 ) -> RespondResult:
     """Play a queued turn (#63): the drainer took the story's turn slot for it and runs it
     under its ``Idempotency-Key``. The request passed every precheck and the input gate when it
     was queued, and its output viewpoint was resolved then (``ctx.viewpoint``); the turn reads
-    the story as the turns before it left it."""
-    started = time.monotonic()
+    the story as the turns before it left it. ``planned``: the call cap and deadline the turn
+    was planned with when it was queued (its clock starts now, when it is played)."""
     story = await read_story_cast(db, story_id)
     cast = resolve_cast(story, request)
     viewpoint = ctx.viewpoint
@@ -238,11 +272,20 @@ async def run_queued(
         queued=True,
     )
     op.holds_turn_slot = True
-    budget = TurnBudget(deadline_s=concurrency.turn_deadline)
-    with recording() as calls:
-        return await _play(
-            db, models, story_id, request, cast, viewpoint, op, budget, calls, started
-        )
+    planned = planned or {}
+    budget = await plan_budget(
+        db,
+        story_id,
+        cast,
+        story_max_calls=planned.get("max_calls", concurrency.max_model_calls_per_turn),
+        deployment_max_calls=concurrency.deployment_max_calls,
+        turn_deadline=planned.get("deadline_s") or concurrency.turn_deadline,
+        override=None,
+        started=time.monotonic(),
+    )
+    budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))  # gated when queued
+    with recording() as calls, reporting_costs(calls, budget):
+        return await _play(db, models, story_id, request, cast, viewpoint, op, budget, calls)
 
 
 async def regenerate(
@@ -256,7 +299,7 @@ async def regenerate(
     gate: Gate,
 ) -> RegenerateResult:
     """Regenerate the head turn of ``story_id``; see the module docstring."""
-    started = time.monotonic()
+    started = ctx.received_at if ctx.received_at is not None else time.monotonic()
     story = await read_story_cast(db, story_id)
     if story.status == StoryStatus.ARCHIVED.value:
         raise StoryArchived(
@@ -273,9 +316,19 @@ async def regenerate(
         cast_ids=story.ids,
     )
     concurrency = await turn_gate.read_concurrency(db, story_id)
-    budget = TurnBudget(deadline_s=concurrency.turn_deadline)
-    with recording() as calls:
+    budget = await plan_budget(
+        db,
+        story_id,
+        cast,
+        story_max_calls=concurrency.max_model_calls_per_turn,
+        deployment_max_calls=concurrency.deployment_max_calls,
+        turn_deadline=concurrency.turn_deadline,
+        override=request.budget,
+        started=started,
+    )
+    with recording() as calls, reporting_costs(calls, budget):
         await gate(budget, joined_input(recorded.say, recorded.do), cast.actor.id, cast.render_ids)
+        budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))
         op = Operation(
             db,
             story_id=story_id,
@@ -301,7 +354,6 @@ async def regenerate(
                     op,
                     budget,
                     calls,
-                    started,
                     regenerating=recorded,
                 )
         finally:
@@ -342,7 +394,6 @@ async def _play(
     op: Operation,
     budget: TurnBudget,
     calls: CallLog,
-    started: float,
     *,
     regenerating: RecordedTurn | None = None,
 ) -> RespondResult:
@@ -364,6 +415,8 @@ async def _play(
         return inputs, resolved
 
     gated: list[Gated] = []
+    rounds: list[int] = []
+    fixed: dict[str, Any] = {}
 
     async def generate(op: Operation, read: tuple[TurnInputs, ResolvedGeneration]) -> None:
         inputs, resolved = read
@@ -371,6 +424,22 @@ async def _play(
         # through #64's re-check at commit.
         context = await guard_context(db, story_id)
         policies = output_policies(context, cast.render_ids)
+        rounds.append(1)
+        if len(rounds) > 1:
+            # A #47/#64 regeneration: its generation and re-checks come from the unreserved
+            # remainder, or the turn is a revision conflict (#69).
+            cost = regeneration_cost(policies)
+            if budget.expired() or not budget.can_afford_unreserved(cost):
+                raise RevisionConflict(
+                    "the story changed under the turn and its model budget cannot pay to "
+                    "generate again",
+                    {
+                        "current_revision": int(op.base_revision or 0),
+                        "attempts": len(op.attempts),
+                        "reason": "budget",
+                    },
+                )
+            budget.hold(cost)
 
         async def produce(constraints: tuple[str, ...], attempt: int) -> Draft:
             payload = assemble(inputs, cast, say=say, do=do, constraints=constraints)
@@ -396,6 +465,7 @@ async def _play(
             fallback=_fallback_lines(inputs, cast),
         )
         gated[:] = [outcome]
+        op.add_commit_step(write_report)
         stage_turn(
             op,
             actor_character_id=cast.actor.id,
@@ -413,6 +483,17 @@ async def _play(
             op.add_commit_step(fail_queue)
 
     failed_queue: list[str] = []
+
+    async def write_report(conn: AsyncConnection) -> None:
+        # ``elapsed_ms`` is fixed here, in the commit transaction, and the turn report is
+        # stored on the operation (#69).
+        fixed["elapsed_ms"] = budget.elapsed_ms()
+        report = turn_report(calls, budget, gated[0] if gated else None, fixed["elapsed_ms"])
+        await conn.execute(
+            update(operations)
+            .where(operations.c.operation_id == op.operation_id)
+            .values(turn_report=report)
+        )
 
     async def fail_queue(conn: AsyncConnection) -> None:
         # A regenerate is a control action: the story's queued turns fail with it (#66).
@@ -442,7 +523,9 @@ async def _play(
             "timeline_revision": committed.timeline_revision,
             "output_viewpoint": viewpoint,
             "model_calls": list(calls.calls),
-            "elapsed_ms": round((time.monotonic() - started) * 1000),
+            "elapsed_ms": fixed.get("elapsed_ms", budget.elapsed_ms()),
+            "call_counts": calls.by_purpose(),
+            "budget": BudgetReport(**budget.report()),
             **_guardrail_fields(gated[0] if gated else None),
         }
         if regenerating is not None:
@@ -514,17 +597,97 @@ def _guardrail_fields(outcome: Gated | None) -> dict[str, Any]:
     return {
         "guardrail": report,
         "degradation": [SAFE_FALLBACK] if outcome.fallback_used else [],
+        "degradation_details": _degradation_details(outcome),
     }
+
+
+def _degradation_details(outcome: Gated | None) -> list[DegradationStep]:
+    if outcome is None or not outcome.fallback_used:
+        return []
+    return [DegradationStep(step=SAFE_FALLBACK, cause=outcome.fallback_cause or "retry_budget")]
+
+
+def turn_report(
+    calls: CallLog, budget: TurnBudget, outcome: Gated | None, elapsed_ms: int
+) -> dict[str, Any]:
+    """What ``operations.turn_report`` stores for a committed turn (#69): its model calls,
+    their counts by purpose, the degradation steps with their causes, the budget and the
+    elapsed time. Ids, purposes and counts only: never story text (invariant 3)."""
+    return {
+        "model_calls": [call.model_dump(mode="json") for call in calls.calls],
+        "call_counts": calls.by_purpose(),
+        "degradation": [d.step for d in _degradation_details(outcome)],
+        "degradation_details": [
+            {"step": d.step, "cause": d.cause} for d in _degradation_details(outcome)
+        ],
+        "budget": budget.report(),
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+async def plan_budget(
+    db: AsyncEngine,
+    story_id: str,
+    cast: ResolvedCast,
+    *,
+    story_max_calls: int | None,
+    deployment_max_calls: int | None,
+    turn_deadline: float,
+    override: BudgetOverride | None,
+    started: float,
+) -> TurnBudget:
+    """The turn's budget (#69, ``budget.plan_lite_budget``): G is one call per model-assisted
+    input policy for the actor's input (``say`` + ``do`` are one text) plus one per
+    model-assisted output policy for the render characters' first output check. Raises 422
+    ``budget_below_safety_minimum`` before any model call."""
+    context = await guard_context(db, story_id)
+    return plan_lite_budget(
+        story_max_calls=story_max_calls,
+        deployment_max_calls=deployment_max_calls,
+        turn_deadline=turn_deadline,
+        guardrail_input=len(model_assisted(input_policies(context, actor=cast.actor.id))),
+        guardrail_output=output_reservation(context, cast.render_ids),
+        override_max_calls=override.max_calls if override is not None else None,
+        override_deadline_s=override.deadline_s if override is not None else None,
+        started=started,
+    )
+
+
+@contextmanager
+def reporting_costs(calls: CallLog, budget: TurnBudget) -> Iterator[None]:
+    """A model failure that ends the turn carries what the turn spent: its ``model_calls``
+    (failed attempts included, with their outcome) and ``elapsed_ms`` (#69)."""
+    try:
+        yield
+    except ModelError as exc:
+        exc.details.setdefault(
+            "model_calls", [call.model_dump(mode="json") for call in calls.calls]
+        )
+        exc.details.setdefault("elapsed_ms", budget.elapsed_ms())
+        raise
 
 
 async def _generate(
     models: ModelAccessLayer, payload: Any, params: Any, budget: TurnBudget
 ) -> ModelResult:
-    """The turn's ``generation`` call; an empty reply is asked once more (then 503)."""
+    """The turn's ``generation`` call; an empty reply is asked once more if the budget's
+    unreserved remainder can pay for it, else (or when it is empty again) 503 ``reason=empty``."""
     try:
         return await models.call(GENERATION, payload, params, budget=budget)
     except EmptyCompletion:
+        if budget.expired() or not budget.can_afford_unreserved():
+            raise
+        budget.hold(1)
         return await models.call(GENERATION, payload, params, budget=budget)
 
 
-__all__ = ["Gate", "QueueTurn", "regenerate", "respond", "run_queued"]
+__all__ = [
+    "Gate",
+    "QueueTurn",
+    "plan_budget",
+    "regenerate",
+    "reporting_costs",
+    "respond",
+    "run_queued",
+    "turn_report",
+]

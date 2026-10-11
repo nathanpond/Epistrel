@@ -1260,3 +1260,33 @@ Process:
   - The changed assertions in other tests follow from the new shape: `guardrail` in I-07's response fields, `fallback_used` in ingest's narration payload, and 2 checks per turn in the model-matrix minors row.
   **Why:** The test plan and the hand-offs.
   **Issue:** #68
+- **Decision:** Extended the existing `orchestrator/budget.py` `TurnBudget`; no second class was added. It gains `reserved {guardrail_input, guardrail_output}` and `held` slots, which are 1 generation + G. Only a first attempt may claim a held slot. Retries, meaning #53 structured retries and the empty-reply retry, need `can_afford_unreserved`. Unplanned work checks the remainder and then holds its calls first; that covers guardrail regenerations and #47/#64 revalidation regenerations. Held slots are released after the input gate, after the first generation and after the first output check. The planned `BudgetedAdapter` wrapper and the TurnContext contextvar were not built. Instead, `ModelAccessLayer.send` (from #51/#53) stays the single debit and clamp point, and the budget is still passed explicitly.
+  **Why:** Every adapter call already goes through `send`, which records exactly once. Its pre-check also means a refused call is never recorded, which is what the planner asked of the wrapper. A wrapper would have duplicated that logic.
+  **Issue:** #69
+- **Decision:** Planning (`plan_lite_budget`). The cap is resolved in this order: the request's `budget.max_calls`, then the story's `max_model_calls_per_turn`, then the deployment's `max_model_calls_per_turn`, then `9 + G`. Both settings are new, prospective and tagged; null means the formula, and the deployment PATCH accepts `null` for this one key. G is the model-assisted input policies for the actor (`say`+`do` is one text) plus the model-assisted output policies for the render set. Condition-false age policies are already excluded by `guard_context`. A cap below 1 + G is 422 `budget_below_safety_minimum`, with `minimum_required`, `max_calls` and `reserved`, and it is raised before the input gate and before any call. An override above the story cap is 422 `validation_error`, and so is a `deadline_s` above `turn_deadline`. A queued turn keeps the cap and deadline it was planned with in its queue row (`turn_budget`). Its clock starts when the drainer plays it.
+  **Why:** The AC and the planner's discretion items (null = formula, deployment defaults, overrides above the cap → 422, budget check before the gate).
+  **Issue:** #69
+- **Decision:** Interpreted the "500 ms floor" as the lower bound of a request's `budget.deadline_s` (>= 0.5 s). It is not a floor on the per-call clamp. The clamp is exactly `min(call_timeout, remaining)`. I also kept the story's `turn_deadline` bounds from #63 (> 0, <= 600 s) instead of narrowing them to 5–300 s. Calls are bounded 1–50 as planned.
+  **Why:** A clamp floor lets a call outlive the deadline, and it broke the existing #53 deadline test. Narrowing `turn_deadline` would break #63's queue tests and X-04, which use 0.5 s deadlines, and existing stored settings. The discretion item gave no rationale that outweighs either. Low cost to revisit.
+  **Issue:** #69
+- **Decision:** Degradation and failure paths:
+  - If the budget or the deadline runs out during a guardrail regeneration, or during an output re-check (the first check included), the safe fallback is released, because an unchecked draft is never released. The cause is recorded as `retry_budget`, `call_budget` or `deadline` in a new `degradation_details: [{step, cause}]` beside `degradation`.
+  - A deadline or budget failure on the first generation, or on the input check, is still 503.
+  - If the remainder cannot afford the empty-reply retry, the turn is 503 `reason=empty`.
+  - If it cannot afford a revalidation regeneration, the turn is 409 `revision_conflict` with `reason=budget`.
+  - A turn-ending ModelError carries `model_calls` (failed attempts with their outcome) and `elapsed_ms` in `details`.
+  - A not-attempted call (`not_configured`, `no_api_key`) is refunded so that counted calls equal recorded calls.
+  **Why:** NFR-PERF-7 step 2 and the planner's discretion items (deadline mid-generation, an unaffordable empty retry → 503 empty, a regeneration → 409, the 503 body carries both).
+  **Issue:** #69
+- **Decision:** The turn report is persisted on the existing `operations.turn_report` jsonb column (no migration). It holds `model_calls`, `call_counts`, `degradation`, `degradation_details`, `budget {max_calls, reserved, used}` and `elapsed_ms`, and it is written by a commit step that also fixes `elapsed_ms`. The respond and regenerate results (library and REST) gain `call_counts`, `budget` and `degradation_details`. `GET`/`PATCH /stories/{id}/settings` echo `effective_budget {max_model_calls_per_turn, source, turn_deadline, reserved, minimum_required}`. A turn's deadline and `elapsed_ms` start at request receipt. A new outermost ASGI middleware (`ReceiptStamp`) stamps receipt into `RequestContext.received_at`; for a library call the clock starts on entry. Non-turn gates (ingest, pins, instructions) now run under the story's `turn_deadline`. **Deferred:** adding `model_calls`/`elapsed_ms` to the ingest, pins and instructions results is left to #73 (surface).
+  **Why:** The planner's discretion items. The column already existed from 0002, and the ingest and pins result shapes belong to #73's surface pass.
+  **Issue:** #69
+- **Decision:** Tests:
+  - `tests/perf/test_p_09.py` has three slices: rejection before any call (stub counter 0), a policy on both sides counting 2, the formula default, the overrides, counted == recorded == stored; degradation by `call_budget` and by `retry_budget`, plus the empty retry; and a slow stub against the deadline, plus a hang → 503 deadline, plus HTTP 500 carrying `model_calls`.
+  - `tests/perf/test_p_05.py` runs over a session census (`tests/perf/census.py`, installed by `tests/conftest.py`, which also orders P-05 last). The census gates every turn in the session (counted == recorded, within the cap, and a clean turn = 1 + G), requires turns from the S-tests when they ran, and plays its own deterministic and assisted turns.
+  - `tests/test_turn_budget.py` holds the unit tests.
+  - Rule 3: `tests/test_markers.py` assumed that `tests/perf` holds only `live_model` tests. It now asserts the live ones are deselected and P-05 is collected.
+  - I-07's response field set now includes the three new fields.
+  - The word "scenario" in P-05's body was rephrased because of the M3 lexicon term.
+  **Why:** The test plan.
+  **Issue:** #69

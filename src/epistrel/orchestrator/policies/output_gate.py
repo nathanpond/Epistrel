@@ -26,8 +26,11 @@ again while all of these hold:
 - the turn budget can afford one generation plus one re-check per model-assisted output policy
   and its deadline has not passed.
 
-Otherwise, or when a regeneration's call runs out of budget or deadline, the **safe fallback**
-is released (a ``ModelUnavailable`` of any other kind is a 503, as on the first call). The
+Otherwise, or when a regeneration's call or a check runs out of budget or deadline, the **safe
+fallback** is released (a ``ModelUnavailable`` of any other kind is a 503, as on the first
+generation call). A regeneration is affordable only from the budget's unreserved remainder and
+holds its calls before it starts (#69); ``Gated.fallback_cause`` says which bound ended the loop
+(``retry_budget``, ``call_budget`` or ``deadline``). The
 fallback is the first render character's ``safe_fallback_text``, else the deployment's
 ``default_safe_fallback`` (``"{name} changes the subject."``), else the hard-coded last resort
 ``"{name} says nothing."``; ``{name}`` is the first render character's name. Each line is
@@ -68,6 +71,10 @@ OUTPUT_POLICY: RejectReason = "output_policy"
 FALLBACK_POLICY: RejectReason = "fallback_policy"
 
 type FallbackSource = Literal["character", "deployment", "last_resort"]
+type FallbackCause = Literal["retry_budget", "call_budget", "deadline"]
+RETRY_BUDGET: FallbackCause = "retry_budget"
+CALL_BUDGET: FallbackCause = "call_budget"
+DEADLINE: FallbackCause = "deadline"
 
 
 def output_policies(
@@ -209,6 +216,9 @@ class Gated:
     fallback_source: FallbackSource | None = None
     rejected: tuple[Rejected, ...] = field(default_factory=tuple)
     attempts: int = 1
+    fallback_cause: FallbackCause | None = None
+    """Why the fallback was released (#69): the ``guardrail_retry_budget`` was spent, the call
+    budget could not afford another attempt, or the deadline passed."""
 
 
 Produce = Callable[[tuple[str, ...], int], Awaitable[Draft]]
@@ -223,12 +233,14 @@ def _reject(rejected: list[Rejected], record: Rejected, stage: str) -> None:
         GUARDRAIL_REJECTIONS.labels(policy_id=violation.policy_id, stage=stage).inc()
 
 
-def _out_of_time(exc: ModelError, budget: TurnBudget) -> bool:
-    """A regeneration that ran out of budget or deadline (the fallback applies), as opposed to
-    a model failure (a 503, #53)."""
-    if isinstance(exc, BudgetExhausted) or budget.expired():
-        return True
-    return isinstance(exc, ModelUnavailable) and exc.reason == "deadline"
+def _out_of_time(exc: ModelError, budget: TurnBudget) -> FallbackCause | None:
+    """Why a regeneration or re-check ran out (the fallback applies): its budget or its
+    deadline; ``None`` for a model failure (a 503, #53)."""
+    if isinstance(exc, BudgetExhausted):
+        return CALL_BUDGET
+    if budget.expired() or (isinstance(exc, ModelUnavailable) and exc.reason == "deadline"):
+        return DEADLINE
+    return None
 
 
 async def gate_output(
@@ -247,8 +259,21 @@ async def gate_output(
     constrained: set[str] = set()
     attempt = 0
     draft = await produce((), attempt)
+    cause: FallbackCause
     while True:
-        check = await check_output(models, draft.text, policies, context, budget=budget)
+        # The first check spends the slots reserved for it; a regeneration's, those it held.
+        budget.release_to(len(_assisted(policies)))
+        try:
+            check = await check_output(models, draft.text, policies, context, budget=budget)
+        except ModelError as exc:
+            # The deadline cut the check short: the draft is unchecked, so it is never released.
+            out = _out_of_time(exc, budget)
+            if out is None:
+                raise
+            cause = out
+            break
+        finally:
+            budget.release_to(0)
         if check.passed:
             return Gated(draft=draft, rejected=tuple(rejected), attempts=attempt + 1)
         _reject(rejected, Rejected(draft.text, check, OUTPUT_POLICY, attempt), STAGE)
@@ -256,17 +281,27 @@ async def gate_output(
             if violation.policy_id not in constrained:
                 constrained.add(violation.policy_id)
                 constraints.append(CONSTRAINT.format(message=violation.message.rstrip(". ")))
-        affordable = not budget.expired() and budget.can_afford(regeneration_cost(policies))
-        if attempt >= retry_budget or not affordable:
+        cost = regeneration_cost(policies)
+        if attempt >= retry_budget:
+            cause = RETRY_BUDGET
             break
+        if budget.expired():
+            cause = DEADLINE
+            break
+        if not budget.can_afford_unreserved(cost):
+            cause = CALL_BUDGET
+            break
+        budget.hold(cost)
         attempt += 1
         try:
             draft = await produce(tuple(constraints), attempt)
         except ModelError as exc:
-            if not _out_of_time(exc, budget):
+            out = _out_of_time(exc, budget)
+            if out is None:
                 raise
+            cause = out
             break
-    return _fall_back(policies, fallback, rejected, attempts=attempt + 1)
+    return _fall_back(policies, fallback, rejected, attempts=attempt + 1, cause=cause)
 
 
 def _fall_back(
@@ -275,6 +310,7 @@ def _fall_back(
     rejected: list[Rejected],
     *,
     attempts: int,
+    cause: FallbackCause,
 ) -> Gated:
     """The first fallback line that passes the deterministic output policies; the last resort
     whatever it breaks."""
@@ -289,6 +325,7 @@ def _fall_back(
                 fallback_source=source,
                 rejected=tuple(rejected),
                 attempts=attempts,
+                fallback_cause=cause,
             )
         _reject(rejected, Rejected(line, check, FALLBACK_POLICY, None), FALLBACK_STAGE)
     raise AssertionError("unreachable: the last resort is always released")  # pragma: no cover
@@ -303,12 +340,16 @@ def raised_temperature(temperature: float | None, attempt: int) -> float | None:
 
 
 __all__ = [
+    "CALL_BUDGET",
     "CONSTRAINT",
+    "DEADLINE",
     "FALLBACK_FINISH_REASON",
     "FALLBACK_POLICY",
     "LAST_RESORT",
     "OUTPUT_POLICY",
+    "RETRY_BUDGET",
     "Draft",
+    "FallbackCause",
     "FallbackLines",
     "Gated",
     "OutputCheck",

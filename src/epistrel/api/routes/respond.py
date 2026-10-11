@@ -38,6 +38,15 @@ RESPOND_DESCRIPTION = (
     '`degradation: ["safe_fallback"]`). Rejected drafts are audit records only. '
     "Several characters are voiced in one generation, and "
     "their knowledge is kept apart only by instructions in that shared prompt."
+    "\n\nEvery turn runs under a model-call budget and a deadline: the story's "
+    "`max_model_calls_per_turn` (default `9 + G`, where G is one call per model-assisted input "
+    "policy plus one per model-assisted output policy) and `turn_deadline`, or a smaller "
+    "`budget: {max_calls, deadline_s}` in the request (above the story's is 422). A budget "
+    "below one generation plus G is refused with 422 `budget_below_safety_minimum` "
+    "(`details.minimum_required`) before any model call. The response reports `model_calls` "
+    "(every attempt, failed ones included), `call_counts` by purpose, `elapsed_ms`, `budget` "
+    "`{max_calls, reserved, used}` and each `degradation` step with its cause; a 503 carries "
+    "`model_calls` and `elapsed_ms` in `details`."
     "\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and "
     "`X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written)."
     "\n\nWhile another turn of the story runs, a story with `turn_concurrency: reject` (the "
@@ -74,6 +83,23 @@ class GuardrailBody(BaseModel):
     fallback_used: bool
 
 
+class BudgetBody(BaseModel):
+    """The turn's model-call budget: its cap, the guardrail calls it reserved
+    (`guardrail_input`, `guardrail_output`) and the calls it made, which equal the entries of
+    `model_calls`."""
+
+    max_calls: int | None
+    reserved: dict[str, int]
+    used: int
+
+
+class DegradationBody(BaseModel):
+    """A degradation step and its cause (`retry_budget`, `call_budget` or `deadline`)."""
+
+    step: str
+    cause: str
+
+
 class RespondResponse(MutationResponse):
     """One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,
     the story's new revision, and the model calls it made."""
@@ -87,7 +113,10 @@ class RespondResponse(MutationResponse):
     model_calls: list[ModelCall]
     elapsed_ms: int = Field(ge=0)
     degradation: list[str]
+    degradation_details: list[DegradationBody]
     guardrail: GuardrailBody
+    call_counts: dict[str, int]
+    budget: BudgetBody | None
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -102,6 +131,19 @@ class RespondResponse(MutationResponse):
             model_calls=result.model_calls,
             elapsed_ms=result.elapsed_ms,
             degradation=result.degradation,
+            degradation_details=[
+                DegradationBody(step=d.step, cause=d.cause) for d in result.degradation_details
+            ],
+            call_counts=result.call_counts,
+            budget=(
+                None
+                if result.budget is None
+                else BudgetBody(
+                    max_calls=result.budget.max_calls,
+                    reserved=dict(result.budget.reserved),
+                    used=result.budget.used,
+                )
+            ),
             guardrail=GuardrailBody(
                 violations=[
                     GuardrailViolationBody(

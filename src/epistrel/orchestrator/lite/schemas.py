@@ -19,7 +19,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from epistrel.core.history import HistoryItem
 from epistrel.core.ids import Ulid
-from epistrel.core.settings_schema import GenerationSettings
+from epistrel.core.settings_schema import (
+    MAX_CALLS_PER_TURN,
+    MAX_TURN_DEADLINE_S,
+    MIN_CALLS_PER_TURN,
+    MIN_DEADLINE_S,
+    GenerationSettings,
+)
 from epistrel.orchestrator.models.metrics import ModelCall
 
 MAX_INPUT_CHARS = 8_000
@@ -74,6 +80,17 @@ class SceneContext(BaseModel):
     )
 
 
+class BudgetOverride(BaseModel):
+    """A request's own turn budget (NFR-PERF-6; #69), within the story's: ``max_calls`` (1 to
+    50, at most the story's ``max_model_calls_per_turn``) and ``deadline_s`` (seconds, at least
+    0.5 and at most the story's ``turn_deadline``); above either is 422 ``validation_error``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_calls: int | None = Field(default=None, ge=MIN_CALLS_PER_TURN, le=MAX_CALLS_PER_TURN)
+    deadline_s: float | None = Field(default=None, ge=MIN_DEADLINE_S, le=MAX_TURN_DEADLINE_S)
+
+
 class RespondRequest(BaseModel):
     """``POST /stories/{id}/respond`` and ``Engine.respond``.
 
@@ -90,6 +107,7 @@ class RespondRequest(BaseModel):
     - ``prompt_params``: ``length`` (``short``/``medium``/``long`` or a token cap),
       ``temperature`` and ``top_p``, for this request only (FR-RESP-3).
     - ``scene_context``: non-authoritative; never stored or placed in a prompt.
+    - ``budget``: this turn's ``max_calls``/``deadline_s``, within the story's (#69).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -102,6 +120,7 @@ class RespondRequest(BaseModel):
     output_viewpoint: str | None = Field(default=None, max_length=MAX_ID_CHARS + 16)
     prompt_params: GenerationSettings | None = None
     scene_context: SceneContext | None = None
+    budget: BudgetOverride | None = None
 
 
 class RegenerateRequest(BaseModel):
@@ -110,7 +129,7 @@ class RegenerateRequest(BaseModel):
     The recorded ``player_input`` of the head turn is reused, never re-sent. ``turn``, when
     given, must be the head turn (422 otherwise). ``render_character_ids``,
     ``output_viewpoint`` and ``prompt_params`` override the values the turn was played with;
-    omitted, the recorded (resolved) ones are reused.
+    omitted, the recorded (resolved) ones are reused. ``budget`` is this call's own (#69).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -121,6 +140,7 @@ class RegenerateRequest(BaseModel):
     )
     output_viewpoint: str | None = Field(default=None, max_length=MAX_ID_CHARS + 16)
     prompt_params: GenerationSettings | None = None
+    budget: BudgetOverride | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +176,27 @@ class GuardrailReport:
 
 
 @dataclass(frozen=True, slots=True)
+class BudgetReport:
+    """What the turn's budget allowed and spent (#69): the cap, the guardrail calls G it
+    reserved (``guardrail_input``, ``guardrail_output``) and the calls it counted, which equal
+    the entries of ``model_calls``."""
+
+    max_calls: int | None
+    reserved: dict[str, int]
+    used: int
+
+
+@dataclass(frozen=True, slots=True)
+class DegradationStep:
+    """A degradation step the turn took (NFR-PERF-7) and why: ``safe_fallback`` because the
+    ``guardrail_retry_budget`` was spent (``retry_budget``), the call budget could not afford
+    the regeneration (``call_budget``), or the deadline passed (``deadline``)."""
+
+    step: str
+    cause: str
+
+
+@dataclass(frozen=True, slots=True)
 class RespondResult:
     """What a Lite turn returns (FR-RESP-1): the finished message, the turn's beats for the
     resolved viewpoint, its position, the new revision, and what it cost."""
@@ -172,6 +213,12 @@ class RespondResult:
     degradation: list[str] = field(default_factory=list)
     guardrail: GuardrailReport = field(default_factory=GuardrailReport)
     """The output gate's outcome (#68): always present."""
+    call_counts: dict[str, int] = field(default_factory=dict)
+    """``model_calls`` counted by purpose (#69)."""
+    budget: BudgetReport | None = None
+    """The turn's budget and what it spent (#69)."""
+    degradation_details: list[DegradationStep] = field(default_factory=list)
+    """Each ``degradation`` step with its cause (#69)."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
@@ -187,6 +234,9 @@ class RegenerateResult(RespondResult):
 __all__ = [
     "MAX_INPUT_CHARS",
     "SAFE_FALLBACK",
+    "BudgetOverride",
+    "BudgetReport",
+    "DegradationStep",
     "FinishedMessage",
     "GuardrailReport",
     "GuardrailViolationItem",

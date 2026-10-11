@@ -54,6 +54,7 @@ from epistrel.core.settings_schema import (
     LiteDefaults,
     StoryTextCaps,
     StructuredSettings,
+    TurnBudgetDefaults,
     TurnQueueDefaults,
 )
 from epistrel.core.tables import config_changes, deployment_state, events, operations
@@ -198,10 +199,12 @@ SECTIONS: tuple[type[BaseModel], ...] = (
     StoryTextCaps,
     IdempotencySettings,
     TurnQueueDefaults,
+    TurnBudgetDefaults,
     StructuredSettings,
     GuardrailSettings,
 )
-"""The views of ``deployment_state.settings`` earlier stories read (#53/#57/#60/#61/#63/#68)."""
+"""The views of ``deployment_state.settings`` earlier stories read
+(#53/#57/#60/#61/#63/#68/#69)."""
 
 
 def section[M: BaseModel](view: type[M], document: Mapping[str, Any] | None) -> M:

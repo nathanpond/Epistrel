@@ -55,7 +55,10 @@ RESPONSE_FIELDS = {
     "model_calls",
     "elapsed_ms",
     "degradation",
+    "degradation_details",
     "guardrail",
+    "call_counts",
+    "budget",
 }
 
 

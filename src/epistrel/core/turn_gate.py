@@ -49,6 +49,7 @@ from epistrel.core.idempotency import QUEUE_OWNER_PREFIX
 from epistrel.core.settings_schema import (
     DEFAULT_TURN_QUEUE_MAX,
     StorySettings,
+    TurnBudgetDefaults,
     TurnConcurrency,
     TurnQueueDefaults,
 )
@@ -127,6 +128,10 @@ class Concurrency:
     mode: TurnConcurrency
     queue_max: int
     turn_deadline: float
+    max_model_calls_per_turn: int | None = None
+    """The story's own call cap (#69; ``None``: the deployment's, else the Lite formula)."""
+    deployment_max_calls: int | None = None
+    """The deployment's default call cap (#69; ``None``: the Lite formula)."""
 
     @property
     def lease_s(self) -> float:
@@ -144,9 +149,20 @@ def turn_queue_defaults(document: Mapping[str, Any] | None) -> TurnQueueDefaults
         return TurnQueueDefaults()
 
 
+def turn_budget_defaults(document: Mapping[str, Any] | None) -> TurnBudgetDefaults:
+    """The deployment's ``max_model_calls_per_turn`` (#69) in a ``deployment_state.settings``
+    document; an invalid stored value falls back to the default (a warning names only the key)."""
+    values = {k: v for k, v in (document or {}).items() if k in TurnBudgetDefaults.model_fields}
+    try:
+        return TurnBudgetDefaults.model_validate(values)
+    except ValidationError:
+        logger.warning("invalid turn budget defaults %s; using the defaults", sorted(values))
+        return TurnBudgetDefaults()
+
+
 async def read_concurrency(db: AsyncEngine | AsyncConnection, story_id: str) -> Concurrency:
-    """The story's ``turn_concurrency``, effective ``turn_queue_max`` and ``turn_deadline``;
-    404 for an unknown story."""
+    """The story's ``turn_concurrency``, effective ``turn_queue_max``, ``turn_deadline`` and
+    call caps (#69); 404 for an unknown story."""
     query = select(
         stories.c.settings,
         stories.c.turn_concurrency,
@@ -171,6 +187,8 @@ async def read_concurrency(db: AsyncEngine | AsyncConnection, story_id: str) -> 
         mode=settings.turn_concurrency,
         queue_max=queue_max or DEFAULT_TURN_QUEUE_MAX,
         turn_deadline=settings.turn_deadline,
+        max_model_calls_per_turn=settings.max_model_calls_per_turn,
+        deployment_max_calls=turn_budget_defaults(row.deployment).max_model_calls_per_turn,
     )
 
 

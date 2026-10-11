@@ -22,12 +22,16 @@ class RequestContext:
     - ``idempotency_key``: the caller's key, or ``None`` (the server generates one, #61).
     - ``expected_revision``: the timeline revision the caller expects (#47), or ``None``.
     - ``viewpoint``: the requested output viewpoint (#59), or ``None`` for the default.
+    - ``received_at``: when the request arrived (``time.monotonic()``, stamped by the REST
+      app's first middleware); a turn's deadline and ``elapsed_ms`` start here (#69). ``None``
+      (a library call): they start when the Engine method is entered.
     """
 
     principal: str | None = None
     idempotency_key: str | None = None
     expected_revision: int | None = None
     viewpoint: str | None = None
+    received_at: float | None = None
 
 
 def principal_problem(value: str) -> str | None:

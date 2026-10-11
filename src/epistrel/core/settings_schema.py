@@ -4,9 +4,9 @@
 (``turn_concurrency``, ``default_output_viewpoint``); #57 adds the Lite generation settings
 (``generation_settings``, ``lite_window_messages``, overriding the deployment's
 ``LiteDefaults``); #63 adds ``turn_queue_max`` and ``turn_deadline`` (``turn_concurrency`` and
-``turn_queue_max`` live in their own ``stories`` columns) and #64 tags every setting
-interpretive or prospective. Settings are read when an operation starts (prospective
-settings never affect work already in flight).
+``turn_queue_max`` live in their own ``stories`` columns), #64 tags every setting
+interpretive or prospective, and #69 adds ``max_model_calls_per_turn``. Settings are read
+when an operation starts (prospective settings never affect work already in flight).
 
 **Classification (FR-CONC-15, #64).** Every leaf setting of ``StorySettings`` and
 ``DeploymentSettings`` carries ``Annotated[..., ConfigClass.interpretive]`` or
@@ -166,8 +166,26 @@ DEFAULT_TURN_QUEUE_MAX = 5
 DEFAULT_TURN_DEADLINE_S = 45.0
 """``turn_deadline``'s default in seconds (NFR-PERF-6)."""
 MAX_TURN_DEADLINE_S = 600.0
+MIN_CALLS_PER_TURN = 1
+MIN_DEADLINE_S = 0.5
+"""The shortest ``deadline_s`` a request's own budget may ask for (#69)."""
+MAX_CALLS_PER_TURN = 50
+LITE_BASE_CALLS = 9
+"""NFR-PERF-6's ``4 + 5 per primary`` with one primary: the Lite default cap is this plus G."""
 COLUMN_SETTINGS = ("turn_concurrency", "turn_queue_max")
 """Settings that live in their own ``stories`` columns (#63) rather than in ``settings``."""
+
+
+class TurnBudgetDefaults(BaseModel):
+    """The deployment's default ``max_model_calls_per_turn`` (NFR-PERF-6; #69), stored under
+    ``deployment_state.settings``; a story's own value overrides it. ``None``: the Lite formula,
+    ``4 + 5 + G`` (one primary plus the story's model-assisted guardrail calls). Prospective."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    max_model_calls_per_turn: Annotated[int | None, PROSPECTIVE] = Field(
+        default=None, ge=MIN_CALLS_PER_TURN, le=MAX_CALLS_PER_TURN
+    )
 
 
 class TurnQueueDefaults(BaseModel):
@@ -214,6 +232,14 @@ class StorySettings(BaseModel):
     """A turn's wall-clock deadline in seconds (NFR-PERF-6; #69 adds the call budget). The turn
     slot's lease is ``turn_deadline`` + 10 s, and a queued request waits at most this long
     before it is answered 202. Prospective."""
+
+    max_model_calls_per_turn: Annotated[int | None, PROSPECTIVE] = Field(
+        default=None, ge=MIN_CALLS_PER_TURN, le=MAX_CALLS_PER_TURN
+    )
+    """The most model calls one turn may make (NFR-PERF-6; #69), 1 to 50. ``None``: the
+    deployment's default, else the Lite formula ``4 + 5 + G``. A cap below one generation plus
+    the story's model-assisted guardrail calls refuses every turn with 422
+    ``budget_below_safety_minimum``. Prospective."""
 
     default_output_viewpoint: Annotated[str | None, INTERPRETIVE] = None
     """The viewpoint a read or respond falls back to when the request names none and has no
@@ -309,6 +335,7 @@ class DeploymentSettings(
     StoryTextCaps,
     IdempotencySettings,
     TurnQueueDefaults,
+    TurnBudgetDefaults,
     StructuredSettings,
     GuardrailSettings,
 ):

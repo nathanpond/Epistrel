@@ -9,7 +9,10 @@ need ``model_config``: the stub only reports the configured model name when a da
 
 Every call goes through ``send``, which is where provider failures stop (FR-MODEL-6, NFR-REL-3):
 the call is bounded by its timeout (the purpose's ``params.timeout``, default 60 s) and by the
-turn's deadline when a ``TurnBudget`` is passed, whichever is sooner, and debits that budget;
+turn's deadline when a ``TurnBudget`` is passed, whichever is sooner (``TurnBudget.clamp``), and
+debits that budget: a first attempt may spend a reserved slot, a retry (``attempt`` > 1) only
+the unreserved remainder, and a call the budget cannot afford is not made (``BudgetExhausted``,
+#69);
 every SDK exception becomes a ``ModelError`` (``errors.map_provider_error``). An unstructured
 call that answers only whitespace raises ``EmptyCompletion``. Structured results go through
 ``structured_call`` (``structured.py``), which never returns a partially parsed object.
@@ -235,17 +238,18 @@ class ModelAccessLayer:
         is recorded as ``invalid_output`` and still returned for the caller to handle."""
         get_delivered(purpose)
         params = params or ModelParams()
+        first = attempt == 1
         if budget is not None:
             if budget.expired():
                 raise ModelUnavailable(purpose, "deadline")
-            if not budget.can_afford():
+            # A first attempt may spend a reserved slot; a retry only the unreserved remainder.
+            affordable = budget.can_afford() if first else budget.can_afford_unreserved()
+            if not affordable:
                 raise BudgetExhausted(purpose, budget.used, budget.max_calls)
         limit, reason = await self._timeout(purpose, params), "timeout"
-        remaining = budget.remaining_s() if budget is not None else None
-        if remaining is not None and remaining < limit:
-            limit, reason = remaining, "deadline"
         if budget is not None:
-            budget.debit()
+            limit, reason = budget.clamp(limit)
+            budget.debit(claim=first)
         model = await self._model_name(purpose)
         started = time.perf_counter()
         bound = asyncio.timeout(limit)
@@ -268,6 +272,8 @@ class ModelAccessLayer:
                 raise
             if _attempted(mapped):
                 self._record_failure(purpose, model, attempt, started, mapped)
+            elif budget is not None:
+                budget.refund()  # nothing was sent: the budget counts recorded calls only
             # ``from None``: the provider's message can echo the prompt (invariant 3).
             raise mapped from None
         outcome: Outcome = "ok" if usable is None or usable(result) else "invalid_output"

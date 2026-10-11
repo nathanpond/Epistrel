@@ -56,6 +56,7 @@ def get_request_context(
         idempotency_key=key,
         expected_revision=expected_revision,
         viewpoint=request.query_params.get("viewpoint"),
+        received_at=getattr(request.state, "received_at", None),
     )
 
 

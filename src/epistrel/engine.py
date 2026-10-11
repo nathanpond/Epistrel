@@ -56,7 +56,13 @@ from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.turn_gate import Concurrency, QueueItem
 from epistrel.core.viewpoint import is_omniscient, resolve_viewpoint, with_requested
 from epistrel.orchestrator import queue_drainer
-from epistrel.orchestrator.budget import DEFAULT_TURN_DEADLINE_S, TurnBudget
+from epistrel.orchestrator.budget import (
+    DEFAULT_TURN_DEADLINE_S,
+    GUARDRAIL_INPUT,
+    GUARDRAIL_OUTPUT,
+    TurnBudget,
+    effective_max_calls,
+)
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.schemas import (
     RegenerateRequest,
@@ -140,6 +146,17 @@ result type, the REST status it answers with, and the revision a reference carri
 
 IDEMPOTENCY_WAIT_S = DEFAULT_TURN_DEADLINE_S + idempotency.WAIT_SLACK_S
 """How long a duplicate waits for its original (the turn deadline + 5 s), then 503."""
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class EffectiveBudget:
+    """A story's effective turn budget (#69; ``GET /stories/{id}/settings``)."""
+
+    max_model_calls_per_turn: int
+    source: str
+    turn_deadline: float
+    reserved: dict[str, int]
+    minimum_required: int
 
 
 def _body(model: Any) -> Any:
@@ -418,6 +435,7 @@ class Engine:
                 operation_id=item.operation_id,
                 principal=item.principal,
                 concurrency=concurrency,
+                planned=item.request.get("turn_budget"),
             ),
         )
 
@@ -582,6 +600,10 @@ class Engine:
         context = await policy_store.guard_context(self.db, story_id)
         if reserve_output_for is not None:
             reserved += output_gate.output_reservation(context, reserve_output_for)
+        deadline_s = DEFAULT_TURN_DEADLINE_S
+        if budget is None:
+            # A gate outside a turn runs under the story's ``turn_deadline`` (#69).
+            deadline_s = (await turn_gate.read_concurrency(self.db, story_id)).turn_deadline
         return await input_gate.enforce_input(
             self.db,
             self.models,
@@ -593,6 +615,7 @@ class Engine:
             budget=budget,
             actor=actor,
             reserved=reserved,
+            deadline_s=deadline_s,
         )
 
     async def respond(
@@ -823,6 +846,30 @@ class Engine:
         story = await stories.get_story(self.db, story_id)
         guardrails = await policy_store.story_guardrails(self.db, story_id)
         return StorySettings.from_row(story.settings), guardrails
+
+    async def effective_budget(self, ctx: RequestContext, story_id: str) -> EffectiveBudget:
+        """The turn budget the story's next turn would plan with (#69): the call cap and where
+        it comes from (``story``, ``deployment`` or ``formula``), ``turn_deadline``, the
+        guardrail calls G it reserves (the input check of a turn whose actor has no
+        character-scoped input policy) and the safety minimum ``1 + G``."""
+        concurrency = await turn_gate.read_concurrency(self.db, story_id)
+        guardrails = await policy_store.story_guardrails(self.db, story_id)
+        reserved = {
+            GUARDRAIL_INPUT: guardrails.calls_input,
+            GUARDRAIL_OUTPUT: guardrails.calls_output,
+        }
+        cap, source = effective_max_calls(
+            concurrency.max_model_calls_per_turn,
+            concurrency.deployment_max_calls,
+            sum(reserved.values()),
+        )
+        return EffectiveBudget(
+            max_model_calls_per_turn=cap,
+            source=source,
+            turn_deadline=concurrency.turn_deadline,
+            reserved=reserved,
+            minimum_required=1 + sum(reserved.values()),
+        )
 
     async def update_story_settings(
         self, ctx: RequestContext, story_id: str, patch: Mapping[str, Any]

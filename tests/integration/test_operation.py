@@ -82,7 +82,7 @@ async def test_non_turn_operations_never_allocate_a_turn(engine: AsyncEngine) ->
         story,
         OperationKind.CONSOLIDATION,
         "lite_summary_segment",
-        {"text": "s", "through_turn": 1},
+        {"text": "s", "covers_from": 1, "covers_to": 1},
         turn=1,
     )
     unpositioned = await record(

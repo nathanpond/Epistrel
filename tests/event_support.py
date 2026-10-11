@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Mapping
 from typing import Any
 
@@ -16,6 +17,21 @@ from epistrel.core.views import Event
 
 STORY_SETUP_KIND = OperationKind.GENESIS
 NARRATIVE_CATEGORIES = frozenset({"narrative_state", "input"})
+
+_SEGMENT_LEVELS = itertools.count(1)
+
+
+def segment_payload(text: str, through: int, *, covers_from: int | None = None) -> dict[str, Any]:
+    """A synthetic ``lite_summary_segment`` payload (#72's shape) over ``covers_from`` (default
+    ``through``)..``through``. Each gets its own ``level`` so repeated synthetic segments over
+    the same turns never collide on the table's unique position; they name no sources."""
+    start = covers_from if covers_from is not None else max(1, through)
+    return {
+        "text": text,
+        "covers_from": start,
+        "covers_to": max(start, through),
+        "level": next(_SEGMENT_LEVELS),
+    }
 
 
 async def new_story(engine: AsyncEngine, principal: str = "p-test") -> str:
@@ -86,7 +102,7 @@ async def interleave(engine: AsyncEngine, story_id: str, after_turn: int) -> Non
         story_id,
         OperationKind.CONSOLIDATION,
         "lite_summary_segment",
-        {"text": f"summary through {after_turn}", "through_turn": after_turn},
+        segment_payload(f"summary through {after_turn}", after_turn),
         turn=after_turn,
     )
 

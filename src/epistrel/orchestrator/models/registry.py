@@ -149,11 +149,19 @@ class GuardrailCheckInputs(InputSchema):
 
 
 class LiteSummaryInputs(InputSchema):
-    """Old messages to fold into the rolling summary, and the segments already written."""
+    """One rolling-summary call (FR-LITE-2; #72). ``mode`` ``compress``: fold ``messages`` (the
+    chunk's transcript rows) into a segment; ``merge``: fold ``merge_segments`` (adjacent
+    segments, oldest first) into one coarser segment. ``prior_segments`` is the segment just
+    before, as context only; ``covers`` names the turns (``Turns a-b``); ``target_tokens`` is
+    the length asked for."""
 
-    messages: list[TranscriptLine]
+    messages: list[TranscriptLine] = Field(default_factory=list)
     prior_segments: Annotated[list[str], C.ROLLING_SUMMARY] = Field(default_factory=list)
     character_names: Annotated[list[str], C.CHARACTER_DEFINITION] = Field(default_factory=list)
+    mode: Annotated[Literal["compress", "merge"], C.ROLLING_SUMMARY] = "compress"
+    merge_segments: Annotated[list[str], C.ROLLING_SUMMARY] = Field(default_factory=list)
+    covers: Annotated[str, C.ROLLING_SUMMARY] = ""
+    target_tokens: Annotated[int, C.ROLLING_SUMMARY] = 400
 
 
 class GuardrailVerdict(BaseModel):

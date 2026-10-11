@@ -14,9 +14,10 @@ FR-CONC-8; #70). Postgres only — no broker (invariant 5).
   ``attempt`` (fencing the lost claim); every worker runs it each poll tick and in its start-up
   recovery pass. A reclaim does not count as a failure.
 - ``commit_job`` commits a handler's output as one ``maintenance``/``consolidation`` operation
-  (story-less jobs: a story-less ``maintenance`` operation), which bumps no revision. Its commit
-  transaction, under the story lock, first checks the job row still carries the claim's token
-  (else the commit is **refused**: ``REFUSED``), then rechecks every declared input
+  (story-less jobs: a story-less ``maintenance`` operation), which bumps no revision, plus any
+  ``positioned`` operations of the same kind (#72's summary segments) in the same transaction.
+  Its commit transaction, under the story lock, first checks the job row still carries the
+  claim's token (else the commit is **refused**: ``REFUSED``), then rechecks every declared input
   (``core.input_versions``): one that is gone, inactive or changed drops the output (nothing is
   written, the operation ends ``abandoned``) and puts the same row back to ``queued`` due now
   (``DROPPED``; not a failure). Otherwise the output is written and the job is ``done``.
@@ -338,13 +339,34 @@ async def commit_job(
     declared = dict(input_versions)
     if not handler.records_operation:
         return await _finish_plain(db, job, output, declared)
+    if output.positioned and job.story_id is None:
+        raise ValueError(f"job kind {job.kind!r} has no story to position operations in")
     op = Operation(
         db,
         story_id=job.story_id,
         kind=handler.operation_kind,
         principal=SYSTEM_PRINCIPAL,
+        source_window=output.source_window,
     )
     await op.begin()
+    extra: list[Operation] = []
+    try:
+        for positioned in output.positioned:
+            more = Operation(
+                db,
+                story_id=job.story_id,
+                kind=handler.operation_kind,
+                principal=SYSTEM_PRINCIPAL,
+                turn=positioned.turn,
+                operation_id=positioned.operation_id,
+                source_window=positioned.source_window,
+            )
+            await more.begin()
+            extra.append(more)
+    except BaseException as exc:
+        for begun in (op, *extra):
+            await begun.settle(exc)
+        raise
 
     async def guard(conn: AsyncConnection) -> None:
         token = await conn.scalar(select(jobs.c.attempt).where(_held(job)).with_for_update())
@@ -377,12 +399,17 @@ async def commit_job(
         if output.stage is not None:
             output.stage(op)
         op.add_commit_step(finish)
+        for more, positioned in zip(extra, output.positioned, strict=True):
+            positioned.stage(more)
         async with db.connect() as conn, conn.begin():
             await conn.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
             await op.write_in(conn)
+            for more in extra:
+                await more.write_in(conn)
     except BaseException as exc:
         error = exc
-    await op.settle(error)
+    for written in (op, *extra):
+        await written.settle(error)
     if error is None:
         return CommitOutcome.COMMITTED
     if isinstance(error, Fenced):

@@ -42,7 +42,8 @@ NARRATOR = "Narrator"
 PLAYER = "Player"
 
 
-def _line(row: WindowRow, names: Mapping[str, str]) -> TranscriptLine:
+def transcript_line(row: WindowRow, names: Mapping[str, str]) -> TranscriptLine:
+    """One transcript row as a ``TranscriptLine`` (the window, and #72's summary chunks)."""
     if row.role == "user":
         name = names.get(row.actor_character_id or "", PLAYER)
         say, do = row.say, row.do
@@ -78,7 +79,7 @@ def assemble(
         ],
         pinned_memories=list(inputs.pins),
         summary_segments=list(inputs.segments),
-        recent_messages=[_line(row, names) for row in inputs.window],
+        recent_messages=[transcript_line(row, names) for row in inputs.window],
         voiced_characters=[c.name for c in cast.render],
         policy_constraints=list(constraints),
         player_input=PlayerInput(name=cast.actor.name, say=say, do=do),
@@ -100,4 +101,4 @@ def prompt_hash(messages: Sequence[Message]) -> str:
     return hash_member([m.model_dump() for m in messages])
 
 
-__all__ = ["assemble", "model_params", "prompt_hash"]
+__all__ = ["assemble", "model_params", "prompt_hash", "transcript_line"]

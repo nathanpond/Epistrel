@@ -17,7 +17,14 @@ from epistrel.core.projections import rebuild
 from epistrel.core.views import corrected_history
 from tests.auth_support import auth_settings
 from tests.concurrency_support import set_instructions, set_pins
-from tests.event_support import execute_in_tx, new_story, play_turn, record, scalar
+from tests.event_support import (
+    execute_in_tx,
+    new_story,
+    play_turn,
+    record,
+    scalar,
+    segment_payload,
+)
 from tests.projection_support import snapshot, swap, truncate, untruncate
 
 BEAT_TYPES = frozenset({"player_input", "message_rendered", "think", "latent"})
@@ -94,7 +101,7 @@ async def _perform(engine: AsyncEngine, story_id: str, action: Action, n: int) -
             story_id,
             OperationKind.CONSOLIDATION,
             "lite_summary_segment",
-            {"text": f"summary {n}", "through_turn": through},
+            segment_payload(f"summary {n}", through),
             turn=through,
         )
     elif name == "truncate":
@@ -127,7 +134,8 @@ async def _perform(engine: AsyncEngine, story_id: str, action: Action, n: int) -
 
 
 async def _corrupt(engine: AsyncEngine, story_id: str) -> None:
-    """Change a stored transcript row, add a row the log never produced, and break the head."""
+    """Change a stored transcript row, add a row the log never produced, break the head, and
+    corrupt any summary segment rows (#72)."""
     await execute_in_tx(
         engine,
         (
@@ -150,6 +158,11 @@ async def _corrupt(engine: AsyncEngine, story_id: str) -> None:
         (
             "UPDATE story_texts SET custom_instructions = 'corrupted', "
             'pinned = \'[{"id": "x", "text": "never pinned"}]\' WHERE story_id = :s',
+            {"s": story_id},
+        ),
+        (
+            "UPDATE lite_summary_segments SET text = 'corrupted', membership = 'dormant' "
+            "WHERE story_id = :s",
             {"s": story_id},
         ),
     )
@@ -191,6 +204,7 @@ async def _scenario(url: str, steps: list[Action]) -> None:
             "transcript_messages": len(incremental.transcript),
             "story_heads": 1,
             "story_texts": 1,
+            "lite_summary_segments": len(incremental.segments),
         }
         # The corrupted row is replaced and the invented row is gone, not kept.
         assert all("corrupted" not in row and BOGUS_ID not in row for row in rebuilt.transcript)

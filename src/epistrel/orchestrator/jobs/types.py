@@ -67,14 +67,31 @@ Stage = Callable[[Operation], None]
 
 
 @dataclass(frozen=True, slots=True)
+class PositionedOutput:
+    """One more operation a job commits with its own (#72): the same kind, positioned at
+    ``turn``'s active variant (so its records follow that turn's membership), with its id fixed
+    up front (another output may name it as a source) and its ``source_window``."""
+
+    turn: int
+    stage: Stage
+    operation_id: str
+    source_window: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class JobOutput:
     """A handler's output: ``stage`` writes it in the job's operation; ``result`` (JSON, ids and
     counts only, never story text) is stored on the job row. ``result_of`` builds the result
-    inside the commit instead (e.g. counts a commit step produced)."""
+    inside the commit instead (e.g. counts a commit step produced). ``positioned`` are further
+    operations committed in the same transaction, after the job's own and in order, under the
+    same fencing and input recheck (#72: one per summary segment). ``source_window`` is the job
+    operation's declared window (FR-STORE-27)."""
 
     stage: Stage | None = None
     result: dict[str, Any] | None = None
     result_of: Callable[[], dict[str, Any]] | None = None
+    positioned: tuple[PositionedOutput, ...] = ()
+    source_window: dict[str, Any] | None = None
 
 
 Run = Callable[[JobContext], Coroutine[Any, Any, JobOutput]]
@@ -98,4 +115,12 @@ class JobHandler:
     records_operation: bool = True
 
 
-__all__ = ["ClaimedJob", "JobContext", "JobHandler", "JobOutput", "Run", "Stage"]
+__all__ = [
+    "ClaimedJob",
+    "JobContext",
+    "JobHandler",
+    "JobOutput",
+    "PositionedOutput",
+    "Run",
+    "Stage",
+]

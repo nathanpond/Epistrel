@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep
-from epistrel.core.history import DEFAULT_LIMIT, History, HistoryItem, TurnSummary
+from epistrel.core.history import DEFAULT_LIMIT, History, HistoryItem, SummaryItem, TurnSummary
 from epistrel.core.variants import ChainRef
 
 router = APIRouter(tags=["stories"])
@@ -32,7 +32,9 @@ HISTORY_DESCRIPTION = (
     "/stories/{id}/variants`), e.g. a dormant continuation or a regenerated reply's earlier "
     "variant: the active history up to where it parts, then that chain's turns; `as_of` "
     "defaults to its tip. A chain that names no variant, or continues in more than one way, is "
-    "409 `unknown_chain`."
+    "409 `unknown_chain`.\n\n`include_summary=1` adds `summary`: the Lite rolling-summary "
+    "segments the prompt includes now (wholly at or before `as_of`), oldest first, each "
+    "`{level, covers_from, covers_to, text, operation_id}`; they are never history items."
 )
 
 
@@ -82,9 +84,24 @@ class TurnSummaryModel(BaseModel):
         return cls.model_validate(summary, from_attributes=True)
 
 
+class SummarySegmentModel(BaseModel):
+    """A rolling-summary segment the prompt includes (#72)."""
+
+    level: int
+    covers_from: int
+    covers_to: int
+    text: str
+    operation_id: str
+
+    @classmethod
+    def of(cls, item: SummaryItem) -> SummarySegmentModel:
+        return cls.model_validate(item, from_attributes=True)
+
+
 class HistoryResponse(BaseModel):
     items: list[ItemModel]
     audit: list[ItemModel] | None = None
+    summary: list[SummarySegmentModel] | None = None
     turns: list[TurnSummaryModel]
     output_viewpoint: str
     audience_filter: Literal["none", "co_location", "full"]
@@ -94,10 +111,14 @@ class HistoryResponse(BaseModel):
 
     @classmethod
     def of(cls, found: History) -> HistoryResponse:
-        audit = {} if found.audit is None else {"audit": [item_model(i) for i in found.audit]}
+        extra: dict[str, Any] = {}
+        if found.audit is not None:
+            extra["audit"] = [item_model(i) for i in found.audit]
+        if found.summary is not None:
+            extra["summary"] = [SummarySegmentModel.of(s) for s in found.summary]
         return cls(
             items=[item_model(i) for i in found.items],
-            **audit,
+            **extra,
             turns=[TurnSummaryModel.of(t) for t in found.turns],
             output_viewpoint=found.output_viewpoint,
             audience_filter=found.audience_filter,
@@ -124,6 +145,7 @@ async def history(
     actor_character_id: str | None = None,
     include_audit: bool = False,
     variant: str | None = None,
+    include_summary: bool = False,
 ) -> HistoryResponse:
     found = await engine.history(
         ctx,
@@ -134,5 +156,6 @@ async def history(
         before_turn=before_turn,
         include_audit=include_audit,
         variant=None if variant is None else ChainRef.parse(variant),
+        include_summary=include_summary,
     )
     return HistoryResponse.of(found)

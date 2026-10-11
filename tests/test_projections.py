@@ -10,6 +10,7 @@ from epistrel.core.enums import Membership, OperationKind, Provenance
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.projections import (
     HEADS,
+    LITE_SUMMARY,
     TRANSCRIPT,
     LogEvent,
     Rows,
@@ -58,6 +59,7 @@ def test_m2_projections_are_registered_once() -> None:
         "transcript_messages",
         "story_heads",
         "story_texts",
+        "lite_summary_segments",
     ]
     with pytest.raises(ValueError, match="already registered"):
         register_projection(HeadsProjection())
@@ -100,10 +102,17 @@ def test_events_a_projection_does_not_know_are_no_ops() -> None:
         for event in (
             log_event("config_changed", {"setting": "s"}, kind=OperationKind.CONTROL, turn=None),
             log_event("guardrail_output_rejected", {"text": "x", "reason": "r"}),
-            log_event("lite_summary_segment", {"text": "x", "through_turn": 1}, turn=None),
+            log_event(
+                "lite_summary_segment",
+                {"text": "x", "covers_from": 1, "covers_to": 1},
+                kind=OperationKind.CONSOLIDATION,
+                turn=None,
+            ),
         ):
             if projection is HEADS and event.kind is OperationKind.TURN:
                 continue  # any event of a turn operation positions the head
+            if projection is LITE_SUMMARY and event.type == "lite_summary_segment":
+                continue  # its own event type (#72)
             projection.apply(rows, event)
         assert len(rows) == 0, projection.name
 

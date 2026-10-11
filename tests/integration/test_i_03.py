@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.enums import OperationKind
 from epistrel.core.views import Event, corrected_history
-from tests.event_support import new_story, play_turn, record
+from tests.event_support import new_story, play_turn, record, segment_payload
 from tests.projection_support import truncate
 
 TURNS = 4
@@ -30,7 +30,7 @@ async def _segment(engine: AsyncEngine, story: str, covers_to: int, text: str) -
         story,
         OperationKind.CONSOLIDATION,
         "lite_summary_segment",
-        {"text": text, "through_turn": covers_to},
+        segment_payload(text, covers_to),
         turn=covers_to,
     )
 

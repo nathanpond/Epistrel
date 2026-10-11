@@ -33,6 +33,7 @@ from tests.respond_support import (
     story_events,
 )
 from tests.story_support import WRITE, count
+from tests.summary_support import run_due_jobs
 
 
 @pytest.fixture
@@ -208,9 +209,12 @@ async def test_empty_reply_is_asked_again_once(
 async def test_window_size_counts_transcript_rows(
     stub_settings: Settings, engine: AsyncEngine
 ) -> None:
-    """A story's ``lite_window_messages`` bounds the verbatim window to its latest rows."""
+    """A story's ``lite_window_messages`` bounds the verbatim window through the rolling summary
+    (#72): no row is dropped before a segment covers it, and once the summary job has run the
+    prompt carries the segments, then every row after them."""
     async with respond_client(stub_settings, engine) as (client, lib):
-        story, ids = await new_story(client, settings={"lite_window_messages": 3})
+        settings = {"lite_window_messages": 3, "lite_summary_chunk": 2}
+        story, ids = await new_story(client, settings=settings)
         for said in ("one", "two", "three"):
             await played(client, story, body(ids[PLAYER], said))
         stub = lib.models.stub
@@ -218,8 +222,19 @@ async def test_window_size_counts_transcript_rows(
         await played(client, story, body(ids[PLAYER], "four"))
         (call,) = generation_calls(stub)
         window = [m for m in call.messages[1:-1]]
-        assert [m.role for m in window] == ["assistant", "user", "assistant"]
-        assert window[1].content == f'{PLAYER}: "three"'
+        assert [m.role for m in window] == ["user", "assistant"] * 3  # nothing summarised yet
+        assert window[0].content == f'{PLAYER}: "one"'
+
+        await run_due_jobs(engine, lib.models, story)  # turns 1 and 2 are older than the window
+        stub.reset()
+        await played(client, story, body(ids[PLAYER], "five"))
+        (call,) = generation_calls(stub)
+        window = [m for m in call.messages[1:-1]]
+        assert [m.role for m in window] == ["user", "assistant"] * 2
+        assert window[0].content == f'{PLAYER}: "three"'
+        system = call.messages[0].content
+        assert "## Earlier in the story\nTurn 1: " in system
+        assert "\nTurn 2: " in system
 
 
 async def test_pins_edit_during_generation_regenerates(

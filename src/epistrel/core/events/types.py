@@ -245,9 +245,26 @@ class GuardrailOutputRejected(EventPayload):
     confidence: float | None = None
 
 
+class SummarySource(EventPayload):
+    """One input a summary segment was made from (FR-STORE-27; #72): a turn operation (level 0)
+    or a child segment's operation (a merge), with the membership it had when it was read."""
+
+    operation_id: str
+    membership: str
+
+
 @register("lite_summary_segment", category=EventCategory.DERIVED)
 class LiteSummarySegment(EventPayload):
-    """A rolling-summary segment over earlier turns (shell; #72 extends)."""
+    """A Lite rolling-summary segment (FR-LITE-2, FR-STORE-27; #72): the summary of turns
+    ``covers_from``..``covers_to``. Level 0 summarises transcript rows; level ``n + 1`` merges
+    adjacent segments. Its operation (``consolidation``) is positioned at ``covers_to``, so the
+    segment follows that turn's membership. ``source_versions`` are its inputs as read;
+    ``model`` and ``prompt_hash`` say what produced it (FR-MEM-10)."""
 
     text: str
-    through_turn: int
+    covers_from: int = Field(ge=1)
+    covers_to: int = Field(ge=1)
+    level: int = Field(default=0, ge=0)
+    source_versions: tuple[SummarySource, ...] = ()
+    model: str | None = None
+    prompt_hash: str | None = None

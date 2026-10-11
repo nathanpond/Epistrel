@@ -26,7 +26,14 @@ from epistrel.core.enums import (
 )
 from epistrel.core.errors import StoryNotFound
 from epistrel.core.events.registry import validate
-from epistrel.core.projections.base import Key, LogEvent, Row, Rows, registered_projections
+from epistrel.core.projections.base import (
+    Key,
+    LogEvent,
+    Projection,
+    Row,
+    Rows,
+    registered_projections,
+)
 from epistrel.core.tables import events, operations, stories
 
 
@@ -56,8 +63,11 @@ async def apply_events(
         await _write_difference(conn, rows, before)
 
 
-async def fold(conn: AsyncConnection, story_id: str) -> dict[str, Rows]:
-    """Every projection of ``story_id`` as the log says it should be (nothing is written)."""
+async def fold(
+    conn: AsyncConnection, story_id: str, only: Sequence[Projection] | None = None
+) -> dict[str, Rows]:
+    """Every projection of ``story_id`` (or ``only`` these) as the log says it should be
+    (nothing is written)."""
     found = await conn.execute(
         select(events, operations.c.kind, operations.c.membership)
         .join(operations, operations.c.operation_id == events.c.operation_id)
@@ -87,7 +97,7 @@ async def fold(conn: AsyncConnection, story_id: str) -> dict[str, Rows]:
         for row in found
     ]
     folded: dict[str, Rows] = {}
-    for projection in registered_projections():
+    for projection in only if only is not None else registered_projections():
         rows = Rows(projection.table)
         for event in log:
             projection.apply(rows, event)

@@ -16,7 +16,10 @@ independent copy under new ids, isolated from the source from the moment it exis
   SELECT`` unless ``stories.STORY_TABLES_NOT_COPIED`` names it, so a new table is copied by
   default: a row follows its operation when it has an ``operation_id`` column (``client_events``,
   #58), and otherwise belongs to the story (``characters``, ``policies``, ``story_texts``).
-  ``story_heads`` is rebuilt from the copied turns; story-scoped ``config_changes`` rows are
+  ``story_heads`` is rebuilt from the copied turns and ``lite_summary_segments`` by folding the
+  copied events (#72: segments positioned at or before N come along with their operations, and
+  the post-commit ``fork`` hook schedules the fork's summary job for the boundary); story-scoped
+  ``config_changes`` rows are
   copied too. Ids are remapped through a per-fork temp table: every column named ``*_id`` (and
   ``id``) and every string in a ``jsonb`` column that is a mapped id, alone or after a
   ``prefix:`` (``character:<id>``), takes the new id; unmapped values (ratings, client event
@@ -100,6 +103,7 @@ from epistrel.core.tables import (
     config_changes,
     content_ratings,
     events,
+    lite_summary_segments,
     operations,
     stories,
     story_heads,
@@ -120,8 +124,11 @@ SKIPPED_EVENT_TYPES: frozenset[str] = frozenset(
 """Control events that edit the source's own timeline or lifecycle; the fork starts without
 them (its membership is already flattened) and their operations are not copied."""
 
-STORY_TABLES_REBUILT: frozenset[str] = frozenset({story_heads.name})
-"""Story tables the fork rebuilds from the copied rows instead of copying."""
+STORY_TABLES_REBUILT: frozenset[str] = frozenset({story_heads.name, lite_summary_segments.name})
+"""Story tables the fork rebuilds from the copied rows instead of copying: ``story_heads`` from
+the copied turns, and ``lite_summary_segments`` (#72) by folding the copied events, so a copied
+segment's ``superseded`` state is the fork's own (a merged parent past the fork point is not
+copied, and its children are active in the fork)."""
 
 FORK_SUFFIX = " (fork)"
 
@@ -345,6 +352,7 @@ async def _copy(
         counts[table.name] = await _copy_table(conn, table, source, fork_id)
     counts[config_changes.name] = await _copy_config_changes(conn, source, fork_id)
     counts[story_heads.name] = await _rebuild_heads(conn, fork_id)
+    counts[lite_summary_segments.name] = await _rebuild_segments(conn, fork_id)
 
     cast = await _cast(conn, fork_id)
     origin = ForkOrigin(
@@ -598,6 +606,16 @@ async def _rebuild_heads(conn: AsyncConnection, fork_id: str) -> int:
     variants = {str(r.narrative_turn): int(r.turn_variant) for r in found}
     await conn.execute(insert(story_heads).values(**head_row(fork_id, variants)))
     return 1
+
+
+async def _rebuild_segments(conn: AsyncConnection, fork_id: str) -> int:
+    """The fork's ``lite_summary_segments`` rows, folded from its copied events (#72)."""
+    folded = (await projections.fold(conn, fork_id, only=(projections.LITE_SUMMARY,)))[
+        lite_summary_segments.name
+    ]
+    if len(folded):
+        await conn.execute(insert(lite_summary_segments), list(folded))
+    return len(folded)
 
 
 async def _cast(conn: AsyncConnection, fork_id: str) -> tuple[ForkCharacter, ...]:

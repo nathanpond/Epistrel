@@ -10,6 +10,13 @@ timestamps of their own: every value is a function of the log and the ``operatio
   variant of every turn (``{"<turn>": variant}``).
 - ``story_texts``: one row per story, created at genesis (#60): the pinned memories
   (``[{id, text}]`` in order) and the custom instructions (``""`` when never set).
+- ``lite_summary_segments`` (#72): one row per rolling-summary segment event, keyed by the event
+  id: the turns it covers (``covers_from``..``covers_to``), its ``level`` (0 summarises
+  transcript rows, ``n + 1`` merges level-``n`` or lower segments), the variant of the turn it is
+  positioned at, its text, the sources it was made from (``source_versions``: ``[{operation_id,
+  membership}]``) and its ``membership``: its operation's, except ``superseded`` while an
+  active merged segment holds it as a source. Unique on ``(story_id, covers_from, covers_to,
+  level, turn_variant)``.
 """
 
 from __future__ import annotations
@@ -55,4 +62,32 @@ story_texts = Table(
     Column("story_id", ulid_type(), primary_key=True),
     Column("pinned", JSONB, nullable=False),
     Column("custom_instructions", Text, nullable=False),
+)
+
+lite_summary_segments = Table(
+    "lite_summary_segments",
+    metadata,
+    Column("segment_id", ulid_type(), primary_key=True),
+    Column("story_id", ulid_type(), nullable=False),
+    Column("seq", BigInteger, nullable=False),
+    Column("operation_id", ulid_type(), nullable=False),
+    Column("covers_from", Integer, nullable=False),
+    Column("covers_to", Integer, nullable=False),
+    Column("level", SmallInteger, nullable=False),
+    Column("turn_variant", SmallInteger, nullable=True),
+    Column("text", Text, nullable=False),
+    Column("membership", pg_enum(Membership, "membership"), nullable=False),
+    Column("source_versions", JSONB, nullable=False),
+    Column("model", Text, nullable=True),
+    Column("prompt_hash", Text, nullable=True),
+    Index("ix_lite_summary_segments_story_covers", "story_id", "covers_to"),
+    Index(
+        "uq_lite_summary_segments_position",
+        "story_id",
+        "covers_from",
+        "covers_to",
+        "level",
+        "turn_variant",
+        unique=True,
+    ),
 )

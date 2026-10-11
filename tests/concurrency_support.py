@@ -26,7 +26,7 @@ from epistrel.core.concurrency import (
 from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.events import Operation
 from epistrel.core.ids import new_ulid
-from tests.event_support import play_turn, rows, scalar
+from tests.event_support import play_turn, rows, scalar, segment_payload
 
 TURN_PRINCIPAL = "p-player"
 EDIT_PRINCIPAL = "p-author"
@@ -188,7 +188,7 @@ async def summarise(engine: AsyncEngine, story_id: str, through: int) -> Operati
         engine,
         story_id,
         "lite_summary_segment",
-        {"text": f"summary through {through}", "through_turn": through},
+        segment_payload(f"summary through {through}", through),
         bumps_revision=False,
         kind=OperationKind.CONSOLIDATION,
         turn=through,

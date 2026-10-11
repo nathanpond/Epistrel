@@ -23,6 +23,10 @@ Reads the ``transcript_messages`` projection (joined to each beat's event for a 
 - **Variant** (``variant``, #66): read along another chain (``core.variants``): the active
   history up to where that chain parts from it, then the chain's own rows; ``as_of`` defaults to
   the chain's tip and runs from 0 to it. 409 ``unknown_chain`` as a swap's selector.
+- **Summary** (``include_summary``, #72): the rolling-summary segments a prompt includes now
+  (``core.summary.included_segments``, wholly at or before ``as_of``), oldest first, as a separate
+  ``summary`` array ``{level, covers_from, covers_to, text, operation_id}``; never mixed into
+  ``items`` (segments are derived, not beats). Read along the active chain only.
 - **Audit** (``include_audit``): ``omniscient`` only (403 ``omniscient_required`` otherwise,
   after every 422); the ``audit`` category events of the page's turns from active, committed
   operations, as items on the ``audit`` channel whose text is the payload's canonical JSON.
@@ -42,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.enums import EventCategory, Membership, OperationStatus
 from epistrel.core.errors import InvalidRequest, StoryNotFound
 from epistrel.core.settings_schema import StorySettings
+from epistrel.core.summary import included_segments
 from epistrel.core.tables import characters, events, operations, stories, transcript_messages
 from epistrel.core.variants import ChainRef, ChainSelection, chain_operations
 from epistrel.core.viewpoint import (
@@ -95,6 +100,17 @@ class TurnSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class SummaryItem:
+    """One included rolling-summary segment (``include_summary``, #72)."""
+
+    level: int
+    covers_from: int
+    covers_to: int
+    text: str
+    operation_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class History:
     items: list[HistoryItem]
     timeline_revision: int
@@ -104,6 +120,7 @@ class History:
     audit: list[HistoryItem] | None = None
     next_before_turn: int | None = None
     audience_filter: AudienceFilter = AUDIENCE_FILTER
+    summary: list[SummaryItem] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +142,7 @@ async def read_history(
     before_turn: int | None = None,
     include_audit: bool = False,
     variant: ChainRef | None = None,
+    include_summary: bool = False,
 ) -> History:
     """The corrected history of ``story_id`` for one viewpoint; see the module docstring."""
     async with _connection(db) as conn:
@@ -159,6 +177,14 @@ async def read_history(
         audit = (
             await _audit(conn, story_id, lower, upper, story.ages, chain) if include_audit else None
         )
+        summary = (
+            [
+                SummaryItem(s.level, s.covers_from, s.covers_to, s.text, s.operation_id)
+                for s in await included_segments(conn, story_id, before_turn=through + 1)
+            ]
+            if include_summary
+            else None
+        )
     return History(
         items=items,
         timeline_revision=story.timeline_revision,
@@ -167,6 +193,7 @@ async def read_history(
         turns=_turns(items),
         audit=audit,
         next_before_turn=next_before,
+        summary=summary,
     )
 
 

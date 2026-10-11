@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import summary
 from epistrel.core.config_changes import read_lite_defaults
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.errors import RevisionConflict, StoryNotFound, TimelineChanged
@@ -276,18 +277,13 @@ async def _window(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> An
 
 
 async def _segments(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
-    """Operation id and membership of every committed summary segment (#72 refines)."""
-    found = await conn.execute(
-        select(events.c.operation_id, operations.c.membership)
-        .join(operations, operations.c.operation_id == events.c.operation_id)
-        .where(
-            events.c.story_id == story_id,
-            events.c.type == "lite_summary_segment",
-            operations.c.status == OperationStatus.COMMITTED.value,
-        )
-        .order_by(events.c.seq)
-    )
-    return [list(row) for row in found.all()]
+    """The summary segments the prompt includes (#72, ``summary.included_segments``): segment
+    id and the turns it covers, oldest first. The text is fixed per segment, so the id says it;
+    the covered range also fixes where the verbatim window starts."""
+    return [
+        [s.segment_id, s.covers_from, s.covers_to]
+        for s in await summary.included_segments(conn, story_id)
+    ]
 
 
 async def _payloads(conn: AsyncConnection, story_id: str, event_type: str) -> list[Any]:

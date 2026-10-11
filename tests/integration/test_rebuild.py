@@ -77,6 +77,7 @@ async def test_rebuild_no_revision_bump(engine: AsyncEngine) -> None:
         "transcript_messages": 3 * 2,
         "story_heads": 1,
         "story_texts": 1,
+        "lite_summary_segments": 0,
     }
 
     await play_turn(engine, story_id, "turn 3, again")
@@ -157,6 +158,7 @@ def test_history_survives_dropping_and_rebuilding_projections(pg_url: str) -> No
             "transcript_messages": 6,
             "story_heads": 1,
             "story_texts": 1,
+            "lite_summary_segments": 0,
         }
         assert len(rebuilt.json()["operation_id"]) == 26
 

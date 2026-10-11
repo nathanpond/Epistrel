@@ -87,6 +87,8 @@ class SettingsPatch(BaseModel):
     minor_age_threshold: int | None = None
     lite_generation_defaults: GenerationSettings | None = None
     lite_window_messages: int | None = None
+    lite_summary_chunk: int | None = None
+    lite_summary_max_tokens: int | None = None
     max_pinned_memories: int | None = None
     max_custom_instructions_chars: int | None = None
     idempotency_result_window: int | None = None

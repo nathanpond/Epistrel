@@ -27,6 +27,7 @@ class Snapshot:
     transcript: tuple[str, ...]
     heads: tuple[str, ...]
     texts: tuple[str, ...] = ()
+    segments: tuple[str, ...] = ()
 
 
 async def snapshot(engine: AsyncEngine, story_id: str) -> Snapshot:
@@ -46,11 +47,22 @@ async def snapshot(engine: AsyncEngine, story_id: str) -> Snapshot:
             {"s": story_id},
         )
         heads_rows = tuple(heads)
-        texts = await conn.scalars(
-            text("SELECT to_jsonb(x)::text FROM story_texts x WHERE story_id = :s"),
+        texts = tuple(
+            await conn.scalars(
+                text("SELECT to_jsonb(x)::text FROM story_texts x WHERE story_id = :s"),
+                {"s": story_id},
+            )
+        )
+        segments = await conn.scalars(
+            text(
+                "SELECT to_jsonb(g)::text FROM lite_summary_segments g "
+                "WHERE story_id = :s ORDER BY segment_id"
+            ),
             {"s": story_id},
         )
-        return Snapshot(transcript=transcript_rows, heads=heads_rows, texts=tuple(texts))
+        return Snapshot(
+            transcript=transcript_rows, heads=heads_rows, texts=texts, segments=tuple(segments)
+        )
 
 
 async def truncate(engine: AsyncEngine, story_id: str, to_turn: int) -> Truncation | None:

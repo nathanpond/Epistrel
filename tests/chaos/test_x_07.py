@@ -233,17 +233,31 @@ async def _drain(engine: AsyncEngine, worker: Worker) -> int:
 @pytest.fixture
 async def registry(engine: AsyncEngine) -> AsyncIterator[jt.Probe]:
     """``tests/integration/test_jobs.py``'s handlers on an empty ``jobs`` table (its own
-    ``registry`` fixture, for the test that moved here)."""
+    ``registry`` fixture, for the test that moved here), with every recurring row due far in
+    the future so a recovery pass enqueues nothing of its own (a task registered since the
+    rows were last reconciled, like #72's ``lite_summary``, would otherwise be created due
+    now). Everything is put back afterwards."""
     jt.PROBE = jt.Probe()
     for handler in jt.TEST_HANDLERS:
         handlers.register(handler)
+    await timer_api.reconcile(engine)
+    async with engine.connect() as conn:
+        saved = [dict(r._mapping) for r in (await conn.execute(select(recurring_tasks))).all()]
     await _execute(engine, "DELETE FROM jobs")
+    await _execute(engine, "UPDATE recurring_tasks SET next_run_at = now() + interval '30 days'")
     try:
         yield jt.PROBE
     finally:
         for handler in jt.TEST_HANDLERS:
             handlers.unregister(handler.kind)
         await _execute(engine, "DELETE FROM jobs")
+        async with engine.begin() as conn:
+            for row in saved:
+                await conn.execute(
+                    update(recurring_tasks)
+                    .where(recurring_tasks.c.name == row["name"])
+                    .values(**{k: v for k, v in row.items() if k != "name"})
+                )
 
 
 @pytest.mark.chaos
@@ -300,7 +314,7 @@ async def test_x_07__jobs(engine: AsyncEngine, registry: jt.Probe, moved: Movabl
     assert lost.id == fenced
 
     def late(op: Operation) -> None:
-        op.append("lite_summary_segment", {"text": "late", "through_turn": 1})
+        op.append("lite_summary_segment", {"text": "late", "covers_from": 1, "covers_to": 1})
 
     output = JobOutput(stage=late)
     moved.advance(jt.LEASE_S + 1)

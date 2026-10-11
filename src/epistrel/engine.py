@@ -66,6 +66,7 @@ from epistrel.orchestrator.budget import (
     effective_max_calls,
 )
 from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
 from epistrel.orchestrator.jobs.handlers.rebuild import (
     REBUILD_KIND,
@@ -252,10 +253,12 @@ class Engine:
         ``all`` and ``worker`` modes run the job worker (``worker_concurrency`` loops) as an
         asyncio task: its recovery pass drains every turn queue a stopped process left behind
         (the ``turn_queue`` recovery hook), and its ``turn_queue_drain`` task re-checks every
-        30 s. ``api`` mode runs no worker and only drains the queues left behind once. Either
+        30 s. The ``lite_summary`` job calls models through this Engine's layer (#72). ``api``
+        mode runs no worker and only drains the queues left behind once. Either
         way it runs in the background, so an unreachable database never stops the server."""
         mode = mode or self.settings.mode
         turn_queue_job.bind(self.drainer.recover)
+        lite_summary_job.bind(self.models)
         if mode == "api":
             self._recovery = asyncio.create_task(self._recover())
             return
@@ -290,6 +293,8 @@ class Engine:
             unregister_recovery_hook(TURN_QUEUE_HOOK)
         if turn_queue_job.bound() == self.drainer.recover:
             turn_queue_job.bind(None)
+        if lite_summary_job.bound() is self.models:
+            lite_summary_job.bind(None)
         await self.drainer.stop()
 
     @property
@@ -567,6 +572,7 @@ class Engine:
         before_turn: int | None = None,
         include_audit: bool = False,
         variant: variants.ChainRef | None = None,
+        include_summary: bool = False,
     ) -> History:
         """The story's corrected history through ``as_of`` (default the head), produced for one
         output viewpoint (FR-RESP-12): ``viewpoint`` (or ``ctx.viewpoint``) when named, else
@@ -574,7 +580,8 @@ class Engine:
         resolves. A character viewpoint never gets ``think``/``latent`` beats; audit records
         (``include_audit``) need ``omniscient`` by name (403 ``omniscient_required``). Pages of
         whole turns, newest first, up to ``limit`` items; ``before_turn`` pages backwards.
-        ``variant`` reads along that chain instead of the active one (#66)."""
+        ``variant`` reads along that chain instead of the active one (#66);
+        ``include_summary`` adds the included rolling-summary segments (#72)."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         return await read_history(
             self.db,
@@ -586,6 +593,7 @@ class Engine:
             before_turn=before_turn,
             include_audit=include_audit,
             variant=variant,
+            include_summary=include_summary,
         )
 
     async def get_operation(

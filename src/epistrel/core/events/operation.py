@@ -54,7 +54,13 @@ from sqlalchemy import and_, delete, func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.orm import aliased
 
-from epistrel.core import config_dependencies, idempotency, projections, turn_gate
+from epistrel.core import (
+    config_dependencies,
+    idempotency,
+    projections,
+    summary_port,
+    turn_gate,
+)
 from epistrel.core.concurrency import (
     Abandon,
     ConfigRecheck,
@@ -167,6 +173,7 @@ class Operation:
         origin: Origin = "generated",
         operation_id: str | None = None,
         queued: bool = False,
+        source_window: dict[str, Any] | None = None,
     ) -> None:
         if principal is None or not principal.strip():
             raise PrincipalRequired("an operation needs a requesting principal")
@@ -213,6 +220,9 @@ class Operation:
         self.origin: Origin = origin
         """``ingested`` when a consumer recorded the operation's events (#58)."""
         self.requested_turn = turn
+        self.source_window = source_window
+        """A derivation's declared source window (FR-STORE-27; #72's summary segments:
+        ``{from_turn, to_turn}``), written with the row at ``begin()``."""
         self.provenance = provenance
         self.authority = authority
         self.status: OperationStatus | None = None
@@ -294,6 +304,7 @@ class Operation:
                         idempotency_key=self.idempotency_key,
                         viewpoint=self.viewpoint,
                         origin=self.origin,
+                        source_window=self.source_window,
                     )
                 )
         self.status = OperationStatus.IN_FLIGHT
@@ -455,6 +466,17 @@ class Operation:
             raise
         self.status = OperationStatus.COMMITTED
         self._wake()
+        await self._after_commit()
+
+    async def _after_commit(self) -> None:
+        """A committed turn may leave the Lite summary behind its window: ask the summary port
+        (#72) to schedule the story's job (logged, never raised)."""
+        if (
+            self.kind is OperationKind.TURN
+            and self.story_id is not None
+            and isinstance(self.db, AsyncEngine)
+        ):
+            await summary_port.notify(self.db, self.story_id)
 
     async def abandon(self) -> None:
         """Give up without writing anything (status ``abandoned``); ``attempts`` is kept."""
@@ -483,6 +505,7 @@ class Operation:
         if error is None:
             self.status = OperationStatus.COMMITTED
             self._wake()
+            await self._after_commit()
             return
         self._reset_position()
         if isinstance(error, RevalidationRequired):

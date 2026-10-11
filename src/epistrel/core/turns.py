@@ -3,9 +3,13 @@
 ``read_turn_inputs`` runs inside ``Operation.begin``'s REPEATABLE READ snapshot, so the inputs
 the prompt is built from are exactly the ones the read set hashed (FR-CONC-2,4). Every input is
 the Engine's own record (FR-RESP-2): the story rating's current prompt guidance (FR-RATE-4),
-the custom instructions and pinned memories (the ``story_texts`` projection, #60), the active
-rolling-summary segments, the cast's definitions, and the latest ``window_messages`` transcript
-rows (FR-LITE-1). Nothing the consumer sends as scene context is read here (FR-RESP-4).
+the custom instructions and pinned memories (the ``story_texts`` projection, #60), the
+rolling-summary segments a prompt includes (``core.summary.included_segments``, #72, each as a
+``Turns a-b:`` line), the cast's definitions, and every **verbatim** transcript row: each active
+row after the last turn the included segments cover, and never fewer than the latest
+``lite_window_messages`` rows (FR-LITE-1,2). The background summary job keeps the uncovered
+rows near ``lite_window_messages``; a row is never dropped from the prompt before a segment
+covers it. Nothing the consumer sends as scene context is read here (FR-RESP-4).
 
 ``read_turn_inputs(before_turn=N)`` reads the inputs of a regenerated turn N (#66): everything
 positioned at N or later (the variant being replaced) is left out, so the new variant is built
@@ -38,6 +42,7 @@ from epistrel.core.settings_schema import (
     GenerationSettings,
     StorySettings,
 )
+from epistrel.core.summary import PROMPT_CHANNELS, covered_to, included_segments
 from epistrel.core.tables import (
     characters,
     events,
@@ -49,8 +54,6 @@ from epistrel.core.tables import (
 
 INPUT_BEAT = 1
 REPLY_BEAT = 2
-PROMPT_CHANNELS = ("message", "narration")
-"""Transcript channels a Lite prompt carries; private channels never enter it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,28 +180,19 @@ def _before(column: Any, before_turn: int | None) -> Any:
     return or_(column.is_(None), column < before_turn)
 
 
-async def _payloads(
-    conn: AsyncConnection, story_id: str, event_type: str, before_turn: int | None = None
-) -> list[Any]:
-    found = await conn.scalars(
-        select(events.c.payload)
-        .join(operations, operations.c.operation_id == events.c.operation_id)
-        .where(
-            events.c.story_id == story_id,
-            events.c.type == event_type,
-            _active_committed(story_id),
-            _before(operations.c.narrative_turn, before_turn),
-        )
-        .order_by(events.c.seq)
-    )
-    return list(found)
-
-
-async def _window(
-    conn: AsyncConnection, story_id: str, limit: int, before_turn: int | None = None
+async def transcript_rows(
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    after_turn: int = 0,
+    through_turn: int | None = None,
+    before_turn: int | None = None,
 ) -> tuple[WindowRow, ...]:
+    """The story's active prompt-channel transcript rows positioned after ``after_turn`` (and
+    through ``through_turn`` / before ``before_turn`` when given), oldest first: a prompt's
+    verbatim window, or the rows a summary chunk is made from (#72)."""
     t = transcript_messages
-    found = await conn.execute(
+    query = (
         select(
             t.c.kind,
             t.c.actor_character_id,
@@ -214,14 +208,18 @@ async def _window(
             _before(t.c.narrative_turn, before_turn),
         )
         .order_by(
-            t.c.narrative_turn.desc().nulls_last(),
-            t.c.turn_variant.desc().nulls_last(),
-            t.c.seq.desc(),
+            t.c.narrative_turn.nulls_first(),
+            t.c.turn_variant.nulls_first(),
+            t.c.seq,
         )
-        .limit(limit)
     )
+    if after_turn > 0:
+        query = query.where(t.c.narrative_turn > after_turn)
+    if through_turn is not None:
+        query = query.where(t.c.narrative_turn <= through_turn)
+    found = await conn.execute(query)
     rows: list[WindowRow] = []
-    for r in reversed(found.all()):
+    for r in found.all():
         payload = r.payload or {}
         player = r.kind == "player_input"
         rows.append(
@@ -236,6 +234,23 @@ async def _window(
             )
         )
     return tuple(rows)
+
+
+async def _verbatim(
+    conn: AsyncConnection,
+    story_id: str,
+    covered: int,
+    window_messages: int,
+    before_turn: int | None,
+) -> tuple[WindowRow, ...]:
+    """Every row after the summary's ``covered`` turn, and never fewer than the latest
+    ``window_messages`` rows (FR-LITE-1: after a rewind leaves few uncovered rows, the latest N
+    are still verbatim, even where a segment also covers them)."""
+    uncovered = await transcript_rows(conn, story_id, after_turn=covered, before_turn=before_turn)
+    if covered == 0 or len(uncovered) >= window_messages:
+        return uncovered
+    every = await transcript_rows(conn, story_id, before_turn=before_turn)
+    return every[-window_messages:]
 
 
 async def read_turn_inputs(
@@ -256,15 +271,15 @@ async def read_turn_inputs(
             )
         )
     ).one_or_none()
-    segments = await _payloads(conn, story_id, "lite_summary_segment", before_turn)
+    segments = await included_segments(conn, story_id, before_turn=before_turn)
     cast = _cast((await conn.execute(_cast_query(story_id))).all())
     return TurnInputs(
         guidance=guidance.prompt_guidance or "",
         instructions=texts.custom_instructions if texts is not None else "",
         pins=tuple(str(item["text"]) for item in texts.pinned) if texts is not None else (),
-        segments=tuple(str(s.get("text", "")) for s in segments),
+        segments=tuple(segment.label for segment in segments),
         cast=cast,
-        window=await _window(conn, story_id, window_messages, before_turn),
+        window=await _verbatim(conn, story_id, covered_to(segments), window_messages, before_turn),
         deployment_generation=defaults.lite_generation_defaults,
         story_generation=settings.generation_settings,
         window_messages=window_messages,
@@ -426,4 +441,5 @@ __all__ = [
     "read_story_cast",
     "read_turn_inputs",
     "stage_turn",
+    "transcript_rows",
 ]

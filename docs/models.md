@@ -96,6 +96,10 @@ Folds old messages into a Lite story's rolling summary (FR-LITE-2).
 | `messages.role` | `recent_message` |
 | `prior_segments` | `rolling_summary` |
 | `character_names` | `character_definition` |
+| `mode` | `rolling_summary` |
+| `merge_segments` | `rolling_summary` |
+| `covers` | `rolling_summary` |
+| `target_tokens` | `rolling_summary` |
 
 **Never receives:** `policy_text`, `subject_true_age`, `checked_text`
 

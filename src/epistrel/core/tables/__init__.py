@@ -11,7 +11,12 @@ from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.operations import operations
 from epistrel.core.tables.policies import policies
-from epistrel.core.tables.projections import story_heads, story_texts, transcript_messages
+from epistrel.core.tables.projections import (
+    lite_summary_segments,
+    story_heads,
+    story_texts,
+    transcript_messages,
+)
 from epistrel.core.tables.ratings import content_rating_versions, content_ratings
 from epistrel.core.tables.stories import stories
 from epistrel.core.tables.timers import recurring_tasks, timers, worker_heartbeats
@@ -29,6 +34,7 @@ __all__ = [
     "events",
     "idempotency_keys",
     "jobs",
+    "lite_summary_segments",
     "metadata",
     "model_config",
     "operations",

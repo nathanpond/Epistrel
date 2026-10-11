@@ -1,21 +1,36 @@
-{#- Lite rolling summary (FR-LITE-2). Placeholder wording; #72 owns the final prompt. -#}
+{#- The Lite rolling summary (FR-LITE-2; #72): one template, two modes.
+
+``compress`` folds one chunk of the story's own transcript rows (whole turns) into a segment;
+``merge`` folds adjacent segments, oldest first, into one coarser segment. The segment just
+before is context only, never restated. The model is asked for third person, past tense, about
+``target_tokens`` tokens, keeping names and commitments. -#}
 {% block system %}
-You summarise a story's older messages into a short segment that preserves facts and names.
+You keep the running memory of an interactive story. Write a summary in the third person and the past tense, about {{ target_tokens }} tokens long. Keep every character's name, what each one did and learned, promises and commitments made, and anything left unresolved. Add nothing that is not in the text. Write prose only: no headings, lists or commentary.
 {% if character_names %}
 Characters: {{ character_names | join(", ") }}
 {% endif %}
 {% if prior_segments %}
 
-## Earlier segments
+## Earlier in the story (context only, do not repeat)
 {% for segment in prior_segments %}
 {{ segment }}
 {% endfor %}
 {% endif %}
 {% endblock %}
 {% block user %}
-{% for line in messages %}
-{% if line.text %}{{ line.text }}{% else %}{{ line.name }}:{% if line.say %} "{{ line.say }}"{% endif %}{% if line.do %} *{{ line.do }}*{% endif %}{% endif %}
+{% if mode == "merge" %}
+Combine these consecutive summaries{% if covers %} of turns {{ covers }}{% endif %} into one shorter summary:
+
+{% for segment in merge_segments %}
+{{ segment }}
 
 {% endfor %}
-Summarise the messages above.
+{% else %}
+Summarise these messages{% if covers %} from turns {{ covers }}{% endif %}:
+
+{% for line in messages %}
+{% if line.text %}{{ line.name }}: {{ line.text }}{% else %}{{ line.name }}:{% if line.say %} "{{ line.say }}"{% endif %}{% if line.do %} *{{ line.do }}*{% endif %}{% endif %}
+
+{% endfor %}
+{% endif %}
 {% endblock %}

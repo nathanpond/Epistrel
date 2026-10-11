@@ -1,7 +1,9 @@
 """Durable background jobs: claim, lease, fencing, the recovery pass and the input recheck (#70).
 
 X-07's jobs half, ``test_x_07__jobs``, moved to ``tests/chaos/test_x_07.py`` with the rest of
-X-07 (#71; a docs/04 part lives in one file) and uses this module's handlers. Test handlers
+X-07 (#71; a docs/04 part lives in one file) and uses this module's handlers; so did
+S-CONSOLIDATION-RACE's jobs half, now in ``tests/scenario/test_s_consolidation_race.py`` beside
+#72's summary job slice. Test handlers
 are registered per test through the handler registry; a worker is killed by cancelling its
 task, and leases lapse by moving the injectable clock (``core.clock``), not by sleeping.
 """
@@ -52,7 +54,6 @@ from epistrel.orchestrator.jobs.worker import (
 )
 from tests.auth_support import auth_settings, bearer
 from tests.event_support import new_story, play_turn, rows, scalar
-from tests.projection_support import truncate
 
 POLL_S = 0.3
 LEASE_S = 3.0
@@ -149,7 +150,9 @@ async def _summarise(ctx: JobContext) -> JobOutput:
     through = int(turns[-1].narrative_turn)
 
     def stage(op: Operation) -> None:
-        op.append("lite_summary_segment", {"text": "derived", "through_turn": through})
+        op.append(
+            "lite_summary_segment", {"text": "derived", "covers_from": 1, "covers_to": through}
+        )
 
     return JobOutput(stage=stage, result={"through_turn": through})
 
@@ -225,50 +228,6 @@ def _config(**kw: Any) -> WorkerConfig:
 async def _status(engine: AsyncEngine, job_id: str) -> str:
     row = await _job(engine, job_id)
     return str(row.status) if row is not None else "gone"
-
-
-@pytest.mark.part("M2", "FR-CONC-8")
-async def test_s_consolidation_race__jobs(
-    engine: AsyncEngine, registry: Probe, moved: MovableClock
-) -> None:
-    """S-CONSOLIDATION-RACE's jobs half (#72 runs it with the real summary job): a job whose
-    inputs a rewind discarded while it ran has its output dropped (no derived row; its
-    operation is abandoned) and is re-enqueued on the same row, due now, with no failure
-    counted. Complement: rerun, it declares only the surviving turns and commits."""
-    story = await new_story(engine)
-    for said in ("one", "two", "three"):
-        await play_turn(engine, story, said)
-    stale = await _enqueue(engine, "test_summarise", {"story_id": story}, story_id=story)
-    claimed = await queue.claim(engine, "w:stale:0", lease_s=LEASE_S)
-    assert claimed is not None
-    assert claimed.id == stale
-    run = asyncio.create_task(Worker(engine, _config()).execute(claimed))
-    await asyncio.wait_for(registry.entered.wait(), 5.0)
-    assert len(registry.declared[-1]) == 3
-    await truncate(engine, story, 1)  # turns 2 and 3 are discarded while the job runs
-    registry.gate.set()
-    assert await run is queue.CommitOutcome.DROPPED
-    row = await _job(engine, stale)
-    assert (row.status, row.attempt, row.failures, row.result) == ("queued", 1, 0, None)
-    assert abs((row.due_at - _now()).total_seconds()) < 2
-    assert await _segments(engine, story) == []  # nothing derived from the stale run
-    abandoned = await rows(
-        engine,
-        "SELECT status FROM operations WHERE story_id = :s AND kind = :k",
-        s=story,
-        k=DERIVED_KIND,
-    )
-    assert [r.status for r in abandoned] == ["abandoned"]
-    rerun = await queue.claim(engine, "w:stale:0", lease_s=LEASE_S)
-    assert rerun is not None
-    assert rerun.id == stale
-    assert await Worker(engine, _config()).execute(rerun) is queue.CommitOutcome.COMMITTED
-    assert len(registry.declared[-1]) == 1  # recomputed against the current timeline
-    row = await _job(engine, stale)
-    assert row.status == "done"
-    assert row.result["through_turn"] == 1
-    assert set(row.input_versions) == set(registry.declared[-1])
-    assert await _segments(engine, story) == ["derived"]
 
 
 async def _done(engine: AsyncEngine, job_id: str) -> bool:

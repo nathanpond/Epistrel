@@ -55,8 +55,18 @@ Length = LengthName | Annotated[int, Field(ge=1, le=MAX_LENGTH_TOKENS)]
 """A response length: a name (``short``/``medium``/``long``) or a token cap."""
 
 DEFAULT_LITE_WINDOW_MESSAGES = 30
-"""How many of the latest transcript rows a Lite prompt carries verbatim (FR-LITE-1)."""
+"""How many of the latest transcript rows a Lite prompt keeps verbatim before older ones are
+summarised (FR-LITE-1,2)."""
 MAX_LITE_WINDOW_MESSAGES = 500
+DEFAULT_LITE_SUMMARY_CHUNK = 10
+"""How many transcript rows one level-0 summary segment covers (FR-LITE-2; #72): two per turn,
+so 5 turns."""
+MAX_LITE_SUMMARY_CHUNK = 200
+DEFAULT_LITE_SUMMARY_MAX_TOKENS = 2_000
+"""The rolling summary's token cap (``len(text) // 4``), about a quarter of the 8k context floor;
+above it adjacent segments merge into a coarser level (FR-LITE-2; #72)."""
+MIN_LITE_SUMMARY_MAX_TOKENS = 100
+MAX_LITE_SUMMARY_MAX_TOKENS = 100_000
 
 
 class GenerationSettings(BaseModel):
@@ -114,6 +124,17 @@ class LiteDefaults(BaseModel):
     lite_window_messages: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_LITE_WINDOW_MESSAGES, ge=1, le=MAX_LITE_WINDOW_MESSAGES
     )
+    lite_summary_chunk: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_LITE_SUMMARY_CHUNK, ge=2, le=MAX_LITE_SUMMARY_CHUNK
+    )
+    """Transcript rows per level-0 summary segment (#72); chunks are whole turns, two rows
+    each. Prospective: the next summary job uses the value in force when it starts."""
+    lite_summary_max_tokens: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_LITE_SUMMARY_MAX_TOKENS,
+        ge=MIN_LITE_SUMMARY_MAX_TOKENS,
+        le=MAX_LITE_SUMMARY_MAX_TOKENS,
+    )
+    """The rolling summary's token cap (#72); above it segments merge. Prospective."""
 
 
 # -- story-level text caps (FR-LITE-3; #60) ------------------------------------------------------
@@ -255,7 +276,18 @@ class StorySettings(BaseModel):
     lite_window_messages: Annotated[int | None, PROSPECTIVE] = Field(
         default=None, ge=1, le=MAX_LITE_WINDOW_MESSAGES
     )
-    """The story's override of how many transcript rows a Lite prompt carries verbatim."""
+    """The story's override of how many transcript rows a Lite prompt keeps verbatim before
+    older ones are summarised (#72)."""
+
+    lite_summary_chunk: Annotated[int | None, PROSPECTIVE] = Field(
+        default=None, ge=2, le=MAX_LITE_SUMMARY_CHUNK
+    )
+    """The story's override of the transcript rows per level-0 summary segment (#72)."""
+
+    lite_summary_max_tokens: Annotated[int | None, PROSPECTIVE] = Field(
+        default=None, ge=MIN_LITE_SUMMARY_MAX_TOKENS, le=MAX_LITE_SUMMARY_MAX_TOKENS
+    )
+    """The story's override of the rolling summary's token cap (#72)."""
 
     guardrail_retry_budget: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_GUARDRAIL_RETRY_BUDGET, ge=0, le=MAX_GUARDRAIL_RETRY_BUDGET

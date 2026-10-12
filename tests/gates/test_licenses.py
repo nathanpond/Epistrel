@@ -229,14 +229,31 @@ def test_classifier_values_are_read_per_classifier(raw: str, status: str, detail
         ("MIT AND GNU GPL v3", "GPL"),
         ("MIT; GPL (for the bundled parser)", "GPL"),
         ("GNU GENERAL PUBLIC LICENSE\n   Version 3, 29 June 2007\n\n Everyone is permitted", "GPL"),
+        # The GPL misnomer and the bare long name (#94 verification, round 1).
+        ("GNU Public License", "GPL"),
+        ("GNU Public License v3", "GPL"),
+        ("GNU Public License v2 or later", "GPL"),
+        ("General Public License v3", "GPL"),
+        ("MIT License; General Public License v3", "GPL"),
+        ("GNU Affero Public License v3", "AGPL"),
+        # Long names joined by `-` or `_`, and identifiers the parser reads as SPDX-like ids.
+        ("Server-Side Public License", "SSPL"),
+        ("European_Union_Public_Licence_1.2", "EUPL"),
+        ("GNU-General-Public-License-v3", "GPL"),
+        ("GNU-GPL", "GPL"),
+        ("GNU-GPLv3", "GPL"),
+        ("GNU.AGPL-3.0", "AGPL"),
+        ("GPL.v3", "GPL"),
+        ("MIT AND GPL.v3", "GPL"),
     ],
 )
 def test_an_exception_never_admits_a_denied_family_whatever_the_spelling(
     raw: str, family: str
 ) -> None:
     """A deny family is found whether it is a table spelling (alone, `;`-joined, any case), an
-    SPDX-like id, or named where the parser reads UNKNOWN: free text, an SPDX expression with
-    parentheses, the title line of a license text (#94)."""
+    SPDX-like id (`GNU-GPL`, `GPL.v3`, a long name joined by hyphens), or named where the parser
+    reads UNKNOWN: free text (`GNU Public License`, `Server-Side Public License`), an SPDX
+    expression with parentheses, the title line of a license text (#94)."""
     verdict = judge("pkg", raw, CONFIG)
     assert (verdict.status, verdict.detail) == ("denied", family)
     cfg = LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "vendor says fine"})
@@ -252,6 +269,22 @@ MPL_TEXT = (
     "    General Public License, Version 2.1, the GNU Affero General Public\n"
     "    License, Version 3.0, or any later versions of those licenses."
 )
+# Abridged from numpy 2.3.1's `License` metadata field (scipy 1.16.1's has the same shape): a
+# BSD text that carries the notices of the binaries bundled in the wheel.
+NUMPY_TEXT = (
+    "Copyright (c) 2005-2025, NumPy Developers.\n"
+    "All rights reserved.\n\n"
+    "Redistribution and use in source and binary forms, with or without\n"
+    "modification, are permitted provided that the following conditions are\n"
+    "met:\n\n"
+    "This binary distribution of NumPy also bundles the following software:\n\n"
+    "Name: GCC runtime library\n"
+    "License: GPL-3.0-or-later WITH GCC-exception-3.1\n"
+    "  Libgfortran is free software; you can redistribute it and/or modify\n"
+    "  it under the terms of the GNU General Public License as published by\n"
+    "  the Free Software Foundation; either version 3, or (at your option)\n"
+    "  any later version."
+)
 
 
 @pytest.mark.parametrize(
@@ -263,14 +296,22 @@ MPL_TEXT = (
         ("GNU Lesser General Public License v2 (LGPLv2)", "not allowed"),
         ("LGPLv2+", "not allowed"),
         ("GNU Lesser General Public License v2.1", "unknown"),
+        ("GNU Library General Public License v2", "unknown"),
+        ("Lesser General Public License v3", "unknown"),
+        ("GNU Library Public License", "unknown"),
         ("GNU Free Documentation License (FDL)", "unknown"),
         ("Nethack General Public License", "not allowed"),
+        ("CNRI-Python-GPL-Compatible", "not allowed"),
+        ("gnuplot", "not allowed"),
         (MPL_TEXT, "unknown"),
+        (NUMPY_TEXT, "unknown"),
     ],
 )
 def test_an_exception_still_admits_what_names_no_denied_family(raw: str, status: str) -> None:
-    """Complement: LGPL, the Nethack GPL and the GFDL are not the GPL family, and only the title
-    of a license text counts, since MPL-2.0's text names the GPL in passing."""
+    """Complement: LGPL (by any of its names), the Nethack GPL and the GFDL are not the GPL
+    family. Only a leading `GNU` is dropped from an id, so the SPDX id `CNRI-Python-GPL-Compatible`
+    and `gnuplot` are not GPL. Only the title of a license text counts: MPL-2.0's text names the
+    GPL in passing, and numpy's and scipy's carry the GPL notice of a bundled runtime library."""
     assert judge("pkg", raw, CONFIG).status == status
     cfg = LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "vendor says fine"})
     assert judge("pkg", raw, cfg).status == "excepted"
@@ -287,10 +328,15 @@ def test_a_table_spelling_is_read_as_listed_not_searched(monkeypatch: pytest.Mon
 def test_or_rescues_only_what_the_gate_reads() -> None:
     """`;` is OR between parts the gate reads (`GPLv3 classifier; MIT License` passes, as `GPL-2.0
     OR MIT` does), but prose it cannot read may bind the package, so a deny family named there
-    denies the value. Complement: unread prose that names no family leaves the OR alone."""
+    denies the value. An SPDX-like id is read even when only its spelling names the family
+    (`GNU-GPL OR MIT` is `GPL-2.0 OR MIT`). Complement: unread prose that names no family leaves
+    the OR alone."""
     verdict = judge("pkg", "MIT; GPL (for the bundled parser)", CONFIG)
     assert (verdict.status, verdict.detail) == ("denied", "GPL")
+    verdict = judge("pkg", "MIT; GNU Public License", CONFIG)
+    assert (verdict.status, verdict.detail) == ("denied", "GPL")
     assert judge("pkg", "GNU General Public License v3 (GPLv3); MIT License", CONFIG).status == "ok"
+    assert judge("pkg", "GNU-GPL OR MIT", CONFIG).status == "ok"
     assert judge("pkg", "BSD License; see LICENSE (in the sdist)", CONFIG).status == "ok"
 
 

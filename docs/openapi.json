@@ -6027,7 +6027,38 @@
               "anyOf": [
                 {
                   "items": {
-                    "type": "string"
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "audit_retention_days",
+                          "default_content_rating_id",
+                          "default_safe_fallback",
+                          "idempotency_result_window",
+                          "job_retention_days",
+                          "lite_generation_defaults",
+                          "lite_generation_defaults.length",
+                          "lite_generation_defaults.temperature",
+                          "lite_generation_defaults.top_p",
+                          "lite_summary_chunk",
+                          "lite_summary_max_tokens",
+                          "lite_window_messages",
+                          "max_custom_instructions_chars",
+                          "max_model_calls_per_turn",
+                          "max_pinned_memories",
+                          "minor_age_threshold",
+                          "structured_retry_budget",
+                          "timer_lag_alert",
+                          "turn_queue_max",
+                          "uncertain_below",
+                          "worker_heartbeat_timeout"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "pattern": "^(model_config|policy|rating):\\S*$",
+                        "type": "string"
+                      }
+                    ]
                   },
                   "type": "array"
                 },
@@ -9754,7 +9785,32 @@
               "anyOf": [
                 {
                   "items": {
-                    "type": "string"
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "audit_retention_days",
+                          "default_output_viewpoint",
+                          "generation_settings",
+                          "generation_settings.length",
+                          "generation_settings.temperature",
+                          "generation_settings.top_p",
+                          "guardrail_retry_budget",
+                          "lite_summary_chunk",
+                          "lite_summary_max_tokens",
+                          "lite_window_messages",
+                          "max_model_calls_per_turn",
+                          "regenerate_retry_budget",
+                          "turn_concurrency",
+                          "turn_deadline",
+                          "turn_queue_max"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "pattern": "^(policy):\\S*$",
+                        "type": "string"
+                      }
+                    ]
                   },
                   "type": "array"
                 },

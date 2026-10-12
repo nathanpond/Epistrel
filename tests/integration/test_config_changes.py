@@ -162,3 +162,41 @@ async def test_listings_filter_page_and_redact(
         "params": {"Authorization": "***", "n": 1},
     }
     assert redact([{"token": "t"}, 3]) == [{"token": "***"}, 3]
+
+
+async def test_setting_filter_refuses_unknown_names(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """``setting`` is a closed vocabulary per scope (#279): a setting name or its dotted parent,
+    or a row family the scope writes (``rating:``, ``policy:``, ``model_config:``, alone or with
+    a member). Anything else is 422 ``validation_error`` at ``query.setting``, rather than a
+    200 that silently matches nothing.
+
+    Complement asserted: every accepted form answers 200, and a family the other scope writes
+    (``rating:`` on a story) is refused."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, _ = await new_story(client)
+        listings = {
+            "/admin/config-changes": (
+                ["lite_generation_defaults", "lite_generation_defaults.top_p", "rating:"],
+                ["rating:01ARZ3NDEKTSV4RRFFQ69G5FAV", "policy:", "model_config:respond.model"],
+            ),
+            f"/stories/{story}/config-changes": (
+                ["generation_settings", "generation_settings.temperature", "turn_deadline"],
+                ["policy:", "policy:01ARZ3NDEKTSV4RRFFQ69G5FAV"],
+            ),
+        }
+        for url, (names, families) in listings.items():
+            for value in [*names, *families]:
+                accepted = await client.get(url, params={"setting": value}, headers=READ)
+                assert accepted.status_code == 200, (url, value, accepted.text)
+            for value in ["false", "0.5", "AAA", "unknown_setting", "generation_settings.", "x:"]:
+                refused = await client.get(url, params={"setting": value}, headers=READ)
+                assert refused.status_code == 422, (url, value, refused.text)
+                error = refused.json()["error"]
+                assert error["code"] == "validation_error"
+                assert error["details"]["field"].startswith("query.setting"), error
+        on_story = await client.get(
+            f"/stories/{story}/config-changes", params={"setting": "rating:"}, headers=READ
+        )
+        assert on_story.status_code == 422, on_story.text

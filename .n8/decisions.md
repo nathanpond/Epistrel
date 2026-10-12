@@ -1690,3 +1690,18 @@ Re-execution of M2 after `/n8-verify M2` filed #285–#297 against PR #284. Bran
   **Issue:** #279
 - **Blocker (merge of PR #299):** CI run 38193067001 was red on `test_c_01[GET /admin/config-changes]` only (#279); 853 passed. Both fixes are owner calls: tighten `setting` to an enum of known setting names (an API contract change, recommended) or narrow C-01's negative-data check for nullable string-array query parameters (weakening a gate). The PR is left open and unmerged, and #279 is labelled `needs-owner-action`.
   **Issue:** #279, PR #299
+
+## /n8-exec M2 (owner decisions on #279, #293) — 2026-10-11
+
+- **Owner decision (#279):** Tighten the contract. The owner chose option 1.
+  **Applied:** the `setting` filter on both config-change listings is now a closed vocabulary per scope: a setting name (each leaf path and each dotted parent from `flatten`), or a row family that scope writes (`<family>:` alone, or `<family>:<member>`). The deployment scope's families are `model_config`, `policy` and `rating`; the story scope's family is `policy`. Anything else is 422 `validation_error` at `query.setting`. The OpenAPI schema documents each item as `anyOf: [enum, pattern]`, and `docs/openapi.json` was regenerated.
+  **Deviation from the literal option ("an enum of the known setting names"):** a pure enum would have broken the documented family filters (`rating:`, `policy:<id>`, `model_config:<purpose>.<field>`), which are open-ended ids. The pattern covers exactly the families each scope writes, so every name that can be recorded stays filterable, and unknown names are now refused.
+  **Consumers:** Epistrel-Console does not call config-changes. Its recorded `openapi.json` picks this up on its next re-record.
+  **Issue:** #279
+- **Owner decision (#293):** Amend §15 so that FR-MODEL-9 is not release-gated. The owner chose the "—" option.
+  **Applied:** docs/04 §15 row `FR-MODEL-9 | S | M2 | —`. The §15 footer now lists `FR-MODEL-9 (S)` as not release-gated. C-04's heading and M2 tag drop FR-MODEL-9 (`FR-MODEL-1..8,10..13`), and its prose says the BYOC path joins the suite when a milestone builds it. §22 still assigns FR-MODEL-9 to M2 (invariant 7 holds). `current_milestone = 2`, and all six gates exit 0.
+  **Issue:** #293
+- **Decision (#293, Rule 3):** Two gate self-tests encoded the M1 state. `test_parts::test_real_tests_pass_today` asserted "0 requirements gated" and now asserts a non-zero gated count at the current milestone. `test_parts_json` ran fixture tests against the real milestone and now pins `fixtures/pyproject_m1.toml`, since it tests the JSON shape, not coverage.
+  **Issue:** #293
+- **Decision (#279, Rule 1, test harness):** C-01 shares one scratch database across all operations. A generated, valid `PUT /admin/model-config/generation` (a `base_url` or model) moved generation off the stub, so a later `POST /regenerate` answered a documented 503 `model_unavailable`, which `not_a_server_error` flags. This draw surfaced once the schema change shifted the derandomized examples. The harness now undoes each successful generated write through `DELETE /admin/model-config/generation`, the same reasoning as the excluded `delete_story`/`archive_story`. No check was removed and the operation is still generated. A logged run shows 23 restores.
+  **Issue:** #279

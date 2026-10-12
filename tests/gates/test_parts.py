@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -141,7 +142,7 @@ def test_real_tests_pass_today() -> None:
     proc = _cli("check-parts")
     assert proc.returncode == 0, proc.stdout
     current = load_config(REPO_ROOT / "pyproject.toml").current_milestone
-    assert f"0 requirements gated at ≤ M{current}" in proc.stdout  # M0/M1 gate no requirements
+    assert re.fullmatch(rf"\d+ parts, [1-9]\d* requirements gated at ≤ M{current}\n", proc.stdout)
 
 
 @pytest.mark.parametrize(

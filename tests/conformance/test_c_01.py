@@ -397,6 +397,31 @@ MALFORMED: list[tuple[str, str, str, dict[str, Any], str]] = [
         {"json": {"turn_deadline": "soon"}},
         "body.turn_deadline",
     ),
+    # The column is INTEGER: a value past int32 must stop at validation, not reach Postgres (#280).
+    (
+        "int32 overflow on create",
+        "POST",
+        "/admin/content-ratings",
+        {"json": {"name": "Overflow", "display_order": 2**31}},
+        "body.display_order",
+    ),
+    (
+        "int32 underflow on replace",
+        "PUT",
+        "/admin/content-ratings/{rating}",
+        {
+            "json": {
+                "name": "Everyone",
+                "description": "",
+                "display_order": -(2**31) - 1,
+                "prompt_guidance": "",
+                "image_guidance": "",
+                "policy_ids": [],
+                "inherits_from": [],
+            }
+        },
+        "body.display_order",
+    ),
 ]
 
 
@@ -407,7 +432,7 @@ def _malformed(live: Live) -> list[str]:
         for name, method, template, kwargs, field in MALFORMED:
             before = live.counts()
             sent = {**kwargs, "headers": headers | kwargs.get("headers", {})}
-            path = template.format(story=live.story_id)
+            path = template.format(story=live.story_id, rating=EVERYONE_ID)
             response = client.request(method, path, **sent)
             error = response.json().get("error", {}) if response.status_code == 422 else {}
             if response.status_code != 422 or error.get("details", {}).get("field") != field:

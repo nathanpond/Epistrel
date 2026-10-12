@@ -6,9 +6,10 @@ status, #117 offboarding). #104's parts:
 
 - ``test_i_21__ownership``: creation sets the owner of every delivered type, a fork included. A
   transfer moves it and records the acting principal. A ``system``-owned entity transfers like
-  any other. Relations are added, listed, filtered (with the owner filter's complement) and
-  removed. A list narrows only by the filters it names, whichever principal asks. A story made
-  from a catalog entry stays byte-identical through the entry's transfer and relation changes.
+  any other. Relations are added, listed, filtered (over names and principals that cross between
+  stories, and with the owner filter's complement) and removed. A list narrows only by the
+  filters it names, whichever principal asks. A story made from a catalog entry stays
+  byte-identical through the entry's transfer and relation changes.
 - ``test_i_21__nothing_gates``: the matrix. Every route under an owned entity answers its owner,
   a stranger, and a principal holding relations named ``admin`` and ``owner`` with the same
   status, and every read with the same body.
@@ -127,15 +128,19 @@ async def test_i_21__ownership(stub_settings: Settings, engine: AsyncEngine) -> 
     the owner the creation names, and a fork by whoever forked it. A transfer by a third
     principal moves the owner and records ``(transfer, old, new, acting principal)`` with a
     ``control`` operation by that principal; the same transfer again is answered with nothing
-    recorded; an entity ``system`` owns transfers like any other. Relations ``co_author:D`` on a
-    story and ``editor:C`` on a character are added, listed, filtered by (``name:principal``,
-    ``name:`` for any principal, repeated filters all holding) and removed, each change
-    recorded. A story whose character came from catalog entry E stays byte-identical while E is
+    recorded; an entity ``system`` owns transfers like any other. Relations on stories and on a
+    character are added, listed, filtered by (``name:principal``, ``name:`` for any principal,
+    repeated filters all holding) and removed, each change recorded. The stories' relations
+    cross: ``editor`` and ``co_author`` each name C on one story and D on another, so a filter
+    lists a story only when one of its relations has both the name and the principal asked for.
+    A story whose character came from catalog entry E stays byte-identical while E is
     transferred and related.
 
     Complements asserted: ``owner=A`` leaves out B's story while no filter lists both, whoever
-    asks (A, B, a stranger or no principal: a list is never narrowed to the asker); a removed
-    relation no longer filters; the story snapshot does see the story's own archive."""
+    asks (A, B, a stranger or no principal: a list is never narrowed to the asker); a relation
+    filter leaves out each story that holds only its name, only its principal, or the two on
+    different relations, and two filters that each hold on a different story list neither; a
+    removed relation no longer filters; the story snapshot does see the story's own archive."""
     async with respond_client(stub_settings, engine) as (client, _):
         # -- creation sets the owner, for every delivered type --------------------------------
         for kind in KINDS.values():
@@ -218,7 +223,7 @@ async def test_i_21__ownership(stub_settings: Settings, engine: AsyncEngine) -> 
         assert await _events(engine, kept.id) == [("transfer", "system", NEW_OWNER, STRANGER)]
 
         # -- relations: added, listed, filtered by, removed ----------------------------------
-        a, b = _unique("p-a"), _unique("p-b")
+        a, b, e = _unique("p-a"), _unique("p-b"), _unique("p-e")
         d, c = _unique("p-d"), _unique("p-c")
         co_author, editor = f"co_author_{secrets.token_hex(3)}", f"editor_{secrets.token_hex(3)}"
         mine = await create_story(client, a, None)
@@ -256,6 +261,20 @@ async def test_i_21__ownership(stub_settings: Settings, engine: AsyncEngine) -> 
             ),
             201,
         )
+        # The names and principals cross. `mine` holds editor:c and co_author:d, so these two
+        # stories each share one half with one of its relations: editor:d (the name, another
+        # principal) and co_author:c (the principal, another name).
+        edited_by_d = await create_story(client, e, None)
+        coauthored_by_c = await create_story(client, e, None)
+        for story, principal, name in ((edited_by_d, d, editor), (coauthored_by_c, c, co_author)):
+            await ok(
+                await client.post(
+                    f"/stories/{story.id}/relations",
+                    json={"principal": principal, "relation": name},
+                    headers=headers(e),
+                ),
+                201,
+            )
         listing = await ok(await client.get(story_relations, headers=READ))
         assert [(i["relation"], i["principal"]) for i in listing["items"]] == sorted(
             [(co_author, d), (editor, c)]
@@ -272,10 +291,23 @@ async def test_i_21__ownership(stub_settings: Settings, engine: AsyncEngine) -> 
             assert await _listed(client, asker, owner=a) == [mine.id], asker
             assert await _listed(client, asker, owner=b) == [theirs.id], asker
             assert await _listed(client, asker, relation=f"{editor}:{c}") == [mine.id], asker
-        assert await _listed(client, relation=f"{co_author}:{d}") == [theirs.id, mine.id]
-        assert set(await _listed(client, relation=f"{co_author}:")) == {mine.id, theirs.id}
+        # Every cell of {editor, co_author} x {c, d}, and each name for any principal, newest
+        # first. A filter that dropped its principal, dropped its name, or matched the two on
+        # different relations would list an extra story in at least one cell.
+        cells = {
+            f"{editor}:{c}": [mine],
+            f"{editor}:{d}": [edited_by_d],
+            f"{co_author}:{c}": [coauthored_by_c],
+            f"{co_author}:{d}": [theirs, mine],
+            f"{editor}:": [edited_by_d, mine],
+            f"{co_author}:": [coauthored_by_c, theirs, mine],
+        }
+        for wanted, expected in cells.items():
+            assert await _listed(client, relation=wanted) == [s.id for s in expected], wanted
         both = await _listed(client, relation=[f"{co_author}:{d}", f"{editor}:{c}"])
         assert both == [mine.id]
+        crossed = await _listed(client, relation=[f"{editor}:{d}", f"{co_author}:{c}"])
+        assert crossed == [], "each filter holds on a story of its own, both on none"
         assert await _listed(client, owner=b, relation=f"{editor}:{c}") == []
 
         removed = await client.delete(f"{story_relations}/{co_author}/{d}", headers=headers(b))

@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import NoOpTracer
 from pydantic import ValidationError
 
 from epistrel import cli
@@ -167,7 +168,15 @@ def test_otlp_endpoint_setting(dummy_dsn: str) -> None:
         auth_settings(dummy_dsn, otlp_endpoint="collector:4318")
     assert tracing.traces_url("http://collector:4318/") == "http://collector:4318/v1/traces"
     assert tracing.traces_url("http://c:4318/v1/traces") == "http://c:4318/v1/traces"
-    assert tracing.configure_tracing(None, version="t", debug=False) is tracing.enabled()
+    previous = tracing.install(None)
+    try:
+        # No endpoint: nothing is installed and spans go to a no-op tracer (#74 AC3; #294).
+        assert tracing.configure_tracing(None, version="t", debug=False) is False
+        assert tracing.configure_tracing("", version="t", debug=False) is False
+        assert not tracing.enabled()
+        assert isinstance(tracing.tracer(), NoOpTracer)
+    finally:
+        tracing.install(previous)
 
 
 def test_configure_tracing_installs_an_otlp_exporter() -> None:

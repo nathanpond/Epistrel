@@ -1832,3 +1832,25 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
     - shifting the listed `published_at` by one second.
   **Why:** These are the verifier's two test-coverage gaps (AC2, AC3). Comparing the publish times as strings also pins one serialization across the publish answer, the version read and the list. The comparison is exact because Postgres `timestamptz` keeps the microseconds of the Engine's `now()`. Cost if wrong: none to behaviour; at worst a stricter test.
   **Issue:** #103
+- **Decision:** #103 verification fixes, round 2. All three gaps were real, and all three were gaps in test coverage only. The code already did what AC3 and AC5 require: `core/catalog/characters.py::get` reads, the attribution (`published_by`, the control operation's actor, the delete's audit principal) and the delete's key scope (`Engine.delete_character`). No source file changed. The tests:
+  - `test_draft_save_publish_and_versions` now reads the entry between the edit and the second publish, while the draft differs from version 1. The default card and the `full` read serve version 1: the `full` read equals the `?version=1` read on every content key and has no `draft_revision`. The draft read serves the edit in both projections, at draft revision 4 with `version` 1.
+  - The new `test_writes_record_the_requester_not_the_owner` covers attribution.
+  - `test_delete_removes_the_entry_and_its_versions` asserts that the delete key's `idempotency_keys` row is `('deployment', 'deployment', 'done')`.
+  - Mutation-checked over the verifier's module set (`test_catalog_characters`, `test_c_15`, `test_i_17`, `test_catalog`, `test_c_03`). Each mutation was applied with the sources restored from a scratch backup afterwards, and the sources were byte-identical at the end. Each of these now fails (unmutated: 41 passed):
+    - the verifier's F (the default read serves the draft) and G (the draft read serves the latest version): `test_draft_save_publish_and_versions` and `test_c_15__catalog_lifecycle` fail;
+    - `published_by` set to the owner, and the operation's actor set to the owner (at save, publish and archive together, at publish alone, and at archive/unarchive alone): the new test fails;
+    - delete recording the owner on its operation, or on its audit row: the new test fails;
+    - delete keyed per entry (`story_id=character_id`, scope `story`): the delete test fails.
+  **Why:** The verifier showed that each of its mutations passed every test (40 passed and 20 passed, 0 failed). The two delete mutations are mine: run against the round-1 test files, each gave 40 passed, 0 failed. The single-site actor mutations are parts of the verifier's combined one. These are the core of FR-CAT-3 (an unpublished edit is not what readers see) and of AC5 (attribution and the deployment key scope). Cost if wrong: none to behaviour; at worst the tests are stricter.
+  **Issue:** #103
+- **Decision:** `test_c_15__catalog_lifecycle` also checks the unpublished edit, between its second save and its second publish. The card still serves version 1 with the old description, and the draft card serves the edit. The fix hint called this optional, and I took it.
+  **Why:** C-15 is #103's M3 part for FR-CAT-3, and docs/04 C-15 names "drafts are editable and published versions immutable". Keeping the draft separate from what readers see is the heart of that, so the milestone part should pin it, not only the unmarked detailed test. Cost if wrong: two extra reads in C-15.
+  **Issue:** #103
+- **Decision:** Attribution has its own test, `test_writes_record_the_requester_not_the_owner`, rather than an extension of `test_owner_is_the_requester_unless_named`, and it goes further than the fix hint. Three principals are involved: the creator (`p-catalog`), the named owner (`p-owner`), and two editors (`p-editor`, `p-reviewer`). The editors take turns across save, publish, a second publish, archive, unarchive and delete. The test asserts four things:
+  - each write's operations row, looked up by its `Idempotency-Key`, names that write's requester;
+  - the version list gives `published_by` `p-editor` for version 1 and `p-reviewer` for version 2;
+  - the delete's audit row names its requester;
+  - `owner_principal` stays `p-owner`.
+  Its docstring cites FR-AUTH-8, FR-AUTH-4 and FR-AUTH-5, so check-parts derives a docstring part from it that gates at M3, the latest milestone it cites (FR-AUTH-4 is M2). check-parts therefore counts 145 parts, not 144. check-parts, check-lexicon and check-traceability all pass.
+  **Why:** FR-AUTH-8 says ownership confers no permission, so non-owner editors are the normal case. The hint covered save, publish, archive and unarchive by one editor. Delete records the requester in two places (the operation and the audit row), and two different publishers show that each version keeps its own publisher. Keeping creation (`test_owner_is_the_requester_unless_named`) and later writes in separate tests keeps each test name accurate. Cost if wrong: one more test of about 50 lines.
+  **Issue:** #103

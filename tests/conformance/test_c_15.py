@@ -36,12 +36,13 @@ PLANTED = "counts the silver twice before the harbour wakes"
 @pytest.mark.integration
 @pytest.mark.part("M3", "FR-CAT-1,3; FR-SCN-10")
 async def test_c_15__catalog_lifecycle(settings: Settings, engine: AsyncEngine) -> None:
-    """A catalog character starts as an editable draft, is published as version 1, edited and
-    published as version 2; version 1 reads unchanged afterwards and its row cannot be updated;
-    the version list names both, each with its publish time and publisher. A read with no
-    projection is the public card of the ``published`` entry: exactly its nine keys and never a
-    definition field (the phrase planted in the private personality appears in no card), while
-    ``full`` returns it; an archived entry still reads in both projections.
+    """A catalog character starts as an editable draft, is published as version 1, edited (the
+    edit shows only in a draft read until it is published) and published as version 2; version 1
+    reads unchanged afterwards and its row cannot be updated; the version list names both, each
+    with its publish time and publisher. A read with no projection is the public card of the
+    ``published`` entry: exactly its nine keys and never a definition field (the phrase planted
+    in the private personality appears in no card), while ``full`` returns it; an archived entry
+    still reads in both projections.
 
     Complement asserted: the phrase is present in ``full``, so its absence from every card is
     the projection's doing."""
@@ -63,6 +64,14 @@ async def test_c_15__catalog_lifecycle(settings: Settings, engine: AsyncEngine) 
 
         edited = await save(client, cid, 3, public_description="Keeper, retired.")
         assert edited.status_code == 200
+        # Until it is published, the edit is the draft's alone: a read still serves version 1.
+        shown = (await read(client, cid)).json()
+        assert (shown["version"], shown["public_description"]) == (
+            1,
+            "Keeper of the Gull Rock light.",
+        )
+        pending = (await read(client, cid, draft=True)).json()
+        assert (pending["version"], pending["public_description"]) == (1, "Keeper, retired.")
         second = await publish(client, cid, 4)
         assert (second.status_code, second.json()["version"]) == (201, 2)
 

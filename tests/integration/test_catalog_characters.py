@@ -159,9 +159,10 @@ async def test_draft_save_publish_and_versions(
 ) -> None:
     """Create is a draft at revision 1; each save bumps the revision; publish makes version
     n + 1 from the draft, stores the entry as ``published`` at that version and leaves the draft
-    equal to it, one revision on; version 1 reads unchanged after version 2 exists; the version
-    list gives each version's number, publish time and publisher, and nothing else (FR-CAT-1,
-    FR-CAT-3)."""
+    equal to it, one revision on; while a saved edit is unpublished, the default card and the
+    ``full`` read still serve the latest published version and only a draft read shows the edit;
+    version 1 reads unchanged after version 2 exists; the version list gives each version's
+    number, publish time and publisher, and nothing else (FR-CAT-1, FR-CAT-3)."""
     created = await create(client)
     cid = created["id"]
     assert created["draft_revision"] == 1
@@ -225,6 +226,28 @@ async def test_draft_save_publish_and_versions(
         definition={"personality": "Wry, these days."},
     )
     assert saved.status_code == 200, saved.text
+    # The draft now differs from version 1 in its description and its private definition.
+    # Readers still get version 1 in both projections; only a draft read shows the edit.
+    shown_card = (await read(client, cid)).json()
+    assert (shown_card["version"], shown_card["public_description"]) == (
+        1,
+        "The first description.",
+    )
+    shown_full = (await read(client, cid, projection="full")).json()
+    assert _content(shown_full) == _content(version_1)
+    assert "draft_revision" not in shown_full
+    draft_card = (await read(client, cid, draft=True)).json()
+    assert (draft_card["version"], draft_card["public_description"]) == (
+        1,
+        "The second description.",
+    )
+    draft_full = (await read(client, cid, draft=True, projection="full")).json()
+    assert (
+        draft_full["version"],
+        draft_full["draft_revision"],
+        draft_full["public_description"],
+        draft_full["definition"],
+    ) == (1, 4, "The second description.", {"personality": "Wry, these days."})
     second = await publish(client, cid, 4)
     assert (second.status_code, second.json()["version"]) == (201, 2)
 
@@ -518,9 +541,9 @@ async def test_delete_removes_the_entry_and_its_versions(
     client: httpx.AsyncClient, engine: AsyncEngine
 ) -> None:
     """Delete removes the entry and every version (204, from any status) and writes a
-    ``catalog_entry_deleted`` audit row naming the entry and the principal; a retry under the
-    key replays the 204. Complement: another entry and its versions are untouched (count and
-    content)."""
+    ``catalog_entry_deleted`` audit row naming the entry and the principal; its key is bound in
+    the deployment scope, and a retry under it replays the 204. Complement: another entry and its
+    versions are untouched (count and content)."""
     cid, revision = await published(client)
     assert (await save(client, cid, revision, name="Second")).status_code == 200
     assert (await publish(client, cid, revision + 1)).status_code == 201
@@ -556,6 +579,10 @@ async def test_delete_removes_the_entry_and_its_versions(
         o=audit.details["operation_id"],
     )
     assert tuple(operation) == ("control", "committed", PRINCIPAL, None, key)
+    (bound,) = await rows(
+        engine, "SELECT scope, scope_id, status FROM idempotency_keys WHERE key = :k", k=key
+    )
+    assert tuple(bound) == ("deployment", "deployment", "done")
 
     replay = await client.delete(f"{BASE}/{cid}", headers=headers(key))
     assert (replay.status_code, replay.headers.get(REPLAY)) == (204, "true")
@@ -650,6 +677,60 @@ async def test_owner_is_the_requester_unless_named(
         refused = await client.post(BASE, json=character(owner=owner), headers=WRITE)
         assert refused.status_code == 422, owner
         assert _error(refused)["details"]["field"] == "body.owner", owner
+
+
+async def test_writes_record_the_requester_not_the_owner(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    """Ownership confers no permission (FR-AUTH-8), so principals other than the owner edit an
+    entry as a matter of course. Each write records the principal that asked (FR-AUTH-4), never
+    the owner or the creator: the control operation of every save, publish, archive, unarchive
+    and delete, each version's ``published_by``, and the delete's audit row. The owner stays as
+    created (FR-AUTH-5)."""
+    owner, editor, reviewer = "p-owner", "p-editor", "p-reviewer"
+    tag = new_ulid()
+    created = await client.post(BASE, json=character(owner=owner), headers=headers(f"create-{tag}"))
+    assert created.status_code == 201, created.text
+    cid = created.json()["id"]
+    writes: list[tuple[str, str, str, dict[str, Any] | None, str]] = [
+        ("save", "PATCH", f"{BASE}/{cid}", {"draft_revision": 1, "name": "Edited"}, editor),
+        ("publish", "POST", f"{BASE}/{cid}/publish", {"draft_revision": 2}, editor),
+        ("republish", "POST", f"{BASE}/{cid}/publish", {"draft_revision": 3}, reviewer),
+        ("archive", "POST", f"{BASE}/{cid}/archive", None, reviewer),
+        ("unarchive", "POST", f"{BASE}/{cid}/unarchive", None, editor),
+    ]
+    for name, method, path, json, principal in writes:
+        answer = await client.request(
+            method, path, json=json, headers=headers(f"{name}-{tag}", principal=principal)
+        )
+        assert answer.is_success, (name, answer.text)
+
+    listed = (await client.get(f"{BASE}/{cid}/versions", headers=READ)).json()["items"]
+    assert [(v["version"], v["published_by"]) for v in listed] == [(1, editor), (2, reviewer)]
+    assert (await entry_row(engine, cid)).owner_principal == owner
+
+    deleted = await client.delete(
+        f"{BASE}/{cid}", headers=headers(f"delete-{tag}", principal=reviewer)
+    )
+    assert deleted.status_code == 204
+    (audit,) = await rows(
+        engine,
+        "SELECT principal FROM audit_log "
+        "WHERE kind = 'catalog_entry_deleted' AND details->>'entity_id' = :c",
+        c=cid,
+    )
+    assert audit.principal == reviewer
+
+    requesters = {
+        "create": PRINCIPAL,
+        **{name: principal for name, *_, principal in writes},
+        "delete": reviewer,
+    }
+    for name, principal in requesters.items():
+        (operation,) = await rows(
+            engine, "SELECT principal FROM operations WHERE idempotency_key = :k", k=f"{name}-{tag}"
+        )
+        assert operation.principal == principal, name
 
 
 # -- refusals ---------------------------------------------------------------------------------

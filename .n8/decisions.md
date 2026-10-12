@@ -1688,3 +1688,5 @@ Re-execution of M2 after `/n8-verify M2` filed #285–#297 against PR #284. Bran
   **Issue:** #293
 - **Finding (#279, not fixed):** On this branch C-01 `GET /admin/config-changes` fails deterministically under `CI=1`, while clean `main` passes. #290's change shifts which examples the derandomized run draws, and the branch draws an object-valued `setting` that serializes into valid query strings. I wrongly assumed invalid UTF-8 at first, then traced it and reverted that attempt. It's a harness/schema mismatch for which #279 already poses the options. I did not weaken the check. CI decides.
   **Issue:** #279
+- **Blocker (merge of PR #299):** CI run 38193067001 was red on `test_c_01[GET /admin/config-changes]` only (#279); 853 passed. Both fixes are owner calls: tighten `setting` to an enum of known setting names (an API contract change, recommended) or narrow C-01's negative-data check for nullable string-array query parameters (weakening a gate). The PR is left open and unmerged, and #279 is labelled `needs-owner-action`.
+  **Issue:** #279, PR #299

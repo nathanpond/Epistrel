@@ -19,8 +19,8 @@ from tests.model_support import config_key, restored_model_config
 async def test_p_08(pg_url: str, engine: AsyncEngine) -> None:
     """Over 20 Lite turns after one warm-up turn, for policies off and for the minors policy on:
     every turn is timed, the nearest-rank p50 is at most the p95, and the calls per turn by
-    purpose are one generation call, plus the seeded minors policy's input check with the
-    policy on (#57; #68 adds the output check).
+    purpose are one generation call, plus the seeded minors policy's input and output checks with
+    the policy on (two ``guardrail_check`` calls: #57's input gate and #68's output gate; #287).
 
     Complement asserted: the policy row makes more calls per turn than the row without it."""
     target = live_target()
@@ -42,5 +42,5 @@ async def test_p_08(pg_url: str, engine: AsyncEngine) -> None:
         assert mm.nearest_rank(latencies, 50) <= mm.nearest_rank(latencies, 95)
     off, minors = measured["off"][1], measured["minors"][1]
     assert off == {"generation": 1.0}
-    assert minors["guardrail_check"] == 1.0
+    assert minors["guardrail_check"] == 2.0
     assert sum(minors.values()) > sum(off.values())

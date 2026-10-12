@@ -1816,3 +1816,19 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** Filed #311 (`needs-triage`) and did not fix it. When `tests/test_markers.py` runs before any test has set up `pg_url`, its in-process pytester run removes `epistrel.core.schema` from `sys.modules`. Alembic's `env.py` then re-declares `schema_meta` on the surviving `MetaData`. The error reproduces on main @ fa0c78d in a temporary worktree and does not affect the full suite's order.
   **Why:** It is outside #103's scope; only subset runs that put the marker tests first hit it.
   **Issue:** #103, #311
+- **Decision:** #103 verification fixes, round 1. Publish now answers with the status it actually stored. The entry `UPDATE` returns `status` (`RETURNING`), and `Published.status` is built from that instead of the constant `EntryStatus.PUBLISHED`. The value, the response model and the idempotency codec are unchanged.
+  **Why:** The verifier found that no test would fail if publish stopped setting `status = published` (AC2). One reason was that the answer was a constant. Reading the row back turns the existing response assertion into a real check, at the cost of one returned column. The new tests below also catch that mutation with the constant restored, so if this change is judged unnecessary it can be reverted without losing coverage.
+  **Issue:** #103
+- **Decision:** #103 verification fixes, round 1. AC2's status and AC3's version list are now asserted from what is stored, not only from the publish answer.
+  - `test_draft_save_publish_and_versions`:
+    - after the first publish, it reads the entry row (`status`, `current_version`, `draft_revision` = `published`, 1, 3) and a fresh card (`published`, version 1);
+    - the version-1 `full` read and the version list carry the publish response's `published_at`;
+    - each list item has exactly `{version, published_at, published_by}` (new `tests/catalog_support.VERSION_KEYS`).
+  - `test_c_15__catalog_lifecycle` asserts that the card is `published` before archiving. Going beyond the fix hint, it also asserts the list's keys and publish times, because docs/04 C-15 names version listing for characters.
+  - Mutation-checked, with the sources restored from a scratch backup each time, because `git checkout` would have discarded the uncommitted fix. Each of these mutations fails both tests (2 failed, 38 passed over the verifier's module set, which passes unmutated inside the 98-test gate run):
+    - dropping `status` from the publish `UPDATE`, with the answer read back;
+    - the same, with the constant answer restored;
+    - dropping `published_at` from `CharacterVersionBody`;
+    - shifting the listed `published_at` by one second.
+  **Why:** These are the verifier's two test-coverage gaps (AC2, AC3). Comparing the publish times as strings also pins one serialization across the publish answer, the version read and the list. The comparison is exact because Postgres `timestamptz` keeps the microseconds of the Engine's `now()`. Cost if wrong: none to behaviour; at worst a stricter test.
+  **Issue:** #103

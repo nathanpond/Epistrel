@@ -17,6 +17,7 @@ from tests.catalog_support import (
     BASE,
     CARD_KEYS,
     READ,
+    VERSION_KEYS,
     WRITE,
     character,
     create,
@@ -37,9 +38,10 @@ PLANTED = "counts the silver twice before the harbour wakes"
 async def test_c_15__catalog_lifecycle(settings: Settings, engine: AsyncEngine) -> None:
     """A catalog character starts as an editable draft, is published as version 1, edited and
     published as version 2; version 1 reads unchanged afterwards and its row cannot be updated;
-    the version list names both. A read with no projection is the public card: exactly its nine
-    keys and never a definition field (the phrase planted in the private personality appears in
-    no card), while ``full`` returns it; an archived entry still reads in both projections.
+    the version list names both, each with its publish time and publisher. A read with no
+    projection is the public card of the ``published`` entry: exactly its nine keys and never a
+    definition field (the phrase planted in the private personality appears in no card), while
+    ``full`` returns it; an archived entry still reads in both projections.
 
     Complement asserted: the phrase is present in ``full``, so its absence from every card is
     the projection's doing."""
@@ -80,15 +82,20 @@ async def test_c_15__catalog_lifecycle(settings: Settings, engine: AsyncEngine) 
         assert sqlstate(refused.value) == "EPI01"
         assert await version_rows(engine, cid) == stored
         listed = await client.get(f"{BASE}/{cid}/versions", headers=READ)
-        assert [v["version"] for v in listed.json()["items"]] == [1, 2]
+        assert [set(v) for v in listed.json()["items"]] == [VERSION_KEYS, VERSION_KEYS]
+        assert [(v["version"], v["published_at"]) for v in listed.json()["items"]] == [
+            (1, version_1["published_at"]),
+            (2, second.json()["published_at"]),
+        ]
 
         card = await read(client, cid)
         assert card.status_code == 200
         assert set(card.json()) == CARD_KEYS
-        assert (card.json()["version"], card.json()["public_description"]) == (
-            2,
-            "Keeper, retired.",
-        )
+        assert (
+            card.json()["version"],
+            card.json()["status"],
+            card.json()["public_description"],
+        ) == (2, "published", "Keeper, retired.")
         assert PLANTED not in card.text
         full = await read(client, cid, projection="full")
         assert PLANTED in full.json()["definition"]["personality"]

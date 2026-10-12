@@ -706,7 +706,8 @@ async def publish(
                 published_by=principal,
             )
         )
-        await conn.execute(
+        # The answer reports the status the entry row now holds, not the one intended.
+        stored_status = await conn.scalar(
             update(character_catalog)
             .where(character_catalog.c.id == character_id)
             .values(
@@ -715,6 +716,7 @@ async def publish(
                 draft_revision=draft_revision,
                 updated_at=now,
             )
+            .returning(character_catalog.c.status)
         )
         await control.record_control_operation(conn, actor=principal)
         config_revision = await _config_revision(conn)
@@ -722,7 +724,7 @@ async def publish(
         id=character_id,
         version=version,
         draft_revision=draft_revision,
-        status=EntryStatus.PUBLISHED,
+        status=EntryStatus(stored_status),
         published_at=now,
         report=report,
         config_revision=config_revision,

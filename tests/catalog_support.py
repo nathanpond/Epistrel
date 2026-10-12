@@ -31,6 +31,9 @@ CARD_KEYS = frozenset(
 )
 """The public card's keys (#103 AC3): nothing else may appear in a ``card`` read."""
 
+VERSION_KEYS = frozenset({"version", "published_at", "published_by"})
+"""The keys of each item a version listing returns (#103 AC3)."""
+
 
 def character(name: str = "Mara Venn", **fields: Any) -> dict[str, Any]:
     """A ``POST /catalog/characters`` body."""
@@ -124,6 +127,7 @@ __all__ = [
     "CARD_KEYS",
     "PRINCIPAL",
     "READ",
+    "VERSION_KEYS",
     "WRITE",
     "character",
     "count",

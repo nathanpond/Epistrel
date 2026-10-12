@@ -25,6 +25,7 @@ from tests.catalog_support import (
     CARD_KEYS,
     PRINCIPAL,
     READ,
+    VERSION_KEYS,
     WRITE,
     character,
     count,
@@ -157,8 +158,10 @@ async def test_draft_save_publish_and_versions(
     client: httpx.AsyncClient, engine: AsyncEngine
 ) -> None:
     """Create is a draft at revision 1; each save bumps the revision; publish makes version
-    n + 1 from the draft and leaves the draft equal to it, one revision on; version 1 reads
-    unchanged after version 2 exists (FR-CAT-1, FR-CAT-3)."""
+    n + 1 from the draft, stores the entry as ``published`` at that version and leaves the draft
+    equal to it, one revision on; version 1 reads unchanged after version 2 exists; the version
+    list gives each version's number, publish time and publisher, and nothing else (FR-CAT-1,
+    FR-CAT-3)."""
     created = await create(client)
     cid = created["id"]
     assert created["draft_revision"] == 1
@@ -185,8 +188,21 @@ async def test_draft_save_publish_and_versions(
         "status": "published",
     }
     assert first.json()["report"] == {"errors": [], "warnings": [], "unavailable": []}
+    # The publish is stored, not just answered: the entry row and a fresh read are published.
+    stored_entry = await entry_row(engine, cid)
+    assert (stored_entry.status, stored_entry.current_version, stored_entry.draft_revision) == (
+        "published",
+        1,
+        3,
+    )
+    card = (await read(client, cid)).json()
+    assert (card["status"], card["version"]) == ("published", 1)
 
     version_1 = (await read(client, cid, version=1, projection="full")).json()
+    assert (version_1["status"], version_1["published_at"]) == (
+        "published",
+        first.json()["published_at"],
+    )
     draft = (await read(client, cid, draft=True, projection="full")).json()
     assert draft["draft_revision"] == 3
     (stored_pair,) = await rows(
@@ -217,15 +233,21 @@ async def test_draft_save_publish_and_versions(
     )
     assert (await version_rows(engine, cid))[:1] == stored
     latest = (await read(client, cid, projection="full")).json()
-    assert (latest["version"], latest["current_version"]) == (2, 2)
+    assert (latest["version"], latest["current_version"], latest["published_at"]) == (
+        2,
+        2,
+        second.json()["published_at"],
+    )
     assert latest["public_description"] == "The second description."
     assert "draft_revision" not in latest
 
     listed = await client.get(f"{BASE}/{cid}/versions", headers=READ)
     assert listed.status_code == 200
-    assert [(v["version"], v["published_by"]) for v in listed.json()["items"]] == [
-        (1, PRINCIPAL),
-        (2, PRINCIPAL),
+    items = listed.json()["items"]
+    assert [set(item) for item in items] == [VERSION_KEYS, VERSION_KEYS]
+    assert [(v["version"], v["published_at"], v["published_by"]) for v in items] == [
+        (1, first.json()["published_at"], PRINCIPAL),
+        (2, second.json()["published_at"], PRINCIPAL),
     ]
 
     # Publishing an unchanged draft still makes a version.

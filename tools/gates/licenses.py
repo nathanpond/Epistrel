@@ -3,7 +3,11 @@
 Records come from `pip-licenses --format=json --from=mixed` run against a runtime-only
 environment; only packages in #41's runtime closure are judged. Unknown spellings normalise to
 UNKNOWN, which fails — the safe direction. An exception admits an UNKNOWN or not-allowed
-license, never a deny family, however the value spells it (#94).
+license, never one that names a deny family (#94): by an id that starts with the family, after
+any leading `GNU` (`GPL-3.0-only`, `GPLv3`, `GNU-GPL`, `GPL.v3`), or by its long name with any
+separators (`GNU Public License`, `Server-Side Public License`). A table entry settles its own
+spelling. A license text (a value spanning several lines) is judged by its title line only,
+since full texts cite or bundle other licenses in their body.
 """
 
 from __future__ import annotations
@@ -145,20 +149,23 @@ NORMALISATION: dict[str, str] = {
 }
 SPDX_ID_RE = re.compile(r"^[A-Za-z0-9.+-]+$")
 
-
-def _long_name(words: str) -> re.Pattern[str]:
-    return re.compile(r"\b" + r"\s+".join(words.split()) + r"\b", re.IGNORECASE)
-
-
-# Deny families by long name, for spotting one where the parser reads UNKNOWN; a family counts
-# only when it is in the deny list. `GNU General` is neither `GNU Lesser General` nor `GNU Affero
-# General`. Identifiers (`GPLv3`, `GPL-3.0-only`) are matched by `denied_family` instead.
+# Deny families by long name, matched against `_words` (lower case, one space between words, so
+# `Server-Side Public_License` reads as `server side public license`); a family counts only when
+# it is in the deny list. `General Public License`, with or without `GNU`, and the misnomer `GNU
+# Public License` are the GPL, unless Lesser, Library, Affero or Nethack names another license.
+# Identifiers (`GPLv3`, `GPL-3.0-only`) are matched by `denied_family` instead.
 FAMILY_NAMES: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("AGPL", _long_name("affero general public licen[cs]e")),
-    ("LGPL", _long_name("(?:lesser|library) general public licen[cs]e")),
-    ("GPL", _long_name("gnu general public licen[cs]e")),
-    ("EUPL", _long_name("european union public licen[cs]e")),
-    ("SSPL", _long_name("server side public licen[cs]e")),
+    ("AGPL", re.compile(r" affero (?:general )?public licen[cs]e ")),
+    ("LGPL", re.compile(r" (?:lesser|library) (?:general )?public licen[cs]e ")),
+    (
+        "GPL",
+        re.compile(
+            r"(?<! lesser)(?<! library)(?<! affero)(?<! nethack)"
+            r" (?:gnu (?:general )?|general )public licen[cs]e "
+        ),
+    ),
+    ("EUPL", re.compile(r" european union public licen[cs]e ")),
+    ("SSPL", re.compile(r" server side public licen[cs]e ")),
 )
 TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9.+-]+")
 
@@ -252,23 +259,32 @@ def parse_expression(raw: str) -> list[list[str]]:
 
 
 def denied_family(spdx: str, deny: tuple[str, ...]) -> str | None:
-    """The deny family of an id: `GPL`, `GPL-3.0-only`, `GPL-2.0+` and the common `GPLv3` and
-    `GPL3` spellings are GPL; `LGPL-2.1-only` and `AGPL-3.0` are not (each family on its own)."""
-    upper = spdx.upper()
+    """The deny family of an id: `GPL`, `GPL-3.0-only`, `GPL-2.0+` and the common `GPLv3`,
+    `GPL3` and `GPL.v3` spellings are GPL, after a leading `GNU` too (`GNU-GPL`); `LGPL-2.1-only`
+    and `AGPL-3.0` are not (each family on its own). Only a leading `GNU` is dropped: the SPDX id
+    `CNRI-Python-GPL-Compatible` names a permissive license."""
+    upper = re.sub(r"^GNU[-.+]?", "", spdx.upper())
     for fam in sorted(deny, key=len, reverse=True):  # LGPL before GPL
-        if re.match(rf"{re.escape(fam)}(?:$|[-+]|V?\d)", upper):
+        if re.match(rf"{re.escape(fam)}(?:$|[-+.]|V?\d)", upper):
             return fam
     return None
 
 
+def _words(text: str) -> str:
+    """`Server-Side Public_License` → ` server side public license `: lower-case words, each
+    between single spaces, for matching `FAMILY_NAMES` across any separators."""
+    return f" {' '.join(re.findall(r'[a-z0-9]+', text.lower()))} "
+
+
 def named_family(text: str, deny: tuple[str, ...]) -> str | None:
-    """A deny family named in free `text`, by identifier (`GNU GPL v3`, `(GPL-3.0-only)`) or by
-    long name (`GNU General Public License`)."""
+    """A deny family named in free `text` or an id, by identifier (`GNU GPL v3`, `GNU-GPL`,
+    `(GPL-3.0-only)`) or by long name (`GNU Public License`, `GNU-General-Public-License`)."""
     for token in TOKEN_SPLIT_RE.split(text):
         if family := denied_family(token.strip(".+-"), deny):
             return family
+    words = _words(text)
     for family, name in FAMILY_NAMES:
-        if family in deny and name.search(text):
+        if family in deny and name.search(words):
             return family
     return None
 
@@ -278,8 +294,9 @@ def unread_family(raw: str, deny: tuple[str, ...]) -> str | None:
 
     Searched: each `;`-part that is not in the table and does not parse (free text, an SPDX
     expression with parentheses, an unlisted classifier), and a license text's title line. A
-    table entry is authoritative for its spelling, and a text's body is not searched, since
-    permissive texts name the GPL in passing (MPL-2.0's "Secondary License").
+    table entry is authoritative for its spelling. A text's body is not searched: permissive
+    texts name the GPL in passing (MPL-2.0's "Secondary License"), and numpy's and scipy's
+    `License` fields carry the GPL notice of the runtime library bundled in their wheels.
     """
     if _is_text(raw):
         return named_family(raw.strip().splitlines()[0], deny)
@@ -303,9 +320,10 @@ class Verdict:
 
 def judge(package: str, raw: str, config: LicensesConfig) -> Verdict:
     alternatives = parse_expression(raw)
-    # OR holds between what the gate reads. Text it cannot read may bind the package (`MIT; GPL
-    # (for the bundled parser)` is prose), so a deny family named there is not rescued by an
-    # allowed branch, and no exception admits it (#94).
+    # OR holds between what the gate reads, ids included (`GNU-GPL OR MIT` is `GPL-2.0 OR MIT`).
+    # Text it cannot read may bind the package (`MIT; GPL (for the bundled parser)` is prose), so
+    # a deny family named there is not rescued by an allowed branch, and no exception admits it
+    # (#94).
     unread = unread_family(raw, config.deny)
     if not unread:
         for conj in alternatives:
@@ -314,7 +332,8 @@ def judge(package: str, raw: str, config: LicensesConfig) -> Verdict:
     denied: str | None = None
     for conj in alternatives:
         for x in conj:
-            denied = denied or denied_family(x, config.deny)
+            # An id names a family by identifier (`GNU-GPL`) or as a hyphenated long name.
+            denied = denied or named_family(x, config.deny)
     denied = denied or unread
     if package in config.exceptions:
         if denied:

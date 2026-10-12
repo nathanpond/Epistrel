@@ -2,7 +2,8 @@
 
 §15 stays the plan of record. The check reports disagreements; `--write` regenerates only the
 Tests column of rows at or before `current_milestone` from the parts found in code, never
-dropping a planned test ID, and regenerates the two footer lines.
+dropping a planned test ID, and regenerates the two footer lines. It writes nothing unless the
+regenerated table parses.
 """
 
 from __future__ import annotations
@@ -21,6 +22,9 @@ EMPTY_CELL = "—"
 ENTRY_RE = re.compile(
     r"^(?P<id>[A-Z][A-Z0-9-]*)\s*\((?P<ms>M\d+)(?:,\s*interim until (?P<until>M\d+))?\)$"
 )
+# Splits a Tests cell between entries: only on a comma outside parentheses, so the comma in
+# `C-16 (M4, interim until M7)` stays inside its entry (#93).
+ENTRY_SEPARATOR_RE = re.compile(r",(?![^()]*\))")
 NOT_GATED_PREFIX = "**Not release-gated**"
 PER_MILESTONE_PREFIX = "**M requirements first gated per milestone:**"
 FAMILIES = ["U", "I", "C", None, "S", "E", "Q", "R", "P", "X"]  # None = property tests
@@ -113,7 +117,7 @@ def parse_plan(text: str) -> Plan:
         entries = (
             []
             if tests in (EMPTY_CELL, "", "-")
-            else [_parse_entry(e, f"docs/04:{i + 1}") for e in tests.split(",")]
+            else [_parse_entry(e, f"docs/04:{i + 1}") for e in ENTRY_SEPARATOR_RE.split(tests)]
         )
         plan.rows[req] = Row(req, prio, milestone_number(ms), entries, i)
         i += 1
@@ -319,9 +323,14 @@ def run(
                 "refusing to --write while §15 and §22 disagree on a milestone: " + pre[0]
             )
         new_text = write_text(write_plan(plan, parts, current), original)
+        try:  # parse before writing: never leave docs/04 in a shape that every later run rejects
+            plan = parse_plan(new_text)
+        except PlanError as exc:
+            raise PlanError(
+                f"refusing to --write: the regenerated §15 does not parse: {exc}"
+            ) from exc
         if new_text != original:
             plan_path.write_text(new_text, encoding="utf-8")
-        plan = parse_plan(new_text)
     findings = reconcile(plan, spec, parts, current)
     summary = (
         f"{len(plan.rows)} §15 rows, {len(parts)} code parts, "

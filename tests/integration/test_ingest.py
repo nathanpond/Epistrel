@@ -148,7 +148,8 @@ async def test_check_order(stub_settings: Settings, engine: AsyncEngine) -> None
 async def test_batch_is_all_or_nothing(stub_settings: Settings, engine: AsyncEngine) -> None:
     """One event failing the input gate refuses the whole batch with nothing written (its
     locator names it); a clean batch records one turn per event, in order, each bumping the
-    revision. Complement: the same events minus the violating one are all recorded."""
+    revision. Complement: the same events minus the violating one are all recorded. A batch with
+    one conflicting ``client_event_id`` records none of its new events."""
     async with respond_client(stub_settings, engine) as (client, lib):
         story, ids = await new_story(client)
         await lib.policies_set_story(
@@ -207,6 +208,16 @@ async def test_batch_is_all_or_nothing(stub_settings: Settings, engine: AsyncEng
             "finish_reason": "consumer",
             "fallback_used": False,
         }
+
+        # A batch whose second event reuses ``n1`` with a different payload is refused as a
+        # whole: its new first event is not recorded either (#58 AC1; #286).
+        settled = await footprint(engine, story)
+        conflicting = await ingest(
+            client, story, narration("new1", "One more."), narration("n1", "Different.")
+        )
+        assert conflicting.status_code == 409, conflicting.text
+        assert code(conflicting) == "client_event_conflict"
+        assert await footprint(engine, story) == settled
 
 
 async def test_mixed_replay_and_new(stub_settings: Settings, engine: AsyncEngine) -> None:

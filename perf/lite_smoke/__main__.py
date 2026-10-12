@@ -369,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if use_compose and not args.keep:
             compose("down", "-v", "--remove-orphans")
-    return 1 if info.enforced and not evaluation.passed else 0
+    return reporting.exit_code(evaluation)
 
 
 if __name__ == "__main__":

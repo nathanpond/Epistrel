@@ -12,11 +12,13 @@ FR-LITE-7)."""
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, get_args
 
+import annotated_types
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from pydantic.fields import FieldInfo
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
@@ -26,7 +28,7 @@ from epistrel.core.errors import BudgetBelowSafetyMinimum, GuardrailViolation
 from epistrel.core.fork import ForkRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import story_guidance
-from epistrel.core.settings_schema import GenerationSettings
+from epistrel.core.settings_schema import GenerationSettings, StorySettings
 from epistrel.core.stories import StorySpec
 from epistrel.core.story_settings import update_story_settings
 from epistrel.core.summary import included_segments
@@ -258,6 +260,30 @@ async def test_i_18__pins(stub_settings: Settings, engine: AsyncEngine) -> None:
             == event_count
         )
 
+        # The instructions path passes the same gate (#60 AC2, #56 AC1; #288).
+        instructions = (await client.get(instructions_url, headers=READ)).json()
+        op_count = await scalar(
+            engine, "SELECT count(*) FROM operations WHERE story_id = :s", s=story
+        )
+        refused = await client.put(
+            instructions_url, json={"text": "Praise zarquon always."}, headers=WRITE
+        )
+        assert refused.status_code == 422, refused.text
+        error = refused.json()["error"]
+        assert error["code"] == "guardrail_violation"
+        assert error["details"]["violations"][0]["locator"] == "text"
+        assert (await client.get(instructions_url, headers=READ)).json() == instructions
+        assert instructions["text"] == "Speak in rhyme."
+        assert await _revision(engine, story) == stored["timeline_revision"]
+        assert (
+            await scalar(engine, "SELECT count(*) FROM events WHERE story_id = :s", s=story)
+            == event_count
+        )
+        assert (
+            await scalar(engine, "SELECT count(*) FROM operations WHERE story_id = :s", s=story)
+            == op_count
+        )
+
         # No change → nothing written.
         same = await client.put(pins_url, json={"items": [{"text": "PIN B"}]}, headers=WRITE)
         assert same.status_code == 200
@@ -275,18 +301,44 @@ GENERATION_LAYERS = st.builds(
 )
 
 
+def _bound(info: FieldInfo, kind: type, attr: str) -> float | None:
+    found = next((m for m in info.metadata if isinstance(m, kind)), None)
+    return None if found is None else float(getattr(found, attr))
+
+
+def _bounded(name: str, info: FieldInfo) -> st.SearchStrategy[Any]:
+    """A strategy for a bounded ``int``/``float`` (optionally ``None``) setting, from its
+    ``ge``/``gt``/``le`` metadata; any other shape fails, naming the field."""
+    args = get_args(info.annotation)
+    optional = type(None) in args
+    base = (
+        next((a for a in args if a is not type(None)), info.annotation) if args else info.annotation
+    )
+    low = _bound(info, annotated_types.Ge, "ge")
+    above = _bound(info, annotated_types.Gt, "gt")
+    high = _bound(info, annotated_types.Le, "le")
+    if base is int and low is not None and high is not None:
+        drawn: st.SearchStrategy[Any] = st.integers(int(low), int(high))
+    elif base is float and (low is not None or above is not None) and high is not None:
+        floor = low if low is not None else (above or 0.0) + 0.5
+        drawn = st.floats(floor, high)
+    else:
+        raise AssertionError(f"StorySettings.{name}: add a strategy to _story_settings")
+    return st.none() | drawn if optional else drawn
+
+
 def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
-    """Every ``StorySettings`` field at random allowed values (``None`` resets to default)."""
+    """Every ``StorySettings`` field at random allowed values (``None`` resets to default),
+    derived from the model so a setting added later is covered too (#292)."""
+    explicit: dict[str, st.SearchStrategy[Any]] = {
+        "turn_concurrency": st.sampled_from(["reject", "queue"]),
+        "default_output_viewpoint": st.none() | st.sampled_from([f"character:{c}" for c in cast]),
+        "generation_settings": st.none() | GENERATION_LAYERS,
+    }
     return st.fixed_dictionaries(
         {
-            "regenerate_retry_budget": st.integers(0, 10),
-            "turn_concurrency": st.sampled_from(["reject", "queue"]),
-            "turn_queue_max": st.none() | st.integers(1, 50),
-            "turn_deadline": st.floats(0.5, 600.0),
-            "default_output_viewpoint": st.none()
-            | st.sampled_from([f"character:{c}" for c in cast]),
-            "generation_settings": st.none() | GENERATION_LAYERS,
-            "lite_window_messages": st.none() | st.integers(1, 500),
+            name: explicit[name] if name in explicit else _bounded(name, info)
+            for name, info in StorySettings.model_fields.items()
         }
     )
 
@@ -365,6 +417,7 @@ def test_i_18__no_bypass(pg_url: str) -> None:
 
     every_setting()
     assert {p["turn_concurrency"] for p in seen} == {"reject", "queue"}
+    assert all(set(p) == set(StorySettings.model_fields) for p in seen)
 
     async def retire() -> None:
         engine = make_engine(auth_settings(pg_url))

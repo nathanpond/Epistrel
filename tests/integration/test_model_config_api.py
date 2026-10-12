@@ -174,12 +174,20 @@ async def test_invalid_config_is_refused_and_nothing_changes(
 
 
 @pytest.mark.parametrize("purpose", ["nonsense", "entailment"])
-async def test_unknown_purpose_is_refused(client: httpx.AsyncClient, purpose: str) -> None:
+async def test_unknown_purpose_is_refused(
+    client: httpx.AsyncClient, engine: AsyncEngine, purpose: str
+) -> None:
+    """Negative (#52 AC4): 422 naming the path; the previous configuration, its revision and
+    the ``config_changes`` log are untouched (#285)."""
+    await put(client, "generation", {"model": "kept", "base_url": "http://gw/v1"})
+    before = await listing(client)
     response = await client.put(
         f"/admin/model-config/{purpose}", json={"model": "m"}, headers=OPERATOR_HEADERS
     )
     assert response.status_code == 422
     assert response.json()["error"]["details"]["field"] == "path.purpose"
+    assert await listing(client) == before
+    assert await changes(engine, before["config_revision"]) == []
     read = await client.get(f"/admin/model-config/{purpose}", headers=bearer())
     assert read.status_code == 422
 

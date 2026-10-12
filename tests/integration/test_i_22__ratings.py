@@ -256,7 +256,7 @@ async def test_i_22__stories(engine: AsyncEngine, settings: Settings) -> None:
         assert after["timeline_revision"] == 2
 
 
-@pytest.mark.part("M2", "FR-RATE-4")
+@pytest.mark.part("M2", "FR-RATE-4; FR-LITE-1")
 async def test_i_22__prompt(pg_url: str, engine: AsyncEngine) -> None:
     """The story rating's current prompt guidance is the first section of the ``system``
     message of every Lite generation, at no extra model call; editing the guidance changes the

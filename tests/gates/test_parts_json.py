@@ -17,6 +17,8 @@ def test_json_output_has_one_entry_per_part(tmp_path: Path) -> None:
             sys.executable,
             "-m",
             "tools.gates",
+            "--pyproject",
+            str(FIXTURES / "pyproject_m1.toml"),  # the fixture parts, not the repo's coverage
             "check-parts",
             "--tests",
             str(FIXTURES / "tests_valid"),

@@ -15,7 +15,8 @@ The app runs on a scratch database migrated to head, so generated writes (storie
 ratings, deployment settings) never reach the session database. Excluded from generation:
 ``delete_story`` and ``archive_story`` (they would end the fixture story every later example
 needs) and the API-key routes (they need ``EPISTREL_CONFIG_KEY``); all three are covered by
-C-03 and their own tests.
+C-03 and their own tests. ``replace_model_config`` is generated, and each successful write is
+undone so that later examples still reach the stub model.
 """
 
 from __future__ import annotations
@@ -85,6 +86,8 @@ EXCLUDED = ("delete_story", "archive_story", "set_model_api_key", "remove_model_
 COUNTED_TABLES = ("operations", "events", "config_changes")
 _COUNT = "SELECT count(*) FROM {}"
 REFUSED = frozenset({400, 401, 404, 409, 422})
+RESTORED = "replace_model_config"
+"""Generated, then undone after each success (``_restore_model_config``)."""
 EXAMPLES = 100
 CHECKS = [
     not_a_server_error,
@@ -183,6 +186,22 @@ def exercise(case: Case[Any], live: Live) -> None:
             assert error["details"]["errors"], error
     if before is not None and response.status_code in REFUSED:
         assert live.counts() == before, (case.operation.label, response.status_code)
+    if case.operation.definition.raw.get("operationId") == RESTORED and response.status_code == 200:
+        _restore_model_config(live)
+
+
+def _restore_model_config(live: Live) -> None:
+    """Put ``generation`` back on the stub after a generated ``PUT /admin/model-config``
+    succeeded. A generated ``base_url`` or model is a valid write, but it would make every later
+    example that calls a model answer a documented 503 ``model_unavailable``, so (like the
+    excluded story routes) the write is undone through the API, which moves the configuration
+    revision the model cache reads."""
+    restore = SCHEMA["/admin/model-config/{purpose}"]["DELETE"].Case(
+        path_parameters={"purpose": live.path_ids["purpose"]},
+        headers={"X-Epistrel-Principal": "c01-restore"},
+    )
+    restored = restore.call(app=live.app, headers=bearer())
+    assert restored.status_code in (200, 204), restored.text
 
 
 @SCHEMA.exclude(operation_id=list(EXCLUDED)).parametrize()

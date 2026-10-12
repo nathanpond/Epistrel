@@ -3,13 +3,14 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema
 
 from epistrel.core.config_changes import ConfigChangePage
-from epistrel.core.settings_schema import ConfigClass
+from epistrel.core.settings_schema import ConfigClass, DeploymentSettings, StorySettings, flatten
 
 
 def _iso_only(value: Any) -> Any:
@@ -27,6 +28,53 @@ def _iso_only(value: Any) -> Any:
 
 IsoDateTime = Annotated[datetime, BeforeValidator(_iso_only)]
 """A query ``date-time``: only the RFC 3339 form is accepted."""
+
+
+def _setting_names(model: type[BaseModel]) -> tuple[str, ...]:
+    """Every name a ``setting`` filter can take for ``model``: each leaf's dotted path and each
+    of its parents (``generation_settings`` filters on all of its leaves)."""
+    names: set[str] = set()
+    for leaf in flatten(model, None):
+        parts = leaf.split(".")
+        names.update(".".join(parts[: i + 1]) for i in range(len(parts)))
+    return tuple(sorted(names))
+
+
+def _setting_filter(model: type[BaseModel], prefixes: tuple[str, ...]) -> Any:
+    """A ``setting`` query item for a scope (#279): one of ``model``'s setting names, or a row
+    family written by that scope: ``<prefix>:`` alone matches the whole family and
+    ``<prefix>:<name>`` one member. The closed vocabulary lets an unknown name be refused (422)
+    instead of silently matching nothing."""
+    names = _setting_names(model)
+    known = frozenset(names)
+    pattern = rf"^({'|'.join(prefixes)}):\S*$"
+
+    def check(value: str) -> str:
+        if value in known or re.fullmatch(pattern, value):
+            return value
+        families = ", ".join(f"{p}:" for p in prefixes)
+        raise ValueError(f"must be a setting name or start with one of {families}")
+
+    return Annotated[
+        str,
+        AfterValidator(check),
+        WithJsonSchema(
+            {
+                "anyOf": [
+                    {"type": "string", "enum": list(names)},
+                    {"type": "string", "pattern": pattern},
+                ]
+            }
+        ),
+    ]
+
+
+DeploymentSettingFilter = _setting_filter(DeploymentSettings, ("model_config", "policy", "rating"))
+"""A deployment-scope ``setting`` filter: a deployment setting, or a model configuration, global
+policy or rating row family."""
+
+StorySettingFilter = _setting_filter(StorySettings, ("policy",))
+"""A story-scope ``setting`` filter: a story setting, or the story's policy rows."""
 
 
 class ConfigChangeItem(BaseModel):

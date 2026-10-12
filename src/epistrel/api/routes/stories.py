@@ -29,7 +29,7 @@ from fastapi import APIRouter, Body, Query, Response
 from fastapi import status as http_status
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from epistrel.api.config_changes import ConfigChangesBody, IsoDateTime
+from epistrel.api.config_changes import ConfigChangesBody, IsoDateTime, StorySettingFilter
 from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep, StoryId
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import MutationResponse
@@ -546,7 +546,7 @@ async def story_config_changes(
     story_id: StoryId,
     ctx: ContextDep,
     engine: EngineDep,
-    setting: Annotated[list[str] | None, Query()] = None,
+    setting: Annotated[list[StorySettingFilter] | None, Query()] = None,
     change_class: Annotated[ConfigClass | None, Query(alias="class")] = None,
     since: IsoDateTime | None = None,
     after: str | None = None,

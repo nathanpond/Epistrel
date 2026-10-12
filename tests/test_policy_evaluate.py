@@ -3,6 +3,8 @@ entity lists, targets, and model-assisted policies left to the guardrail-check p
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import time
 
 import pytest
@@ -94,6 +96,43 @@ def test_regex_past_its_deadline_is_a_violation() -> None:
     fine = policy({"type": "regex", "patterns": ["b"]}, policy_id="fine")
     assert _ids("abc", fine) == ["fine"]
     assert _ids("xyz", fine) == []
+
+
+def test_timed_out_regex_workers_are_killed() -> None:
+    """A search past its deadline kills its worker rather than leaving it to backtrack: after
+    repeated timeouts on input that would run for minutes, no more than ``REGEX_WORKERS``
+    workers are alive and every timed-out one has exited (#290)."""
+    slow = policy({"type": "regex", "patterns": [r"(a+)+$"]}, policy_id="slow")
+    pool = evaluate_module._REGEX
+    seen: set[subprocess.Popen[bytes]] = set()
+    for _ in range(evaluate_module.REGEX_WORKERS + 2):
+        before = set(pool.processes())
+        assert _ids("a" * 40 + "!", slow) == ["slow"]
+        seen |= before | set(pool.processes())
+    assert len(pool.processes()) <= evaluate_module.REGEX_WORKERS
+    killed = [p for p in seen if p.returncode is not None]
+    assert all(p.poll() is not None for p in killed)
+    fine = policy({"type": "regex", "patterns": ["b"]}, policy_id="fine")
+    assert _ids("abc", fine) == ["fine"]
+    assert len(pool.processes()) <= evaluate_module.REGEX_WORKERS
+
+
+def test_process_exits_after_a_regex_timeout() -> None:
+    """The issue's repro: a process whose search timed out exits promptly instead of spinning
+    on the abandoned search (#290)."""
+    script = (
+        "from epistrel.core.policies.evaluate import evaluate\n"
+        "from epistrel.core.policies.model import Target\n"
+        "from tests.policy_support import policy\n"
+        "p = policy({'type': 'regex', 'patterns': ['(a+)+$']}, applies_to=(Target.TEXT_INPUT,))\n"
+        "print(len(evaluate('a' * 40 + '!', [p], Target.TEXT_INPUT)))\n"
+    )
+    started = time.monotonic()
+    done = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30, check=True
+    )
+    assert done.stdout.strip() == "1"
+    assert time.monotonic() - started < 15
 
 
 def test_regex_deadline_constant() -> None:

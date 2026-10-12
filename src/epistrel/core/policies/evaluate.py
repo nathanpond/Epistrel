@@ -10,26 +10,31 @@ them through the ``guardrail check`` purpose.
   and split into words. A word is a run of Unicode ``\\w`` characters, and an apostrophe
   inside a word joins it. An entry matches when its words appear consecutively in the text,
   so "kill" does not match "skill" and "don" does not match "don't".
-- ``regex``: ``re.search`` with ``IGNORECASE``. Each policy's patterns run in a
-  subinterpreter under a deadline (``REGEX_DEADLINE_S``). ``re`` holds its interpreter's lock
-  for a whole match, so a thread in this interpreter could not be interrupted, and catastrophic
-  backtracking would stall the caller. A subinterpreter has its own lock. The deadline starts
-  when a worker picks the search up. A search that misses it, or that waits longer than
-  ``STARTUP_GRACE_S`` for a worker, counts as a **violation** (fail closed). Its worker is
-  abandoned and the pool is replaced; the abandoned search runs to completion in the
-  background.
+- ``regex``: ``re.search`` with ``IGNORECASE``. Each policy's patterns run in a child process
+  (``regex_worker``) under a deadline (``REGEX_DEADLINE_S``). ``re`` holds the interpreter's
+  lock for a whole match and nothing can interrupt it inside one interpreter, so catastrophic
+  backtracking is contained by a process the caller can kill. The deadline starts once a worker
+  is ready. A search that misses it, or that waits longer than ``STARTUP_GRACE_S`` for a worker,
+  counts as a **violation** (fail closed), and its worker is killed and reaped, never left
+  running (#290). At most ``REGEX_WORKERS`` workers exist; idle ones are reused.
 """
 
 from __future__ import annotations
 
+import atexit
+import json
+import os
 import re
+import selectors
+import subprocess
+import sys
 import threading
 import time
 import unicodedata
 from collections.abc import Iterable
-from concurrent.futures import Future, InterpreterPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
+from pathlib import Path
 
+from epistrel.core.policies import regex_worker
 from epistrel.core.policies.model import (
     EntityListRule,
     ModelAssistedRule,
@@ -39,7 +44,6 @@ from epistrel.core.policies.model import (
     Violation,
     WordlistRule,
 )
-from epistrel.core.policies.regex_worker import search_any
 
 REGEX_DEADLINE_S = 0.05
 REGEX_WORKERS = 4
@@ -77,45 +81,126 @@ class _Words:
         return phrase in grams
 
 
-class _RegexPool:
-    """A lazily started interpreter pool, replaced whenever a search misses its deadline."""
+class _RegexWorker:
+    """One child process running ``regex_worker``; killed when a search misses its deadline."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._pool: InterpreterPoolExecutor | None = None
+        self.process = subprocess.Popen(  # noqa: S603 - fixed argv, no user input
+            [sys.executable, "-I", str(Path(regex_worker.__file__))],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+        if self.process.stdin is None or self.process.stdout is None:  # pragma: no cover
+            raise RuntimeError("regex worker started without pipes")
+        self._stdin = self.process.stdin
+        self._stdout = self.process.stdout
+        self._buffer = b""
+
+    def _readline(self, until: float) -> bytes | None:
+        """The next line from the worker, or ``None`` when ``until`` passed or it closed."""
+        fd = self._stdout.fileno()
+        with selectors.DefaultSelector() as selector:
+            selector.register(fd, selectors.EVENT_READ)
+            while b"\n" not in self._buffer:
+                remaining = until - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    return None
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    return None
+                self._buffer += chunk
+        line, _, self._buffer = self._buffer.partition(b"\n")
+        return line
+
+    def ready(self, grace: float) -> bool:
+        return self._readline(time.monotonic() + grace) == b"ready"
 
     def search(self, patterns: tuple[str, ...], text: str, deadline: float) -> bool | None:
         """Whether any pattern matches; ``None`` when the deadline passed first."""
-        with self._lock:
-            if self._pool is None:
-                self._pool = InterpreterPoolExecutor(max_workers=REGEX_WORKERS)
-            pool = self._pool
-        future = pool.submit(search_any, patterns, text)
+        request = json.dumps({"p": list(patterns), "t": text}).encode() + b"\n"
         try:
-            if not _started(future, STARTUP_GRACE_S):
-                raise FutureTimeout
-            return future.result(timeout=deadline)
-        except FutureTimeout:
-            future.cancel()
-            with self._lock:
-                if self._pool is pool:
-                    self._pool = None
-                    pool.shutdown(wait=False, cancel_futures=True)
+            self._stdin.write(request)
+        except OSError:
             return None
+        answer = self._readline(time.monotonic() + deadline)
+        return None if answer not in (b"0", b"1") else answer == b"1"
+
+    def kill(self) -> None:
+        self.process.kill()
+        self.process.wait()
+        self._stdin.close()
+        self._stdout.close()
 
 
-def _started(future: Future[bool], grace: float) -> bool:
-    """Wait until a worker has picked the search up. A worker's interpreter is created before
-    it takes work, so the deadline measures the search alone, never interpreter start-up."""
-    give_up = time.monotonic() + grace
-    while not (future.running() or future.done()):
-        if time.monotonic() > give_up:
-            return False
-        time.sleep(0.0005)
-    return True
+class _RegexPool:
+    """Up to ``REGEX_WORKERS`` worker processes, started lazily and reused while they answer in
+    time; a worker that misses a deadline (or fails) is killed and replaced on demand."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._slots = threading.BoundedSemaphore(REGEX_WORKERS)
+        self._idle: list[_RegexWorker] = []
+        self._live: list[_RegexWorker] = []
+
+    def processes(self) -> list[subprocess.Popen[bytes]]:
+        """The worker processes still running (for tests and diagnostics)."""
+        with self._lock:
+            return [w.process for w in self._live if w.process.poll() is None]
+
+    def _take(self) -> _RegexWorker | None:
+        with self._lock:
+            while self._idle:
+                worker = self._idle.pop()
+                if worker.process.poll() is None:
+                    return worker
+                self._drop(worker)
+        worker = _RegexWorker()
+        with self._lock:
+            self._live.append(worker)
+        if worker.ready(STARTUP_GRACE_S):
+            return worker
+        self._discard(worker)
+        return None
+
+    def _drop(self, worker: _RegexWorker) -> None:
+        if worker in self._live:
+            self._live.remove(worker)
+
+    def _discard(self, worker: _RegexWorker) -> None:
+        worker.kill()
+        with self._lock:
+            self._drop(worker)
+
+    def search(self, patterns: tuple[str, ...], text: str, deadline: float) -> bool | None:
+        """Whether any pattern matches; ``None`` when the deadline passed first."""
+        if not self._slots.acquire(timeout=STARTUP_GRACE_S):
+            return None
+        try:
+            worker = self._take()
+            if worker is None:
+                return None
+            matched = worker.search(patterns, text, deadline)
+            if matched is None:
+                self._discard(worker)
+            else:
+                with self._lock:
+                    self._idle.append(worker)
+            return matched
+        finally:
+            self._slots.release()
+
+    def close(self) -> None:
+        """Kill every worker (at interpreter exit)."""
+        with self._lock:
+            workers, self._live, self._idle = self._live, [], []
+        for worker in workers:
+            worker.kill()
 
 
 _REGEX = _RegexPool()
+atexit.register(_REGEX.close)
 
 
 def _breaks(policy: Policy, found: _Words, text: str) -> bool:

@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Response
 from pydantic import ConfigDict
 
-from epistrel.api.config_changes import ConfigChangesBody, IsoDateTime
+from epistrel.api.config_changes import ConfigChangesBody, DeploymentSettingFilter, IsoDateTime
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import DeploymentMutationResponse
@@ -69,7 +69,7 @@ async def update_settings(
 async def config_changes(
     ctx: ContextDep,
     engine: EngineDep,
-    setting: Annotated[list[str] | None, Query()] = None,
+    setting: Annotated[list[DeploymentSettingFilter] | None, Query()] = None,
     change_class: Annotated[ConfigClass | None, Query(alias="class")] = None,
     since: IsoDateTime | None = None,
     after: str | None = None,

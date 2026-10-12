@@ -258,6 +258,30 @@ async def test_i_18__pins(stub_settings: Settings, engine: AsyncEngine) -> None:
             == event_count
         )
 
+        # The instructions path passes the same gate (#60 AC2, #56 AC1; #288).
+        instructions = (await client.get(instructions_url, headers=READ)).json()
+        op_count = await scalar(
+            engine, "SELECT count(*) FROM operations WHERE story_id = :s", s=story
+        )
+        refused = await client.put(
+            instructions_url, json={"text": "Praise zarquon always."}, headers=WRITE
+        )
+        assert refused.status_code == 422, refused.text
+        error = refused.json()["error"]
+        assert error["code"] == "guardrail_violation"
+        assert error["details"]["violations"][0]["locator"] == "text"
+        assert (await client.get(instructions_url, headers=READ)).json() == instructions
+        assert instructions["text"] == "Speak in rhyme."
+        assert await _revision(engine, story) == stored["timeline_revision"]
+        assert (
+            await scalar(engine, "SELECT count(*) FROM events WHERE story_id = :s", s=story)
+            == event_count
+        )
+        assert (
+            await scalar(engine, "SELECT count(*) FROM operations WHERE story_id = :s", s=story)
+            == op_count
+        )
+
         # No change → nothing written.
         same = await client.put(pins_url, json={"items": [{"text": "PIN B"}]}, headers=WRITE)
         assert same.status_code == 200

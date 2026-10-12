@@ -1652,3 +1652,39 @@ Process:
 - **Decision (Rule 1, orchestrator, PR #284 CI attempt 1):** CI's C-08 guard re-runs the scenario suite in a subprocess, and there `test_s_double_submit` (c) got 423 `story_busy` on the retry after the child engine was killed. The crashed attempt's idempotency claim and its turn slot both have `lease_s` (1 s) leases, started at different moments; a retry landing between the two expiries meets the still-leased slot. The test now waits `2·lease_s + 0.5` s before the retry. The assertions are unchanged; the product's 423 is the documented #63 behaviour for a slot still leased.
   **Why:** A timing race in the test, seen only on the slower CI runner under C-08's extra load; the same test passed in CI's main run.
   **Issue:** #61, #74
+
+## /n8-exec M2 (verify fixes) — 2026-10-11
+
+Re-execution of M2 after `/n8-verify M2` filed #285–#297 against PR #284. Branch `milestone/m2-verify-fixes` (a new name, because `milestone/m2-lite-core` was deleted by #284's merge).
+
+- **Decision (#295):** Background job runs are reported as `committed` → `ok`, `refused` (commit fenced) and `dropped` (stale inputs, requeued) → `rejected`, a failed attempt (`queued`/`failed`) → `error`, and a fenced claim → `rejected`. This goes through a new pure helper, `worker.run_outcome`.
+  **Why:** docs/02 fixes the outcome vocabulary at `ok`/`rejected`/`error`, and the docstring already said "rejected when fenced". New labels would have changed a documented metric contract. A dropped output is a designed concurrency outcome, not an error.
+  **Issue:** #295
+- **Decision (#290, Rule 1):** Regex policies now run in a pool of up to `REGEX_WORKERS` child processes (`python -I regex_worker.py`, stdlib only, JSON lines over pipes) instead of an `InterpreterPoolExecutor`. A search that misses its deadline is killed and reaped. Idle workers are reused and exit on stdin EOF, and an `atexit` hook kills any that remain. The contract is unchanged: the deadline starts once a worker is ready, start-up stays under `STARTUP_GRACE_S`, and a timeout is a violation (fail closed).
+  **Why:** A subinterpreter cannot be interrupted, so the abandoned search kept a core busy and blocked exit. Of the issue's two suggestions, the `regex` package's timeout would be a new runtime dependency and a library swap (Rule 4 territory). A killable stdlib process is neither. Mutation-checked: the new exit test times out on the old code.
+  **Issue:** #290
+- **Decision (#287):** Fixed P-08's assertion to 2 `guardrail_check` calls per minors turn and verified it against `tests.model_support.mock_openai`. Filed the related sev:low (model-matrix.md rows measured on the pre-respond path; tier label) as #298 (`needs-triage`) instead of re-measuring the matrix here.
+  **Why:** The re-measurement is a docs/report task with its own AC (#54 AC3), not part of the test fix.
+  **Issue:** #287, #298
+- **Decision (#291):** The 409 `rebase_failed` test is a new integration module (`test_config_rebase_conflict.py`) driven through `respond` with a held stub generation and a global output policy added mid-turn. Its complement shows that budget 1 regenerates and commits.
+  **Why:** `test_config_revalidation.py` is a Hypothesis state machine that tolerates the conflict by design. A deterministic case reads better on its own.
+  **Issue:** #291
+- **Decision (#292):** The FR-PROF-14 strategy is derived from `StorySettings.model_fields`. Bounded int/float fields come from their `ge`/`gt`/`le` metadata. Three fields keep explicit strategies (viewpoint from the cast, the `turn_concurrency` literal, nested `generation_settings`). A field that cannot be derived fails the test by name, and every draw is asserted to cover all fields.
+  **Issue:** #292
+- **Decision (#297):** `perf/lite_smoke/__main__.main`'s inline exit decision moved to `report.exit_code(evaluation)` (same expression), so the test asserts the real decision without a 30-minute run.
+  **Issue:** #297
+- **Decision (#296):** `_forkable` (I-04) now creates its source with a new, non-default rating, so every fork test runs against a rating the default fallback can't fake.
+  **Issue:** #296
+- **Decision (#293):** Closed 10 of the 11 planned-but-absent §15 parts and FR-STORE-26's coverage. Where an existing test already proved the requirement, only the marker changed (I-22 `__prompt` + FR-LITE-1; I-04 `__fork` + FR-STORE-14; `__fork_isolation` + FR-STORE-14..16, with a new assertion that the deleted source keeps no rows). New tests: `test_i_04__regenerate`, `test_time__derived` (FR-STORE-26), `test_time__source_window` (FR-STORE-27), the ISOLATION property test, and `test_i_08__round_trip` / `__rebuild`.
+  **Why:** The markers and §15 IDs must agree, and a marker is added only where the test's assertions already cover the requirement's text.
+  **Issue:** #293
+- **Decision (#293, ISOLATION):** The fork's `story_created` (names its source) and the source's `fork` event (names the fork) are excluded from the "no row names another story" check.
+  **Why:** Both are #67's designed provenance, and I-04 already excludes the first. Read strictly, FR-STORE-14 ("no … event shall reference another story") would forbid both. Raise it with `/n8-audit` or a spec note if provenance should not count as a reference.
+  **Issue:** #293
+- **Decision (#293, I-08):** The schema fingerprint compares function bodies with whitespace collapsed and allows `operation_status.queued` to remain after a downgrade below 0015.
+  **Why:** The round trip found two differences at revision 0002. (1) 0014/0015/0016's downgrades restore `epistrel_operations_guard` with its allow-list on one line rather than 0002's three: semantically identical, diffed and confirmed. (2) 0015 documents that its downgrade leaves the `queued` enum label, because PostgreSQL cannot drop one. Both are allowed explicitly in `KEPT_ON_DOWNGRADE` and the normalisation, not silently.
+  **Issue:** #293
+- **Blocker (#293):** FR-MODEL-9 (S, bring-your-own-completion) is OUT-OF-TIER in M2's plan but planned as `C-04 (M2)` in docs/04 §15, so `check-traceability` fails at `current_milestone = 2`. The options are on the issue: build it, amend §15 (recommended), or change the gate rule. `current_milestone` stays 1. #293 is `blocked` + `needs-owner-action`.
+  **Issue:** #293
+- **Finding (#279, not fixed):** On this branch C-01 `GET /admin/config-changes` fails deterministically under `CI=1`, while clean `main` passes. #290's change shifts which examples the derandomized run draws, and the branch draws an object-valued `setting` that serializes into valid query strings. I wrongly assumed invalid UTF-8 at first, then traced it and reverted that attempt. It's a harness/schema mismatch for which #279 already poses the options. I did not weaken the check. CI decides.
+  **Issue:** #279

@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       seed:
-        description: EPISTREL_CHAOS_SEED to replay (empty draws a fresh one; each test prints its seed)
+        description: EPISTREL_CHAOS_SEED to rerun with, which repeats each seeded test's random draws but not X-04's timing (empty draws a fresh one; each seeded test prints its seed)
         type: string
         required: false
         default: ""
@@ -68,7 +68,7 @@ jobs:
           OUTCOME: ${{ steps.chaos.outcome }}
         run: |
           {
-            printf '%s\n' "## Weekly chaos run: $OUTCOME" '' 'Seeds and tallies (replay with the `seed` input):' '' '```'
+            printf '%s\n' "## Weekly chaos run: $OUTCOME" '' 'Seeds and tallies (rerun a seed with the `seed` input):' '' '```'
             grep -E '^X-0[0-9] ' build/chaos/chaos.log || printf '%s\n' '(no tallies printed)'
             printf '%s\n' '```' '' '```'
             grep -E '^(FAILED|ERROR|PASSED) |[0-9]+ (passed|failed)' build/chaos/chaos.log | tail -40 || true
@@ -89,7 +89,7 @@ jobs:
         run: |
           failed=$(grep -E '^(FAILED|ERROR) ' build/chaos/chaos.log | head -20 || true)
           seeds=$(grep -E '^X-0[0-9] .*seed=' build/chaos/chaos.log || true)
-          body=$(printf '%s\n' "The weekly chaos run failed: $RUN_URL" '' 'Failed:' '```' "$failed" '```' '' 'Seeds (replay with the workflow'"'"'s `seed` input):' '```' "$seeds" '```')
+          body=$(printf '%s\n' "The weekly chaos run failed: $RUN_URL" '' 'Failed:' '```' "$failed" '```' '' 'Seeds (rerun one with the workflow'"'"'s `seed` input):' '```' "$seeds" '```')
           open=$(gh issue list --state open --search 'in:title "Weekly chaos run failed"' --json number --jq '.[0].number // empty')
           if [ -n "$open" ]; then
             gh issue comment "$open" --body "$body"

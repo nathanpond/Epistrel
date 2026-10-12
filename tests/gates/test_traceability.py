@@ -301,6 +301,34 @@ def test_cli_passes_today_and_exits_two_without_parts_json(tmp_path: Path) -> No
     assert "missing from §15: FR-RESP-1 ← test_i_99 (M2)" in broken.stdout
 
 
+def _fixture_gate(
+    plan_path: Path, parts_path: Path, *extra: str
+) -> subprocess.CompletedProcess[str]:
+    """`check-traceability` through the CLI, on the fixture spec at current_milestone = 1."""
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tools.gates",
+            "--spec",
+            str(FIXTURES / "spec_m1.md"),
+            "--pyproject",
+            str(FIXTURES / "pyproject_m1.toml"),  # current_milestone = 1
+            "check-traceability",
+            "--plan",
+            str(plan_path),
+            "--parts",
+            str(parts_path),
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+        cwd=REPO_ROOT,
+    )
+
+
 def test_cli_write_of_an_interim_part_leaves_a_plan_the_next_run_accepts(tmp_path: Path) -> None:
     # #93: this `--write` exited 2 after rewriting the plan, and every later run exited 2 too.
     plan_path = tmp_path / "04.md"
@@ -308,32 +336,47 @@ def test_cli_write_of_an_interim_part_leaves_a_plan_the_next_run_accepts(tmp_pat
     parts_path = tmp_path / "parts.json"
     parts_path.write_text(json.dumps([_interim(_part("test_i_01", "M1", ["FR-A-1"]), "M2")]))
 
-    def gate(*extra: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "tools.gates",
-                "--spec",
-                str(FIXTURES / "spec_m1.md"),
-                "--pyproject",
-                str(FIXTURES / "pyproject_m1.toml"),  # current_milestone = 1
-                "check-traceability",
-                "--plan",
-                str(plan_path),
-                "--parts",
-                str(parts_path),
-                *extra,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-            cwd=REPO_ROOT,
-        )
-
-    written = gate("--write")
+    written = _fixture_gate(plan_path, parts_path, "--write")
     assert written.returncode == 0, written.stdout
     assert "| FR-A-1 | M | M1 | I-01 (M1, interim until M2) |" in plan_path.read_text()
-    again = gate()
+    again = _fixture_gate(plan_path, parts_path)
     assert again.returncode == 0, again.stdout
+
+
+def test_cli_write_whose_output_would_not_parse_exits_two_and_leaves_the_plan(
+    tmp_path: Path,
+) -> None:
+    # #93: the refused write is a structural error (exit 2), not an uncaught PlanError (exit 1).
+    plan_path = tmp_path / "04.md"
+    plan_path.write_text(PLAN)
+    parts_path = tmp_path / "parts.json"
+    # `test_1x` derives the test ID "1X", which a §15 Tests entry cannot hold (#307).
+    parts_path.write_text(
+        json.dumps([_part("test_i_01", "M1", ["FR-A-1"]), _part("test_1x", "M1", ["FR-A-1"])])
+    )
+
+    refused = _fixture_gate(plan_path, parts_path, "--write")
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert refused.stdout == (
+        "error: refusing to --write: the regenerated §15 does not parse: "
+        "docs/04:9: malformed Tests entry '1X (M1)'\n"
+    )
+    assert plan_path.read_text() == PLAN
+
+
+@pytest.mark.parametrize("extra", [(), ("--write",)], ids=["check", "write"])
+def test_cli_malformed_interim_entry_exits_two_and_leaves_the_plan(
+    tmp_path: Path, extra: tuple[str, ...]
+) -> None:
+    # #93: a malformed interim entry stays a structural error through the CLI, with or without
+    # --write, and nothing is written.
+    plan = PLAN.replace("I-01 (M1)", "I-01 (M1, Interim until M3)")  # keyword is lower-case
+    plan_path = tmp_path / "04.md"
+    plan_path.write_text(plan)
+    parts_path = tmp_path / "parts.json"
+    parts_path.write_text(json.dumps([_interim(_part("test_i_01", "M1", ["FR-A-1"]), "M3")]))
+
+    proc = _fixture_gate(plan_path, parts_path, *extra)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert proc.stdout == "error: docs/04:9: malformed Tests entry 'I-01 (M1, Interim until M3)'\n"
+    assert plan_path.read_text() == plan

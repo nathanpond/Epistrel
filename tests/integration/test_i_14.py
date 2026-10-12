@@ -18,7 +18,7 @@ from epistrel.core.clock import frozen_at
 from epistrel.core.idempotency import purge_expired
 from tests.auth_support import auth_settings
 from tests.idempotency_support import REPLAY, key_row, keyed, operations_of
-from tests.respond_support import PLAYER, body, generation_calls, new_story, respond_client
+from tests.respond_support import FIRST, PLAYER, body, generation_calls, new_story, respond_client
 from tests.story_support import READ
 
 
@@ -54,6 +54,18 @@ async def test_i_14(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert (conflict.status_code, conflict.json()["error"]["code"]) == (
             409,
             "idempotency_conflict",
+        )
+        # The hash covers the actor: the same words as another character are a conflict, never
+        # the first character's cached reply (#61 AC3; #289).
+        as_other = await keyed(
+            client, story, body(ids[FIRST], "Where does this road lead?"), "i14-key"
+        )
+        assert as_other.status_code == 409, as_other.text
+        assert as_other.json()["error"]["code"] == "idempotency_conflict"
+        assert as_other.json()["error"]["details"]["reason"] == "request_hash"
+        assert (len(generation_calls(stub)), await operations_of(engine, story)) == (
+            calls,
+            operations,
         )
         stored = await key_row(engine, "i14-key")
         operation_id = stored.operation_id

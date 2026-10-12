@@ -2,7 +2,8 @@
 
 Records come from `pip-licenses --format=json --from=mixed` run against a runtime-only
 environment; only packages in #41's runtime closure are judged. Unknown spellings normalise to
-UNKNOWN, which fails — the safe direction.
+UNKNOWN, which fails — the safe direction. An exception admits an UNKNOWN or not-allowed
+license, never a deny family, however the value spells it (#94).
 """
 
 from __future__ import annotations
@@ -20,9 +21,9 @@ from typing import Any
 from tools.gates.deps import DepsError, closure, load_lock, normalize
 
 UNKNOWN = "UNKNOWN"
-DENY_FAMILIES = ("GPL", "LGPL", "AGPL", "SSPL", "EUPL")
 
-# Trove classifier and free-text spellings → SPDX ids. Keys are compared lower-case.
+# Trove classifier and free-text spellings → SPDX ids. Keys are compared lower-case. Every license
+# classifier in trove-classifiers 2026.9.21.13 is listed (#94).
 NORMALISATION: dict[str, str] = {
     "apache software license": "Apache-2.0",
     "apache license 2.0": "Apache-2.0",
@@ -72,6 +73,7 @@ NORMALISATION: dict[str, str] = {
     "gnu affero general public license v3 or later (agplv3+)": "AGPL-3.0-or-later",
     "european union public licence 1.2 (eupl 1.2)": "EUPL-1.2",
     "european union public licence 1.1 (eupl 1.1)": "EUPL-1.1",
+    "european union public licence 1.0 (eupl 1.0)": "EUPL-1.0",
     "server side public license (sspl)": "SSPL-1.0",
     "artistic license": "Artistic-2.0",
     "academic free license (afl)": "AFL-3.0",
@@ -83,6 +85,55 @@ NORMALISATION: dict[str, str] = {
     "public domain": "Unlicense",
     "historical permission notice and disclaimer (hpnd)": "HPND",
     "w3c license": "W3C",
+    # The rest of the trove set, ids checked against SPDX license list 3.27.0. None is allowed;
+    # a name without its version, or with no SPDX id, is UNKNOWN rather than a guess.
+    "aladdin free public license (afpl)": "Aladdin",
+    "attribution assurance license": "AAL",
+    "blue oak model license (blueoak-1.0.0)": "BlueOak-1.0.0",
+    "cea cnrs inria logiciel libre license, version 2.1 (cecill-2.1)": "CECILL-2.1",
+    "cecill-b free software license agreement (cecill-b)": "CECILL-B",
+    "cecill-c free software license agreement (cecill-c)": "CECILL-C",
+    "cmu license (mit-cmu)": "MIT-CMU",
+    "common public license": "CPL-1.0",
+    "educational community license, version 2.0 (ecl-2.0)": "ECL-2.0",
+    "ibm public license": "IPL-1.0",
+    "intel open source license": "Intel",
+    "mit no attribution license (mit-0)": "MIT-0",
+    "miros license (miros)": "MirOS",
+    "motosoto license": "Motosoto",
+    "mulan permissive software license v2 (mulanpsl-2.0)": "MulanPSL-2.0",
+    "nasa open source agreement v1.3 (nasa-1.3)": "NASA-1.3",
+    "nethack general public license": "NGPL",
+    "nokia open source license": "Nokia",
+    "nokia open source license (nokos)": "Nokia",
+    "open group test suite license": "OGTSL",
+    "open software license 3.0 (osl-3.0)": "OSL-3.0",
+    "postgresql license": "PostgreSQL",
+    "python license (cnri python license)": "CNRI-Python",
+    "qt public license (qpl)": "QPL-1.0",
+    "ricoh source code public license": "RSCPL",
+    "sil open font license 1.1 (ofl-1.1)": "OFL-1.1",
+    "sleepycat license": "Sleepycat",
+    "sun industry standards source license (sissl)": "SISSL",
+    "sun public license": "SPL-1.0",
+    "universal permissive license (upl)": "UPL-1.0",
+    "university of illinois/ncsa open source license": "NCSA",
+    "vovida software license 1.0": "VSL-1.0",
+    "x.net license": "Xnet",
+    "apple public source license": UNKNOWN,  # APSL-1.0 … APSL-2.0
+    "eiffel forum license": UNKNOWN,  # EFL-1.0 or EFL-2.0
+    "eiffel forum license (efl)": UNKNOWN,
+    "gnu free documentation license (fdl)": UNKNOWN,  # GFDL-1.1 … GFDL-1.3
+    "netscape public license (npl)": UNKNOWN,  # NPL-1.0 or NPL-1.1
+    "zope public license": UNKNOWN,  # ZPL-1.1 … ZPL-2.1
+    "mitre collaborative virtual workspace license (cvw)": UNKNOWN,  # no SPDX id
+    "gust font license 1.0": UNKNOWN,
+    "gust font license 2006-09-30": UNKNOWN,
+    "jabber open source license": UNKNOWN,
+    "repoze public license": UNKNOWN,
+    "free for educational use": UNKNOWN,
+    "free for home use": UNKNOWN,
+    "free to use but restricted": UNKNOWN,
     "osi approved": UNKNOWN,
     "other/proprietary license": UNKNOWN,
     "dfsg approved": UNKNOWN,
@@ -93,6 +144,23 @@ NORMALISATION: dict[str, str] = {
     "unknown": UNKNOWN,
 }
 SPDX_ID_RE = re.compile(r"^[A-Za-z0-9.+-]+$")
+
+
+def _long_name(words: str) -> re.Pattern[str]:
+    return re.compile(r"\b" + r"\s+".join(words.split()) + r"\b", re.IGNORECASE)
+
+
+# Deny families by long name, for spotting one where the parser reads UNKNOWN; a family counts
+# only when it is in the deny list. `GNU General` is neither `GNU Lesser General` nor `GNU Affero
+# General`. Identifiers (`GPLv3`, `GPL-3.0-only`) are matched by `denied_family` instead.
+FAMILY_NAMES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("AGPL", _long_name("affero general public licen[cs]e")),
+    ("LGPL", _long_name("(?:lesser|library) general public licen[cs]e")),
+    ("GPL", _long_name("gnu general public licen[cs]e")),
+    ("EUPL", _long_name("european union public licen[cs]e")),
+    ("SSPL", _long_name("server side public licen[cs]e")),
+)
+TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9.+-]+")
 
 
 class LicensesError(Exception):
@@ -152,32 +220,76 @@ def normalise_id(token: str) -> str:
     return UNKNOWN
 
 
+def _is_text(raw: str) -> bool:
+    """A value spanning several lines is a license text (a free-text field), not an expression."""
+    return len(raw.strip().splitlines()) > 1
+
+
+def _parse_part(part: str) -> list[list[str]]:
+    """One `;`-part: a name found whole in the table is that id (a classifier such as `GNU General
+    Public License v3 (GPLv3)`); other parentheses → UNKNOWN; the rest splits on OR/AND/WITH."""
+    text = part.strip()
+    if text.lower() in NORMALISATION:
+        return [[NORMALISATION[text.lower()]]]
+    if "(" in text or ")" in text:
+        return [[UNKNOWN]]
+    return [
+        [normalise_id(re.split(r"\s+WITH\s+", term)[0]) for term in re.split(r"\s+AND\s+", alt)]
+        for alt in re.split(r"\s+OR\s+", text)
+    ]
+
+
 def parse_expression(raw: str) -> list[list[str]]:
     """OR of ANDs: `GPL-2.0 OR MIT` → [[GPL-2.0], [MIT]]; `MIT AND PSF-2.0` → [[MIT, PSF-2.0]].
 
-    `;`-joined classifier values are OR. `WITH` keeps the left-hand id. A whole value found in
-    the normalisation table (a classifier name such as `Mozilla Public License 2.0 (MPL 2.0)`)
-    is that id; any other parentheses → UNKNOWN.
+    `;` is OR and is split first: pip-licenses `--from=mixed` joins a package's license
+    classifiers with `"; "`, so each part is looked up whole before the parenthesis rule applies
+    to it (#94). `WITH` keeps the left-hand id. A license text (several lines) is UNKNOWN.
     """
-    if raw.strip().lower() in NORMALISATION:
-        return [[NORMALISATION[raw.strip().lower()]]]
-    if "(" in raw or ")" in raw:
+    if _is_text(raw):
         return [[UNKNOWN]]
-    alternatives: list[list[str]] = []
-    for alt in re.split(r"\s*;\s*|\s+OR\s+", raw.strip()):
-        conj: list[str] = []
-        for term in re.split(r"\s+AND\s+", alt):
-            term = re.split(r"\s+WITH\s+", term)[0]
-            conj.append(normalise_id(term))
-        alternatives.append(conj)
-    return alternatives or [[UNKNOWN]]
+    return [conj for part in raw.split(";") for conj in _parse_part(part)]
 
 
 def denied_family(spdx: str, deny: tuple[str, ...]) -> str | None:
+    """The deny family of an id: `GPL`, `GPL-3.0-only`, `GPL-2.0+` and the common `GPLv3` and
+    `GPL3` spellings are GPL; `LGPL-2.1-only` and `AGPL-3.0` are not (each family on its own)."""
     upper = spdx.upper()
     for fam in sorted(deny, key=len, reverse=True):  # LGPL before GPL
-        if upper == fam or upper.startswith(fam + "-") or upper.startswith(fam + "+"):
+        if re.match(rf"{re.escape(fam)}(?:$|[-+]|V?\d)", upper):
             return fam
+    return None
+
+
+def named_family(text: str, deny: tuple[str, ...]) -> str | None:
+    """A deny family named in free `text`, by identifier (`GNU GPL v3`, `(GPL-3.0-only)`) or by
+    long name (`GNU General Public License`)."""
+    for token in TOKEN_SPLIT_RE.split(text):
+        if family := denied_family(token.strip(".+-"), deny):
+            return family
+    for family, name in FAMILY_NAMES:
+        if family in deny and name.search(text):
+            return family
+    return None
+
+
+def unread_family(raw: str, deny: tuple[str, ...]) -> str | None:
+    """A deny family named where `parse_expression` reads UNKNOWN, so no exception can admit it.
+
+    Searched: each `;`-part that is not in the table and does not parse (free text, an SPDX
+    expression with parentheses, an unlisted classifier), and a license text's title line. A
+    table entry is authoritative for its spelling, and a text's body is not searched, since
+    permissive texts name the GPL in passing (MPL-2.0's "Secondary License").
+    """
+    if _is_text(raw):
+        return named_family(raw.strip().splitlines()[0], deny)
+    for part in raw.split(";"):
+        if part.strip().lower() in NORMALISATION:
+            continue
+        if any(UNKNOWN in conj for conj in _parse_part(part)) and (
+            family := named_family(part, deny)
+        ):
+            return family
     return None
 
 
@@ -191,13 +303,19 @@ class Verdict:
 
 def judge(package: str, raw: str, config: LicensesConfig) -> Verdict:
     alternatives = parse_expression(raw)
+    # OR holds between what the gate reads. Text it cannot read may bind the package (`MIT; GPL
+    # (for the bundled parser)` is prose), so a deny family named there is not rescued by an
+    # allowed branch, and no exception admits it (#94).
+    unread = unread_family(raw, config.deny)
+    if not unread:
+        for conj in alternatives:
+            if all(x.lower() in config.allow for x in conj):
+                return Verdict(package, raw, "ok")
     denied: str | None = None
-    for conj in alternatives:
-        if all(x.lower() in config.allow for x in conj):
-            return Verdict(package, raw, "ok")
     for conj in alternatives:
         for x in conj:
             denied = denied or denied_family(x, config.deny)
+    denied = denied or unread
     if package in config.exceptions:
         if denied:
             return Verdict(package, raw, "denied", f"exception refused: {denied} family")

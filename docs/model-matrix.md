@@ -12,10 +12,35 @@ over 20 calls (`json_schema`, or the schema in the prompt when the endpoint refu
 **E-06** checks the prompt parameters: `tokens_out`/`max_tokens` per length, and how many of 10
 samples at temperature 0 are identical (≥ 8 passes). **p50 / p95** are nearest-rank end-to-end
 turn latencies over the measured Lite turns, after one warm-up turn (NFR-PERF-8). **Calls per
-turn** is the mean number of model calls by purpose.
+turn** is the mean number of model calls by purpose, counting every attempt (failed ones too).
 
-**Turn path.** Rows whose turn path is the guarded reply (#53) were measured before `respond`
-existed; a live re-run through `respond` (#57) is pending and will replace them.
+**Calls** breaks those calls down (#303):
+
+- **Designed per turn**: what each turn planned before its first call. That is one `generation`
+  plus one `guardrail_check` per model-assisted policy on the input and on the output, the
+  guardrail calls its budget reserved (#69).
+- **Extra calls**: the calls the measured turns made beyond that design, summed over the turns.
+  They are structured-output retries, the empty-reply retry, regenerations after an output
+  policy flagged the draft (with their re-checks), and regenerations after the story changed
+  under the turn.
+- **Failed calls**: the calls whose outcome was not `ok`, by purpose and outcome. The outcome is
+  `timeout` (the call's timeout or the turn's deadline), `http_error`, `invalid_output` or
+  `cancelled`.
+- **Turns with a deadline or error**: the turns that had a failed call, or whose deadline
+  released the safe fallback. They are numbered from 1 in the order they were measured, which is
+  the order of the raw timings.
+- **p50 / p95 without them**: the percentiles of the other turns, so the latency those turns
+  added stands out against the rest.
+- **Safe fallbacks**: the turns whose reply is the safe fallback line, by cause: `deadline`,
+  `retry_budget` (every regeneration the story allows was flagged too) or `call_budget`.
+
+A call the deadline cuts is never retried. If it is an output check or a regeneration, the turn
+releases the safe fallback. If it is the input check or the first generation, the turn fails and
+the run writes no row.
+
+**Not recorded.** Rows measured before the breakdown existed show *not recorded* in the
+**Calls** columns (`null` in the JSON). Those runs kept only the mean calls per turn, and
+nothing is derived from it. The next live run of the tier fills them.
 
 ## Results
 
@@ -23,6 +48,13 @@ existed; a live re-run through `respond` (#57) is pending and will replace them.
 |---|---|---|---|---|---|---|---|---|---|---|
 | local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 18.31 s | 45.06 s | 3.15 (generation 1.1, guardrail_check 2.05) |
 | local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 13.40 s | 16.87 s | 1 (generation 1) |
+
+## Calls
+
+| Tier | Policies | Designed per turn | Extra calls | Failed calls | Turns with a deadline or error | p50 / p95 without them | Safe fallbacks |
+|---|---|---|---|---|---|---|---|
+| local: cydonia-24b-v4.3 | minors policy on | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| local: cydonia-24b-v4.3 | policies off | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
 
 ## Runs
 

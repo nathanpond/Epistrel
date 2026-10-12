@@ -18,7 +18,15 @@ from epistrel.core.clock import frozen_at
 from epistrel.core.idempotency import purge_expired
 from tests.auth_support import auth_settings
 from tests.idempotency_support import REPLAY, key_row, keyed, operations_of
-from tests.respond_support import FIRST, PLAYER, body, generation_calls, new_story, respond_client
+from tests.respond_support import (
+    FIRST,
+    PLAYER,
+    SECOND,
+    body,
+    generation_calls,
+    new_story,
+    respond_client,
+)
 from tests.story_support import READ
 
 
@@ -56,9 +64,20 @@ async def test_i_14(stub_settings: Settings, engine: AsyncEngine) -> None:
             "idempotency_conflict",
         )
         # The hash covers the actor: the same words as another character are a conflict, never
-        # the first character's cached reply (#61 AC3; #289).
+        # the first character's cached reply (#61 AC3; #289). The viewpoint and render set are
+        # derived from the actor when omitted, so both are pinned here: the actor is the only
+        # hashed field that differs between the two requests.
+        pinned = {
+            "output_viewpoint": f"character:{ids[SECOND]}",
+            "render_character_ids": [ids[SECOND]],
+        }
+        as_player = await keyed(
+            client, story, body(ids[PLAYER], "Who goes there?", **pinned), "i14-actor"
+        )
+        assert as_player.status_code == 200, as_player.text
+        calls, operations = len(generation_calls(stub)), await operations_of(engine, story)
         as_other = await keyed(
-            client, story, body(ids[FIRST], "Where does this road lead?"), "i14-key"
+            client, story, body(ids[FIRST], "Who goes there?", **pinned), "i14-actor"
         )
         assert as_other.status_code == 409, as_other.text
         assert as_other.json()["error"]["code"] == "idempotency_conflict"

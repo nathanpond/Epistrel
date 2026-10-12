@@ -5,6 +5,8 @@ surface, the variant listing, reads along a dormant chain, and the refusals)."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -13,19 +15,34 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core import timeline, variants
+from epistrel.core import summary_port, timeline, variants
+from epistrel.core.enums import OperationKind
 from epistrel.core.errors import UnknownChain
 from epistrel.core.ids import new_ulid
 from epistrel.core.variants import ChainRef, SwapRequest
 from epistrel.core.views import audit_view, corrected_history
+from epistrel.orchestrator.jobs import queue
+from epistrel.orchestrator.jobs.handlers import lite_summary
+from epistrel.orchestrator.models.access import ModelAccessLayer
 from tests.auth_support import auth_settings
-from tests.concurrency_support import assert_single_chain, chain, regenerate
-from tests.event_support import interleave, narrative, new_story, play_turn, rows, story_row
+from tests.concurrency_support import assert_single_chain, chain, edit, regenerate, summarise
+from tests.event_support import (
+    execute_in_tx,
+    interleave,
+    narrative,
+    new_story,
+    play_turn,
+    rows,
+    scalar,
+    segment_payload,
+    story_row,
+)
 from tests.gate_support import audit_rows, input_policies
 from tests.projection_support import snapshot, swap, truncate, untruncate
 from tests.respond_support import PLAYER, body, generation_calls, played, respond_client
 from tests.respond_support import new_story as new_rest_story
 from tests.story_support import READ, WRITE
+from tests.summary_support import claim_summary, run_due_jobs, segment_rows, worker
 
 TURNS = 3
 
@@ -367,3 +384,120 @@ async def test_time__swap_chains(engine: AsyncEngine) -> None:
         assert await snapshot(engine, story) == before
     finally:
         timeline.remove_membership_hook(hook)
+
+
+# -- derived records: provenance (FR-STORE-26) and source windows (FR-STORE-27) ---------------
+
+
+def _covers(view: list[Any]) -> list[tuple[int, int]]:
+    found = [e.payload.model_dump() for e in view if e.type == "lite_summary_segment"]
+    return sorted((p["covers_from"], p["covers_to"]) for p in found)
+
+
+@pytest.mark.part("M2", "FR-STORE-26")
+async def test_time__derived(engine: AsyncEngine) -> None:
+    """(e) Derived records enter corrected views by provenance, not creation: summary segments
+    over turns 1, 2 and 1-2, all written after turn 4, are in the corrected history through N
+    exactly when every turn they cover is <= N, for every N. Truncating to 1 takes the
+    segments over turn 2 out of every view, because their source turn is no longer active.
+
+    Complement asserted: by creation time none of them existed at turn 2, yet the view through
+    2 has all three."""
+    story = await new_story(engine)
+    for n in range(1, 5):
+        await play_turn(engine, story, f"turn {n}")
+    await summarise(engine, story, 1)
+    for covers_from in (2, 1):
+        await edit_segment(engine, story, segment_payload("derived", 2, covers_from=covers_from))
+    expected = {0: [], 1: [(1, 1)], 2: [(1, 1), (1, 2), (2, 2)]}
+    for n in range(0, 5):
+        assert _covers(await corrected_history(engine, story, n)) == expected[min(n, 2)], n
+    assert _covers(await corrected_history(engine, story)) == expected[2]
+
+    await truncate(engine, story, 1)
+    for through in (1, 2, None):
+        assert _covers(await corrected_history(engine, story, through)) == [(1, 1)], through
+
+
+async def edit_segment(engine: AsyncEngine, story: str, payload: dict[str, Any]) -> None:
+    """A segment over ``payload``'s turns, positioned at the last turn it covers."""
+    await edit(
+        engine,
+        story,
+        "lite_summary_segment",
+        payload,
+        bumps_revision=False,
+        kind=OperationKind.CONSOLIDATION,
+        turn=payload["covers_to"],
+    )
+
+
+SUMMARY_SETTINGS = {"lite_window_messages": 2, "lite_summary_chunk": 4}
+"""Two verbatim rows and two turns (four rows) per level-0 segment."""
+
+
+@pytest.fixture
+def models(pg_url: str, engine: AsyncEngine) -> ModelAccessLayer:
+    layer = ModelAccessLayer.from_settings(auth_settings(pg_url, model_adapter="stub"))
+    layer.bind(engine)
+    return layer
+
+
+async def _summary_story(engine: AsyncEngine, turns: int) -> str:
+    story = await new_story(engine)
+    await execute_in_tx(
+        engine,
+        (
+            "UPDATE stories SET settings = settings || CAST(:patch AS jsonb) WHERE id = :s",
+            {"s": story, "patch": json.dumps(SUMMARY_SETTINGS)},
+        ),
+    )
+    summary_port.set_scheduler(None)
+    try:
+        for n in range(1, turns + 1):
+            await play_turn(engine, story, f"line {n}")
+    finally:
+        summary_port.set_scheduler(lite_summary.schedule)
+    return story
+
+
+@pytest.mark.part("M2", "FR-STORE-27")
+async def test_time__source_window(engine: AsyncEngine, models: ModelAccessLayer) -> None:
+    """A derivation job declares its source window and reads only those inputs. Every committed
+    segment stores its job's operation (whose ``source_window`` names the turns it covers) and
+    the version of each input. When one of those inputs is discarded while the job runs, its
+    output is dropped and nothing new appears in any view.
+
+    Complement asserted: the same kind of run with nothing discarded commits."""
+    story = await _summary_story(engine, 5)
+    assert await lite_summary.schedule(engine, story)
+    assert queue.CommitOutcome.COMMITTED in await run_due_jobs(engine, models, story)
+    committed = await segment_rows(engine, story)
+    assert committed
+    for segment in committed:
+        window = await scalar(
+            engine,
+            "SELECT source_window FROM operations WHERE operation_id = :o",
+            o=segment.operation_id,
+        )
+        assert window == {"from_turn": segment.covers_from, "to_turn": segment.covers_to}
+        assert segment.source_versions
+    view_before = _covers(await corrected_history(engine, story))
+
+    summary_port.set_scheduler(None)
+    try:
+        for n in range(6, 10):
+            await play_turn(engine, story, f"line {n}")
+    finally:
+        summary_port.set_scheduler(lite_summary.schedule)
+    assert await lite_summary.schedule(engine, story)
+    job = await claim_summary(engine, story)
+    assert job is not None
+    latch = models.stub.hold("lite_summary")
+    run = asyncio.create_task(worker(engine).execute(job))
+    await asyncio.wait_for(latch.entered.wait(), 10)
+    await truncate(engine, story, 5)  # the turns the job is summarising are discarded
+    latch.release()
+    assert await run is queue.CommitOutcome.DROPPED
+    assert await segment_rows(engine, story) == committed
+    assert _covers(await corrected_history(engine, story)) == view_before

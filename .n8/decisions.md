@@ -1705,3 +1705,15 @@ Re-execution of M2 after `/n8-verify M2` filed #285–#297 against PR #284. Bran
   **Issue:** #293
 - **Decision (#279, Rule 1, test harness):** C-01 shares one scratch database across all operations. A generated, valid `PUT /admin/model-config/generation` (a `base_url` or model) moved generation off the stub, so a later `POST /regenerate` answered a documented 503 `model_unavailable`, which `not_a_server_error` flags. This draw surfaced once the schema change shifted the derandomized examples. The harness now undoes each successful generated write through `DELETE /admin/model-config/generation`, the same reasoning as the excluded `delete_story`/`archive_story`. No check was removed and the operation is still generated. A logged run shows 23 restores.
   **Issue:** #279
+
+## /n8-exec M2 (re-verify fixes) — 2026-10-12
+
+Re-execution of M2 for the two bugs `/n8-verify M2` left open after PR #299 (#289 reopened, #300 new). Branch `milestone/m2-reverify-fixes` (`milestone/m2-verify-fixes` already carries #299's squashed history).
+
+- **Decision (#289):** The actor-conflict case uses its own key (`i14-actor`). Its first request (as Wren) pins `output_viewpoint=character:<Brann>` and `render_character_ids=[Brann]`, and the conflicting request repeats it as Ada with the same pins. The case does not reuse `i14-key`.
+  **Why:** `i14-key`'s original request leaves the viewpoint and render set to be derived, so reusing that key with pins would change three hashed fields. A fresh key makes the actor the only difference. Mutation-checked: with the actor removed from both places in the hash material (the body dump and the separate key), the second request gets 200 with Wren's reply and the test fails.
+  **Issue:** #289
+- **Decision (#300):** The in-process test spies on `_RegexPool._discard` (wrapping the real method) to record discarded worker handles. The subprocess test uses `start_new_session=True` and `os.killpg(pid, 0)` to show that no worker outlives the child, and it is skipped on Windows.
+  **Why:** A process group is the only handle on a re-parented orphan that does not depend on matching the command line. The spy observes exactly the workers the pool gives up on.
+  **Finding:** Of the two mutants, `_discard` → `pass` (worker kept tracked, never killed) is caught only by the in-process test, because the child's `atexit` hook kills tracked workers. Removing only `worker.kill()` (the issue's repro: untracked, left running, 6 orphans) fails both tests.
+  **Issue:** #300

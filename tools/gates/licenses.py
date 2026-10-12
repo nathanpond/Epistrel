@@ -4,10 +4,13 @@ Records come from `pip-licenses --format=json --from=mixed` run against a runtim
 environment; only packages in #41's runtime closure are judged. Unknown spellings normalise to
 UNKNOWN, which fails — the safe direction. An exception admits an UNKNOWN or not-allowed
 license, never one that names a deny family (#94): by an id that starts with the family, after
-any leading `GNU` (`GPL-3.0-only`, `GPLv3`, `GNU-GPL`, `GPL.v3`), or by its long name with any
-separators (`GNU Public License`, `Server-Side Public License`). A table entry settles its own
-spelling. A license text (a value spanning several lines) is judged by its title line only,
-since full texts cite or bundle other licenses in their body.
+any leading `LicenseRef-` or `GNU` (`GPL-3.0-only`, `GPLv3`, `GNU-GPL`, `GPL.v3`,
+`LicenseRef-GPL-3.0`), or by its long name with any separators or none (`GNU Public License`,
+`Server-Side Public License`, `EuropeanUnionPublicLicence`); any `Affero` is the AGPL. A GPL
+qualified as another license (`Lesser GPL`, `Library GPL`, `Nethack GPL`) is that license. A
+bare `GNU` names no single family, so an exception can admit it (#313). A table entry settles
+its own spelling. A license text (a value spanning several lines) is judged by its title line
+only, since full texts cite or bundle other licenses in their body.
 """
 
 from __future__ import annotations
@@ -150,24 +153,38 @@ NORMALISATION: dict[str, str] = {
 SPDX_ID_RE = re.compile(r"^[A-Za-z0-9.+-]+$")
 
 # Deny families by long name, matched against `_words` (lower case, one space between words, so
-# `Server-Side Public_License` reads as `server side public license`); a family counts only when
-# it is in the deny list. `General Public License`, with or without `GNU`, and the misnomer `GNU
-# Public License` are the GPL, unless Lesser, Library, Affero or Nethack names another license.
-# Identifiers (`GPLv3`, `GPL-3.0-only`) are matched by `denied_family` instead.
+# `Server-Side Public_License` reads as `server side public license`). A name's words may also
+# be joined, its version too (`ServerSide Public License`, `EuropeanUnionPublicLicenceV1.2`),
+# but `licensed` is not `license`. A family counts only when it is in the deny list. `Affero`
+# names only the AGPL, and `EU Public Licence` is the EUPL. `General Public License`, with or
+# without `GNU`, and the misnomer `GNU Public License` are the GPL, unless Lesser, Library, Affero
+# or Nethack names another license; `Lesser GPL` and `Library GPL` are the LGPL. Identifiers
+# (`GPLv3`, `GPL-3.0-only`) are matched by `denied_family` instead.
+_PUBLIC_LICENSE = r"public ?licen[cs]e(?=[ v\d])"
 FAMILY_NAMES: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("AGPL", re.compile(r" affero (?:general )?public licen[cs]e ")),
-    ("LGPL", re.compile(r" (?:lesser|library) (?:general )?public licen[cs]e ")),
+    ("AGPL", re.compile(r"affero")),
+    ("LGPL", re.compile(rf" (?:lesser|library) ?(?:(?:general ?)?{_PUBLIC_LICENSE}|gpl)")),
     (
         "GPL",
         re.compile(
             r"(?<! lesser)(?<! library)(?<! affero)(?<! nethack)"
-            r" (?:gnu (?:general )?|general )public licen[cs]e "
+            rf" (?:gnu ?(?:general ?)?|general ?){_PUBLIC_LICENSE}"
         ),
     ),
-    ("EUPL", re.compile(r" european union public licen[cs]e ")),
-    ("SSPL", re.compile(r" server side public licen[cs]e ")),
+    ("EUPL", re.compile(rf" (?:european ?union|eu) ?{_PUBLIC_LICENSE}")),
+    ("SSPL", re.compile(rf" server ?side ?{_PUBLIC_LICENSE}")),
 )
-TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9.+-]+")
+# Runs of free text that may be ids (`GPL-3.0-only`, `GNU-GPL`, `GPL.v3`).
+TOKEN_RE = re.compile(r"[A-Za-z0-9.+-]+")
+# A GPL id right after one of these words, joined by spaces or `_`, is another license: `Lesser
+# GPL` is the LGPL, `Affero GPL` the AGPL and `Nethack GPL` the NGPL. `Library GPL` is the LGPL
+# when it starts a phrase or follows `GNU` (`LGPL (Library GPL)`), since `Python library GPL v3`
+# is the GPL. Another separator ends the qualifier, so `Library: GPL v3` is the GPL too.
+GPL_QUALIFIER_RE = re.compile(
+    r"(?:(?<![a-z])(?:lesser|affero|nethack)|(?:(?:^|[^\w\s])[\s_]*|(?<![a-z])gnu[\s_]+)library)"
+    r"[\s_]+$",
+    re.IGNORECASE,
+)
 
 
 class LicensesError(Exception):
@@ -260,12 +277,13 @@ def parse_expression(raw: str) -> list[list[str]]:
 
 def denied_family(spdx: str, deny: tuple[str, ...]) -> str | None:
     """The deny family of an id: `GPL`, `GPL-3.0-only`, `GPL-2.0+` and the common `GPLv3`,
-    `GPL3` and `GPL.v3` spellings are GPL, after a leading `GNU` too (`GNU-GPL`); `LGPL-2.1-only`
-    and `AGPL-3.0` are not (each family on its own). Only a leading `GNU` is dropped: the SPDX id
-    `CNRI-Python-GPL-Compatible` names a permissive license."""
-    upper = re.sub(r"^GNU[-.+]?", "", spdx.upper())
+    `GPL3`, `GPLVersion3` and `GPL.v3` spellings are GPL, after a leading `GNU` (`GNU-GPL`) or
+    PEP 639 `LicenseRef-` (`LicenseRef-GPL-3.0`) too; `LGPL-2.1-only` and `AGPL-3.0` are not (each
+    family on its own). Only a leading prefix is dropped: the SPDX id `CNRI-Python-GPL-Compatible`
+    names a permissive license."""
+    upper = re.sub(r"^(?:LICENSEREF-)?(?:GNU[-.+]?)?", "", spdx.upper())
     for fam in sorted(deny, key=len, reverse=True):  # LGPL before GPL
-        if re.match(rf"{re.escape(fam)}(?:$|[-+.]|V?\d)", upper):
+        if re.match(rf"{re.escape(fam)}(?:$|[-+.]|(?:V|VERSION)?\d)", upper):
             return fam
     return None
 
@@ -278,9 +296,13 @@ def _words(text: str) -> str:
 
 def named_family(text: str, deny: tuple[str, ...]) -> str | None:
     """A deny family named in free `text` or an id, by identifier (`GNU GPL v3`, `GNU-GPL`,
-    `(GPL-3.0-only)`) or by long name (`GNU Public License`, `GNU-General-Public-License`)."""
-    for token in TOKEN_SPLIT_RE.split(text):
-        if family := denied_family(token.strip(".+-"), deny):
+    `(GPL-3.0-only)`, `LicenseRef-GPLv3`) or by long name (`GNU Public License`,
+    `GNU-General-Public-License`, `Affero GPL`). A qualified GPL (`Lesser GPL`) is not the GPL."""
+    for token in TOKEN_RE.finditer(text):
+        family = denied_family(token[0].strip(".+-"), deny)
+        if family == "GPL" and GPL_QUALIFIER_RE.search(text[: token.start()]):
+            continue  # the LGPL, AGPL or NGPL, which FAMILY_NAMES reads
+        if family:
             return family
     words = _words(text)
     for family, name in FAMILY_NAMES:

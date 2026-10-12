@@ -14,6 +14,7 @@ from sqlalchemy import Column, Table, Text
 
 from epistrel.core import tables
 from epistrel.core.tables import NAMING_CONVENTION, metadata
+from epistrel.core.tables.catalog import CATALOG_SCHEMA
 
 __all__ = ["AUTOGENERATE_OPTS", "NAMING_CONVENTION", "metadata", "schema_meta", "tables"]
 
@@ -28,6 +29,11 @@ schema_meta = Table(
 """Key/value bookkeeping written by migrations; ``engine_version`` is the package version."""
 
 
+OWNED_SCHEMAS = frozenset({None, CATALOG_SCHEMA})
+"""The schemas the engine's tables live in: the default schema (``None``) and ``catalog``
+(#103). Autogenerate compares exactly these."""
+
+
 def include_object(
     obj: Any,
     name: str | None,
@@ -39,9 +45,18 @@ def include_object(
     return not (type_ == "table" and name == ALEMBIC_VERSION_TABLE)
 
 
+def include_name(name: str | None, type_: str, parent_names: Any) -> bool:
+    """Alembic ``include_name`` hook: compare only the schemas the engine owns."""
+    if type_ == "schema":
+        return name in OWNED_SCHEMAS
+    return True
+
+
 AUTOGENERATE_OPTS: dict[str, Any] = {
     "compare_type": True,
     "compare_server_default": True,
+    "include_schemas": True,
+    "include_name": include_name,
     "include_object": include_object,
 }
 """Comparison options shared by ``migrations/env.py`` and the drift tests."""

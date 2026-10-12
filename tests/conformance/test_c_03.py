@@ -40,6 +40,12 @@ from epistrel.api.routes.admin.policies import PolicyBody, PolicyList, PolicyMut
 from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, RatingMutation
 from epistrel.api.routes.admin.settings import SettingsBody
 from epistrel.api.routes.admin.stories import RebuildQueuedResponse, RebuildResponse
+from epistrel.api.routes.catalog_characters import (
+    CharacterDraftBody,
+    CharacterPublishedBody,
+    CharacterStatusBody,
+    CharacterVersionsBody,
+)
 from epistrel.api.routes.history import HistoryResponse
 from epistrel.api.routes.operations import OperationBody
 from epistrel.api.routes.respond import RespondResponse
@@ -67,6 +73,12 @@ from epistrel.api.routes.timeline import (
     VariantsBody,
 )
 from epistrel.config import Settings
+from epistrel.core.catalog.characters import (
+    CharacterCreate,
+    CharacterPatch,
+    Projection,
+    PublishRequest,
+)
 from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
@@ -240,6 +252,13 @@ GLOBAL_POLICY = {
     "message": "Never say zzqx.",
 }
 RATING = {"name": "Parity rating", "description": "Made by C-03.", "inherits_from": [EVERYONE_ID]}
+CHARACTER = {
+    "name": "Mara Venn",
+    "public_description": "Keeps the light on Gull Rock.",
+    "definition": {"personality": "Patient, private and slow to trust."},
+}
+CHARACTER_PATCH = {"draft_revision": 1, "public_description": "Keeps the Gull Rock light."}
+GHOST = {"name": "Ghost", "public_description": "Never published."}
 MODEL_OVERRIDE = {"model": "parity-model", "params": {"temperature": 0.5}}
 
 
@@ -432,6 +451,90 @@ def _steps() -> list[Step]:
             "set_custom_instructions",
             lambda ids: Rest("PUT", f"{s}/custom-instructions", {"text": "a\x00b"}),
             lambda e, ids: _instructions(e, ids["story"], "a\x00b"),
+        ),
+        # -- the character catalog (#103)
+        Step(
+            "create_character_draft",
+            lambda ids: Rest("POST", "/catalog/characters", CHARACTER),
+            lambda e, ids: _draft(e.create_character_draft(CTX, CharacterCreate(**CHARACTER))),
+            _keep("character", "id"),
+        ),
+        Step(
+            "save_character_draft",
+            lambda ids: Rest("PATCH", "/catalog/characters/{character}", CHARACTER_PATCH),
+            lambda e, ids: _draft(
+                e.save_character_draft(CTX, ids["character"], CharacterPatch(**CHARACTER_PATCH))
+            ),
+        ),
+        Step(  # stale: the same patch again, from revision 1 (409 draft_stale on both)
+            "save_character_draft",
+            lambda ids: Rest("PATCH", "/catalog/characters/{character}", CHARACTER_PATCH),
+            lambda e, ids: _draft(
+                e.save_character_draft(CTX, ids["character"], CharacterPatch(**CHARACTER_PATCH))
+            ),
+        ),
+        Step(
+            "publish_character",
+            lambda ids: Rest(
+                "POST", "/catalog/characters/{character}/publish", {"draft_revision": 2}
+            ),
+            lambda e, ids: _published(
+                e.publish_character(CTX, ids["character"], PublishRequest(draft_revision=2))
+            ),
+        ),
+        Step(
+            "get_character",
+            lambda ids: Rest("GET", "/catalog/characters/{character}"),
+            lambda e, ids: _character(e, ids["character"]),
+        ),
+        Step(
+            "get_character",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/characters/{character}",
+                params={"version": 1, "projection": "full"},
+            ),
+            lambda e, ids: _character(e, ids["character"], version=1, projection=Projection.FULL),
+        ),
+        Step(
+            "get_character",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/characters/{character}",
+                params={"draft": "true", "projection": "full"},
+            ),
+            lambda e, ids: _character(e, ids["character"], draft=True, projection=Projection.FULL),
+        ),
+        Step(
+            "list_character_versions",
+            lambda ids: Rest("GET", "/catalog/characters/{character}/versions"),
+            lambda e, ids: _character_versions(e, ids["character"]),
+        ),
+        Step(
+            "archive_character",
+            lambda ids: Rest("POST", "/catalog/characters/{character}/archive"),
+            lambda e, ids: _character_status(e.archive_character(CTX, ids["character"])),
+        ),
+        Step(
+            "unarchive_character",
+            lambda ids: Rest("POST", "/catalog/characters/{character}/unarchive"),
+            lambda e, ids: _character_status(e.unarchive_character(CTX, ids["character"])),
+        ),
+        Step(
+            "create_character_draft",
+            lambda ids: Rest("POST", "/catalog/characters", GHOST),
+            lambda e, ids: _draft(e.create_character_draft(CTX, CharacterCreate(**GHOST))),
+            _keep("ghost", "id"),
+        ),
+        Step(  # never published: 422 not_published on both
+            "get_character",
+            lambda ids: Rest("GET", "/catalog/characters/{ghost}"),
+            lambda e, ids: _character(e, ids["ghost"]),
+        ),
+        Step(
+            "delete_character",
+            lambda ids: Rest("DELETE", "/catalog/characters/{ghost}"),
+            lambda e, ids: _no_content(e.delete_character(CTX, ids["ghost"])),
         ),
         # -- the operator surface
         Step(
@@ -647,6 +750,27 @@ async def _deleted(engine: Engine, story_id: str) -> dict[str, Any]:
 async def _no_content(call: Awaitable[Any]) -> dict[str, Any]:
     await call
     return {}
+
+
+async def _draft(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CharacterDraftBody.of(await call))
+
+
+async def _published(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CharacterPublishedBody.of(await call))
+
+
+async def _character_status(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CharacterStatusBody.of(await call))
+
+
+async def _character(engine: Engine, character_id: str, **params: Any) -> dict[str, Any]:
+    return dump(await engine.get_character(CTX, character_id, **params))
+
+
+async def _character_versions(engine: Engine, character_id: str) -> dict[str, Any]:
+    found = await engine.list_character_versions(CTX, character_id)
+    return dump(CharacterVersionsBody.of(found))
 
 
 async def _ratings(engine: Engine) -> dict[str, Any]:
@@ -882,7 +1006,8 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
     """The same calls give the same results over REST and in-process, for every operation.
 
     Complement asserted: the comparison sees real results (the turn's reply text came back on
-    both surfaces, and the error steps answered errors, not successes)."""
+    both surfaces, the error steps answered errors, not successes, and each character step its
+    intended status)."""
     steps = _steps()
     app = create_app(auth_settings(dummy_dsn))
     assert parity_gaps(Engine, app, steps) == []
@@ -893,6 +1018,27 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
     assert replies
     assert all(text == REPLY for text in replies)
     assert sorted({status for status, _ in rest if status >= 400}) == [403, 409, 422]
+    # The character steps (#103) answered what they were written to answer, on both surfaces.
+    answered = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if "character" in step.operation
+    ]
+    assert answered == [
+        ("create_character_draft", 201),
+        ("save_character_draft", 200),
+        ("save_character_draft", 409),
+        ("publish_character", 201),
+        ("get_character", 200),
+        ("get_character", 200),
+        ("get_character", 200),
+        ("list_character_versions", 200),
+        ("archive_character", 200),
+        ("unarchive_character", 200),
+        ("create_character_draft", 201),
+        ("get_character", 422),
+        ("delete_character", 204),
+    ]
 
 
 def test_c_03_bites_on_a_method_without_a_route_or_step(dummy_dsn: str) -> None:

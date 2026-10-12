@@ -39,6 +39,7 @@ from epistrel.core import (
     variants,
 )
 from epistrel.core import story_settings as settings_store
+from epistrel.core.catalog import characters as catalog_characters
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import StoryStatus
@@ -55,6 +56,7 @@ from epistrel.core.idempotency import (
 from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
 from epistrel.core.policies.model import Policy, Scope
+from epistrel.core.ports import Ports
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.tables import events
 from epistrel.core.turn_gate import Concurrency, QueueItem
@@ -164,6 +166,18 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     "remove_model_api_key": ResultCodec.of(
         model_config.ConfigWrite, status=204, revision_field=_CONFIG
+    ),
+    "create_character_draft": ResultCodec.of(
+        catalog_characters.DraftWrite, status=201, revision_field=_CONFIG
+    ),
+    "save_character_draft": ResultCodec.of(catalog_characters.DraftWrite, revision_field=_CONFIG),
+    "publish_character": ResultCodec.of(
+        catalog_characters.Published, status=201, revision_field=_CONFIG
+    ),
+    "archive_character": ResultCodec.of(catalog_characters.StatusChange, revision_field=_CONFIG),
+    "unarchive_character": ResultCodec.of(catalog_characters.StatusChange, revision_field=_CONFIG),
+    "delete_character": ResultCodec.of(
+        catalog_characters.DeletedCharacter, status=204, revision_field=_CONFIG
     ),
 }
 """How each mutating method's result is stored under its ``Idempotency-Key`` and replayed: the
@@ -286,9 +300,13 @@ class Engine:
         settings: Settings,
         db: AsyncEngine | None = None,
         models: ModelAccessLayer | None = None,
+        ports: Ports | None = None,
     ) -> None:
         self.settings = settings
         self._db = db
+        # What Core asks of the Orchestrator (#103): the input gate, policy evaluation, model
+        # calls and background jobs. The no-op defaults stand until a story wires a real one.
+        self.ports = ports or Ports()
         # Every model call goes through this one layer (FR-MODEL-1); the adapter is chosen by
         # EPISTREL_MODEL_ADAPTER. Tests reach the stub through ``engine.models.stub``.
         self.models = models or ModelAccessLayer.from_settings(settings)
@@ -1541,6 +1559,125 @@ class Engine:
             ),
             material={"purpose": purpose},
         )
+
+    # -- the character catalog (FR-CAT-1,3,9; FR-SCN-10; FR-API-6; #103) ----------------------
+    # Deployment-scoped: each write is one transaction recording a story-less ``control``
+    # operation, keyed per deployment. Nothing here reads or changes a story (FR-CAT-9).
+
+    async def create_character_draft(
+        self, ctx: RequestContext, request: catalog_characters.CharacterCreate
+    ) -> catalog_characters.DraftWrite:
+        """Create a catalog character whose draft holds ``request``'s fields, at draft revision
+        1 and status ``draft`` (FR-CAT-1,3), owned by ``request.owner`` or else the requesting
+        principal (FR-AUTH-5). Answers the draft in ``full``."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "create_character_draft",
+            lambda _: catalog_characters.create(self.db, request, principal=principal),
+            material={"body": _body(request)},
+        )
+
+    async def save_character_draft(
+        self,
+        ctx: RequestContext,
+        character_id: str,
+        patch: catalog_characters.CharacterPatch,
+    ) -> catalog_characters.DraftWrite:
+        """Apply a JSON merge patch to the draft (``null`` removes a field), compared on
+        ``patch.draft_revision``: a stale revision is 409 ``draft_stale`` and changes nothing
+        (FR-CAT-3); an archived entry is 422 ``entry_archived``. Bumps the draft revision."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "save_character_draft",
+            lambda _: catalog_characters.save(self.db, character_id, patch, principal=principal),
+            material={
+                "character_id": character_id,
+                "body": patch.model_dump(mode="json", exclude_unset=True),
+            },
+        )
+
+    async def publish_character(
+        self,
+        ctx: RequestContext,
+        character_id: str,
+        request: catalog_characters.PublishRequest,
+    ) -> catalog_characters.Published:
+        """Publish the draft as an immutable version ``n + 1`` (FR-CAT-3), compared on
+        ``request.draft_revision`` like a save; 422 ``publish_invalid`` with the report when the
+        draft cannot be published. The draft stays equal to what was published, at the next
+        revision."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "publish_character",
+            lambda _: catalog_characters.publish(
+                self.db, character_id, request, principal=principal
+            ),
+            material={"character_id": character_id, "body": _body(request)},
+        )
+
+    async def archive_character(
+        self, ctx: RequestContext, character_id: str
+    ) -> catalog_characters.StatusChange:
+        """Archive the entry: it still reads, but cannot be edited, published, or used to create
+        a story (#119) until it is unarchived. Archiving an archived entry changes nothing."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "archive_character",
+            lambda _: catalog_characters.archive(self.db, character_id, principal=principal),
+            material={"character_id": character_id},
+        )
+
+    async def unarchive_character(
+        self, ctx: RequestContext, character_id: str
+    ) -> catalog_characters.StatusChange:
+        """Restore an archived entry to ``published`` (``draft`` if never published); any other
+        entry is left as it is."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "unarchive_character",
+            lambda _: catalog_characters.unarchive(self.db, character_id, principal=principal),
+            material={"character_id": character_id},
+        )
+
+    async def delete_character(
+        self, ctx: RequestContext, character_id: str
+    ) -> catalog_characters.DeletedCharacter:
+        """Delete the entry and its versions, from any status, with a ``catalog_entry_deleted``
+        audit row. Stories created from it keep their snapshot and provenance (FR-CAT-9)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "delete_character",
+            lambda _: catalog_characters.delete(self.db, character_id, principal=principal),
+            material={"character_id": character_id},
+        )
+
+    async def get_character(
+        self,
+        ctx: RequestContext,
+        character_id: str,
+        *,
+        version: int | None = None,
+        draft: bool = False,
+        projection: catalog_characters.Projection = catalog_characters.Projection.CARD,
+    ) -> catalog_characters.CharacterCard | catalog_characters.CharacterFull:
+        """The latest published version (``version``: that one; ``draft``: the draft) as its
+        public ``card`` (the default) or in ``full`` (FR-SCN-10). 422 ``not_published`` before
+        the first publish (read the draft instead); 404 for an unknown entry or version."""
+        return await catalog_characters.get(
+            self.db, character_id, version=version, draft=draft, projection=projection
+        )
+
+    async def list_character_versions(
+        self, ctx: RequestContext, character_id: str
+    ) -> list[catalog_characters.VersionSummary]:
+        """Every published version of the entry, oldest first: number, time and publisher."""
+        return await catalog_characters.versions(self.db, character_id)
 
 
 # One span, summary line and count per outermost call of every public coroutine method (#74).

@@ -7,7 +7,10 @@ leak it. ``story_id`` is plain and NOT NULL (no foreign key; story deletion enum
 
 ``definition`` is free text the Lite pipeline renders verbatim; structured catalog characters
 arrive in M3. ``safe_fallback_text`` is the character's line when every regenerated reply fails
-its guardrails (#68).
+its guardrails (#68). ``source_catalog_id``/``source_catalog_version`` name the catalog entry and
+version a character was created from (FR-CAT-3,9; #103; written by #119's genesis): provenance by
+identifiers only, with no foreign key, so archiving, editing or deleting the entry never touches
+the story.
 """
 
 from __future__ import annotations
@@ -49,6 +52,8 @@ characters = Table(
         nullable=False,
         server_default=text("transaction_timestamp()"),
     ),
+    Column("source_catalog_id", ulid_type(), nullable=True),
+    Column("source_catalog_version", Integer, nullable=True),
     CheckConstraint(f"true_age BETWEEN {TRUE_AGE_MIN} AND {TRUE_AGE_MAX}", name="true_age"),
 )
 

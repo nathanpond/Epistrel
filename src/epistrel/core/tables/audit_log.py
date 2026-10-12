@@ -1,9 +1,9 @@
 """``audit_log``: deployment-level audit records that outlive the story they mention (#56).
 
 One row per audited act that has no operation of its own: an input rejected by a guardrail
-(``guardrail_input_rejected``, FR-GUARD-10) and a story deletion (``story_deleted``, #50). A
-row holds policy ids, the story, the principal and small structured details, and **never** the
-text that was rejected (NFR-SEC-4).
+(``guardrail_input_rejected``, FR-GUARD-10), a story deletion (``story_deleted``, #50) and a
+catalog entry deletion (``catalog_entry_deleted``, #103). A row holds policy ids, the story, the
+principal and small structured details, and **never** the text that was rejected (NFR-SEC-4).
 
 The table is append-only (trigger ``audit_log_append_only``). Two changes are allowed:
 deleting a story nulls ``story_id`` on that story's rows, which is the only update the trigger
@@ -25,6 +25,7 @@ from epistrel.core.tables.base import metadata, ulid_type
 class AuditKind(StrEnum):
     GUARDRAIL_INPUT_REJECTED = "guardrail_input_rejected"
     STORY_DELETED = "story_deleted"
+    CATALOG_ENTRY_DELETED = "catalog_entry_deleted"
 
 
 KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in AuditKind) + ")"

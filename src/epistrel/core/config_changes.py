@@ -35,14 +35,8 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import and_, func, insert, null, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency
-from epistrel.core.enums import (
-    Authority,
-    EventCategory,
-    OperationKind,
-    OperationStatus,
-    Provenance,
-)
+from epistrel.core import control
+from epistrel.core.enums import Authority, EventCategory, Provenance
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import (
@@ -57,7 +51,7 @@ from epistrel.core.settings_schema import (
     TurnBudgetDefaults,
     TurnQueueDefaults,
 )
-from epistrel.core.tables import config_changes, deployment_state, events, operations
+from epistrel.core.tables import config_changes, deployment_state, events
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
 ChangeClass = ConfigClass
@@ -90,29 +84,14 @@ async def _write_operation(
     conn: AsyncConnection, *, story_id: str | None, actor: str
 ) -> tuple[str, bool]:
     """The ``control`` operation of the configuration write running in ``conn``'s transaction,
-    recorded (committed, with the write) at its first change; ``(id, created now)``."""
+    recorded (committed, with the write, its key bound; ``core.control``) at its first change;
+    ``(id, created now)``."""
     transaction = int(await conn.scalar(select(func.txid_current())) or 0)
     known = conn.info.get(_WRITE_OPERATION)
     if known is not None and known[0] == transaction:
         return str(known[1]), False
-    operation_id = new_ulid()
-    call = idempotency.current_call()
-    now = func.transaction_timestamp()
-    await conn.execute(
-        insert(operations).values(
-            operation_id=operation_id,
-            story_id=story_id,
-            kind=OperationKind.CONTROL.value,
-            principal=actor,
-            status=OperationStatus.COMMITTED.value,
-            membership_tx=now,
-            committed_at=now,
-            idempotency_key=call.key if call is not None and call.claimed else None,
-        )
-    )
+    operation_id = await control.record_control_operation(conn, actor=actor, story_id=story_id)
     conn.info[_WRITE_OPERATION] = (transaction, operation_id)
-    if call is not None:
-        await call.bind_configuration(conn, operation_id=operation_id)
     return operation_id, True
 
 

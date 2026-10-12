@@ -372,3 +372,57 @@ class DatabaseUnavailable(EpistrelError):
 
     code = "database_unavailable"
     http_status = 503
+
+
+# -- the catalog (#103) -------------------------------------------------------------------------
+
+
+class CharacterNotFound(EpistrelError):
+    """The catalog character (or the version of it) a call names does not exist.
+    ``details``: ``character_id`` and, for a version read, ``version``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class DraftStale(EpistrelError):
+    """The ``draft_revision`` a save or publish was based on is no longer the draft's
+    (FR-CAT-3): another editor saved or published since. Nothing is written; re-read the draft
+    and retry from its revision. ``details``: ``character_id``, ``draft_revision`` (sent) and
+    ``current_draft_revision``."""
+
+    code = "draft_stale"
+    http_status = 409
+
+
+class DraftTooLarge(EpistrelError):
+    """The draft, after the patch is applied, is larger than the cap (256 KiB of canonical
+    JSON). Nothing is written. ``details``: ``size`` and ``limit`` (bytes)."""
+
+    code = "draft_too_large"
+    http_status = 413
+
+
+class EntryArchived(EpistrelError):
+    """The catalog entry is archived: its draft cannot be saved or published until it is
+    unarchived (reads still work). Nothing is written. ``details``: ``character_id``."""
+
+    code = "entry_archived"
+    http_status = 422
+
+
+class NotPublished(EpistrelError):
+    """A read of the published character before its first publish: read the draft
+    (``?draft=true``) instead. ``details``: ``character_id``."""
+
+    code = "not_published"
+    http_status = 422
+
+
+class PublishInvalid(EpistrelError):
+    """The draft cannot be published as it stands. Nothing is written. ``details.report``:
+    ``{errors, warnings, unavailable}``, each error ``{code, field, message}`` with ``field`` a
+    dotted path in the draft (``name``, ``definition.personality``)."""
+
+    code = "publish_invalid"
+    http_status = 422

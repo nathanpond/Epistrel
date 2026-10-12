@@ -10,6 +10,7 @@ from fastapi import APIRouter
 
 from epistrel.api.routes import (
     admin,
+    catalog_characters,
     health,
     history,
     operations,
@@ -31,6 +32,7 @@ router.include_router(respond.router)
 router.include_router(story_texts.router)
 router.include_router(timeline.router)
 router.include_router(operations.router)
+router.include_router(catalog_characters.router)
 router.include_router(admin.router)
 
 __all__ = ["public_router", "router"]

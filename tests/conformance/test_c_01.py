@@ -12,11 +12,12 @@
   extra field, JSON syntax, path id, query, header), each refused at its field with zero rows.
 
 The app runs on a scratch database migrated to head, so generated writes (stories, policies,
-ratings, deployment settings) never reach the session database. Excluded from generation:
-``delete_story`` and ``archive_story`` (they would end the fixture story every later example
-needs) and the API-key routes (they need ``EPISTREL_CONFIG_KEY``); all three are covered by
-C-03 and their own tests. ``replace_model_config`` is generated, and each successful write is
-undone so that later examples still reach the stub model.
+ratings, deployment settings, catalog characters) never reach the session database. Excluded
+from generation: ``delete_story`` and ``archive_story`` (they would end the fixture story every
+later example needs), ``delete_character`` (it would end the fixture catalog character, #103)
+and the API-key routes (they need ``EPISTREL_CONFIG_KEY``); all are covered by C-03 and their own
+tests. ``replace_model_config`` is generated, and each successful write is undone so that later
+examples still reach the stub model.
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ from epistrel.api import create_app
 from epistrel.api.auth import EXEMPT_ROUTES
 from epistrel.api.openapi import TAG_NAMES, dumps
 from epistrel.config import Settings
+from epistrel.core.catalog.characters import CharacterCreate, PublishRequest
 from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.settings_schema import StorySettings
@@ -59,6 +61,7 @@ from epistrel.orchestrator.lite.schemas import RespondRequest
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from epistrel.tools import openapi as openapi_tool
 from tests.auth_support import auth_settings, bearer
+from tests.catalog_support import character as catalog_character
 from tests.conformance.conftest import migrated_database
 from tests.conftest import REPO_ROOT
 from tests.respond_support import AUTHOR, body
@@ -81,7 +84,13 @@ def _without_security(schema: dict[str, Any]) -> dict[str, Any]:
 
 SCHEMA = schemathesis.openapi.from_dict(_without_security(COMMITTED))
 
-EXCLUDED = ("delete_story", "archive_story", "set_model_api_key", "remove_model_api_key")
+EXCLUDED = (
+    "delete_story",
+    "archive_story",
+    "delete_character",
+    "set_model_api_key",
+    "remove_model_api_key",
+)
 """Not generated against (see the module docstring); every other operation is."""
 COUNTED_TABLES = ("operations", "events", "config_changes")
 _COUNT = "SELECT count(*) FROM {}"
@@ -107,6 +116,7 @@ class Live:
     url: str
     story_id: str
     operation_id: str
+    character_id: str
 
     def counts(self) -> dict[str, int]:
         sync = make_sync_engine(self.url)
@@ -127,11 +137,13 @@ class Live:
             "rating_id": EVERYONE_ID,
             "policy_id": MINORS_POLICY_ID,
             "purpose": "generation",
+            "character_id": self.character_id,
         }
 
 
-async def _seed(settings: Settings) -> tuple[str, str]:
-    """A two-character story with one played turn: its id and the turn's operation id."""
+async def _seed(settings: Settings) -> tuple[str, str, str]:
+    """A two-character story with one played turn, and a published catalog character: the
+    story's id, the turn's operation id and the character's id."""
     db = make_engine(settings)
     engine = Engine.from_settings(settings)
     engine.bind(db)
@@ -142,7 +154,12 @@ async def _seed(settings: Settings) -> tuple[str, str]:
         actor = created.characters[0].id
         request = RespondRequest.model_validate(body(actor))
         played = await engine.respond(AUTHOR, created.story_id, request)
-        return created.story_id, played.beats[0].operation_id
+        draft = await engine.create_character_draft(
+            AUTHOR, CharacterCreate.model_validate(catalog_character("Mara Venn"))
+        )
+        character_id = draft.character.id
+        await engine.publish_character(AUTHOR, character_id, PublishRequest(draft_revision=1))
+        return created.story_id, played.beats[0].operation_id, character_id
     finally:
         await engine.models.aclose()
         await db.dispose()
@@ -154,8 +171,8 @@ def live(pg_url: str) -> Iterator[Live]:
     with migrated_database(pg_url, "epistrel_c01") as url:
         try:
             settings = auth_settings(url, model_adapter="stub")
-            story_id, operation_id = asyncio.run(_seed(settings))
-            yield Live(create_app(settings), url, story_id, operation_id)
+            story_id, operation_id, character_id = asyncio.run(_seed(settings))
+            yield Live(create_app(settings), url, story_id, operation_id, character_id)
         finally:
             schemathesis_asgi.shutdown_lifespans()
 
@@ -422,6 +439,36 @@ MALFORMED: list[tuple[str, str, str, dict[str, Any], str]] = [
         },
         "body.display_order",
     ),
+    # Catalog characters (#103): a draft revision past int32, an unknown draft field, a
+    # projection that is not one, and a version that cannot exist.
+    (
+        "catalog draft revision past int32",
+        "PATCH",
+        "/catalog/characters/{character}",
+        {"json": {"draft_revision": 2**31, "name": "Overflow"}},
+        "body.draft_revision",
+    ),
+    (
+        "catalog unknown draft field",
+        "POST",
+        "/catalog/characters",
+        {"json": {"name": "Mara", "secret_past": "x"}},
+        "body.secret_past",
+    ),
+    (
+        "catalog projection",
+        "GET",
+        "/catalog/characters/{character}",
+        {"params": {"projection": "everything"}},
+        "query.projection",
+    ),
+    (
+        "catalog version zero",
+        "GET",
+        "/catalog/characters/{character}",
+        {"params": {"version": 0}},
+        "query.version",
+    ),
 ]
 
 
@@ -432,7 +479,9 @@ def _malformed(live: Live) -> list[str]:
         for name, method, template, kwargs, field in MALFORMED:
             before = live.counts()
             sent = {**kwargs, "headers": headers | kwargs.get("headers", {})}
-            path = template.format(story=live.story_id, rating=EVERYONE_ID)
+            path = template.format(
+                story=live.story_id, rating=EVERYONE_ID, character=live.character_id
+            )
             response = client.request(method, path, **sent)
             error = response.json().get("error", {}) if response.status_code == 422 else {}
             if response.status_code != 422 or error.get("details", {}).get("field") != field:

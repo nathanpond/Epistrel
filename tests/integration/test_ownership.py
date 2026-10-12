@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -27,6 +28,7 @@ from epistrel.core.enums import OperationKind
 from epistrel.core.events import Operation
 from epistrel.core.ownership import REGISTRY
 from epistrel.core.tables.ownership import EntityType
+from epistrel.testing import pauses
 from tests.auth_support import auth_settings, bearer
 from tests.event_support import rows, scalar
 from tests.integration.ownership_fixtures import (
@@ -482,6 +484,65 @@ async def test_concurrent_adds_record_one_relation(
         )
         await ok(moved)
         assert await scalar(engine, updated, e=entry.id) > first
+
+
+LOCK_WAITERS = (
+    "SELECT count(*) FROM pg_stat_activity "
+    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+)
+
+
+async def _waits_or_ends(engine: AsyncEngine, task: asyncio.Future[Any]) -> bool:
+    """Wait until ``task`` has ended or a request of this database waits on a lock; whether one
+    waits."""
+    deadline = time.monotonic() + 10.0
+    while not task.done():
+        if await scalar(engine, LOCK_WAITERS) > 0:
+            return True
+        assert time.monotonic() < deadline, "the request neither ended nor waited on a lock"
+        await asyncio.sleep(0.02)
+    return False
+
+
+async def test_an_add_racing_the_removal_of_its_relation(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """An add of a relation that exists and the removal of that relation, at the same moment:
+    the add has found the relation (held there) when the removal starts. The removal waits on
+    the entity's row lock until the add commits, so the add answers 200 with the stored row and
+    records nothing, and the removal answers 204 and records its event. For every delivered
+    type; neither request errors."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        for kind in KINDS.values():
+            entity = await kind.create(client, OWNER, None)
+            path = kind.path(entity.id, "/relations")
+            body = {"principal": RELATED, "relation": "editor"}
+            first = await ok(await client.post(path, json=body, headers=headers(OWNER)), 201)
+            with pauses.held(pauses.OWNERSHIP_ADD_FOUND) as hold:
+                add = asyncio.ensure_future(client.post(path, json=body, headers=headers(STRANGER)))
+                await hold.arrived(1)
+                removal = asyncio.ensure_future(
+                    client.delete(f"{path}/editor/{RELATED}", headers=headers(NEW_OWNER))
+                )
+                waited = await _waits_or_ends(engine, removal)
+                hold.release()
+                added, removed = await asyncio.gather(add, removal)
+            assert added.status_code == 200, (kind.entity_type, added.text)
+            assert added.json()["created_at"] == first["created_at"]
+            assert removed.status_code == 204, (kind.entity_type, removed.text)
+            assert waited, "the removal waits for the add, which holds the entity's row lock"
+            listing = await ok(await client.get(path, headers=READ))
+            assert listing["items"] == []
+            events = await rows(
+                engine,
+                "SELECT kind, acting_principal FROM ownership_events "
+                "WHERE entity_id = :e ORDER BY at, id",
+                e=entity.id,
+            )
+            assert [tuple(e) for e in events] == [
+                ("relation_added", OWNER),
+                ("relation_removed", NEW_OWNER),
+            ]
 
 
 async def test_library_matches_rest(stub_settings: Settings, engine: AsyncEngine) -> None:

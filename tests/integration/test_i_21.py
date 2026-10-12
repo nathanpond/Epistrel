@@ -7,11 +7,11 @@ status, #117 offboarding). #104's parts:
 - ``test_i_21__ownership``: creation sets the owner of every delivered type, a fork included. A
   transfer moves it and records the acting principal. A ``system``-owned entity transfers like
   any other. Relations are added, listed, filtered (with the owner filter's complement) and
-  removed. A story made from a catalog entry stays byte-identical through the entry's transfer
-  and relation changes.
+  removed. A list narrows only by the filters it names, whichever principal asks. A story made
+  from a catalog entry stays byte-identical through the entry's transfer and relation changes.
 - ``test_i_21__nothing_gates``: the matrix. Every route under an owned entity answers its owner,
   a stranger, and a principal holding relations named ``admin`` and ``owner`` with the same
-  status.
+  status, and every read with the same body.
 - ``test_i_21__companion``: a character's companion scenario moves with it and cannot be
   transferred or related on its own; a scenario transfer leaves stories alone. Until #108 and
   #116 create ``catalog.scenario_catalog`` with ``companion_of``, the test stands one in on its
@@ -23,9 +23,12 @@ The detailed tests are in ``tests/integration/test_ownership.py``. The story-cre
 
 from __future__ import annotations
 
+import json
+import re
 import secrets
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import urlencode
 
 import pytest
 from sqlalchemy import Table, text
@@ -110,13 +113,15 @@ async def _events(engine: AsyncEngine, entity_id: str) -> list[tuple[Any, ...]]:
     return [tuple(r) for r in found]
 
 
-async def _listed(client: Any, **params: Any) -> list[str]:
-    response = await client.get("/stories", params=params, headers=READ)
+async def _listed(client: Any, principal: str | None = None, **params: Any) -> list[str]:
+    """The story ids ``GET /stories`` lists when ``principal`` asks (``None``: no principal)."""
+    sent = READ if principal is None else headers(principal)
+    response = await client.get("/stories", params=params, headers=sent)
     return [item["id"] for item in (await ok(response))["items"]]
 
 
 @pytest.mark.integration
-@pytest.mark.part("M3", "FR-AUTH-5,6; FR-CAT-9")
+@pytest.mark.part("M3", "FR-AUTH-5,6,8; FR-CAT-9")
 async def test_i_21__ownership(stub_settings: Settings, engine: AsyncEngine) -> None:
     """Every delivered owned type (stories, catalog characters) is owned by its creator, or by
     the owner the creation names, and a fork by whoever forked it. A transfer by a third
@@ -128,7 +133,8 @@ async def test_i_21__ownership(stub_settings: Settings, engine: AsyncEngine) -> 
     recorded. A story whose character came from catalog entry E stays byte-identical while E is
     transferred and related.
 
-    Complements asserted: ``owner=A`` leaves out B's story while no filter lists both; a removed
+    Complements asserted: ``owner=A`` leaves out B's story while no filter lists both, whoever
+    asks (A, B, a stranger or no principal: a list is never narrowed to the asker); a removed
     relation no longer filters; the story snapshot does see the story's own archive."""
     async with respond_client(stub_settings, engine) as (client, _):
         # -- creation sets the owner, for every delivered type --------------------------------
@@ -261,6 +267,11 @@ async def test_i_21__ownership(stub_settings: Settings, engine: AsyncEngine) -> 
 
         assert await _listed(client, owner=a) == [mine.id]
         assert set(await _listed(client)) >= {mine.id, theirs.id}
+        for asker in (a, b, STRANGER):  # whoever asks, only the filters asked for narrow
+            assert set(await _listed(client, asker)) >= {mine.id, theirs.id}, asker
+            assert await _listed(client, asker, owner=a) == [mine.id], asker
+            assert await _listed(client, asker, owner=b) == [theirs.id], asker
+            assert await _listed(client, asker, relation=f"{editor}:{c}") == [mine.id], asker
         assert await _listed(client, relation=f"{co_author}:{d}") == [theirs.id, mine.id]
         assert set(await _listed(client, relation=f"{co_author}:")) == {mine.id, theirs.id}
         both = await _listed(client, relation=[f"{co_author}:{d}", f"{editor}:{c}"])
@@ -328,25 +339,58 @@ def _kind_of(path: str) -> Kind:
     raise AssertionError(f"{path} is under no delivered owned type")
 
 
-def _label(route: tuple[str, str]) -> str:
-    return f"{route[0]} {route[1]}"
+CASES = [(route, query) for route in sorted(CALLS) for query in CALLS[route].queries]
+"""Every route under an owned entity, once per query string its ``Call`` names."""
+
+
+def _label(case: tuple[tuple[str, str], dict[str, str]]) -> str:
+    (method, path), query = case
+    return f"{method} {path}" + (f"?{urlencode(query)}" if query else "")
+
+
+ULID_TEXT = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+TIME_TEXT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?")
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True)
+
+
+def _blanked(body: Any) -> Any:
+    """``body`` without what differs between two fresh entities in the same state: every id
+    and time blanked, in keys too (a mapping whose keys become alike, such as true ages by
+    character id, is compared as its pairs), and every list in one order."""
+    if isinstance(body, dict):
+        pairs = sorted(((_blanked(k), _blanked(v)) for k, v in body.items()), key=_canonical)
+        return dict(pairs) if len({key for key, _ in pairs}) == len(pairs) else pairs
+    if isinstance(body, list):
+        return sorted((_blanked(item) for item in body), key=_canonical)
+    if isinstance(body, str):
+        return TIME_TEXT.sub("<time>", ULID_TEXT.sub("<id>", body))
+    return body
 
 
 @pytest.mark.integration
 @pytest.mark.part("M3", "FR-AUTH-8")
-@pytest.mark.parametrize("route", sorted(CALLS), ids=_label)
+@pytest.mark.parametrize(("route", "query"), CASES, ids=[_label(case) for case in CASES])
 async def test_i_21__nothing_gates(
-    route: tuple[str, str], stub_settings: Settings, engine: AsyncEngine
+    route: tuple[str, str], query: dict[str, str], stub_settings: Settings, engine: AsyncEngine
 ) -> None:
-    """Each route under an owned entity (a story; a ``private`` catalog character, read in
-    ``full`` too) answers a request about an entity owned by A with the same status code
-    whether A sends it, a stranger B sends it, or C sends it while holding relations named
-    ``admin`` and ``owner`` on the entity. Each requester gets a fresh entity in the same
-    state. The code compared is the route's success code, so every request really ran: the
-    owner owns no extra permission, and neither does a relation, whatever its name."""
+    """Each route under an owned entity answers a request about an entity owned by A with the
+    same status code whether A sends it, a stranger B sends it, or C sends it while holding
+    relations named ``admin`` and ``owner`` on the entity. Each requester gets a fresh entity in
+    the same state. The code compared is the route's success code, so every request really ran:
+    the owner owns no extra permission, and neither does a relation, whatever its name.
+
+    A read answers all three with the same body too, once ids and times are blanked: the
+    content A put there (a played turn, settings, pinned memories, relations, a published
+    version) is there for B and C, nothing narrowed. A ``private`` catalog character is read as
+    its card (the default) and in ``full``, as version 1, and as its draft in both projections;
+    a story and its history in the default viewpoint and the omniscient one."""
     method, path = route
     kind, call = _kind_of(path), CALLS[route]
     statuses: dict[str, int] = {}
+    bodies: dict[str, Any] = {}
     async with respond_client(stub_settings, engine) as (client, _):
         for requester in (OWNER, STRANGER, RELATED):
             entity = await kind.create(client, OWNER, None)
@@ -362,12 +406,17 @@ async def test_i_21__nothing_gates(
                 method,
                 request_path(kind, path, entity, extra),
                 json=call.body(entity),
-                params=call.params,
+                params=query,
                 headers=headers(requester),
             )
             statuses[requester] = response.status_code
             assert response.status_code == call.expected, (requester, response.text)
+            if method == "GET":
+                bodies[requester] = _blanked(response.json())
     assert statuses == dict.fromkeys((OWNER, STRANGER, RELATED), call.expected)
+    if method == "GET":
+        assert bodies[STRANGER] == bodies[OWNER], "a stranger reads what the owner reads"
+        assert bodies[RELATED] == bodies[OWNER], "a relation's holder reads what the owner reads"
 
 
 # -- companions ------------------------------------------------------------------------------------

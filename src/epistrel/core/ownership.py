@@ -28,7 +28,9 @@ A companion's owner and relations cannot be changed on their own (422
 column.
 
 **Writes.** Each write is one transaction under the entity's row lock: ``FOR UPDATE`` for a
-transfer, ``FOR SHARE`` for a relation change. The transaction writes the ``ownership_events``
+transfer, ``FOR NO KEY UPDATE`` for a relation change. So the writes to one entity's relations
+take turns with each other and with its deletion: an add that finds its relation stored reads
+it back before a removal can delete it. The transaction writes the ``ownership_events``
 rows and one committed ``control`` operation by the acting principal (``core.control``), and binds
 the call's ``Idempotency-Key`` to it. For a story the operation is the story's own, so it and
 its key go when the story is deleted. A write that changes nothing (a transfer to the current
@@ -73,6 +75,7 @@ from epistrel.core.tables.ownership import (
     entity_relations,
     ownership_events,
 )
+from epistrel.testing import pauses
 
 # -- the registry -----------------------------------------------------------------------------
 
@@ -444,7 +447,10 @@ class Relations:
 
 # -- rows ---------------------------------------------------------------------------------------
 
-Lock = Literal["update", "share"] | None
+Lock = Literal["update", "no_key_update"] | None
+"""``FOR UPDATE`` (a transfer) or ``FOR NO KEY UPDATE`` (a relation change). Either makes the
+writes to one entity's relations take turns with each other and with the entity's deletion;
+``FOR NO KEY UPDATE`` leaves free the ``FOR KEY SHARE`` that a foreign key check takes."""
 
 
 def _not_found(owned: OwnedType, entity_id: str) -> EntityNotFound:
@@ -478,8 +484,8 @@ async def _entity(
     query = select(*handle.c).where(handle.c.id == entity_id)
     if lock == "update":
         query = query.with_for_update()
-    elif lock == "share":
-        query = query.with_for_update(read=True)
+    elif lock == "no_key_update":
+        query = query.with_for_update(key_share=True)
     row = (await conn.execute(query)).one_or_none()
     if row is None:
         raise _not_found(owned, entity_id)
@@ -646,11 +652,15 @@ async def add_relation(
 ) -> RelationWrite:
     """Relate ``related`` to the entity as ``relation`` (``created``); a relation that already
     exists is returned as it is and nothing is recorded. 404 for an unknown entity, 422
-    ``companion_follows_character`` for a companion."""
+    ``companion_follows_character`` for a companion. The entity's row lock keeps a removal (or
+    the entity's deletion) from deleting a relation between this add finding it and reading
+    it back."""
     owned = REGISTRY[entity_type]
     async with db.begin() as conn:
         columns = await _columns(conn, owned, entity_id)
-        _refuse_companion(owned, await _entity(conn, owned, entity_id, columns, lock="share"))
+        _refuse_companion(
+            owned, await _entity(conn, owned, entity_id, columns, lock="no_key_update")
+        )
         key = and_(
             entity_relations.c.entity_type == entity_type.value,
             entity_relations.c.entity_id == entity_id,
@@ -673,6 +683,7 @@ async def add_relation(
         ).one_or_none()
         created = stored is not None
         if stored is None:
+            await pauses.pause(pauses.OWNERSHIP_ADD_FOUND)
             stored = (
                 await conn.execute(
                     select(entity_relations.c.created_at, entity_relations.c.created_by).where(key)
@@ -722,7 +733,9 @@ async def remove_relation(
     owned = REGISTRY[entity_type]
     async with db.begin() as conn:
         columns = await _columns(conn, owned, entity_id)
-        _refuse_companion(owned, await _entity(conn, owned, entity_id, columns, lock="share"))
+        _refuse_companion(
+            owned, await _entity(conn, owned, entity_id, columns, lock="no_key_update")
+        )
         removed = await conn.scalar(
             delete(entity_relations)
             .where(

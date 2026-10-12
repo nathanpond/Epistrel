@@ -5,9 +5,11 @@ the minimal request for every route under an owned entity. The registry-generate
 ``KINDS`` holds an entry for every owned type whose routes are mounted. A story that delivers a
 type adds that type's factory and ``CALLS`` entries, and ``test_every_delivered_type_is_covered``
 fails until it does. ``CALLS`` maps each served ``(method, path)`` under an entity to a request
-that succeeds for the entity's owner. The nothing-gates matrix sends that request as the owner,
-as a stranger, and as a principal holding relations named ``admin`` and ``owner``, and expects
-the same status code each time.
+that succeeds for the entity's owner, once per query string in ``queries`` (a read's options:
+a catalog entry's projections, the draft, a story's omniscient viewpoint). The nothing-gates
+matrix sends that request as the owner, as a stranger, and as a principal holding relations
+named ``admin`` and ``owner``, and expects the same status code each time. A read's ``prepare``
+puts the owner's content where the read finds it, so the matrix can also expect the same body.
 """
 
 from __future__ import annotations
@@ -136,11 +138,25 @@ def respond_body(entity: Entity) -> dict[str, Any]:
     }
 
 
+async def _send(
+    client: httpx.AsyncClient,
+    kind: Kind,
+    entity: Entity,
+    method: str,
+    suffix: str,
+    body: Any,
+    status: int,
+) -> dict[str, Any]:
+    response = await client.request(
+        method, kind.path(entity.id, suffix), json=body, headers=headers(OWNER)
+    )
+    return await ok(response, status)
+
+
 async def _post(
     client: httpx.AsyncClient, kind: Kind, entity: Entity, suffix: str, body: Any, status: int
 ) -> dict[str, Any]:
-    response = await client.post(kind.path(entity.id, suffix), json=body, headers=headers(OWNER))
-    return await ok(response, status)
+    return await _send(client, kind, entity, "POST", suffix, body, status)
 
 
 async def _played(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
@@ -176,14 +192,35 @@ async def _related(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dic
     return {"relation": "editor", "principal": quote(NEW_OWNER, safe="")}
 
 
+SETTINGS = {"turn_deadline": 30}
+PINNED = {"items": [{"text": "Ada owes Wren."}]}
+INSTRUCTIONS = {"text": "Keep it brief."}
+
+
+async def _configured(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    await _send(client, kind, entity, "PATCH", "/settings", SETTINGS, 200)
+    return {}
+
+
+async def _pinned(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    await _send(client, kind, entity, "PUT", "/pinned-memories", PINNED, 200)
+    return {}
+
+
+async def _instructed(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    await _send(client, kind, entity, "PUT", "/custom-instructions", INSTRUCTIONS, 200)
+    return {}
+
+
 @dataclass(frozen=True)
 class Call:
     """A request that succeeds (``expected``) when the entity's owner sends it. ``json`` is the
-    body, or a function of the entity; ``prepare`` runs first, as the owner."""
+    body, or a function of the entity; ``prepare`` runs first, as the owner. The request is sent
+    once per query string in ``queries``, each its own matrix case."""
 
     expected: int
     json: Any = None
-    params: dict[str, str] = field(default_factory=dict)
+    queries: tuple[dict[str, str], ...] = ({},)
     prepare: Prepare = _nothing
 
     def body(self, entity: Entity) -> Any:
@@ -193,6 +230,14 @@ class Call:
 S = "/stories/{story_id}"
 C = "/catalog/characters/{character_id}"
 RELATION = "/relations/{relation}/{principal:path}"
+OMNISCIENT = {"viewpoint": "omniscient"}
+ENTRY_READS: tuple[dict[str, str], ...] = (
+    {},
+    {"projection": "full"},
+    {"version": "1"},
+    {"draft": "true"},
+    {"draft": "true", "projection": "full"},
+)
 
 CALLS: dict[tuple[str, str], Call] = {
     # -- stories: writes
@@ -202,9 +247,9 @@ CALLS: dict[tuple[str, str], Call] = {
         201,
         {"events": [{"client_event_id": "evt-1", "kind": "narration", "text": "Rain falls."}]},
     ),
-    ("PATCH", f"{S}/settings"): Call(200, {"turn_deadline": 30}),
-    ("PUT", f"{S}/pinned-memories"): Call(200, {"items": [{"text": "Ada owes Wren."}]}),
-    ("PUT", f"{S}/custom-instructions"): Call(200, {"text": "Keep it brief."}),
+    ("PATCH", f"{S}/settings"): Call(200, SETTINGS),
+    ("PUT", f"{S}/pinned-memories"): Call(200, PINNED),
+    ("PUT", f"{S}/custom-instructions"): Call(200, INSTRUCTIONS),
     ("POST", f"{S}/truncate"): Call(200, {"to_turn": 0}, prepare=_played),
     ("POST", f"{S}/untruncate"): Call(200, {}, prepare=_truncated),
     ("POST", f"{S}/swap"): Call(
@@ -217,14 +262,15 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{S}/owner"): Call(200, {"principal": NEW_OWNER}),
     ("POST", f"{S}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
     ("DELETE", f"{S}{RELATION}"): Call(204, prepare=_related),
-    # -- stories: reads
-    ("GET", S): Call(200),
-    ("GET", f"{S}/history"): Call(200, prepare=_played),
-    ("GET", f"{S}/settings"): Call(200),
-    ("GET", f"{S}/config-changes"): Call(200),
-    ("GET", f"{S}/pinned-memories"): Call(200),
-    ("GET", f"{S}/custom-instructions"): Call(200),
-    ("GET", f"{S}/variants"): Call(200),
+    # -- stories: reads, each finding content the owner put there (the story and its history
+    # in the default viewpoint and the omniscient one too)
+    ("GET", S): Call(200, queries=({}, OMNISCIENT)),
+    ("GET", f"{S}/history"): Call(200, queries=({}, OMNISCIENT), prepare=_played),
+    ("GET", f"{S}/settings"): Call(200, prepare=_configured),
+    ("GET", f"{S}/config-changes"): Call(200, prepare=_configured),
+    ("GET", f"{S}/pinned-memories"): Call(200, prepare=_pinned),
+    ("GET", f"{S}/custom-instructions"): Call(200, prepare=_instructed),
+    ("GET", f"{S}/variants"): Call(200, prepare=_regenerated),
     ("GET", f"{S}/relations"): Call(200, prepare=_related),
     # -- catalog characters: writes
     ("PATCH", C): Call(200, {"draft_revision": 1, "public_description": "Keeps the logbook."}),
@@ -235,8 +281,9 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{C}/owner"): Call(200, {"principal": NEW_OWNER}),
     ("POST", f"{C}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
     ("DELETE", f"{C}{RELATION}"): Call(204, prepare=_related),
-    # -- catalog characters: reads (a `private` entry, owned by someone else, in both projections)
-    ("GET", C): Call(200, params={"projection": "full"}, prepare=_published),
+    # -- catalog characters: reads of a `private` entry: the latest version as the card (the
+    # default) and in full, version 1, and the draft in both projections
+    ("GET", C): Call(200, queries=ENTRY_READS, prepare=_published),
     ("GET", f"{C}/versions"): Call(200, prepare=_published),
     ("GET", f"{C}/relations"): Call(200, prepare=_related),
 }

@@ -261,6 +261,33 @@ def test_display_order_default_and_listing(client: TestClient) -> None:
     assert retired["retired_at"] is not None
 
 
+def test_display_order_is_int32(scratch_database: str) -> None:
+    """``display_order`` is bounded to the ``INTEGER`` column (#280): the int32 ends are accepted,
+    one past either end is 422 at ``body.display_order`` on create and replace, and an assigned
+    order after a rating at the maximum stops there instead of overflowing. Runs on a scratch
+    database so the maximum never leaks into other tests' default orders."""
+    command.upgrade(alembic_config(scratch_database), "head")
+    with TestClient(create_app(auth_settings(scratch_database))) as c:
+        top = _create(c, display_order=2**31 - 1)
+        bottom = _create(c, display_order=-(2**31))
+        assert (top["display_order"], bottom["display_order"]) == (2**31 - 1, -(2**31))
+        assigned = _create(c)
+        assert assigned["display_order"] == 2**31 - 1
+
+        for value in (2**31, -(2**31) - 1):
+            created = c.post(
+                BASE, json={"name": _unique_name("o"), "display_order": value}, headers=WRITE
+            )
+            assert created.status_code == 422, created.text
+            assert created.json()["error"]["details"]["field"] == "body.display_order"
+            replaced = c.put(
+                f"{BASE}/{top['id']}", json=_replacement(top, display_order=value), headers=WRITE
+            )
+            assert replaced.status_code == 422, replaced.text
+            assert replaced.json()["error"]["details"]["field"] == "body.display_order"
+        assert c.get(f"{BASE}/{top['id']}", headers=bearer()).json()["version"] == top["version"]
+
+
 def test_retire(client: TestClient, pg_url: str) -> None:
     """DELETE retires (200, recorded with new ``retired``); again → 204; a retired rating
     still answers GET and refuses PUT (409); the default → 409 and stays listed."""

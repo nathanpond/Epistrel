@@ -1717,3 +1717,17 @@ Re-execution of M2 for the two bugs `/n8-verify M2` left open after PR #299 (#28
   **Why:** A process group is the only handle on a re-parented orphan that does not depend on matching the command line. The spy observes exactly the workers the pool gives up on.
   **Finding:** Of the two mutants, `_discard` → `pass` (worker kept tracked, never killed) is caught only by the in-process test, because the child's `atexit` hook kills tracked workers. Removing only `worker.kill()` (the issue's repro: untracked, left running, 6 orphans) fails both tests.
   **Issue:** #300
+
+## /n8-exec M2 (#280, adopted by re-verify) — 2026-10-12
+
+Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`confirmed`, `sev:high`). Branch `milestone/m2-rating-order-bounds`.
+
+- **Decision (#280):** `display_order` is bounded to the full int32 range of the `INTEGER` column (`DISPLAY_ORDER_MIN = -2**31`, `DISPLAY_ORDER_MAX = 2**31 - 1`, a shared `DisplayOrder` annotated type) on both `RatingFields` and `RatingReplacement`. Out-of-range values are 422 `validation_error` at `body.display_order`.
+  **Why:** The issue's fix shape names int32. A smaller "documented" range would have refused values the API accepts today, which is a contract narrowing with no need behind it. Negative orders stay legal because they always were.
+  **Issue:** #280
+- **Decision (#280, Rule 1):** The order assigned when `display_order` is omitted, `max(live) + DISPLAY_ORDER_STEP`, is clamped to `DISPLAY_ORDER_MAX`. Without the clamp, a create that omits the field after a live rating at the maximum reached Postgres and returned the same 500. With it, the new rating ties at the maximum, and the documented tiebreak orders it by name, then id.
+  **Why:** This is the same `DataError` 500 from the same route, reachable only through values the new bound still allows, so fixing the bound alone would have left #73 AC2 false. A 422 was not an option, because the caller sent no `display_order` to blame. Mutation-checked: without the clamp, the new test fails with `integer out of range`.
+  **Issue:** #280
+- **Decision (#280):** The C-01 cases go in `test_c_01__malformed` (POST `2**31`, PUT on the seeded Everyone rating with `-2**31 - 1`). The path template gained `{rating}`. The boundary and clamp test runs on a scratch database.
+  **Why:** That is the issue's fix shape. The scratch database matters because a rating left at the int32 maximum in the shared session database would change every later default order, and `test_display_order_default_and_listing` asserts `+10`.
+  **Issue:** #280

@@ -3419,6 +3419,8 @@
           "display_order": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
+                "minimum": -2147483648.0,
                 "type": "integer"
               },
               {
@@ -3617,6 +3619,8 @@
             "type": "string"
           },
           "display_order": {
+            "maximum": 2147483647.0,
+            "minimum": -2147483648.0,
             "title": "Display Order",
             "type": "integer"
           },

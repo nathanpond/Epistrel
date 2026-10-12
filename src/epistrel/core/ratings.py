@@ -54,11 +54,16 @@ REFERENCE_MAX = 64
 REFERENCES_MAX = 256
 DISPLAY_ORDER_STEP = 10
 """A rating created without ``display_order`` goes after every live rating, by this step."""
+DISPLAY_ORDER_MIN = -(2**31)
+DISPLAY_ORDER_MAX = 2**31 - 1
+"""The ``display_order`` column is ``INTEGER``: a value outside int32 is a 422, never a 500 (#280).
+An assigned order stops at the maximum, where ties sort by name, then id."""
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX)]
 Reference = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=REFERENCE_MAX)
 ]
+DisplayOrder = Annotated[int, Field(ge=DISPLAY_ORDER_MIN, le=DISPLAY_ORDER_MAX)]
 
 
 class RatingFields(BaseModel):
@@ -85,7 +90,7 @@ class RatingFields(BaseModel):
 
     name: Name
     description: str = Field(default="", max_length=DESCRIPTION_MAX)
-    display_order: int | None = None
+    display_order: DisplayOrder | None = None
     prompt_guidance: str = Field(default="", max_length=GUIDANCE_MAX)
     image_guidance: str = Field(default="", max_length=GUIDANCE_MAX)
     policy_ids: list[Reference] = Field(default_factory=list, max_length=REFERENCES_MAX)
@@ -112,7 +117,7 @@ class RatingReplacement(RatingFields):
     )
 
     description: str = Field(max_length=DESCRIPTION_MAX)
-    display_order: int
+    display_order: DisplayOrder
     prompt_guidance: str = Field(max_length=GUIDANCE_MAX)
     image_guidance: str = Field(max_length=GUIDANCE_MAX)
     policy_ids: list[Reference] = Field(max_length=REFERENCES_MAX)
@@ -566,7 +571,7 @@ async def create_rating(db: AsyncEngine, fields: RatingFields, *, principal: str
         display_order = fields.display_order
         if display_order is None:
             live = [r.display_order for r in ratings if r.retired_at is None]
-            display_order = max(live, default=0) + DISPLAY_ORDER_STEP
+            display_order = min(max(live, default=0) + DISPLAY_ORDER_STEP, DISPLAY_ORDER_MAX)
         content = _Content(
             name=fields.name,
             description=fields.description,

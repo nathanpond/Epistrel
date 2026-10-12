@@ -42,6 +42,7 @@ from epistrel.core.input_versions import (
 from epistrel.core.stories import delete_story
 from epistrel.core.tables import jobs, operations
 from epistrel.engine import Engine
+from epistrel.observability import metrics
 from epistrel.orchestrator.jobs import handlers, queue
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
@@ -50,6 +51,7 @@ from epistrel.orchestrator.jobs.worker import (
     WorkerConfig,
     recovery_pass,
     register_recovery_hook,
+    run_outcome,
     unregister_recovery_hook,
 )
 from tests.auth_support import auth_settings, bearer
@@ -294,6 +296,37 @@ async def test_failures_back_off_then_fail(
     assert await queue.reap(engine) == [reclaimed]
     row = await _job(engine, reclaimed)
     assert (row.status, row.failures, row.attempt) == ("queued", 0, 2)
+
+
+def _counted(kind: str, outcome: str) -> float:
+    return float(metrics.OPERATIONS.labels(kind, outcome)._value.get())
+
+
+async def test_job_runs_are_counted_by_outcome(engine: AsyncEngine, registry: Probe) -> None:
+    """A committed job counts as ``ok`` (not ``error``), a failed attempt as ``error``, and a
+    fenced or dropped commit as ``rejected`` (#74 AC2; #295: ``CommitOutcome`` is a StrEnum)."""
+    worker = Worker(engine, _config())
+    before = {o: _counted("test_echo", o) for o in ("ok", "rejected", "error")}
+    await _enqueue(engine, "test_echo", {"n": 3})
+    claimed = await queue.claim(engine, "w:count:0", lease_s=LEASE_S)
+    assert claimed is not None
+    assert await worker.execute(claimed) is queue.CommitOutcome.COMMITTED
+    assert _counted("test_echo", "ok") == before["ok"] + 1
+    assert _counted("test_echo", "error") == before["error"]
+    assert _counted("test_echo", "rejected") == before["rejected"]
+
+    failed_before = _counted("test_boom", "error")
+    await _enqueue(engine, "test_boom", {"n": 4})
+    claimed = await queue.claim(engine, "w:count:0", lease_s=LEASE_S)
+    assert claimed is not None
+    assert await worker.execute(claimed) == "queued"
+    assert _counted("test_boom", "error") == failed_before + 1
+
+    assert run_outcome(queue.CommitOutcome.COMMITTED) == "ok"
+    assert run_outcome(queue.CommitOutcome.REFUSED) == "rejected"
+    assert run_outcome(queue.CommitOutcome.DROPPED) == "rejected"
+    assert run_outcome(None) == "rejected"
+    assert run_outcome("queued") == run_outcome("failed") == "error"
 
 
 async def test_enqueue_validates_and_coalesces(engine: AsyncEngine, registry: Probe) -> None:

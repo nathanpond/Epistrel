@@ -118,6 +118,16 @@ async def recovery_pass(db: AsyncEngine) -> RecoveryReport:
     )
 
 
+def run_outcome(result: queue.CommitOutcome | str | None) -> str:
+    """A job run's reported outcome: ``ok`` when its output committed, ``rejected`` when the
+    commit was fenced or its output dropped (requeued, FR-CONC-8) or the claim was fenced, and
+    ``error`` for a failed attempt (the status it left, ``queued`` or ``failed``).
+    ``CommitOutcome`` is a ``StrEnum``, so it is matched before plain strings (#295)."""
+    if isinstance(result, queue.CommitOutcome):
+        return "ok" if result is queue.CommitOutcome.COMMITTED else "rejected"
+    return "rejected" if result is None else "error"
+
+
 @dataclass(frozen=True, slots=True)
 class WorkerConfig:
     poll_interval: float = 5.0
@@ -302,13 +312,10 @@ class Worker:
         """Run a claimed job: its handler under heartbeat and the runtime cap, then the commit.
         Returns the commit outcome, the status a failure left (``queued``/``failed``), or
         ``None`` when the claim was fenced. One span, summary line and count per run (kind =
-        the job's kind, outcome ``error`` for a failed attempt, ``rejected`` when fenced; #74)."""
+        the job's kind, outcome per :func:`run_outcome`; #74)."""
         with instrument.background(job.kind, story_id=job.story_id, job_id=job.id) as run:
             result = await self._execute(job)
-            if result is None:
-                run.outcome = "rejected"
-            elif isinstance(result, str):
-                run.outcome = "error"
+            run.outcome = run_outcome(result)
             return result
 
     async def _execute(self, job: ClaimedJob) -> queue.CommitOutcome | str | None:
@@ -418,5 +425,6 @@ __all__ = [
     "listen_dsn",
     "recovery_pass",
     "register_recovery_hook",
+    "run_outcome",
     "unregister_recovery_hook",
 ]

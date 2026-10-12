@@ -29,10 +29,11 @@ the engine therefore does not depend on how long the restarts take.
 
 ``EPISTREL_CHAOS_SEED`` (printed) fixes every random draw: which of each client's requests
 drop and after how long, its backoff delays in order, the client that drops its first
-request, and when the later restarts come. It does not replay the run itself. The engine is a
-separate process that races the clients on the wall clock, so between runs of one seed these
-can differ: which turns a later restart catches, and whether a request was answered before
-its drop.
+request, and how long after the engine is back each later restart comes. It does not replay
+the run itself. The engine is a separate process that races the clients on the wall clock,
+so between runs of one seed the interleaving can differ, for example: when the first kill
+comes and which turn it catches, which turns a later restart catches, and whether a request
+was answered before its drop.
 
 ``test_x_04__slow_engine`` runs a smaller storm against an engine whose turns wait
 ``SLOW_START_S`` before they begin, longer than any restart's delay. This is a slow runner,

@@ -3,6 +3,9 @@ entity lists, targets, and model-assisted policies left to the guardrail-check p
 
 from __future__ import annotations
 
+import contextlib
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -98,28 +101,38 @@ def test_regex_past_its_deadline_is_a_violation() -> None:
     assert _ids("xyz", fine) == []
 
 
-def test_timed_out_regex_workers_are_killed() -> None:
-    """A search past its deadline kills its worker rather than leaving it to backtrack: after
-    repeated timeouts on input that would run for minutes, no more than ``REGEX_WORKERS``
-    workers are alive and every timed-out one has exited (#290)."""
+def test_timed_out_regex_workers_are_killed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A search past its deadline kills its worker rather than leaving it to backtrack: every
+    worker the pool gives up on after a timeout has exited, and no more than ``REGEX_WORKERS``
+    are alive (#290). The given-up workers are recorded as they are discarded, since a discarded
+    worker is untracked by the pool whether or not it was killed (#300)."""
     slow = policy({"type": "regex", "patterns": [r"(a+)+$"]}, policy_id="slow")
     pool = evaluate_module._REGEX
-    seen: set[subprocess.Popen[bytes]] = set()
-    for _ in range(evaluate_module.REGEX_WORKERS + 2):
-        before = set(pool.processes())
+    discard = evaluate_module._RegexPool._discard
+    discarded: list[subprocess.Popen[bytes]] = []
+
+    def recording(self: evaluate_module._RegexPool, worker: evaluate_module._RegexWorker) -> None:
+        discarded.append(worker.process)
+        discard(self, worker)
+
+    monkeypatch.setattr(evaluate_module._RegexPool, "_discard", recording)
+    timeouts = evaluate_module.REGEX_WORKERS + 2
+    for _ in range(timeouts):
         assert _ids("a" * 40 + "!", slow) == ["slow"]
-        seen |= before | set(pool.processes())
+    assert len(discarded) == timeouts
+    assert [p.poll() is not None for p in discarded] == [True] * timeouts
     assert len(pool.processes()) <= evaluate_module.REGEX_WORKERS
-    killed = [p for p in seen if p.returncode is not None]
-    assert all(p.poll() is not None for p in killed)
     fine = policy({"type": "regex", "patterns": ["b"]}, policy_id="fine")
     assert _ids("abc", fine) == ["fine"]
     assert len(pool.processes()) <= evaluate_module.REGEX_WORKERS
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
 def test_process_exits_after_a_regex_timeout() -> None:
     """The issue's repro: a process whose search timed out exits promptly instead of spinning
-    on the abandoned search (#290)."""
+    on the abandoned search, and leaves no worker behind (#290). The child leads its own
+    process group, which its workers inherit, so a worker that outlives it, re-parented and
+    still spinning, keeps that group alive (#300)."""
     script = (
         "from epistrel.core.policies.evaluate import evaluate\n"
         "from epistrel.core.policies.model import Target\n"
@@ -128,11 +141,20 @@ def test_process_exits_after_a_regex_timeout() -> None:
         "print(len(evaluate('a' * 40 + '!', [p], Target.TEXT_INPUT)))\n"
     )
     started = time.monotonic()
-    done = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30, check=True
+    child = subprocess.Popen(
+        [sys.executable, "-c", script], stdout=subprocess.PIPE, text=True, start_new_session=True
     )
-    assert done.stdout.strip() == "1"
-    assert time.monotonic() - started < 15
+    try:
+        stdout, _ = child.communicate(timeout=30)
+        assert child.returncode == 0
+        assert stdout.strip() == "1"
+        assert time.monotonic() - started < 15
+        with pytest.raises(ProcessLookupError):
+            os.killpg(child.pid, 0)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(child.pid, signal.SIGKILL)
+        child.wait()
 
 
 def test_regex_deadline_constant() -> None:

@@ -448,6 +448,12 @@ def _seconds(value: float | None) -> str:
     return f"≤ {value * 1000:g} ms"
 
 
+def exit_code(evaluation: Evaluation) -> int:
+    """The run's exit status: 1 for a FAIL on the reference host class, else 0 (NFR-PERF-4:
+    other hosts are reported, not gated)."""
+    return 1 if evaluation.info.enforced and not evaluation.passed else 0
+
+
 def markdown(evaluation: Evaluation) -> str:
     """The report: the verdict, every criterion, per-story and aggregate figures, the server's
     stage latencies, and queue depth and resources per minute."""

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -148,8 +149,29 @@ def test_p_04__gate() -> None:
         "longest wait to reach the queue's front",
     }
 
+    assert report.exit_code(clean) == 0
+
+    # The gate is enforced only on the reference host class (#76 AC2; #297): the same slow
+    # commits FAIL on both, but only the reference run exits 1.
     slow = {"0.1": 0.0, "0.25": 70.0, "0.5": 100.0, "+Inf": 100.0}
-    assert not report.evaluate(info, stories, _run(info), samples, {"commit": slow}, {}).passed
+    on_mac = report.evaluate(info, stories, _run(info), samples, {"commit": slow}, {})
+    assert not on_mac.passed
+    assert not info.enforced
+    assert "**Result: FAIL** (host class mac: reported, not gated)" in report.markdown(on_mac)
+    assert report.exit_code(on_mac) == 0
+    reference = replace(info, host_class="reference")
+    assert reference.enforced
+    on_reference = report.evaluate(
+        reference, stories, _run(reference), samples, {"commit": slow}, {}
+    )
+    assert not on_reference.passed
+    assert "**Result: FAIL** (host class reference: gated (exit 1 on FAIL))" in report.markdown(
+        on_reference
+    )
+    assert report.exit_code(on_reference) == 1
+    passing = report.evaluate(reference, stories, _run(reference), samples, {"commit": commit}, {})
+    assert passing.passed
+    assert report.exit_code(passing) == 0
 
 
 def _stage_count(stage: str) -> float:

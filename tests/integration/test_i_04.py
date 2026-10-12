@@ -14,9 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core import projections, timeline, turn_gate
+from epistrel.core.config_changes import read_settings
 from epistrel.core.errors import InvalidRequest, NothingToUndo, StoryNotFound, UnknownChain
 from epistrel.core.ids import new_ulid
-from epistrel.core.stories import delete_story
+from epistrel.core.ratings import RatingFields, create_rating
+from epistrel.core.stories import create_story, delete_story
 from epistrel.core.variants import ChainRef
 from epistrel.core.views import corrected_history
 from tests.auth_support import auth_settings
@@ -420,8 +422,14 @@ async def test_i_04__timeline_moved(engine: AsyncEngine, monkeypatch: pytest.Mon
 async def _forkable(engine: AsyncEngine) -> str:
     """Five turns with everything a fork must handle: an audit event inside a turn, pinned
     memories and instructions, a summary segment, maintenance work, a regenerated turn (its old
-    variant dormant) and a truncated, rewritten tail (a dormant continuation)."""
-    story = await new_story(engine)
+    variant dormant) and a truncated, rewritten tail (a dormant continuation). Its content rating
+    is not the deployment default, so a fork that fell back to the default would show (#296)."""
+    rating = await create_rating(
+        engine, RatingFields(name=f"fork-{new_ulid()}"), principal="p-test"
+    )
+    story = await create_story(
+        engine, principal="p-test", title="a test story", content_rating_id=rating.rating.id
+    )
     await play_turn(engine, story, "turn 1")
     await play_turn(engine, story, "turn 2", rejected="a rejected reply")
     await set_pins(engine, story, "the key is under the mat")
@@ -437,6 +445,17 @@ async def _forkable(engine: AsyncEngine) -> str:
     return story
 
 
+async def _rating(engine: AsyncEngine, story: str) -> tuple[str, str]:
+    """The story's content rating and that rating's current version."""
+    (row,) = await rows(
+        engine,
+        "SELECT s.content_rating_id, r.current_version_id FROM stories s "
+        "JOIN content_ratings r ON r.id = s.content_rating_id WHERE s.id = :s",
+        s=story,
+    )
+    return str(row[0]), str(row[1])
+
+
 @pytest.mark.part("M2", "FR-STORE-15")
 async def test_i_04__fork(engine: AsyncEngine) -> None:
     """A fork through N is a full copy of the corrected history through N under new ids: the
@@ -447,6 +466,8 @@ async def test_i_04__fork(engine: AsyncEngine) -> None:
     maintenance work, turns after N, dormant variants, the timeline edits) is not copied."""
     story = await _forkable(engine)
     revision = (await story_row(engine, story))[0]
+    rating = await _rating(engine, story)
+    assert rating[0] != (await read_settings(engine)).default_content_rating_id
     for at_turn, cut in ((None, 5), (3, 3), (0, 0)):
         done = await fork(engine, story, at_turn)
         assert done.forked_from.story_id == story
@@ -493,6 +514,9 @@ async def test_i_04__fork(engine: AsyncEngine) -> None:
             "variant_chain": None,
         }
         assert [c["id"] for c in origin["characters"]] == [c.id for c in done.characters]
+        # #48's fork clause: the fork keeps the source's rating, at its current version.
+        assert await _rating(engine, new) == rating
+        assert (origin["content_rating_id"], origin["rating_version_id"]) == rating
 
         # No shared rows, and nothing in the fork names the source, except the provenance
         # the fork's own story_created event records.

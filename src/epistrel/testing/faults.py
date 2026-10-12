@@ -11,7 +11,10 @@ port. Options the child applies to itself before serving:
   restarted worker's recovery pass fails what the crash left ``in_flight``);
 - ``pause_before_commit``: every ``turn`` operation prints ``EPISTREL-FAULT before-commit
   <operation id>`` and then waits forever instead of committing, so a test can kill the engine
-  *between generation and commit* (S-DOUBLE-SUBMIT (c));
+  *between generation and commit* (S-DOUBLE-SUBMIT (c)). It may be changed between restarts;
+- ``turn_start_delay_s`` (#305): every ``turn`` operation waits this long before it begins (before
+  its ``in_flight`` row is written), as on a slow runner where a request takes that long to get
+  its turn in flight;
 - ``crash`` (#75): a ``crash_at(point, nth, kind)`` plan. The child is started with
   ``EPISTREL_TEST_FAULTS=1`` and ``EPISTREL_TEST_CRASH_AT``, and its ``nth`` hit of the named
   crash point (``epistrel.testing.crash``) ends it with ``os._exit(137)`` after printing
@@ -61,6 +64,7 @@ class EngineProcess:
         lease_s: float = 1.0,
         pause_before_commit: bool = False,
         stub_latency_s: float = 0.0,
+        turn_start_delay_s: float = 0.0,
         crash: CrashPlan | None = None,
         mode: str = "all",
     ) -> None:
@@ -70,6 +74,7 @@ class EngineProcess:
         self.lease_s = lease_s
         self.pause_before_commit = pause_before_commit
         self.stub_latency_s = stub_latency_s
+        self.turn_start_delay_s = turn_start_delay_s
         self.crash = crash
         self.mode = mode
         self.process: asyncio.subprocess.Process | None = None
@@ -107,6 +112,8 @@ class EngineProcess:
         ]
         if self.pause_before_commit:
             args.append("--pause-before-commit")
+        if self.turn_start_delay_s > 0:
+            args += ["--turn-start-delay-s", str(self.turn_start_delay_s)]
         self.process = await asyncio.create_subprocess_exec(
             *args,
             env=env,
@@ -205,11 +212,27 @@ def _pause_turn_commits() -> None:
     Operation.commit = paused  # type: ignore[method-assign]
 
 
+def _delay_turn_starts(delay_s: float) -> None:
+    """Make every ``turn`` operation wait ``delay_s`` before it begins (a slow runner)."""
+    from epistrel.core.enums import OperationKind
+    from epistrel.core.events.operation import Operation
+
+    original = Operation.begin
+
+    async def delayed(self: Operation, *args: Any, **kwargs: Any) -> Any:
+        if self.kind is OperationKind.TURN:
+            await asyncio.sleep(delay_s)
+        return await original(self, *args, **kwargs)
+
+    Operation.begin = delayed  # type: ignore[method-assign]
+
+
 def serve(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="epistrel.testing.faults serve")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--lease-s", type=float, default=1.0)
     parser.add_argument("--pause-before-commit", action="store_true")
+    parser.add_argument("--turn-start-delay-s", type=float, default=0.0)
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -222,6 +245,8 @@ def serve(argv: list[str] | None = None) -> int:
     orphans.GRACE_S = args.lease_s
     if args.pause_before_commit:
         _pause_turn_commits()
+    if args.turn_start_delay_s > 0:
+        _delay_turn_starts(args.turn_start_delay_s)
     uvicorn.run(create_app(), host=HOST, port=args.port, log_level="warning")
     return 0
 

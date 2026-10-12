@@ -21,14 +21,14 @@ existed; a live re-run through `respond` (#57) is pending and will replace them.
 
 | Tier | Policies | Protocol | `generation` | `guardrail_check` | `lite_summary` | E-06 | Turns | p50 | p95 | Calls per turn |
 |---|---|---|---|---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (tokens 32/32, 128/128; temp 0: 9/10 identical) | 20 | 12.82 s | 19.78 s | 3 (generation 1, guardrail_check 2) |
-| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (tokens 32/32, 128/128; temp 0: 9/10 identical) | 20 | 8.00 s | 15.06 s | 1 (generation 1) |
+| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 18.31 s | 45.06 s | 3.15 (generation 1.1, guardrail_check 2.05) |
+| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | ✓ (context ✓) | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 13.40 s | 16.87 s | 1 (generation 1) |
 
 ## Runs
 
 | Tier | Policies | Measured | Engine SHA | Hardware | Server | Turn path |
 |---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | 2026-10-11 | `f0f4b98-dirty` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.18 | guarded reply (#53), until respond (#57) |
-| local: cydonia-24b-v4.3 | policies off | 2026-10-11 | `f0f4b98-dirty` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.18 | guarded reply (#53), until respond (#57) |
+| local: cydonia-24b-v4.3 | minors policy on | 2026-10-12 | `cd0261d` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
+| local: cydonia-24b-v4.3 | policies off | 2026-10-12 | `cd0261d` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
 
 Raw timings for every row are in [model-matrix.json](model-matrix.json).

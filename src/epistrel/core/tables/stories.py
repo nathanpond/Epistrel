@@ -6,7 +6,8 @@ operation of the latest truncate, untruncate, swap or regenerate, so an in-fligh
 "history was edited" from "someone else played") and the story ``settings`` (``StorySettings``).
 #48 adds ``content_rating_id``. #50 adds ``name``, ``archived_at`` and the status vocabulary
 (``StoryStatus``: ``active``, ``archived``, ``paused``). #63 adds the turn-concurrency columns and
-the in-flight turn marker.
+the in-flight turn marker. #104 adds ``owner_principal`` (FR-AUTH-5): the story's one owner, set at
+creation and changed only by a transfer (``core.ownership``); it decides nothing (FR-AUTH-8).
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -19,6 +20,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     Column,
+    Index,
     Integer,
     SmallInteger,
     Table,
@@ -43,6 +45,9 @@ stories = Table(
     metadata,
     Column("id", ulid_type(), primary_key=True),
     Column("name", Text, nullable=True),
+    # FR-AUTH-5 (#104): set at creation (the requester, or the ``owner`` it names) and changed
+    # only by a transfer. No server default: every insert names it.
+    Column("owner_principal", Text, nullable=False),
     Column("status", Text, nullable=False, server_default=text(f"'{StoryStatus.ACTIVE.value}'")),
     Column("archived_at", TIMESTAMP(timezone=True), nullable=True),
     Column("timeline_revision", BigInteger, nullable=False, server_default=text("0")),
@@ -82,3 +87,5 @@ stories = Table(
     CheckConstraint(TURN_CONCURRENCY_CHECK, name="turn_concurrency"),
     CheckConstraint(TURN_QUEUE_MAX_CHECK, name="turn_queue_max"),
 )
+
+Index("ix_stories_owner_principal", stories.c.owner_principal)

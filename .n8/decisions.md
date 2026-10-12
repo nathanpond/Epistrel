@@ -1854,3 +1854,103 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   Its docstring cites FR-AUTH-8, FR-AUTH-4 and FR-AUTH-5, so check-parts derives a docstring part from it that gates at M3, the latest milestone it cites (FR-AUTH-4 is M2). check-parts therefore counts 145 parts, not 144. check-parts, check-lexicon and check-traceability all pass.
   **Why:** FR-AUTH-8 says ownership confers no permission, so non-owner editors are the normal case. The hint covered save, publish, archive and unarchive by one editor. Delete records the requester in two places (the operation and the audit row), and two different publishers show that each version keeps its own publisher. Keeping creation (`test_owner_is_the_requester_unless_named`) and later writes in separate tests keeps each test name accurate. Cost if wrong: one more test of about 50 lines.
   **Issue:** #103
+- **Decision (drift):** Story owner and relation routes are `/stories/{story_id}/owner` and `/stories/{story_id}/relations…`. Their bodies extend `MutationResponse` and answer the story's unchanged `timeline_revision`. Every other type's bodies extend `DeploymentMutationResponse` with the unchanged `config_revision`. The idempotency codecs are keyed per method and type (`transfer_owner_story`, `add_relation_character`, …), the same as the routes' operation ids. A story write checks `X-Epistrel-Expected-Revision` first, like every other story-path mutation. Keys are deployment-scoped, as the Discretion says.
+  **Why:** `response_base_problems` requires `MutationResponse` on any path that names `{story_id}` and `DeploymentMutationResponse` elsewhere; there is no third base. A reference replay after the result window must name the right revision field. Cost if wrong: the response shapes are additive, so only the revision field name would change.
+  **Issue:** #104
+- **Decision (drift):** The planned `test_c_15__ownership` becomes three I-21 slices in the new `tests/integration/test_i_21.py`, the one file every later I-21 (M3) part must join:
+  - `test_i_21__ownership`, `part("M3", "FR-AUTH-5,6; FR-CAT-9")`: creation, transfer, `system`-owned transfer, relations, filters, and a story left byte-identical by its catalog entry's transfer and relation changes;
+  - `test_i_21__nothing_gates`, `part("M3", "FR-AUTH-8")`: the matrix;
+  - `test_i_21__companion`, `part("M3", "FR-AUTH-5; FR-CAT-9")`: companions, and the scenario half of the FR-CAT-9 clause.
+  No C-15 slice: #110's `test_c_15__listing_status` claims FR-AUTH-8 there. The detailed tests (`tests/integration/test_ownership.py`, `tests/test_ownership_rules.py`) name no requirement ID in their docstrings, so they are not parts.
+  **Why:** docs/04 §15 maps FR-AUTH-5,6 and FR-CAT-9 only to I-21 (M3) among this story's tests, so the planned C-15 marker fails `check-traceability`. Splitting into slices gives each clause a precise test name. check-parts now counts 148 parts.
+  **Issue:** #104
+- **Decision:** `ownership_events` uses the AC's names, not the pass-1 Discretion's. The column is `acting_principal`, not `principal`. The kinds are `transfer`, `relation_added`, `relation_removed` and `listing_status`, plus the Discretion's `deleted` for `drop_entity`. The Discretion's `owner_changed` and `listing_status_changed` are not used. The table also has `id` (ULID), `old`/`new` jsonb (owners as JSON strings, relations as `{principal, relation}`, and `deleted`'s `old` as `{owner_principal, relations}`), `at` (transaction time), and a nullable `job_id`, which the Discretion lists. So #117's migration must not add `job_id` again. Both `kind` and `entity_type` are CHECK-constrained text. `core.ownership.record_event` is the one writer, and #110 and #117 call it.
+  **Why:** `/n8-verify` checks the AC text, and the AC names the columns and kinds explicitly. The Discretion's renames came later and never reached the AC. Cost if wrong: renaming two kinds and a column, before anything reads them.
+  **Issue:** #104, #110, #117
+- **Decision:** `owner_principal` appears in a catalog character's `full` projection (and so in the create and save answers), in `GET /stories/{id}` and in each `GET /stories` item. It is not in `card`, although the pass-1 Discretion lists `card`.
+  **Why:** FR-SCN-10 lists the card's contents exactly and leaves the owner out. #103's verified AC3 and its decision fix the card at nine keys. `CARD_KEYS` in `tests/catalog_support.py` asserts that the card has nothing else. Cost if wrong: one key added to the card, plus updated card tests.
+  **Issue:** #104
+- **Decision (drift):** No `stories.updated_at` is added. A transfer bumps `updated_at` only on tables that have it (`catalog.character_catalog` now). `core/ownership.py` reads each table's columns at runtime from `pg_attribute` through `to_regclass`, so `updated_at` and `companion_of` are used wherever a later table has them. A table that does not exist yet means its type is not delivered: calls on it answer 404 `not_found`. The registry-generated tests cover only delivered types.
+  **Why:** The drift note offers this alternative. A `stories.updated_at` that only ownership moves would mislead readers, because turns and settings changes would not move it. #117's lookup already plans `(created_at, id)` keysets for tables without `updated_at`. Cost if wrong: one column and an application-side bump.
+  **Issue:** #104, #117
+- **Decision (drift):** A fork is owned by its requester, or by the optional `owner` that `ForkRequest` now accepts (the same rule as `POST /stories`'s new `owner`). `_copy_story_row` overrides `owner_principal`, and the source's relations are not copied. The migration backfills each existing story's owner from the principal of its newest committed `genesis` operation (`committed_at DESC`, then `operation_id DESC`; a fork's own genesis is newer than the one it copied), else `system`. `test_ownership_backfill_and_downgrade` covers both cases and the downgrade.
+  **Why:** Without the override, `_insert_select` would copy the source's owner into the fork. FR-AUTH-5 says the owner is set at creation and defaults to the requester, and a creation may name another owner. A fork is a creation. Cost if wrong: drop the optional field. The default does not change.
+  **Issue:** #104
+- **Decision:** These are the registry and route conventions later stories follow:
+  - `REGISTRY` in `core/ownership.py` names every type's schema, table, URL segment, path parameter and noun: `story`/`story_id`, `character`/`character_id`, `scenario`/`scenario_id` (`catalog.scenario_catalog`), `persona`/`persona_id` (`personas`), `media`/`media_id` (`media_assets`) and `engine_profile`/`profile_id` (`engine_profiles`).
+  - `mount_ownership_routes(router, entity_type)` adds four routes per type on the type's own router. Each handler is built per type, with an explicit `__signature__` that names the type's path parameter. The routes are tagged `ownership` through `openapi.ROUTE_TAGS`, a new tag in the closed list.
+  - `companion_follows_character` (422) is documented on the write routes of types that follow a parent.
+  - Ownership writes need `ownership_fixtures.KINDS` and `CALLS` entries for every new type and route. `test_every_delivered_type_is_covered` fails until a story that creates an owned table adds them and mounts the routes.
+  - Every delete path calls `ownership.drop_entity` in its transaction, before the row goes.
+  **Why:** These are the pass-1 Discretion's prescriptions, made concrete enough that #105, #106, #108, #114 and #116 add a type without changing this module. Cost if wrong: a later story renames a path parameter in the registry.
+  **Issue:** #104, #105, #106, #108, #114, #116
+- **Decision:** Each ownership write is one transaction under the entity's row lock: `FOR UPDATE` for a transfer, `FOR SHARE` for a relation change. It writes its `ownership_events` row or rows and one committed `control` operation by the acting principal through `core/control.py`, which binds the key. The operation is story-scoped for a story, so `delete_story` removes it and its key with the story. It is story-less for every other type.
+  - A no-op records nothing. That covers a transfer to the current owner (200 with `previous_owner` equal to the owner) and an add that finds the relation (200 with the existing row, its `created_at` and `created_by`).
+  - A relation add is an `INSERT … ON CONFLICT DO NOTHING`, so two simultaneous adds give one 201, one 200 and one event.
+  - No story event is written and no revision moves.
+  - The writes run on archived stories and entries and while a turn is in flight.
+  - A character transfer also moves every scenario whose `companion_of` names the character, locked character first, with one event per entity. It skips a companion already at the new owner.
+  **Why:** This is the Discretion's "control operation, no story event, row lock only, always allowed", built on #103's `record_control_operation` pattern so that a refused write leaves no row (C-01's zero-row check). An event-less story-scoped control operation is not copied by a fork (`_select_operations` needs a non-audit event) and is invisible to history.
+  **Issue:** #104
+- **Decision:** Relation names follow the pass-1 Discretion, not the AC's looser "free text (≤ 64 chars)":
+  - 1 to 64 of `A-Z a-z 0-9 _ -`, case-sensitive, trimmed of spaces and tabs in a body;
+  - checked again by `ck_entity_relations_relation`;
+  - listed in byte order (`COLLATE "C"`, so `Editor` sorts before `editor` whatever the database's collation).
+  The removal route is `DELETE …/relations/{relation}/{principal:path}`, because principals may contain `/` (drift). Its principal, the transfer's `principal` and the relation's `principal` all follow the `X-Epistrel-Principal` rule, and `system` is refused (422 at `path.principal` or `body.principal`). `Owner` and the new `Principal` are one rule (`ownership.principal_rule`). #103's `Owner` type moved from `core/catalog/characters.py` to `core/ownership.py` unchanged, and stories and forks use it too. `GET /stories` takes `?owner=` (`system` allowed, because presets are system-owned) and a repeatable `?relation=` (AND), split at the first colon. Errors land at `query.relation[i]`.
+  **Why:** The character set keeps names from colliding with a path segment or the filter's colon. "Free text" is read as consumer-defined and never interpreted. Cost if wrong: widening the pattern and the CHECK.
+  **Issue:** #104
+- **Decision:** The relation filter is `name:principal`, or `name:` (an empty principal) for any principal. The Discretion's bare `relation=name` is refused (422), because the colon is required. Both filters are documented without a `null` alternative: `owner` is a pattern-constrained string, and `relation` an array of pattern-constrained strings (`WithJsonSchema`). The validation is unchanged.
+  **Why:** A randomized C-01 run failed `GET /stories` with `AcceptedNegativeData`. Schemathesis turned `relation` into the boolean `false` and `owner`'s `null` branch into an object, and both serialize to query strings that a bare relation name or an opaque principal accepts. This is #279's class of flake, and the owner settled it there by tightening the contract. With the colon required, a bare `true`, `0` or other junk string is refused. With the null branch gone, schemathesis does not change the type of a string query parameter at all. A temporary stress run of C-01's checks over the nine new or changed operations, 1,500 examples each, passed; the file was deleted afterwards. Twelve randomized runs of `GET /stories` and a `CI=1` run passed too. Cost if wrong: a consumer writes `editor:` instead of `editor` to filter on any principal.
+  **Issue:** #104
+- **Decision:** Indexes are `ix_stories_owner_principal`, `catalog.ix_character_catalog_owner_principal`, `ix_entity_relations_principal` and `ix_ownership_events_entity (entity_type, entity_id, at)`. The `(entity_type, entity_id)` index the Discretion names is the leading prefix of `entity_relations`' primary key `(entity_type, entity_id, principal, relation)`, not a separate index.
+  **Why:** A second index on the primary key's prefix would only cost writes. Cost if wrong: one `CREATE INDEX`.
+  **Issue:** #104
+- **Decision:** `test_i_21__companion` tests the companion rule against a stand-in `catalog.scenario_catalog (id, owner_principal, companion_of, updated_at)` on its own scratch database (`migrated_database`), through the library, because #108 and #116 have not built scenarios or companions yet. The test asserts that the real table does not exist, so it fails once #108 creates it. #108 or #116 must then rebuild the test on real scenarios. It also plants an out-of-step second companion to cover the skip of a companion already at the new owner.
+  **Why:** AC1's companion clauses need a test now. A stand-in in the session database would break the drift tests. A loud failure is better than a test that silently stops covering the rule. Cost if wrong: the #108 implementer rewrites one test.
+  **Issue:** #104, #108, #116
+- **Decision:** These clauses are verified only partly, or are left to the story that owns them:
+  - The Lite preset clause is checked generically: a catalog character set to owner `system` transfers like any other, with `old` `system` in the event. #106 seeds the preset owned by `system` and mounts its routes, and the generated tests then cover profiles.
+  - The story-creation clauses go to #119, as the Discretion says: player slots recorded as `player` relations, and creating a story from another owner's entry.
+  - `GET /catalog/characters?relation=` waits for #110's list, which uses `ownership.list_filters`.
+  - The scenario, persona, media and profile routes do not exist yet.
+  **Why:** The tables and endpoints those clauses need belong to #106, #108, #110, #114, #105 and #119, all later in M3.
+  **Issue:** #104, #106, #110, #119
+- **Decision:** The nothing-gates matrix (`test_i_21__nothing_gates`) is parametrised over every route under an owned entity, reads included and `/admin` excluded. That is 35 cases for stories and catalog characters. Each case sends one route's minimal request three times, each time about a fresh entity owned by A in the same state:
+  - as A;
+  - as a stranger B;
+  - as C, who holds relations named `admin` and `owner` on the entity.
+  It asserts that all three get the route's own success status. Catalog entries are the default `private`, and the character read uses `projection=full`. The matrix uses three principals, not the Discretion's two, so that it also proves "adding `admin` grants nothing".
+  **Why:** Equal success codes prove that every request ran, not that every request failed alike. Mutation-checked: making transfers owner-only, or making a draft save owner-only, fails the matrix.
+  **Issue:** #104
+- **Decision:** `tests/test_ownership_rules.py` scans the AST of `src/` and allows `entity_relations` to be named only in:
+  - `core/ownership.py`;
+  - `core/tables/ownership.py` and `core/tables/__init__.py` (the declaration and its registration, which the Discretion's allow-list leaves out);
+  - `core/principals.py` (#117).
+  It also refuses any comparison between a `.relation` attribute and a string literal. A complement plants a module with `row.relation == "admin"` and checks that the scan flags it. #110 adds its catalog list module to the allow-list only if it filters without `ownership.list_filters`.
+  **Why:** This is AC2's repository test, and the literal-comparison check is the "no code path interprets a name" half. Mutation-checked: a raw SQL string naming `entity_relations` in `core/stories.py` fails it.
+  **Issue:** #104, #110
+- **Decision:** `TRUST_BOUNDARY_STATEMENT` ends with the Discretion's sentence, verbatim ("Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them."), followed by AC4's "Ownership exists for listing, attribution and offboarding only." It appears in the README, docs/02 §9 and `info.description`. Every ownership route's description and the `ownership` tag repeat the point. docs/02 §4.10's ownership paragraph and §9's route list are amended to the shapes built here. `docs/openapi.json` is regenerated, and the regeneration documented the add-relation 200 answer after C-01 found it undocumented.
+  **Why:** AC4 asks for "listing, attribution and offboarding only", which the Discretion's sentence does not say on its own. `test_trust_boundary` keeps the three copies identical.
+  **Issue:** #104
+- **Decision (drift):** S-DELETE and C-03 are extended, and no existing assertion is loosened.
+  - S-DELETE: every story gets a `player` relation. `_rows_of` counts the victim's `entity_relations` rows as its own. The added tables now include `ownership_events`. The victim's `deleted` event is asserted: owner `p-author`, the relation removed, actor `p-author`.
+  - C-03 gains parity steps for `transfer_owner`, `add_relation`, `list_relations` and `remove_relation` on a story and `transfer_owner`, `add_relation` and `list_relations` on a catalog character, plus a `list_stories` step with `owner` and `relation` filters.
+  **Why:** These follow the drift note on S-DELETE and the `parity_gaps` rule that every new Engine operation needs a route and a step.
+  **Issue:** #104
+- **Decision:** Mutation checks were run with the sources restored byte for byte afterwards. Each of these fails at least one of the story's tests:
+  - transfers only by the owner;
+  - draft saves only by the owner;
+  - companions not moved;
+  - a story delete without `drop_entity`;
+  - a fork copying the source's owner;
+  - the relation filter ignored, or the owner filter ignored;
+  - a no-op transfer that records an operation;
+  - an out-of-step companion re-recorded;
+  - the new owner recorded as the actor;
+  - story creation ignoring `owner`;
+  - a raw SQL string naming `entity_relations` outside the allow-list;
+  - an add that always reports `created`;
+  - companions not refused.
+  The two that survived the first round, both no-op variants, led to the added assertions on no-op operations and on the out-of-step companion.
+  **Why:** Under the batched gate, each story's correctness rests on its own tests until group A's full run.
+  **Issue:** #104

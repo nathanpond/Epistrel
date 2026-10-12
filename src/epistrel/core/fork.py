@@ -31,7 +31,9 @@ independent copy under new ids, isolated from the source from the moment it exis
   turn committing meanwhile is wholly in or wholly out (FR-CONC-10). A serialization failure is
   retried (``SNAPSHOT_ATTEMPTS``), then 503 ``database_unavailable``.
 - **The new story.** Status ``active`` (an archived source can be forked), its settings,
-  rating and ``config_revision`` copied, no turn in flight, ``next_turn_index`` N + 1 and
+  rating and ``config_revision`` copied, owned by the requester or the ``owner`` the request
+  names (FR-AUTH-5: a fork is a creation, so it never inherits the source's owner, and the
+  source's relations stay with the source), no turn in flight, ``next_turn_index`` N + 1 and
   ``timeline_revision`` 1: its own ``genesis`` operation (after the copied one) records a
   ``story_created`` event with ``forked_from {story_id, revision, at_turn, variant_chain}``.
   Under an idempotent call the deployment-scoped key is bound to that operation.
@@ -90,6 +92,7 @@ from epistrel.core.events.operation import Operation
 from epistrel.core.events.registry import validate
 from epistrel.core.events.types import CastMember, Fork, ForkedFrom, StoryCreated
 from epistrel.core.ids import new_ulid
+from epistrel.core.ownership import Owner
 from epistrel.core.projections.heads import head_row
 from epistrel.core.stories import (
     CONFIG_SCOPE_STORY,
@@ -214,6 +217,11 @@ class ForkRequest(BaseModel):
     )
     name: str | None = Field(
         default=None, max_length=STORY_NAME_MAX, description='Default "<source name> (fork)".'
+    )
+    owner: Owner | None = Field(
+        default=None,
+        description="The fork's owner principal (default: the requesting principal, not the "
+        "source's owner; never `system`). Recorded, never interpreted.",
     )
 
 
@@ -354,7 +362,7 @@ async def _copy(
 
     counts: dict[str, int] = {}
     name = request.name if request.name is not None else _fork_name(row.name)
-    await _copy_story_row(conn, source, fork_id, name, through)
+    await _copy_story_row(conn, source, fork_id, name, through, request.owner or principal)
     for table in copying:
         counts[table.name] = await _copy_table(conn, table, source, fork_id)
     counts[config_changes.name] = await _copy_config_changes(conn, source, fork_id)
@@ -574,11 +582,12 @@ async def _copy_table(conn: AsyncConnection, table: Table, source: str, fork_id:
 
 
 async def _copy_story_row(
-    conn: AsyncConnection, source: str, fork_id: str, name: str | None, through: int
+    conn: AsyncConnection, source: str, fork_id: str, name: str | None, through: int, owner: str
 ) -> None:
     overrides = {
         "id": ":fork",
         "name": ":name",
+        "owner_principal": ":owner",
         "status": f"'{StoryStatus.ACTIVE.value}'",
         "archived_at": "NULL",
         "timeline_revision": "1",
@@ -591,7 +600,7 @@ async def _copy_story_row(
     }
     await conn.execute(
         text(_insert_select(stories, overrides, "t.id = :source")),
-        {"source": source, "fork": fork_id, "name": name, "next": through + 1},
+        {"source": source, "fork": fork_id, "name": name, "next": through + 1, "owner": owner},
     )
 
 

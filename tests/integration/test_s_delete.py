@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel import Engine
+from epistrel import Engine, RelationRequest
 from epistrel.config import Settings
 from epistrel.core import clock, turn_gate
 from epistrel.core.context import RequestContext
@@ -17,6 +17,7 @@ from epistrel.core.errors import GuardrailViolation
 from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
+from epistrel.core.tables.ownership import EntityType
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import timers
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
@@ -31,8 +32,9 @@ AUTHOR = RequestContext(principal="p-author")
 
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:
     """Turns, background work between them, story and character policies, a rebuild, an
-    ingested narration (a ``client_events`` row, #58), and a rejected input (an ``audit_log``
-    row naming the story). The victim also gets a queued turn (``turn_queue``, #63)."""
+    ingested narration (a ``client_events`` row, #58), a rejected input (an ``audit_log``
+    row naming the story) and a relation (``entity_relations``, #104). The victim also gets a
+    queued turn (``turn_queue``, #63)."""
     for n in range(1, 3):
         await play_turn(engine, story_id, f"turn {n} of {story_id}")
         await interleave(engine, story_id, after_turn=n)
@@ -63,6 +65,8 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
         ],
     )
     await lib.rebuild_projections(AUTHOR, story_id)
+    reader = RelationRequest(principal=f"p-reader-{story_id}", relation="player")
+    await lib.add_relation(AUTHOR, EntityType.STORY, story_id, reader)
     narration = {"client_event_id": "narration-1", "kind": "narration", "text": f"of {story_id}"}
     await lib.ingest(AUTHOR, story_id, IngestRequest.model_validate({"events": [narration]}))
     with pytest.raises(GuardrailViolation):
@@ -79,8 +83,9 @@ async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
     """Every row that belongs to ``story_id``, as text, per table. The tables come from
     ``information_schema`` (every table with a ``story_id`` column), not from ``STORY_TABLES``,
     so a table the deletion forgets shows up as rows left behind; plus the story-scoped rows of
-    ``config_changes`` and ``idempotency_keys`` (#61), which name the story by ``scope_id``, and
-    the key of the story's creation (#61), which names its operation."""
+    ``config_changes`` and ``idempotency_keys`` (#61), which name the story by ``scope_id``, the
+    key of the story's creation (#61), which names its operation, and the story's relations
+    (#104), which name it by ``entity_id``."""
     owned: dict[str, set[str]] = {}
     async with engine.connect() as conn:
         scoped = await conn.scalars(
@@ -117,14 +122,25 @@ async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
                 {"s": story_id},
             )
         )
+        owned["entity_relations"] = set(
+            await conn.scalars(
+                text(
+                    "SELECT t::text FROM entity_relations t "
+                    "WHERE entity_type = 'story' AND entity_id = :s"
+                ),
+                {"s": story_id},
+            )
+        )
     return owned
 
 
 @pytest.mark.part("M2", "FR-STORE-14,16")
 async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
     """Delete one story among three: exactly its rows are removed, every other row of every
-    table is byte-identical, and the only new rows are the deletion's own record. Complement:
-    the deleted story had rows in every story-scoped table, so the comparison bites."""
+    table is byte-identical, and the only new rows are the deletion's own record (its
+    operation, event, audit row and key, and the ``deleted`` ownership event naming the owner
+    and the relations removed, #104). Complement: the deleted story had rows in every
+    story-scoped table and a relation, so the comparison bites."""
     lib = Engine(settings, db=engine)
     async with rest(settings, engine) as client:
         created = [await create(client, story_body("Ada", "Brann")) for _ in range(3)]
@@ -168,7 +184,26 @@ async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
         "events",
         "audit_log",
         "idempotency_keys",
+        "ownership_events",
     }
+    (dropped,) = await rows(
+        engine,
+        "SELECT entity_type, entity_id, kind, old, new, acting_principal FROM ownership_events "
+        "WHERE kind = 'deleted' AND entity_id = :s",
+        s=victim,
+    )
+    assert tuple(dropped) == (
+        "story",
+        victim,
+        "deleted",
+        {
+            "owner_principal": "p-author",
+            "relations": [{"principal": f"p-reader-{victim}", "relation": "player"}],
+        },
+        None,
+        "p-author",
+    )
+    assert len(added["ownership_events"]) == 1
     # The deletion's own Idempotency-Key (#61): deployment-scoped, so it outlives the story.
     (key,) = await rows(
         engine,

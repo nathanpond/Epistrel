@@ -18,6 +18,11 @@ recorded by a story-less operation, so the record outlives the story, and by a
 with ``story_id`` nulled (#56).
 
 Stories are self-contained (FR-STORE-14): no row of a story-scoped table names another story.
+
+Every story has one owner (``owner_principal``, FR-AUTH-5): the requesting principal, or the
+``owner`` the creation names; ``core.ownership`` transfers it and keeps its relations. Deletion
+removes the story's relations and records the deletion there (``ownership.drop_entity``). The
+list filters by owner and relation only when a request asks for it (FR-AUTH-8).
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, String
 from sqlalchemy import Table, and_, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import audit, clock
+from epistrel.core import audit, clock, ownership
 from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
 from epistrel.core.errors import (
     InvalidRequest,
@@ -51,6 +56,7 @@ from epistrel.core.events.types import (
 )
 from epistrel.core.idempotency import Scope
 from epistrel.core.ids import new_ulid
+from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.ratings import require_assignable
 from epistrel.core.settings_schema import (
     CHARACTER_VIEWPOINT_PREFIX,
@@ -80,6 +86,7 @@ from epistrel.core.tables import (
 )
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.tables.ownership import EntityType
 
 Database = AsyncEngine | AsyncConnection
 
@@ -167,7 +174,9 @@ class CreationSettings(StorySettings):
 
 
 class StorySpec(BaseModel):
-    """``POST /stories``: a blank story with its cast, rating and settings."""
+    """``POST /stories``: a blank story with its cast, rating and settings, and optionally its
+    ``owner`` (default: the requesting principal; never ``system``). Ownership confers no
+    permission (FR-AUTH-5,8)."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -199,6 +208,11 @@ class StorySpec(BaseModel):
     characters: list[CharacterSpec] = Field(min_length=CAST_MIN, max_length=CAST_MAX)
     content_rating_id: str | None = None
     settings: CreationSettings = Field(default_factory=CreationSettings)
+    owner: Owner | None = Field(
+        default=None,
+        description="The story's owner principal (default: the requesting principal; never "
+        "`system`). Recorded, never interpreted.",
+    )
 
 
 # -- results --------------------------------------------------------------------------------
@@ -250,6 +264,7 @@ class StoryView:
     settings: dict[str, Any]
     created_at: datetime
     archived_at: datetime | None
+    owner_principal: str
     characters: tuple[CharacterView, ...] = ()
 
 
@@ -322,6 +337,7 @@ async def create_story_from(
             insert(stories).values(
                 id=story_id,
                 name=spec.name,
+                owner_principal=spec.owner or principal,
                 settings=document,
                 content_rating_id=rating.id,
                 **columns,
@@ -607,7 +623,8 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
     Archived stories can be deleted.
     The deletion is recorded by a story-less ``control`` operation whose ``story_deleted``
     audit event names the story and the acting principal, and by a ``story_deleted``
-    ``audit_log`` row (null ``story_id``; the story's earlier audit rows are detached).
+    ``audit_log`` row (null ``story_id``; the story's earlier audit rows are detached). The
+    story's relations are removed and a ``deleted`` ownership event names its owner (#104).
     """
     async with db.connect() as conn:
         exists = await conn.scalar(select(stories.c.id).where(stories.c.id == story_id))
@@ -623,6 +640,8 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
         await _refuse_busy(conn, story_id, turns_only=False)
         await _refuse_running_job(conn, story_id)
+        # The story's relations go too, and the deletion is recorded with its owner (#104).
+        await ownership.drop_entity(conn, EntityType.STORY, story_id, principal=principal)
         removed.update(await _delete_story_rows(conn, story_id))
         await audit.record(
             conn,
@@ -691,6 +710,7 @@ def _story_columns() -> tuple[Any, ...]:
     return (
         stories.c.id,
         stories.c.name,
+        stories.c.owner_principal,
         stories.c.status,
         stories.c.timeline_revision,
         stories.c.next_turn_index,
@@ -718,6 +738,7 @@ def _view(row: Any, cast: tuple[CharacterView, ...] = ()) -> StoryView:
         settings=settings_of(row),
         created_at=row.created_at,
         archived_at=row.archived_at,
+        owner_principal=row.owner_principal,
         characters=cast,
     )
 
@@ -760,13 +781,26 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
     )
 
 
-async def list_stories(db: AsyncEngine, *, status: StoryStatus | None = None) -> list[StoryView]:
-    """The deployment's stories, newest first, optionally of one status (no cast)."""
+async def list_stories(
+    db: AsyncEngine,
+    *,
+    status: StoryStatus | None = None,
+    owner: str | None = None,
+    relations: Sequence[RelationFilter] = (),
+) -> list[StoryView]:
+    """The deployment's stories, newest first (no cast): every story, unless the request filters
+    by ``status``, by ``owner``, or by ``relations`` (a relation name, with or without its
+    principal; several must all hold). Nothing else narrows the list (FR-AUTH-8)."""
     query = select(*_story_columns()).join(
         content_ratings, content_ratings.c.id == stories.c.content_rating_id
     )
     if status is not None:
         query = query.where(stories.c.status == status.value)
+    filters = ownership.list_filters(
+        EntityType.STORY, stories.c.id, stories.c.owner_principal, owner=owner, relations=relations
+    )
+    if filters:
+        query = query.where(*filters)
     async with db.connect() as conn:
         found = (
             await conn.execute(query.order_by(stories.c.created_at.desc(), stories.c.id.desc()))

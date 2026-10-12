@@ -21,7 +21,7 @@ catalog tables may use foreign keys among themselves.
 
 from __future__ import annotations
 
-from sqlalchemy import TIMESTAMP, Column, ForeignKey, Integer, Table, Text
+from sqlalchemy import TIMESTAMP, Column, ForeignKey, Index, Integer, Table, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
 from epistrel.core.enums import EntryStatus
@@ -56,6 +56,9 @@ character_catalog = Table(
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False),
     schema=CATALOG_SCHEMA,
 )
+
+# Listing by owner and principal lookup (#104, #117) read the owner column.
+Index("ix_character_catalog_owner_principal", character_catalog.c.owner_principal)
 
 character_versions = Table(
     "character_versions",

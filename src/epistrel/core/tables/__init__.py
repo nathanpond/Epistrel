@@ -11,6 +11,7 @@ from epistrel.core.tables.idempotency import idempotency_keys
 from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.operations import operations
+from epistrel.core.tables.ownership import entity_relations, ownership_events
 from epistrel.core.tables.policies import policies
 from epistrel.core.tables.projections import (
     lite_summary_segments,
@@ -34,6 +35,7 @@ __all__ = [
     "content_rating_versions",
     "content_ratings",
     "deployment_state",
+    "entity_relations",
     "events",
     "idempotency_keys",
     "jobs",
@@ -41,6 +43,7 @@ __all__ = [
     "metadata",
     "model_config",
     "operations",
+    "ownership_events",
     "policies",
     "recurring_tasks",
     "stories",

@@ -48,6 +48,13 @@ from epistrel.api.routes.catalog_characters import (
 )
 from epistrel.api.routes.history import HistoryResponse
 from epistrel.api.routes.operations import OperationBody
+from epistrel.api.routes.ownership import (
+    OwnerBody,
+    RelationBody,
+    RelationsBody,
+    StoryOwnerBody,
+    StoryRelationBody,
+)
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.stories import (
     IngestResponse,
@@ -86,11 +93,13 @@ from epistrel.core.deployment import SettingsPatch
 from epistrel.core.errors import EpistrelError
 from epistrel.core.fork import ForkRequest
 from epistrel.core.ingest import IngestRequest
+from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.stories import StorySpec
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
+from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import TruncateRequest, UntruncateRequest
 from epistrel.core.variants import ChainRef, SwapRequest
 from epistrel.engine import Engine, operations
@@ -259,6 +268,8 @@ CHARACTER = {
 }
 CHARACTER_PATCH = {"draft_revision": 1, "public_description": "Keeps the Gull Rock light."}
 GHOST = {"name": "Ghost", "public_description": "Never published."}
+NEW_OWNER = {"principal": "p-parity-owner"}
+RELATION = {"principal": "p-parity-d", "relation": "co_author"}
 MODEL_OVERRIDE = {"model": "parity-model", "params": {"temperature": 0.5}}
 
 
@@ -426,6 +437,44 @@ def _steps() -> list[Step]:
             lambda ids: Rest("DELETE", "/stories/{fork}"),
             lambda e, ids: _deleted(e, ids["fork"]),
         ),
+        # -- ownership (#104): a story's owner and relations
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", f"{s}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX, EntityType.STORY, ids["story"], OwnerTransferRequest(**NEW_OWNER)
+                )
+            ),
+        ),
+        Step(
+            "add_relation",
+            lambda ids: Rest("POST", f"{s}/relations", RELATION),
+            lambda e, ids: _relation(
+                e.add_relation(CTX, EntityType.STORY, ids["story"], RelationRequest(**RELATION))
+            ),
+        ),
+        Step(
+            "list_relations",
+            lambda ids: Rest("GET", f"{s}/relations"),
+            lambda e, ids: _relations(e, EntityType.STORY, ids["story"]),
+        ),
+        Step(
+            "list_stories",
+            lambda ids: Rest(
+                "GET",
+                "/stories",
+                params={"owner": "p-parity-owner", "relation": "co_author:p-parity-d"},
+            ),
+            lambda e, ids: _listed_by(e, owner="p-parity-owner", relation=["co_author:p-parity-d"]),
+        ),
+        Step(
+            "remove_relation",
+            lambda ids: Rest("DELETE", f"{s}/relations/co_author/p-parity-d"),
+            lambda e, ids: _no_content(
+                e.remove_relation(CTX, EntityType.STORY, ids["story"], "co_author", "p-parity-d")
+            ),
+        ),
         # -- error paths: the same error on both surfaces
         Step(
             "truncate",
@@ -535,6 +584,30 @@ def _steps() -> list[Step]:
             "delete_character",
             lambda ids: Rest("DELETE", "/catalog/characters/{ghost}"),
             lambda e, ids: _no_content(e.delete_character(CTX, ids["ghost"])),
+        ),
+        # -- ownership (#104): a catalog character's owner and relations
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", "/catalog/characters/{character}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX, EntityType.CHARACTER, ids["character"], OwnerTransferRequest(**NEW_OWNER)
+                )
+            ),
+        ),
+        Step(
+            "add_relation",
+            lambda ids: Rest("POST", "/catalog/characters/{character}/relations", RELATION),
+            lambda e, ids: _relation(
+                e.add_relation(
+                    CTX, EntityType.CHARACTER, ids["character"], RelationRequest(**RELATION)
+                )
+            ),
+        ),
+        Step(
+            "list_relations",
+            lambda ids: Rest("GET", "/catalog/characters/{character}/relations"),
+            lambda e, ids: _relations(e, EntityType.CHARACTER, ids["character"]),
         ),
         # -- the operator surface
         Step(
@@ -660,6 +733,26 @@ async def _listed(engine: Engine) -> dict[str, Any]:
     from epistrel.core.enums import StoryStatus
 
     return dump(StoryList.of(await engine.list_stories(CTX, status=StoryStatus.ACTIVE)))
+
+
+async def _listed_by(engine: Engine, **filters: Any) -> dict[str, Any]:
+    return dump(StoryList.of(await engine.list_stories(CTX, **filters)))
+
+
+async def _owner(call: Awaitable[Any]) -> dict[str, Any]:
+    transfer = await call
+    model = StoryOwnerBody if transfer.entity_type is EntityType.STORY else OwnerBody
+    return dump(model.of(transfer))
+
+
+async def _relation(call: Awaitable[Any]) -> dict[str, Any]:
+    write = await call
+    model = StoryRelationBody if write.entity_type is EntityType.STORY else RelationBody
+    return dump(model.of(write))
+
+
+async def _relations(engine: Engine, entity_type: EntityType, entity_id: str) -> dict[str, Any]:
+    return dump(RelationsBody.of(await engine.list_relations(CTX, entity_type, entity_id)))
 
 
 async def _changes(engine: Engine, scope: ConfigScope, story_id: str | None) -> dict[str, Any]:

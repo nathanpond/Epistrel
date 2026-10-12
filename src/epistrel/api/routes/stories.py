@@ -2,9 +2,13 @@
 
 - ``POST /stories``: a blank story with its cast (each character with a required true age),
   rating and settings; 201 with ``Location``.
-- ``GET /stories`` (``?status=``) and ``GET /stories/{id}``; a character's ``true_age`` appears
-  only under ``?viewpoint=omniscient`` (FR-CAT-12). The single read also reports
-  ``undo_available`` and ``dormant_chains`` (#65).
+- ``GET /stories`` (``?status=``, ``?owner=``, repeatable ``?relation=name:principal``) and
+  ``GET /stories/{id}``; a character's ``true_age`` appears only under ``?viewpoint=omniscient``
+  (FR-CAT-12). The single read also reports ``undo_available`` and ``dormant_chains`` (#65).
+  Both show the story's ``owner_principal`` (FR-AUTH-5).
+- ``PUT /stories/{id}/owner``, ``POST``/``GET /stories/{id}/relations`` and ``DELETE
+  /stories/{id}/relations/{relation}/{principal}``: the story's owner and relations
+  (``routes.ownership``, #104). Nothing gates on them (FR-AUTH-8).
 - ``POST /stories/{id}/archive`` and ``…/unarchive``: control operations, idempotent (200).
 - ``DELETE /stories/{id}``: removes every row of the story and nothing else (204).
 - ``POST /stories/{id}/ingest``: record consumer events (a player-only turn, narration) without
@@ -27,18 +31,29 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Query, Response
 from fastapi import status as http_status
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    WithJsonSchema,
+    create_model,
+)
 
 from epistrel.api.config_changes import ConfigChangesBody, IsoDateTime, StorySettingFilter
 from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep, StoryId
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import MutationResponse
+from epistrel.api.routes.ownership import mount_ownership_routes
 from epistrel.api.routes.timeline import VariantChainBody
 from epistrel.api.validation import register_body_model
 from epistrel.core import idempotency
 from epistrel.core.config_changes import ConfigScope
+from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.enums import StoryStatus
 from epistrel.core.ingest import IngestRequest, IngestResult
+from epistrel.core.ownership import RELATION_FILTER_PATTERN, relation_filter_problem
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.stories import (
@@ -50,6 +65,7 @@ from epistrel.core.stories import (
     StoryView,
 )
 from epistrel.core.story_settings import StorySettingsWrite
+from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import UndoState
 from epistrel.core.variants import Chain
 from epistrel.engine import EffectiveBudget
@@ -109,10 +125,12 @@ class StoryCreatedBody(MutationResponse):
 
 
 class StorySummaryBody(BaseModel):
-    """A story as the list returns it: status, revision, next turn index and rating."""
+    """A story as the list returns it: its owner, status, revision, next turn index and
+    rating."""
 
     id: str
     name: str | None
+    owner_principal: str
     status: StoryStatus
     timeline_revision: int
     next_turn_index: int
@@ -125,6 +143,7 @@ class StorySummaryBody(BaseModel):
         return {
             "id": story.id,
             "name": story.name,
+            "owner_principal": story.owner_principal,
             "status": story.status,
             "timeline_revision": story.timeline_revision,
             "next_turn_index": story.next_turn_index,
@@ -456,17 +475,60 @@ async def create_story(
     return answered(StoryCreatedBody.of(created), ctx, response, replayed=created.replayed)
 
 
+def _relation_filter(value: str) -> str:
+    problem = relation_filter_problem(value)
+    if problem is not None:
+        raise ValueError(problem)
+    return value
+
+
+RelationFilterParam = Annotated[
+    str, StringConstraints(pattern=RELATION_FILTER_PATTERN), AfterValidator(_relation_filter)
+]
+"""A ``relation`` filter: ``name:principal``, or ``name:`` for any principal."""
+
+OWNER_FILTER_SCHEMA = {"type": "string", "pattern": PRINCIPAL_PATTERN}
+RELATION_FILTERS_SCHEMA = {
+    "type": "array",
+    "items": {"type": "string", "pattern": RELATION_FILTER_PATTERN},
+}
+"""The filters' documented schemas. A query parameter that is absent is simply not sent, so the
+schemas carry no ``null`` alternative: a value a client could send for "null" (``true``, ``0``,
+an object's pairs) would read as a principal over the wire."""
+
+
 @router.get(
     "",
     response_model=StoryList,
     operation_id="list_stories",
     summary="List stories",
-    description="Every story, optionally only those with `status`.",
+    description=(
+        "Every story, newest first, unless the request filters: by `status`, by `owner` (the "
+        "owner principal, `system` included), or by `relation` (`name:principal`, or `name:` "
+        "for any principal; repeat it and every one must hold). Owners and relations narrow a "
+        "list only when a request asks: they gate nothing (FR-AUTH-8)."
+    ),
 )
 async def list_stories(
-    ctx: ContextDep, engine: EngineDep, status: StoryStatus | None = None
+    ctx: ContextDep,
+    engine: EngineDep,
+    status: StoryStatus | None = None,
+    owner: Annotated[
+        str | None,
+        Query(pattern=PRINCIPAL_PATTERN, description="Only the stories this principal owns."),
+        WithJsonSchema(OWNER_FILTER_SCHEMA),
+    ] = None,
+    relation: Annotated[
+        list[RelationFilterParam] | None,
+        Query(
+            description="Only the stories with this relation: `name:principal`, or `name:` for "
+            "any principal (repeatable; all must hold)."
+        ),
+        WithJsonSchema(RELATION_FILTERS_SCHEMA),
+    ] = None,
 ) -> StoryList:
-    return StoryList.of(await engine.list_stories(ctx, status=status))
+    found = await engine.list_stories(ctx, status=status, owner=owner, relation=relation or ())
+    return StoryList.of(found)
 
 
 @router.get(
@@ -633,3 +695,6 @@ async def unarchive_story(
 async def delete_story(story_id: StoryId, ctx: ContextDep, engine: EngineDep) -> Response:
     deleted = await engine.delete_story(ctx, story_id)
     return no_content(ctx, replayed=deleted.replayed)
+
+
+mount_ownership_routes(router, EntityType.STORY)

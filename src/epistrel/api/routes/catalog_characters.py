@@ -11,6 +11,9 @@
 - ``GET /catalog/characters/{id}/versions``: every published version, oldest first.
 - ``POST /catalog/characters/{id}/archive`` and ``…/unarchive`` (200); ``DELETE
   /catalog/characters/{id}`` (204).
+- ``PUT /catalog/characters/{id}/owner``, ``POST``/``GET …/relations`` and ``DELETE
+  …/relations/{relation}/{principal}``: the entry's owner and relations (``routes.ownership``,
+  #104). Nothing gates on them (FR-AUTH-8).
 
 Every handler makes one ``Engine`` call. Writes are deployment-scoped: idempotent under
 ``Idempotency-Key``, answering the deployment's ``config_revision`` (which catalog writes leave
@@ -29,6 +32,7 @@ from pydantic import BaseModel
 from epistrel.api.deps import CharacterId, ContextDep, EngineDep
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse
+from epistrel.api.routes.ownership import mount_ownership_routes
 from epistrel.core.catalog.characters import (
     REVISION_MAX,
     CharacterCard,
@@ -45,6 +49,7 @@ from epistrel.core.catalog.characters import (
     VersionSummary,
 )
 from epistrel.core.enums import EntryStatus
+from epistrel.core.tables.ownership import EntityType
 
 router = APIRouter(prefix="/catalog/characters", tags=["catalog"])
 
@@ -339,3 +344,6 @@ async def delete_character(
 ) -> Response:
     deleted = await engine.delete_character(ctx, character_id)
     return no_content(ctx, replayed=deleted.replayed)
+
+
+mount_ownership_routes(router, EntityType.CHARACTER)

@@ -19,7 +19,9 @@ What ``build`` adds or changes:
   ``Location`` on creations and 202s, ``Retry-After`` on 423 and 503.
 - Components only the document needs: ``Error``, ``QueuedTurn`` (a queued turn's 202) and
   ``StorySettingsPatch`` (``PATCH /stories/{id}/settings``'s body, which the Engine validates).
-- Tags: stories, timeline, history, operations, settings, catalog, admin, ops.
+- Tags: stories, timeline, history, operations, settings, catalog, ownership, admin, ops. Every
+  owned type's owner and relation routes (``routes.ownership``, #104) are tagged ``ownership``,
+  whichever router serves them.
 - A route flagged ``mutating=False`` (``deps.route_flags``) is documented as a read with a
   principal: no ``Idempotency-Key``, idempotency errors, replay headers or expected revision.
 """
@@ -44,9 +46,11 @@ from epistrel.api.deps import (
     RESPOND_ASYNC,
 )
 from epistrel.api.responses import STORY_PATH_PARAMETER
+from epistrel.api.routes.ownership import OWNERSHIP_TAG, ownership_operation_ids
 from epistrel.api.routes.stories import StorySettingsPatch
 from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
+from epistrel.core.ownership import REGISTRY
 
 SCHEMA_VERSION = "m2"
 """``info.version``: the milestone whose contract the document describes."""
@@ -65,6 +69,13 @@ TAGS: list[dict[str, str]] = [
         "description": "Catalog characters: drafts, immutable published versions and their "
         "`card`/`full` projections (FR-CAT, FR-SCN-10).",
     },
+    {
+        "name": OWNERSHIP_TAG,
+        "description": "Each owned entity's one owner and its relations (FR-AUTH-5,6): "
+        "transfers and relation changes, recorded with the acting principal. Ownership and "
+        "relations exist for listing, attribution and offboarding only; nothing gates on them "
+        "(FR-AUTH-8).",
+    },
     {"name": "admin", "description": "Operator endpoints, all under `/admin` (FR-AUTH-1)."},
     {"name": "ops", "description": "Unauthenticated operational probes."},
 ]
@@ -75,8 +86,14 @@ ROUTE_TAGS: dict[str, str] = {
     "story_settings": "settings",
     "update_story_settings": "settings",
     "config_changes_story": "settings",
+    **{
+        operation_id: OWNERSHIP_TAG
+        for entity_type in REGISTRY
+        for operation_id in ownership_operation_ids(entity_type)
+    },
 }
-"""Operations whose router tag is broader than the tag they belong under."""
+"""Operations whose router tag is broader than the tag they belong under: some story routes,
+and every owned type's owner and relation routes."""
 
 
 class ErrorBody(BaseModel):
@@ -150,6 +167,7 @@ ERROR_STATUS: dict[str, int] = {
     "draft_too_large": 413,
     "budget_below_safety_minimum": 422,
     "cannot_relax": 422,
+    "companion_follows_character": 422,
     "entry_archived": 422,
     "guardrail_violation": 422,
     "inheritance_cycle": 422,
@@ -242,6 +260,13 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "save_character_draft": ("draft_stale", "draft_too_large", "entry_archived"),
     "publish_character": ("draft_stale", "entry_archived", "publish_invalid"),
     "get_character": ("not_published",),
+    # A companion scenario's owner and relations follow its character (#104, #116).
+    **{
+        operation_id: ("companion_follows_character",)
+        for entity_type, owned in REGISTRY.items()
+        if owned.follows is not None
+        for operation_id in ownership_operation_ids(entity_type)[:3]
+    },
 }
 """Error codes beyond the ones every operation of its kind can answer (``_rule_errors``)."""
 

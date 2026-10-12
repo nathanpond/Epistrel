@@ -48,9 +48,13 @@ TRUST_BOUNDARY_STATEMENT = (
     "Epistrel by itself does not stop a player from reaching another character's secrets. Every "
     "mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which "
     "Epistrel records for attribution and never interprets; use opaque IDs rather than names or "
-    "email addresses, so recorded attribution identifies no one without your own records."
+    "email addresses, so recorded attribution identifies no one without your own records. "
+    "Ownership and relations are labels the consumer defines; the engine never grants or "
+    "withholds an action because of them. Ownership exists for listing, attribution and "
+    "offboarding only."
 )
-"""FR-AUTH-2's documentation half, verbatim in the OpenAPI description, README and docs/02 §9."""
+"""FR-AUTH-2's documentation half, verbatim in the OpenAPI description, README and docs/02 §9;
+its last two sentences are FR-AUTH-8's (#104): owners and relations gate nothing."""
 
 _bearer = HTTPBearer(auto_error=False, description="A service credential (FR-AUTH-1).")
 

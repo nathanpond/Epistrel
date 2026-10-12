@@ -27,7 +27,11 @@ publish) and its one draft: a JSON document that ``CharacterDraft`` validates, w
   publishes are 422 ``entry_archived`` (and #119 refuses it for story creation). **Unarchive**
   restores ``published``, or ``draft`` when nothing was ever published. Both answer with nothing
   changed when there is nothing to change. **Delete** removes the entry and its versions, from
-  any status, and writes a ``catalog_entry_deleted`` audit row.
+  any status, and writes a ``catalog_entry_deleted`` audit row. It also removes the entry's
+  relations and records a ``deleted`` ownership event (``core.ownership.drop_entity``, #104).
+
+The owner and the relations are ``core.ownership``'s: transfers and relation changes happen
+there, and nothing here reads them to decide anything (FR-AUTH-8).
 
 Every write is one transaction that also records a committed, story-less ``control`` operation
 with the requesting principal and binds the call's ``Idempotency-Key`` to it
@@ -48,7 +52,6 @@ from enum import StrEnum
 from typing import Annotated, Any
 
 from pydantic import (
-    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -59,8 +62,7 @@ from sqlalchemy import delete as sql_delete
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import audit, clock, control
-from epistrel.core.context import PRINCIPAL_PATTERN, SYSTEM_PRINCIPAL, principal_problem
+from epistrel.core import audit, clock, control, ownership
 from epistrel.core.enums import EntryStatus
 from epistrel.core.errors import (
     CharacterNotFound,
@@ -74,14 +76,16 @@ from epistrel.core.errors import (
 )
 from epistrel.core.idempotency import canonical
 from epistrel.core.ids import new_ulid
+from epistrel.core.ownership import Owner
 from epistrel.core.tables import deployment_state
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.core.tables.catalog import ERASURE_GUC, character_catalog, character_versions
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.tables.ownership import EntityType
 from epistrel.testing import pauses
 
-ENTITY_TYPE = "character"
-"""The entry type an audit row, and later ownership (#104), names."""
+ENTITY_TYPE = EntityType.CHARACTER.value
+"""The entry type an audit row and ``core.ownership`` (#104) name."""
 LISTING_STATUS = "private"
 """Every new entry's listing status until #110 makes the values configurable (FR-CAT-11)."""
 FIRST_DRAFT_REVISION = 1
@@ -96,21 +100,6 @@ boundary, never a database error (#280's lesson)."""
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX)]
 Revision = Annotated[int, Field(ge=1, le=REVISION_MAX)]
-
-
-def _owner(value: str) -> str:
-    """An ``owner`` follows the principal rule (``X-Epistrel-Principal``): trimmed of spaces and
-    tabs, 1 to 256 characters, no control character, never the reserved ``system``."""
-    owner = value.strip(" \t")
-    problem = principal_problem(owner)
-    if problem is None and owner == SYSTEM_PRINCIPAL:
-        problem = f"must not be `{SYSTEM_PRINCIPAL}`, which is reserved for background work"
-    if problem is not None:
-        raise ValueError(f"owner {problem}")
-    return owner
-
-
-Owner = Annotated[str, Field(pattern=PRINCIPAL_PATTERN), AfterValidator(_owner)]
 
 
 # -- the draft document -----------------------------------------------------------------------
@@ -320,13 +309,15 @@ class CharacterFull(BaseModel):
     public card's fields and the private ``definition``. ``draft_revision`` is present only on a
     draft read (``?draft=true``): the revision the next save or publish must send.
     ``published_at`` is when ``version`` was published; ``companion_id`` names the character's
-    companion scenario (#116; ``null`` until then)."""
+    companion scenario (#116; ``null`` until then). ``owner_principal`` is the entry's owner
+    (FR-AUTH-5), recorded for listing and attribution only."""
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
     status: EntryStatus
     listing_status: str
+    owner_principal: str
     version: int | None
     current_version: int | None
     draft_revision: int | None = Field(default=None, exclude_if=lambda revision: revision is None)
@@ -366,6 +357,7 @@ def _project(
         return CharacterCard(**card)
     return CharacterFull(
         **card,
+        owner_principal=entry.owner_principal,
         current_version=entry.current_version,
         draft_revision=draft_revision,
         created_at=entry.created_at,
@@ -774,10 +766,12 @@ async def _set_archived(
 
 async def delete(db: AsyncEngine, character_id: str, *, principal: str) -> DeletedCharacter:
     """Remove the entry and its versions (from any status) and write a
-    ``catalog_entry_deleted`` audit row; 404 for an unknown entry. Stories created from it keep
-    their snapshot and provenance (FR-CAT-9)."""
+    ``catalog_entry_deleted`` audit row; 404 for an unknown entry. Its relations go too, recorded
+    as a ``deleted`` ownership event (#104). Stories created from it keep their snapshot and
+    provenance (FR-CAT-9)."""
     async with db.begin() as conn:
         await _entry(conn, character_id, lock=True)
+        await ownership.drop_entity(conn, EntityType.CHARACTER, character_id, principal=principal)
         versions = await conn.scalar(
             select(func.count())
             .select_from(character_versions)

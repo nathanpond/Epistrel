@@ -426,3 +426,31 @@ class PublishInvalid(EpistrelError):
 
     code = "publish_invalid"
     http_status = 422
+
+
+# -- ownership (#104) ---------------------------------------------------------------------------
+
+
+class EntityNotFound(EpistrelError):
+    """The owned entity a call names does not exist, or its type is not delivered by this
+    version. ``details``: ``entity_type`` and ``entity_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class RelationNotFound(EpistrelError):
+    """The entity has no relation with that name and principal: nothing to remove.
+    ``details``: ``entity_type``, ``entity_id``, ``relation`` and ``principal``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class CompanionFollowsCharacter(EpistrelError):
+    """A companion scenario's owner and relations follow its character (FR-AUTH-5): change them
+    on the character, and they change together. Nothing is written. ``details``:
+    ``entity_type``, ``entity_id`` and ``character_id``."""
+
+    code = "companion_follows_character"
+    http_status = 422

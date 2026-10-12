@@ -494,6 +494,10 @@
             ],
             "title": "Name"
           },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
           "public_description": {
             "anyOf": [
               {
@@ -542,6 +546,7 @@
           "id",
           "status",
           "listing_status",
+          "owner_principal",
           "version",
           "current_version",
           "draft_revision",
@@ -561,7 +566,7 @@
       },
       "CharacterFull": {
         "additionalProperties": false,
-        "description": "A catalog character in full (``projection=full``; FR-SCN-10): the entry's envelope, the\npublic card's fields and the private ``definition``. ``draft_revision`` is present only on a\ndraft read (``?draft=true``): the revision the next save or publish must send.\n``published_at`` is when ``version`` was published; ``companion_id`` names the character's\ncompanion scenario (#116; ``null`` until then).",
+        "description": "A catalog character in full (``projection=full``; FR-SCN-10): the entry's envelope, the\npublic card's fields and the private ``definition``. ``draft_revision`` is present only on a\ndraft read (``?draft=true``): the revision the next save or publish must send.\n``published_at`` is when ``version`` was published; ``companion_id`` names the character's\ncompanion scenario (#116; ``null`` until then). ``owner_principal`` is the entry's owner\n(FR-AUTH-5), recorded for listing and attribution only.",
         "properties": {
           "companion_id": {
             "anyOf": [
@@ -647,6 +652,10 @@
             ],
             "title": "Name"
           },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
           "public_description": {
             "anyOf": [
               {
@@ -694,6 +703,7 @@
           "id",
           "status",
           "listing_status",
+          "owner_principal",
           "version",
           "current_version",
           "created_at",
@@ -1595,6 +1605,19 @@
         "title": "EntityListRule",
         "type": "object"
       },
+      "EntityType": {
+        "description": "Every owned entity type (FR-AUTH-5), as ``entity_type`` columns and the registry in\n``core.ownership`` name them.",
+        "enum": [
+          "story",
+          "character",
+          "scenario",
+          "persona",
+          "media",
+          "engine_profile"
+        ],
+        "title": "EntityType",
+        "type": "string"
+      },
       "EntryStatus": {
         "description": "A catalog entry's version status (FR-CAT-2; #103, #108): ``draft`` until its first\npublish, then ``published``; ``archived`` entries still read but cannot be edited,\npublished or used to create a story until they are unarchived. Postgres enum\n``catalog.entry_status``.",
         "enum": [
@@ -1721,6 +1744,19 @@
             ],
             "description": "Default \"<source name> (fork)\".",
             "title": "Name"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The fork's owner principal (default: the requesting principal, not the source's owner; never `system`). Recorded, never interpreted.",
+            "title": "Owner"
           },
           "variant_chain": {
             "anyOf": [
@@ -3286,6 +3322,72 @@
           "idempotency_key"
         ],
         "title": "OperationBody",
+        "type": "object"
+      },
+      "OwnerBody": {
+        "description": "An entity's owner after a transfer, and its owner before. The two are equal when the\nrequest named the current owner: nothing was recorded then. ``config_revision`` is the\ndeployment's, unchanged.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "entity_type": {
+            "$ref": "#/components/schemas/EntityType"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "previous_owner": {
+            "title": "Previous Owner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_revision",
+          "entity_type",
+          "entity_id",
+          "owner_principal",
+          "previous_owner"
+        ],
+        "title": "OwnerBody",
+        "type": "object"
+      },
+      "OwnerTransferRequest": {
+        "additionalProperties": false,
+        "description": "``PUT /{type}/{id}/owner``: the principal that becomes the entity's owner (opaque; never\n``system``). A transfer to the current owner changes nothing. Ownership confers no permission\n(FR-AUTH-8).",
+        "examples": [
+          {
+            "principal": "p-7f3a9c"
+          }
+        ],
+        "properties": {
+          "principal": {
+            "description": "The new owner principal.",
+            "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+            "title": "Principal",
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal"
+        ],
+        "title": "OwnerTransferRequest",
         "type": "object"
       },
       "PinnedItemBody": {
@@ -4895,6 +4997,152 @@
         "title": "RegexRule",
         "type": "object"
       },
+      "RelationBody": {
+        "description": "The entity's relation: added (201), or already there (200, nothing recorded). The\n``config_revision`` is the deployment's, unchanged.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "entity_type": {
+            "$ref": "#/components/schemas/EntityType"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_revision",
+          "principal",
+          "relation",
+          "created_at",
+          "created_by",
+          "entity_type",
+          "entity_id"
+        ],
+        "title": "RelationBody",
+        "type": "object"
+      },
+      "RelationItem": {
+        "description": "One relation: the related principal, the relation's name (consumer-defined, never\ninterpreted), and who added it and when.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal",
+          "relation",
+          "created_at",
+          "created_by"
+        ],
+        "title": "RelationItem",
+        "type": "object"
+      },
+      "RelationRequest": {
+        "additionalProperties": false,
+        "description": "``POST /{type}/{id}/relations``: a relation to add, the related ``principal`` and the\n``relation``'s name (consumer-defined, e.g. ``editor``, ``co_author``, ``player``). Epistrel\nnever interprets the name (FR-AUTH-6,8).",
+        "examples": [
+          {
+            "principal": "p-7f3a9c",
+            "relation": "editor"
+          }
+        ],
+        "properties": {
+          "principal": {
+            "description": "The related principal (opaque; never `system`).",
+            "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+            "title": "Principal",
+            "type": "string"
+          },
+          "relation": {
+            "description": "The relation's name: 1 to 64 of `A-Z a-z 0-9 _ -`, case-sensitive.",
+            "pattern": "^[\\t ]*[A-Za-z0-9_-]{1,64}[\\t ]*$",
+            "title": "Relation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal",
+          "relation"
+        ],
+        "title": "RelationRequest",
+        "type": "object"
+      },
+      "RelationsBody": {
+        "description": "An entity's owner and its relations, ordered by relation name, then principal.",
+        "properties": {
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "entity_type": {
+            "$ref": "#/components/schemas/EntityType"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RelationItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_type",
+          "entity_id",
+          "owner_principal",
+          "items"
+        ],
+        "title": "RelationsBody",
+        "type": "object"
+      },
       "ReportEntryBody": {
         "description": "One finding of the publish validation: a stable ``code``, the draft ``field`` it concerns\n(a dotted path, e.g. ``definition.personality``) and a message.",
         "properties": {
@@ -5726,6 +5974,10 @@
             "title": "Next Turn Index",
             "type": "integer"
           },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
           "settings": {
             "additionalProperties": true,
             "title": "Settings",
@@ -5753,6 +6005,7 @@
         "required": [
           "id",
           "name",
+          "owner_principal",
           "status",
           "timeline_revision",
           "next_turn_index",
@@ -5825,6 +6078,50 @@
           "items"
         ],
         "title": "StoryList",
+        "type": "object"
+      },
+      "StoryOwnerBody": {
+        "description": "A story's owner after a transfer, and its owner before. The two are equal when the request\nnamed the current owner: nothing was recorded then. ``timeline_revision`` is the story's,\nunchanged, because ownership is not story truth.",
+        "properties": {
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "entity_type": {
+            "$ref": "#/components/schemas/EntityType"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "previous_owner": {
+            "title": "Previous Owner",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "entity_type",
+          "entity_id",
+          "owner_principal",
+          "previous_owner"
+        ],
+        "title": "StoryOwnerBody",
         "type": "object"
       },
       "StoryPolicyItem": {
@@ -5981,6 +6278,61 @@
           "name"
         ],
         "title": "StoryRatingBody",
+        "type": "object"
+      },
+      "StoryRelationBody": {
+        "description": "The story's relation: added (201), or already there (200, nothing recorded). The\n``timeline_revision`` is the story's, unchanged.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "entity_type": {
+            "$ref": "#/components/schemas/EntityType"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "relation": {
+            "title": "Relation",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "principal",
+          "relation",
+          "created_at",
+          "created_by",
+          "entity_type",
+          "entity_id"
+        ],
+        "title": "StoryRelationBody",
         "type": "object"
       },
       "StorySettingsBody": {
@@ -6292,7 +6644,7 @@
       },
       "StorySpec": {
         "additionalProperties": false,
-        "description": "``POST /stories``: a blank story with its cast, rating and settings.",
+        "description": "``POST /stories``: a blank story with its cast, rating and settings, and optionally its\n``owner`` (default: the requesting principal; never ``system``). Ownership confers no\npermission (FR-AUTH-5,8).",
         "examples": [
           {
             "characters": [
@@ -6348,6 +6700,19 @@
             ],
             "title": "Name"
           },
+          "owner": {
+            "anyOf": [
+              {
+                "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The story's owner principal (default: the requesting principal; never `system`). Recorded, never interpreted.",
+            "title": "Owner"
+          },
           "settings": {
             "$ref": "#/components/schemas/CreationSettings"
           }
@@ -6369,7 +6734,7 @@
         "type": "string"
       },
       "StorySummaryBody": {
-        "description": "A story as the list returns it: status, revision, next turn index and rating.",
+        "description": "A story as the list returns it: its owner, status, revision, next turn index and\nrating.",
         "properties": {
           "archived_at": {
             "anyOf": [
@@ -6410,6 +6775,10 @@
             "title": "Next Turn Index",
             "type": "integer"
           },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
           "status": {
             "$ref": "#/components/schemas/StoryStatus"
           },
@@ -6421,6 +6790,7 @@
         "required": [
           "id",
           "name",
+          "owner_principal",
           "status",
           "timeline_revision",
           "next_turn_index",
@@ -6908,7 +7278,7 @@
     }
   },
   "info": {
-    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records.",
+    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.",
     "title": "Epistrel Engine",
     "version": "m2"
   },
@@ -10554,6 +10924,172 @@
         ]
       }
     },
+    "/catalog/characters/{character_id}/owner": {
+      "put": {
+        "description": "Make `principal` the owner of a catalog character (FR-AUTH-5): it answers the owner now and the one before, with the deployment's `config_revision` (unchanged). The transfer is recorded with the acting principal and time. A character's companion scenario moves with it. A transfer to the current owner changes nothing and records nothing. `system` is refused (422). Allowed whatever the entity's status. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "transfer_owner_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerTransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Transfer a catalog character's ownership",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
     "/catalog/characters/{character_id}/publish": {
       "post": {
         "description": "Publish the draft as the next immutable version (FR-CAT-3): `draft_revision` is compared like a save's (409 `draft_stale`). The draft must be publishable (422 `publish_invalid` with `details.report`: it needs a `name`). The draft stays equal to what was published, at the next revision. Publishing an unchanged draft still makes a new version.",
@@ -10717,6 +11253,475 @@
         "summary": "Publish the draft as a new version",
         "tags": [
           "catalog"
+        ]
+      }
+    },
+    "/catalog/characters/{character_id}/relations": {
+      "get": {
+        "description": "A catalog character's owner and its relations, by relation name, then principal. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "list_relations_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a catalog character's owner and relations",
+        "tags": [
+          "ownership"
+        ]
+      },
+      "post": {
+        "description": "Add the relation `relation` (consumer-defined, e.g. `editor`, `co_author`, `player`: 1 to 64 of `A-Z a-z 0-9 _ -`, case-sensitive) between `principal` and a catalog character (FR-AUTH-6): 201 with the relation, recorded with the acting principal; 200 when it already exists (nothing recorded). Relations are list filters (`?relation=name:principal`), and Epistrel never interprets a name. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "add_relation_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationBody"
+                }
+              }
+            },
+            "description": "The relation already existed; nothing was recorded.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Relate a principal to a catalog character",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/catalog/characters/{character_id}/relations/{relation}/{principal}": {
+      "delete": {
+        "description": "Remove a catalog character's relation `relation` to `principal` (204), recorded with the acting principal; 404 `not_found` when there is no such relation. The principal is the rest of the path and may contain `/`. A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "remove_relation_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The relation's name.",
+            "in": "path",
+            "name": "relation",
+            "required": true,
+            "schema": {
+              "description": "The relation's name.",
+              "examples": [
+                "editor"
+              ],
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Relation",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The related principal: the rest of the path, so it may contain `/`.",
+            "in": "path",
+            "name": "principal",
+            "required": true,
+            "schema": {
+              "description": "The related principal: the rest of the path, so it may contain `/`.",
+              "examples": [
+                "p-7f3a9c"
+              ],
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Principal",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove a relation from a catalog character",
+        "tags": [
+          "ownership"
         ]
       }
     },
@@ -11153,7 +12158,7 @@
     },
     "/stories": {
       "get": {
-        "description": "Every story, optionally only those with `status`.",
+        "description": "Every story, newest first, unless the request filters: by `status`, by `owner` (the owner principal, `system` included), or by `relation` (`name:principal`, or `name:` for any principal; repeat it and every one must hold). Owners and relations narrow a list only when a request asks: they gate nothing (FR-AUTH-8).",
         "operationId": "list_stories",
         "parameters": [
           {
@@ -11170,6 +12175,31 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "description": "Only the stories this principal owns.",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the stories with this relation: `name:principal`, or `name:` for any principal (repeatable; all must hold).",
+            "in": "query",
+            "name": "relation",
+            "required": false,
+            "schema": {
+              "items": {
+                "pattern": "^[A-Za-z0-9_-]{1,64}:[\\t ]*([^\\x00-\\x1f\\x7f]{1,256}[\\t ]*)?$",
+                "type": "string"
+              },
+              "title": "Relation",
+              "type": "array"
             }
           }
         ],
@@ -12989,6 +14019,182 @@
         ]
       }
     },
+    "/stories/{story_id}/owner": {
+      "put": {
+        "description": "Make `principal` the owner of a story (FR-AUTH-5): it answers the owner now and the one before, with its `timeline_revision` (unchanged). The transfer is recorded with the acting principal and time. A transfer to the current owner changes nothing and records nothing. `system` is refused (422). Allowed whatever the entity's status. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "transfer_owner_story",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerTransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryOwnerBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Transfer a story's ownership",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
     "/stories/{story_id}/pinned-memories": {
       "get": {
         "operationId": "pinned_memories",
@@ -13472,6 +14678,495 @@
         "summary": "Regenerate the latest reply",
         "tags": [
           "timeline"
+        ]
+      }
+    },
+    "/stories/{story_id}/relations": {
+      "get": {
+        "description": "A story's owner and its relations, by relation name, then principal. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "list_relations_story",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a story's owner and relations",
+        "tags": [
+          "ownership"
+        ]
+      },
+      "post": {
+        "description": "Add the relation `relation` (consumer-defined, e.g. `editor`, `co_author`, `player`: 1 to 64 of `A-Z a-z 0-9 _ -`, case-sensitive) between `principal` and a story (FR-AUTH-6): 201 with the relation, recorded with the acting principal; 200 when it already exists (nothing recorded). Relations are list filters (`?relation=name:principal`), and Epistrel never interprets a name. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "add_relation_story",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryRelationBody"
+                }
+              }
+            },
+            "description": "The relation already existed; nothing was recorded.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryRelationBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Relate a principal to a story",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/stories/{story_id}/relations/{relation}/{principal}": {
+      "delete": {
+        "description": "Remove a story's relation `relation` to `principal` (204), recorded with the acting principal; 404 `not_found` when there is no such relation. The principal is the rest of the path and may contain `/`. A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "remove_relation_story",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The relation's name.",
+            "in": "path",
+            "name": "relation",
+            "required": true,
+            "schema": {
+              "description": "The relation's name.",
+              "examples": [
+                "editor"
+              ],
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Relation",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The related principal: the rest of the path, so it may contain `/`.",
+            "in": "path",
+            "name": "principal",
+            "required": true,
+            "schema": {
+              "description": "The related principal: the rest of the path, so it may contain `/`.",
+              "examples": [
+                "p-7f3a9c"
+              ],
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Principal",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove a relation from a story",
+        "tags": [
+          "ownership"
         ]
       }
     },
@@ -14897,6 +16592,10 @@
     {
       "description": "Catalog characters: drafts, immutable published versions and their `card`/`full` projections (FR-CAT, FR-SCN-10).",
       "name": "catalog"
+    },
+    {
+      "description": "Each owned entity's one owner and its relations (FR-AUTH-5,6): transfers and relation changes, recorded with the acting principal. Ownership and relations exist for listing, attribution and offboarding only; nothing gates on them (FR-AUTH-8).",
+      "name": "ownership"
     },
     {
       "description": "Operator endpoints, all under `/admin` (FR-AUTH-1).",

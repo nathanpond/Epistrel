@@ -30,6 +30,7 @@ from epistrel.core import (
     idempotency,
     ingest,
     operation_view,
+    ownership,
     projections,
     ratings,
     stories,
@@ -59,6 +60,7 @@ from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.ports import Ports
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.tables import events
+from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turn_gate import Concurrency, QueueItem
 from epistrel.core.viewpoint import is_omniscient, resolve_viewpoint, with_requested
 from epistrel.observability import instrument
@@ -182,6 +184,31 @@ CODECS: dict[str, ResultCodec[Any]] = {
 }
 """How each mutating method's result is stored under its ``Idempotency-Key`` and replayed: the
 result type, the REST status it answers with, and the revision a reference carries."""
+
+
+def _ownership_codecs() -> dict[str, ResultCodec[Any]]:
+    """The ownership writes' codecs, one per method and owned type (#104): the key is the
+    route's ``operation_id`` (``transfer_owner_story``). A story's writes carry its
+    ``timeline_revision``; every other type's the deployment's ``config_revision``."""
+    codecs: dict[str, ResultCodec[Any]] = {}
+    for entity_type in EntityType:
+        revision = "timeline_revision" if entity_type is EntityType.STORY else _CONFIG
+        suffix = entity_type.value
+        codecs[f"transfer_owner_{suffix}"] = ResultCodec.of(
+            ownership.OwnerTransfer, revision_field=revision
+        )
+        codecs[f"add_relation_{suffix}"] = ResultCodec.of(
+            ownership.RelationWrite,
+            status=lambda write: 201 if write.created else 200,
+            revision_field=revision,
+        )
+        codecs[f"remove_relation_{suffix}"] = ResultCodec.of(
+            ownership.RelationRemoved, status=204, revision_field=revision
+        )
+    return codecs
+
+
+CODECS.update(_ownership_codecs())
 
 IDEMPOTENCY_WAIT_S = DEFAULT_TURN_DEADLINE_S + idempotency.WAIT_SLACK_S
 """How long a duplicate waits for its original (the turn deadline + 5 s), then 503."""
@@ -1282,9 +1309,23 @@ class Engine:
         )
 
     async def list_stories(
-        self, ctx: RequestContext, *, status: StoryStatus | None = None
+        self,
+        ctx: RequestContext,
+        *,
+        status: StoryStatus | None = None,
+        owner: str | None = None,
+        relation: Sequence[str] = (),
     ) -> list[stories.StoryView]:
-        return await stories.list_stories(self.db, status=status)
+        """Every story, newest first, unless the request filters: by ``status``, by ``owner``
+        (a principal), or by ``relation`` (each ``name:principal``, or ``name:`` for any
+        principal; repeated filters all hold). Owners and relations narrow a list only when
+        asked (FR-AUTH-8)."""
+        return await stories.list_stories(
+            self.db,
+            status=status,
+            owner=ownership.owner_filter(owner),
+            relations=[ownership.parse_relation_filter(value) for value in relation],
+        )
 
     async def archive_story(self, ctx: RequestContext, story_id: str) -> stories.StatusChange:
         """Make the story read-only; idempotent; 423 while a turn is in flight."""
@@ -1678,6 +1719,120 @@ class Engine:
     ) -> list[catalog_characters.VersionSummary]:
         """Every published version of the entry, oldest first: number, time and publisher."""
         return await catalog_characters.versions(self.db, character_id)
+
+    # -- ownership (FR-AUTH-5,6,8; #104) --------------------------------------------------------
+    # One owner and any number of relations per story, catalog character, scenario, persona,
+    # media asset and engine profile: recorded for listing, attribution and offboarding, and
+    # never consulted by any other call. Keyed per deployment; allowed in any state (an
+    # archived story, a turn in flight). On a story, the expected revision is checked first.
+
+    async def _ownership_write[T](
+        self,
+        ctx: RequestContext,
+        method: str,
+        entity_type: EntityType,
+        entity_id: str,
+        write: Callable[[str], Awaitable[T]],
+        material: Mapping[str, Any],
+    ) -> T:
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> T:
+            if entity_type is EntityType.STORY:
+                await self.check_expected_revision(ctx, entity_id)
+            return await write(principal)
+
+        return await self._keyed(
+            ctx,
+            f"{method}_{entity_type.value}",
+            run,
+            material={"entity_type": entity_type.value, "entity_id": entity_id, **material},
+        )
+
+    async def transfer_owner(
+        self,
+        ctx: RequestContext,
+        entity_type: EntityType | str,
+        entity_id: str,
+        request: ownership.OwnerTransferRequest,
+    ) -> ownership.OwnerTransfer:
+        """Make ``request.principal`` the entity's owner (FR-AUTH-5), recorded with the acting
+        principal and time. A character's companion scenario moves with it; a companion cannot
+        be transferred alone (422 ``companion_follows_character``). A transfer to the current
+        owner changes nothing. Ownership confers no permission (FR-AUTH-8)."""
+        self.require_principal(ctx)
+        kind = ownership.entity_type_of(entity_type)
+        return await self._ownership_write(
+            ctx,
+            "transfer_owner",
+            kind,
+            entity_id,
+            lambda principal: ownership.transfer_owner(
+                self.db, kind, entity_id, request.principal, principal=principal
+            ),
+            {"body": _body(request)},
+        )
+
+    async def add_relation(
+        self,
+        ctx: RequestContext,
+        entity_type: EntityType | str,
+        entity_id: str,
+        request: ownership.RelationRequest,
+    ) -> ownership.RelationWrite:
+        """Relate ``request.principal`` to the entity as ``request.relation`` (FR-AUTH-6),
+        recorded with the acting principal; a relation that exists is answered as it is. The
+        name is never interpreted: a relation grants nothing (FR-AUTH-8)."""
+        self.require_principal(ctx)
+        kind = ownership.entity_type_of(entity_type)
+        return await self._ownership_write(
+            ctx,
+            "add_relation",
+            kind,
+            entity_id,
+            lambda principal: ownership.add_relation(
+                self.db,
+                kind,
+                entity_id,
+                request.principal,
+                request.relation,
+                principal=principal,
+            ),
+            {"body": _body(request)},
+        )
+
+    async def remove_relation(
+        self,
+        ctx: RequestContext,
+        entity_type: EntityType | str,
+        entity_id: str,
+        relation: str,
+        principal: str,
+    ) -> ownership.RelationRemoved:
+        """Remove the entity's ``relation`` to ``principal``, recorded with the acting
+        principal; 404 ``not_found`` when there is no such relation."""
+        self.require_principal(ctx)
+        kind = ownership.entity_type_of(entity_type)
+        name = ownership.path_relation(relation)
+        related = ownership.path_principal(principal)
+        return await self._ownership_write(
+            ctx,
+            "remove_relation",
+            kind,
+            entity_id,
+            lambda actor: ownership.remove_relation(
+                self.db, kind, entity_id, related, name, principal=actor
+            ),
+            {"relation": name, "principal": related},
+        )
+
+    async def list_relations(
+        self, ctx: RequestContext, entity_type: EntityType | str, entity_id: str
+    ) -> ownership.Relations:
+        """The entity's owner and its relations, by relation name, then principal."""
+        return await ownership.list_relations(
+            self.db, ownership.entity_type_of(entity_type), entity_id
+        )
 
 
 # One span, summary line and count per outermost call of every public coroutine method (#74).

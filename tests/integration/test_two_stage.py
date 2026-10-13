@@ -41,8 +41,10 @@ from tests.profile_support import (
     POLISH,
     PROFILES,
     QUALITY_STATUSES,
+    REDERIVATION,
     SETTINGS,
     STATUS_COMPONENT,
+    UNAVAILABLE_WARNINGS,
     UNCERTIFIED,
     configuration_rows,
     merged,
@@ -153,13 +155,16 @@ async def test_c_18__fingerprint(scratch: Space) -> None:
     ``uncertified``; its operation records the same fingerprint in ``config_revisions`` with the
     profile, its version, each delivered purpose's model (no reported version yet), the status
     and the capabilities. The story's effective configuration states the same fingerprint,
-    capabilities and status, and a preview's report states it before and after a change.
+    capabilities and status. An impact report states the fingerprint before and after a change,
+    with the capabilities enabled and the status after it: a preview's at its top and in its
+    entry, a profile edit's in each story's entry (its top ones are null, as it may list many
+    stories). Turning the rolling summary off in a preview leaves it out of those capabilities.
 
     A change to a quality-relevant setting gives a new fingerprint: another generation model, a
-    summary-window override in a preview, and an edit of the generation temperature, which the
-    next turn then reports and records with the new version. A change to a quality-irrelevant
-    setting does not (complement): the pinned-memories limit as an override, and the story's
-    turn concurrency."""
+    summary-window override and the rolling summary turned off in a preview, and an edit of the
+    generation temperature, which the next turn then reports and records with the new version. A
+    change to a quality-irrelevant setting does not (complement): the pinned-memories limit as
+    an override, and the story's turn concurrency."""
     async with respond_client(scratch.settings, scratch.db) as (client, _):
         routed = await client.put(
             "/admin/model-config/generation", json={"model": "house-model"}, headers=headers(A)
@@ -203,7 +208,13 @@ async def test_c_18__fingerprint(scratch: Space) -> None:
         same = await ok(await _preview(client, story, {"overrides": nest("pins.max_pinned", 10)}))
         assert same["fingerprint_before"] == same["fingerprint_after"] == read["fingerprint"]
         assert (same["quality_status_after"], same["warnings"]) == (UNCERTIFIED, [])
-        assert same["affected_stories"][0]["fingerprint_after"] == read["fingerprint"]
+        assert same["capabilities_after"] == LITE_CAPABILITIES
+        (alone,) = same["affected_stories"]
+        assert (alone["fingerprint_after"], alone["capabilities_after"]) == (
+            read["fingerprint"],
+            LITE_CAPABILITIES,
+        )
+        assert alone["quality_status_after"] == UNCERTIFIED
         concurrency = await client.patch(
             f"/stories/{story}/settings", json={"turn_concurrency": "queue"}, headers=headers(A)
         )
@@ -228,6 +239,18 @@ async def test_c_18__fingerprint(scratch: Space) -> None:
         )
         assert window["fingerprint_before"] == read["fingerprint"] != window["fingerprint_after"]
         assert window["quality_status_after"] == UNCERTIFIED
+        assert window["capabilities_after"] == LITE_CAPABILITIES
+        quiet = await ok(
+            await _preview(
+                client, story, {"overrides": nest("memory.rolling_summary.enabled", False)}
+            )
+        )
+        without_summary = [c for c in LITE_CAPABILITIES if c != "rolling_summary"]
+        (shown,) = quiet["affected_stories"]
+        assert quiet["capabilities_after"] == shown["capabilities_after"] == without_summary
+        assert quiet["fingerprint_before"] == read["fingerprint"] != quiet["fingerprint_after"]
+        assert quiet["fingerprint_after"] == shown["fingerprint_after"]
+        assert quiet["quality_status_after"] == shown["quality_status_after"] == UNCERTIFIED
         lite = (await ok(await client.get(f"{PROFILES}/{LITE_PRESET_ID}", headers=READ)))[
             "settings"
         ]
@@ -240,12 +263,18 @@ async def test_c_18__fingerprint(scratch: Space) -> None:
             )
         )
         assert edited["applied"] is True
-        (entry,) = edited["impact"]["affected_stories"]
+        top = edited["impact"]
+        stamp = (top["fingerprint_after"], top["capabilities_after"], top["quality_status_after"])
+        assert stamp == (None, None, None)
+        (entry,) = top["affected_stories"]
         assert entry["fingerprint_before"] == read["fingerprint"] != entry["fingerprint_after"]
-        assert entry["quality_status_after"] == UNCERTIFIED
+        assert (entry["capabilities_after"], entry["quality_status_after"]) == (
+            LITE_CAPABILITIES,
+            UNCERTIFIED,
+        )
         changed = await _effective(client, story)
         assert changed["fingerprint"] == entry["fingerprint_after"]
-        assert changed["capabilities"] == LITE_CAPABILITIES
+        assert changed["capabilities"] == entry["capabilities_after"]
         next_turn = await _play(client, story, actor)
         assert next_turn["fingerprint"] == entry["fingerprint_after"]
         assert next_turn["quality_status"] == UNCERTIFIED
@@ -425,6 +454,104 @@ async def test_reports_list_at_most_the_cap(
         )
         assert (await _effective(client, forked["story_id"]))["profile"]["pinned"] is True
         await _default(client, LITE_PRESET_ID)
+
+
+async def test_only_a_committed_active_turn_is_history(scratch: Space) -> None:
+    """A story has history, for M3's interim rule, when it has at least one committed, active
+    turn. Four stories follow a profile with the polish pass off: one has played a turn; one's
+    only turn failed (503 ``model_unavailable``: its operation is ``failed``); one played a turn
+    and truncated it away (its operation is still ``committed``, but ``discarded``); one never
+    played. Turning the polish pass on, marked data-producing, lists only the first as
+    ``upgrade_unavailable`` with its re-derivation needed. The other three gain the polish pass
+    with nothing to re-derive, in the edit's report and in a preview of each alone. Confirmed,
+    the first keeps version 1 (pinned) while the other three run on version 2, unpinned, with
+    the polish pass."""
+    off = merged(SETTINGS, nest(POLISH, False))
+    edit = {"name": "Brisk Lite", "settings": merged(SETTINGS, nest(POLISH, True))}
+    async with respond_client(scratch.settings, scratch.db) as (client, lib):
+        profile = (
+            await ok(
+                await client.post(PROFILES, json=profile_body(settings=off), headers=headers(A)),
+                201,
+            )
+        )["id"]
+        await _default(client, profile)
+        lived, actor = await _story(client)
+        await _play(client, lived, actor)
+        failed, hero = await _story(client)
+        lib.models.stub.fault("generation", "http_500")
+        attempt = await client.post(
+            f"/stories/{failed}/respond", json=respond_body(hero), headers=headers(A)
+        )
+        refused(attempt, 503, "model_unavailable")
+        truncated, player = await _story(client)
+        await _play(client, truncated, player)
+        cut = await client.post(
+            f"/stories/{truncated}/truncate", json={"to_turn": 0}, headers=headers(A)
+        )
+        await ok(cut)
+        never, _ = await _story(client)
+        await _default(client, LITE_PRESET_ID)
+        turns = {
+            story: [
+                tuple(r)
+                for r in await rows(
+                    scratch.db,
+                    "SELECT status, membership FROM operations WHERE story_id = :s "
+                    "AND kind = 'turn'",
+                    s=story,
+                )
+            ]
+            for story in (lived, failed, truncated, never)
+        }
+        assert turns == {
+            lived: [("committed", "active")],
+            failed: [("failed", "active")],
+            truncated: [("committed", "discarded")],
+            never: [],
+        }
+        without = (failed, truncated, never)
+        polish = {"overrides": nest(POLISH, True)}
+        with data_producing("polish"):
+            held = await ok(
+                await client.put(f"{PROFILES}/{profile}", json=edit, headers=headers(A))
+            )
+            assert (held["applied"], held["impact"]["warnings"]) == (False, UNAVAILABLE_WARNINGS)
+            entries = {e["story_id"]: e for e in held["impact"]["affected_stories"]}
+            assert list(entries) == sorted([lived, *without])
+            assert entries[lived]["upgrade_unavailable"] is True
+            assert entries[lived][REDERIVATION]["needed"] is True
+            shown = await ok(await _preview(client, lived, polish))
+            assert shown["affected_stories"][0]["upgrade_unavailable"] is True
+            for story in without:
+                entry = entries[story]
+                assert (entry["upgrade_unavailable"], entry[REDERIVATION]) == (
+                    False,
+                    {"needed": False, "estimate": None},
+                )
+                assert entry["capabilities_after"] == LITE_CAPABILITIES
+                alone = await ok(await _preview(client, story, polish))
+                assert alone["warnings"] == ["capabilities_gained"]
+                assert alone["affected_stories"][0]["upgrade_unavailable"] is False
+            confirmed = await client.put(
+                f"{PROFILES}/{profile}", json={**edit, "ignore_warnings": True}, headers=headers(A)
+            )
+            assert (await ok(confirmed))["applied"] is True
+        assert (await _effective(client, lived))["profile"] == {
+            "id": profile,
+            "version": 1,
+            "pinned": True,
+            "deleted": False,
+        }
+        for story in without:
+            now = await _effective(client, story)
+            assert now["profile"] == {
+                "id": profile,
+                "version": 2,
+                "pinned": False,
+                "deleted": False,
+            }
+            assert now["capabilities"] == LITE_CAPABILITIES
 
 
 async def test_a_new_profile_version_is_a_new_fingerprint(scratch: Space) -> None:

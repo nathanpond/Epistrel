@@ -210,9 +210,10 @@ def test_a_delta_names_levels_raised_and_lowered() -> None:
 
 def test_an_entry_keeps_the_configuration_it_cannot_leave() -> None:
     """An increase for a story with history is unavailable: the re-derivation is needed with
-    its estimate and the story keeps its fingerprint; without history, or without an increase,
-    nothing is needed. A one-story report lifts the entry's fingerprints to its top and names
-    its warnings in ``WARNING_KINDS`` order."""
+    its estimate and the story keeps its fingerprint and capabilities; without history, or
+    without an increase, nothing is needed and the entry states the new ones. A one-story report
+    lifts the entry's fingerprints, capabilities and status to its top and names its warnings in
+    ``WARNING_KINDS`` order."""
     off = Configuration(LITE_PRESET_ID, 1, _settings(nest("repair.polish.enabled", False)))
     on = Configuration(LITE_PRESET_ID, 2, _settings())
     with data_producing("polish"):
@@ -227,6 +228,9 @@ def test_an_entry_keeps_the_configuration_it_cannot_leave() -> None:
         "duration_s": 3 * CALL_LATENCY_MS / 1000,
     }
     assert stuck.fingerprint_after == stuck.fingerprint_before
+    unpolished = [c for c in LITE_CAPABILITIES if c != "polish"]
+    assert stuck.capabilities_after == list(capabilities(off.settings)) == unpolished
+    assert stuck.quality_status_after == UNCERTIFIED
     free = affected("S2", change, history=False)
     assert (free.upgrade_unavailable, free.backfill.needed, free.backfill.estimate) == (
         False,
@@ -234,12 +238,17 @@ def test_an_entry_keeps_the_configuration_it_cannot_leave() -> None:
         None,
     )
     assert free.fingerprint_after != free.fingerprint_before
+    assert free.capabilities_after == list(capabilities(on.settings)) == LITE_CAPABILITIES
     report = single_report(stuck, change)
     assert report.warnings == ["capabilities_gained", "backfill_needed", "upgrade_unavailable"]
     assert set(report.warnings) <= set(WARNING_KINDS)
     assert (report.fingerprint_before, report.fingerprint_after) == (
         stuck.fingerprint_before,
         stuck.fingerprint_after,
+    )
+    assert (report.capabilities_after, report.quality_status_after) == (
+        stuck.capabilities_after,
+        UNCERTIFIED,
     )
 
 
@@ -330,6 +339,10 @@ async def test_two_stage_applies_only_when_it_may() -> None:
     assert unmet(None, lite.settings) == []
     created = creation_report(lite.stamp(FACTS), lite.settings, None)
     assert (created.warnings, created.affected_count) == ([], 0)
+    assert (created.capabilities_after, created.quality_status_after) == (
+        LITE_CAPABILITIES,
+        UNCERTIFIED,
+    )
     assert await with_history(cast(Any, None), []) == set()
     held = await two_stage(warns, apply, ignore_warnings=False)
     assert (held.applied, held.result, calls, held.kept()) == (False, None, [], False)

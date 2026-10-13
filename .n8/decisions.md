@@ -2824,3 +2824,26 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   Branch coverage of `epistrel.core.profiles` over its three test modules is 98%.
   **Why:** Under the batched gate, a story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
   **Issue:** #109
+- **Decision:** #109 verification fixes, round 1 (Rule 1). Every impact report now states the capabilities enabled, as `capabilities_after`: the sorted module names (`lite` included) of the configuration a story would run under. It sits between `fingerprint_after` and `quality_status_after`, with their placement and nullability (`list[str] | None`):
+  - in each `AffectedStory`, from the stamp the story will run under. So an `upgrade_unavailable` entry states the list it keeps, while `capabilities_gained` still shows what the change would add;
+  - at the top of a one-story report (the preview, and #113's assignment and overrides) and of a creation report (#119);
+  - null at the top of a profile edit's report, which may list many stories, like its fingerprints.
+
+  I added no `capabilities_before`: the report's naming is `_before`/`_after`, FR-PROF-16 asks for the capabilities enabled, and `capabilities_gained`/`capabilities_lost` already give the delta. `docs/openapi.json` is regenerated, and the preview and edit route descriptions and README name the field. The tests gained assertions, and none was removed or loosened:
+  - C-18 (M3): the preview's top and entry (Lite's list under a `pins.max_pinned` override; the list without `rolling_summary` under a new override that turns it off, which also gives a new fingerprint); the edit report's entry, with its top null, and the read after the edit.
+  - C-16 (M3): the held edit's entries (no `rolling_summary`) with the top null, the preview, and the creation report.
+  - C-16 (M4, interim): the kept entry without the polish pass and the moved entry with it, each equal to its story's effective configuration after the confirmation, and both previews.
+  - `tests/test_profile_facts.py`: the entry and one-story report, and the creation report.
+
+  Mutation-checked, with `impact.py` restored from a scratch backup each time (SHA-1 identical at the end). Each mutation fails a test: an unavailable entry stating the new list, an available entry stating the old list, the field dropped from the entry, from a one-story report's top, and from a creation report.
+  **Why:** AC4, FR-PROF-16 and C-18 (M3) require every impact report to state the capabilities enabled, and the report carried only the deltas (the verifier's gap 1). Cost if wrong: one field's name or nullability, before anything consumes it; #113 and #119 build their reports on these builders.
+  **Issue:** #109
+- **Decision:** #109 verification fixes, round 1 (test gap). The gap was real, and it was a gap in test coverage only: `with_history` already counted only committed, active turn operations. No logic changed; its docstring, the module docstring, the two route descriptions and README now say what history is. The new detailed test is `test_only_a_committed_active_turn_is_history` in `tests/integration/test_two_stage.py`:
+  - Four stories follow a profile with the polish pass off: one has played a turn; one's only turn failed (a stub `http_500`, 503 `model_unavailable`); one played a turn, then truncated it away (`to_turn: 0`); one never played.
+  - It first asserts each story's turn operations (status, membership): `committed`/`active`, `failed`/`active`, `committed`/`discarded`, and none. So neither case is vacuous.
+  - Under `data_producing("polish")`, the edit's report lists only the first as `upgrade_unavailable`, with its re-derivation needed. The other three gain the polish pass with nothing to re-derive and Lite's capabilities after it, in the report and in a preview of each alone; the first's preview is unavailable.
+  - Confirmed, the first stays pinned on version 1, and the other three run on version 2, unpinned, with the polish pass.
+
+  It is a detailed test, not part of the C-16 (M4) slice: the qualifier is #109's own definition of history, and the slice follows docs/04's text. The verifier's mutations E (status filter removed) and E2 (membership filter removed) each fail it, at the entry's `upgrade_unavailable`, with `impact.py` restored afterwards (SHA-1 checked).
+  **Why:** The verifier's gap 2: removing either filter left all 38 story tests green, so a story whose only turn failed or was truncated could have been pinned as `upgrade_unavailable` without any test noticing. Cost if wrong: none; a test only.
+  **Issue:** #109

@@ -24,22 +24,26 @@ neither. Each report is logged at INFO with counts and warning codes only.
 ``AFFECTED_MAX`` of them (``affected_count`` counts them all): the capabilities it gains and
 loses (a module switched on or off, or raised or lowered a level; the pipeline by its level),
 whether a backfill is needed and its estimate (model calls, tokens, duration; ``estimates``),
-whether the upgrade is unavailable, and its fingerprint before and after with its quality status
-after. Then the scenario recommendations the result does not meet (``recommended_by`` is the
-scenario's ``<catalog id>@<version>``), the FR-VERIFY-15 guarantees it loses, and the warning
-kinds that made it two-stage. A single-story report (a preview, an assignment, overrides, a
-creation) also states the fingerprints and the quality status at the top; a report over a
-profile's following stories leaves them null there.
+whether the upgrade is unavailable, and FR-PROF-16's stamp of the configuration it would run
+under: its fingerprint before and after, and the capabilities enabled and the quality status
+after (``capabilities_after``, ``quality_status_after``). Then the scenario recommendations the
+result does not meet (``recommended_by`` is the scenario's ``<catalog id>@<version>``), the
+FR-VERIFY-15 guarantees it loses, and the warning kinds that made it two-stage. A single-story
+report (a preview, an assignment, overrides, a creation) also states the fingerprints, the
+capabilities and the quality status at the top; a report over a profile's following stories
+leaves them null there.
 
 **M3's interim rule (FR-PROF-8, until M7).** A change that adds data-producing capability
 (``schema.data_increases``) to a story with history, meaning at least one committed, active
 turn, cannot apply to it, because M3 has no backfill. The report lists that story with
 ``upgrade_unavailable: true`` and ``backfill.needed: true`` with the estimate; a confirmed change
 applies to every other affected story, and that one keeps its previous configuration (a profile
-edit pins it to the version it ran on). Its ``fingerprint_after`` is the one it keeps. A story
-with no turns upgrades, as there is nothing to backfill. So in M3 ``backfill.needed`` is true
-exactly when the upgrade is unavailable. No module delivered in M3 is data-producing;
-``epistrel.testing.profiles.data_producing`` marks one for tests.
+edit pins it to the version it ran on). Its ``fingerprint_after`` and ``capabilities_after`` are
+the ones it keeps. A story with no committed, active turn upgrades, as there is nothing to
+backfill: one that never played, one whose only turn failed, one whose turns were truncated
+away. So in M3 ``backfill.needed`` is true exactly when the upgrade is unavailable. No module
+delivered in M3 is data-producing; ``epistrel.testing.profiles.data_producing`` marks one for
+tests.
 """
 
 from __future__ import annotations
@@ -120,7 +124,9 @@ class Backfill(BaseModel):
 class AffectedStory(BaseModel):
     """One story a change affects: the capabilities it gains and loses, its backfill, whether
     the upgrade is unavailable to it (it has history, and the change adds data-producing
-    capability), and its fingerprint before and after with its quality status after."""
+    capability), and its fingerprint before and after with the capabilities enabled and the
+    quality status after: those of the configuration it would run under, which is its current
+    one when the upgrade is unavailable (FR-PROF-16)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -131,6 +137,7 @@ class AffectedStory(BaseModel):
     upgrade_unavailable: bool
     fingerprint_before: str | None = None
     fingerprint_after: str | None = None
+    capabilities_after: list[str] | None = None
     quality_status_after: QualityStatus | None = None
 
 
@@ -147,10 +154,10 @@ class UnmetRecommendation(BaseModel):
 class ImpactReport(BaseModel):
     """What a change would do before it is applied (FR-PROF-7): the affected stories (ordered by
     story id, at most 1,000; ``affected_count`` counts them all), the scenario recommendations
-    left unmet, the FR-VERIFY-15 guarantees lost, the fingerprints and quality status (at the top
-    for one story; inside each entry for a profile's following stories, with the top ones
-    null), and the ``warnings`` that hold the change for confirmation (empty: it applies at
-    once)."""
+    left unmet, the FR-VERIFY-15 guarantees lost, the fingerprints, the capabilities enabled
+    and the quality status after (FR-PROF-16: at the top for one story; inside each entry for a
+    profile's following stories, with the top ones null), and the ``warnings`` that hold the
+    change for confirmation (empty: it applies at once)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -160,6 +167,7 @@ class ImpactReport(BaseModel):
     guarantees_lost: list[str]
     fingerprint_before: str | None = None
     fingerprint_after: str | None = None
+    capabilities_after: list[str] | None = None
     quality_status_after: QualityStatus | None = None
     warnings: list[str]
 
@@ -232,8 +240,8 @@ def affected(
     story_id: str, change: Delta, *, history: bool, transcript: tuple[int, int] = (0, 0)
 ) -> AffectedStory:
     """``story_id``'s entry: an upgrade is unavailable when the change adds data-producing
-    capability and the story has history; then it keeps its configuration, and the estimate is
-    over its transcript (``messages``, ``characters``)."""
+    capability and the story has history; then it keeps its configuration (the stamp after is
+    the one before), and the estimate is over its transcript (``messages``, ``characters``)."""
     unavailable = bool(change.increases) and history
     estimate = None
     if unavailable:
@@ -248,6 +256,7 @@ def affected(
         upgrade_unavailable=unavailable,
         fingerprint_before=change.before.fingerprint,
         fingerprint_after=kept.fingerprint,
+        capabilities_after=list(kept.capabilities),
         quality_status_after=kept.quality_status,
     )
 
@@ -284,6 +293,7 @@ def single_report(
         guarantees_lost=list(change.guarantees_lost),
         fingerprint_before=entry.fingerprint_before,
         fingerprint_after=entry.fingerprint_after,
+        capabilities_after=entry.capabilities_after,
         quality_status_after=entry.quality_status_after,
         warnings=_warnings(
             change,
@@ -298,8 +308,8 @@ def creation_report(
     after: Stamp, settings: ProfileSettings, recommendation: Recommendation | None
 ) -> ImpactReport:
     """The report of creating a story (#119): no story is affected yet; the new story's
-    fingerprint and quality status, and the scenario's recommendations its profile leaves
-    unmet (the only warning a creation can carry)."""
+    fingerprint, capabilities and quality status, and the scenario's recommendations its
+    profile leaves unmet (the only warning a creation can carry)."""
     missing = unmet(recommendation, settings)
     return ImpactReport(
         affected_stories=[],
@@ -307,6 +317,7 @@ def creation_report(
         recommendations_unmet=missing,
         guarantees_lost=[],
         fingerprint_after=after.fingerprint,
+        capabilities_after=list(after.capabilities),
         quality_status_after=after.quality_status,
         warnings=_warnings(None, affects=False, unavailable=False, recommendations=missing),
     )
@@ -317,7 +328,8 @@ def creation_report(
 
 async def with_history(conn: AsyncConnection, story_ids: Collection[str]) -> set[str]:
     """The stories among ``story_ids`` with history: at least one committed, active turn
-    (generated or ingested; a truncated turn is not active)."""
+    (generated or ingested; a failed turn is not committed, and a truncated one is not
+    active)."""
     if not story_ids:
         return set()
     found = await conn.scalars(

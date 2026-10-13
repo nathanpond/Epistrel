@@ -314,15 +314,17 @@ async def get_profile(
         f"{_SETTINGS_RULES}"
         "\n\nAn edit runs in two stages (FR-PROF-7). Its `impact` report lists every story "
         "that follows the profile's latest version: the capabilities each gains and loses, its "
-        "fingerprint before and after (FR-PROF-16), whether a backfill would be needed and "
-        "whether its upgrade is unavailable. When the report has `warnings` and the body does "
-        "not set `ignore_warnings` (`ignoreWarnings`), nothing is written and the answer is 200 "
-        "with `applied: false` and the report; the `Idempotency-Key` is not kept, so the "
+        "fingerprint before and after with the capabilities enabled and the quality status "
+        "after (FR-PROF-16), whether a backfill would be needed and whether its upgrade is "
+        "unavailable. When the report has `warnings` and the body does not set "
+        "`ignore_warnings` (`ignoreWarnings`), nothing is written and the answer is 200 with "
+        "`applied: false` and the report; the `Idempotency-Key` is not kept, so the "
         "confirmation may reuse it. With `ignore_warnings`, or a report without warnings, the "
         "edit applies: `applied: true`, the report, and the profile in `result`. A "
         "data-producing increase (none is delivered in M3) cannot apply to a following story "
-        "with history: that story keeps the version it ran on, and every other story moves to "
-        "the new one. Settings that cannot run are refused whatever `ignore_warnings` says."
+        "with history (a committed turn still on its timeline): that story keeps the version "
+        "it ran on, and every other story moves to the new one. Settings that cannot run are "
+        "refused whatever `ignore_warnings` says."
     ),
 )
 async def update_profile(

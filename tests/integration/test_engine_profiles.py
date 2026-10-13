@@ -595,22 +595,24 @@ async def test_c_16__two_stage(scratch: Space) -> None:
     with a played turn. Turning the rolling summary off is answered 200 with ``applied: false``
     and no ``result``: the impact report lists both stories by id, each losing the rolling
     summary, with its fingerprint before (the one its effective configuration states) and a new
-    one after, and warns of the lost capability. Nothing changed: the profiles, versions,
-    stories, operations, keys and configuration rows compare equal, so the ``Idempotency-Key``
-    was not kept. Sent again under that key with ``ignoreWarnings: true``, the edit applies:
-    version 2 in ``result``, the same report, both stories running on version 2 without the
-    rolling summary under the fingerprint the report gave; a retry replays the answer. An edit
-    the stories would not feel as a lost or gained capability (a temperature) applies at once,
-    with a new fingerprint. Settings that cannot run are refused 422 ``invalid_profile`` even
-    with ``ignore_warnings``, and nothing changes; a preview of them is refused the same way.
-    So is a confirmed edit sent without the service credential (401). ``ignore_warnings`` and
+    one after, the capabilities it would run with (no rolling summary) and its quality status,
+    and warns of the lost capability; the report's own fingerprints and capabilities are null,
+    as it may list many stories. Nothing changed: the profiles, versions, stories, operations,
+    keys and configuration rows compare equal, so the ``Idempotency-Key`` was not kept. Sent
+    again under that key with ``ignoreWarnings: true``, the edit applies: version 2 in
+    ``result``, the same report, both stories running on version 2 without the rolling summary
+    under the fingerprint the report gave; a retry replays the answer. An edit the stories
+    would not feel as a lost or gained capability (a temperature) applies at once, with a new
+    fingerprint. Settings that cannot run are refused 422 ``invalid_profile`` even with
+    ``ignore_warnings``, and nothing changes; a preview of them is refused the same way. So is a
+    confirmed edit sent without the service credential (401). ``ignore_warnings`` and
     ``ignoreWarnings`` with different values are 422.
 
     The impact preview of assigning Lite to a story states the one-story report with the
-    fingerprints at the top too, and writes nothing (no key is echoed). A story creation whose
-    profile lacks a capability its scenario recommends goes through the same flow (#119 sends
-    ``POST /stories`` through it): held, with the recommendation unmet and nothing created,
-    until ``ignore_warnings``."""
+    fingerprints and the capabilities at the top too, and writes nothing (no key is echoed). A
+    story creation whose profile lacks a capability its scenario recommends goes through the
+    same flow (#119 sends ``POST /stories`` through it): held, with the recommendation unmet,
+    the new story's capabilities stated and nothing created, until ``ignore_warnings``."""
     async with respond_client(scratch.settings, scratch.db) as (client, _):
         profile = (
             await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
@@ -636,7 +638,12 @@ async def test_c_16__two_stage(scratch: Space) -> None:
         assert [entry["story_id"] for entry in report["affected_stories"]] == followers
         assert (report["affected_count"], report["warnings"]) == (2, ["capabilities_lost"])
         assert (report["recommendations_unmet"], report["guarantees_lost"]) == ([], [])
-        assert (report["fingerprint_before"], report["fingerprint_after"]) == (None, None)
+        assert (
+            report["fingerprint_before"],
+            report["fingerprint_after"],
+            report["capabilities_after"],
+        ) == (None, None, None)
+        without_summary = [c for c in LITE_CAPABILITIES if c != "rolling_summary"]
         for entry in report["affected_stories"]:
             assert (entry["capabilities_gained"], entry["capabilities_lost"]) == (
                 [],
@@ -646,6 +653,7 @@ async def test_c_16__two_stage(scratch: Space) -> None:
             assert entry["upgrade_unavailable"] is False
             assert entry["fingerprint_before"] == before[entry["story_id"]]
             assert entry["fingerprint_after"] != entry["fingerprint_before"]
+            assert entry["capabilities_after"] == without_summary
             assert entry["quality_status_after"] == UNCERTIFIED
         assert await configuration_rows(scratch.db) == unchanged
 
@@ -659,7 +667,7 @@ async def test_c_16__two_stage(scratch: Space) -> None:
             now = await _effective(client, story)
             assert (now["profile"]["version"], now["profile"]["pinned"]) == (2, False)
             assert now["fingerprint"] == after[story]
-            assert now["capabilities"] == [c for c in LITE_CAPABILITIES if c != "rolling_summary"]
+            assert now["capabilities"] == without_summary
         again = await client.put(f"{PROFILES}/{profile}", json=confirm, headers=headers(B, key))
         assert (again.headers.get("Idempotent-Replay"), again.json()) == ("true", done)
         (recorded,) = await rows(
@@ -733,6 +741,7 @@ async def test_c_16__two_stage(scratch: Space) -> None:
         current = (await _effective(client, idle))["fingerprint"]
         assert preview["fingerprint_before"] == entry["fingerprint_before"] == current
         assert preview["fingerprint_after"] == entry["fingerprint_after"] != current
+        assert preview["capabilities_after"] == entry["capabilities_after"] == LITE_CAPABILITIES
         assert preview["quality_status_after"] == UNCERTIFIED
         assert await configuration_rows(scratch.db) == still
 
@@ -757,6 +766,7 @@ async def test_c_16__two_stage(scratch: Space) -> None:
         (lacking, "SCN@1")
     ]
     assert first.impact.fingerprint_after == lite.stamp(facts).fingerprint
+    assert first.impact.capabilities_after == LITE_CAPABILITIES
     second: TwoStageResult[str] = await two_stage(report_fn, create, ignore_warnings=True)
     assert (second.applied, second.result, created) == (True, "story", ["story"])
     assert second.impact == first.impact
@@ -771,11 +781,12 @@ async def test_c_16__upgrade_unavailable(scratch: Space) -> None:
     ``ignore_warnings``, changes nothing and reports, by story id: the story with history
     ``upgrade_unavailable``, its re-derivation needed with an estimate over its transcript (one
     call per 30 messages, its characters over four in tokens, the measured per-call latency),
-    and keeping its fingerprint; the story without turns gaining the polish pass with nothing to
-    re-derive. With ``ignore_warnings`` the edit applies to the second story, which runs on
-    version 2 with the polish pass, while the first keeps version 1 (pinned, as its effective
-    configuration states) and its next turn runs on it. A preview of the same increase reports
-    the same for each story alone.
+    and keeping its fingerprint and its capabilities (no polish pass); the story without turns
+    gaining the polish pass with nothing to re-derive, its capabilities after holding it. With
+    ``ignore_warnings`` the edit applies to the second story, which runs on version 2 with the
+    polish pass, while the first keeps version 1 (pinned, as its effective configuration states)
+    and its next turn runs on it: each runs with the capabilities its entry stated. A preview of
+    the same increase reports the same for each story alone.
 
     Complement asserted: without the marking, the same kind of edit moves a story with history
     to the new version, as an ordinary gained capability."""
@@ -823,12 +834,15 @@ async def test_c_16__upgrade_unavailable(scratch: Space) -> None:
                 },
             }
             assert kept["fingerprint_before"] == kept["fingerprint_after"] == before[played]
+            unpolished = [c for c in LITE_CAPABILITIES if c != "polish"]
+            assert kept["capabilities_after"] == unpolished
             assert (moved["upgrade_unavailable"], moved["capabilities_gained"]) == (
                 False,
                 ["polish"],
             )
             assert moved[REDERIVATION] == {"needed": False, "estimate": None}
             assert moved["fingerprint_before"] == before[fresh] != moved["fingerprint_after"]
+            assert moved["capabilities_after"] == LITE_CAPABILITIES
 
             preview = await ok(
                 await client.post(
@@ -839,6 +853,7 @@ async def test_c_16__upgrade_unavailable(scratch: Space) -> None:
             )
             assert preview["warnings"] == UNAVAILABLE_WARNINGS
             assert preview["affected_stories"][0]["upgrade_unavailable"] is True
+            assert preview["capabilities_after"] == unpolished
             alone = await ok(
                 await client.post(
                     f"/stories/{fresh}/impact-preview",
@@ -847,6 +862,7 @@ async def test_c_16__upgrade_unavailable(scratch: Space) -> None:
                 )
             )
             assert alone["warnings"] == ["capabilities_gained"]
+            assert alone["capabilities_after"] == LITE_CAPABILITIES
 
             confirmed = await ok(
                 await client.put(
@@ -860,9 +876,11 @@ async def test_c_16__upgrade_unavailable(scratch: Space) -> None:
         goes = await _effective(client, fresh)
         assert (stays["profile"]["version"], stays["profile"]["pinned"]) == (1, True)
         assert "polish" not in stays["capabilities"]
+        assert stays["capabilities"] == kept["capabilities_after"]
         assert stays["fingerprint"] == before[played]
         assert (goes["profile"]["version"], goes["profile"]["pinned"]) == (2, False)
         assert "polish" in goes["capabilities"]
+        assert goes["capabilities"] == moved["capabilities_after"]
         assert goes["fingerprint"] == moved["fingerprint_after"]
         pins = await rows(
             scratch.db,

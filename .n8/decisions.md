@@ -3620,3 +3620,6 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - `docs/openapi.json` is regenerated.
   **Why:** docs/02 is authoritative and should describe the routes as built, as #110 and #111 did. Cost if wrong: none.
   **Issue:** #112
+- **Decision:** Filed #322 (`needs-triage`) and did not fix it. `PUT /admin/settings` coerces a JSON boolean, a numeric string or an integral float for every older integer setting. `SettingsPatch` and the settings sections use lax `int`, so `true` becomes `1` and `"7"` becomes `7`, while the documented schema says `integer`. #112's own new settings refuse these values: `feedback_text_max_chars` is a `StrictInt`, and `feedback_retention` has a validator. It is cross-referenced on #112.
+  **Why:** The older settings are M2's and earlier M3 stories', outside #112's scope, and tightening them changes accepted input for every integer setting: a triage call. Cost if wrong: none.
+  **Issue:** #112, #322

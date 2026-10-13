@@ -59,7 +59,7 @@ class ListingStatusRequest(BaseModel):
 
     value: ListingStatusValue = Field(
         description="One of the deployment's `listing_status_values` (default `private`, "
-        "`in_review`, `public`): 1 to 40 characters, case-sensitive."
+        "`in_review`, `public`): 1 to 40 printable characters, case-sensitive."
     )
 
 

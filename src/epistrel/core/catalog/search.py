@@ -74,7 +74,7 @@ from epistrel.core.enums import EntryStatus
 from epistrel.core.errors import CursorInvalid, InvalidRequest, refuse_nul
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.ownership import RelationFilter
-from epistrel.core.settings_schema import LISTING_STATUS_PATTERN
+from epistrel.core.settings_schema import ListingStatusValue
 from epistrel.core.tables import content_ratings
 from epistrel.core.tables.catalog import SEARCH_CONFIG
 from epistrel.core.tables.ownership import EntityType
@@ -90,6 +90,7 @@ CURSOR_MAX = 256
 COMPANION_COLUMN = ownership.COMPANION_COLUMN
 
 _LABEL: TypeAdapter[str] = TypeAdapter(Label)
+_LISTING_STATUS: TypeAdapter[str] = TypeAdapter(ListingStatusValue)
 _TS_CONFIG: ColumnClause[Any] = literal_column(f"'{SEARCH_CONFIG}'::regconfig")
 """The text-search configuration, written into the SQL (a constant, never a request value)."""
 
@@ -207,12 +208,14 @@ def catalog_query(
         )
     value = None
     if listing_status is not None:
-        if not re.fullmatch(LISTING_STATUS_PATTERN, listing_status):
+        try:
+            value = _LISTING_STATUS.validate_python(listing_status)
+        except ValidationError:
             raise InvalidRequest(
-                "listing_status must be 1 to 40 characters without control characters",
+                "listing_status must be 1 to 40 printable characters (no control or format "
+                "character, and no separator but the space)",
                 {"field": "query.listing_status"},
-            )
-        value = listing_status.strip(" \t")
+            ) from None
     return CatalogQuery(
         q=q,
         labels=_labels(labels),

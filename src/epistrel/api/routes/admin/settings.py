@@ -54,7 +54,7 @@ async def read_settings(ctx: ContextDep, engine: EngineDep) -> SettingsBody:
         "`max_characters_at_start_ceiling` (unset: no hook, no base URL, no ceiling); no other "
         "key does. A list replaces the stored one. `listing_status_values` lists the catalog's "
         "listing status values in order (a new entry takes the first; distinct, case-sensitive, "
-        "1 to 40 characters each); removing a value a catalog entry still holds is 409 "
+        "1 to 40 printable characters each); removing a value a catalog entry still holds is 409 "
         "`listing_status_in_use` (`details.value`, `details.count`). `validation_model_calls` "
         "(0 to 1000, default 0) is how many model calls one catalog validation (a publish, or a "
         "dry run) may spend on model-assisted input policies; those it does not reach are "

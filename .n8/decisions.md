@@ -3441,3 +3441,75 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - prepare inside the lock (the no-lock test).
   **Why:** Under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
   **Issue:** #111
+- **Decision:** #110 verification fixes, round 1 (gap 1 of 5). The gap was real, and it was a gap in test coverage only. No source file changed for it. `test_list_items_are_the_single_read_cards` now edits its published entries' drafts after they publish:
+  - the character's name and public description;
+  - the archived character's name, before it is archived;
+  - the scenario's name, public description, labels (`noir`) and rating (Teen).
+
+  So a list that showed a draft would no longer equal the single read.
+  - For each edited entry, the listed card equals the plain read, which shows the published name, and `?draft=true` shows the edit.
+  - The label, rating and text filters also read the published version. `label=family` and the Everyone rating find the scenario. The draft's `noir`, its Teen rating and its new words (`sale`, `margaret`) find nothing.
+  - **Mutation-checked.** The verifier's 1b (`catalog.c.draft.label("document")` at `search.py:314`) passed every story test before. Now the story's tests give 1 failed, 39 passed: the listed card shows the draft's "Keeps the orchard now." where the read shows the published card.
+  **Why:** This is the fix hint. I extended the test that claims "list cards equal the single read" rather than adding a new one, so the claim and its proof stay together. Cost if wrong: none.
+  **Issue:** #110
+- **Decision:** #110 verification fixes, round 1 (gap 2 of 5). The gap was real, and it was a gap in test coverage only. No source file changed. `test_i_21__listing_filters` now combines `status=draft` with the label and rating filters:
+  - `label=family` and the Everyone rating find `s4`, the draft-only "Attic".
+  - `label=noir` and the Teen rating find nothing.
+  - The docstring names the clause.
+  - **Mutation-checked.** The verifier's mutant 2 makes the label and rating predicates read `versions.c.content` instead of the shown document (`search.py:332,334`). It passed before. Now: 1 failed, 39 passed, at `{'label': 'family'}`, where `[] != [s4]`.
+  **Why:** This is the fix hint's first option. I-21 is the filters' behavioural matrix, and it already holds a labelled draft-only scenario. The new cases sit after the matrix loop, because that loop asserts that each filtered list is a strict subset of the published list. Cost if wrong: none.
+  **Issue:** #110
+- **Decision:** #110 verification fixes, round 1 (gap 3 of 5). The gap was real, and it was a gap in test coverage only. No source file changed. Tests now pin every filter in the cursor's hash.
+  - **Unit.** The new `tests/test_catalog_listing.py::test_a_cursor_binds_every_filter` is parametrised over all eight filters and both kinds. The filters are `q`'s words, `label`, `content_rating`, `listing_status`, `owner`, `relation`, `status` and `include_companions`. For each pair of queries that differ in exactly that filter:
+    - their fingerprints differ;
+    - the cursor decodes to its position under its own fingerprint;
+    - under the other's fingerprint it is 422 `cursor_invalid`, reason `filters_changed`.
+  - **REST.** `test_list_requests_are_checked` now also checks the reuse cases, each `filters_changed`:
+    - the page-1 cursor reused with `label`, `content_rating`, `listing_status` or `relation` added;
+    - a search's cursor (`q=sailor`) reused with `q=sailor 1`;
+    - a scenario list's cursor reused with `include_companions=true`.
+    Complement: the search's own next page lists the other two sailors.
+  - **Mutation-checked.** The verifier's mutant 3 removes `q`, `labels`, `content_rating`, `listing_status` and `include_companions` from `CatalogQuery.fingerprint`. It passed before. Now: 11 failed, 29 passed. The failures are the REST test and the 10 unit cases for those five filters.
+  **Why:** The fix hint offered either test. Both are cheap, and the REST one also pins how `search` uses the fingerprint, not just the hash. Cost if wrong: none.
+  **Issue:** #110
+- **Decision:** #110 verification fixes, round 1 (gap 4 of 5). The gap was real, and it was a gap in test coverage only. No source file changed. A new detailed test, `test_writes_waiting_on_a_removal_read_the_values_it_left`, races a removal against both writes that read the configured values under the deployment row `FOR SHARE`.
+  - **The race.**
+    1. The test's own transaction takes the row `FOR UPDATE` with `core.config_changes.lock_deployment`, the call every settings write starts with.
+    2. A listing-status change to `in_review` and a creation both start, and the test waits until `pg_stat_activity` shows both waiting on the lock.
+    3. The transaction sets the values to `["public", "private"]` and commits.
+  - **The outcome.**
+    - The change had passed its own early check before its key was claimed. It is now 422 `invalid_listing_status`, naming the new values. Nothing is recorded (no event, no operation), and the entry stays `private`.
+    - The new entry starts at `public`, the new first value.
+  - **Mutation-checked.** The verifier's mutant 7 (no `refuse_unknown` under the lock, `service.py:657` at this HEAD) now fails the test: 200, not 422. Mutant 8 (`allowed_values(conn, lock=False)` in `create`, `service.py:450`) fails it too: "no request waited on the lock in time", because the creation no longer waits and takes `private`. Each run: 1 failed, 39 passed. Both mutants passed every test before.
+  **Why:**
+  - The fix hint's direct service call, bypassing `Engine.require_allowed`, would prove only that the in-transaction check exists. The race shows why it matters: it goes through REST, and the early check passes.
+  - I simulated the operator's removal with a held transaction instead of adding a pause point to `apply_settings`, so no product code changed for a test.
+  - The simulation skips `refuse_removal` and the `config_changes` rows. Neither affects what the waiting writes read, and since no entry holds `in_review`, the real removal would have committed the same values.
+
+  Cost if wrong: none.
+  **Issue:** #110
+- **Decision (Rule 2):** #110 verification fixes, round 1 (gap 5 of 5). A listing status value must now be printable text, as the pass-2 Discretion line says: "any printable text without control characters". Before, `LISTING_STATUS_PATTERN` refused only C0 and DEL. The setting, the `PUT …/listing-status` body and the `listing_status` filter all accepted a C1 control (U+0085), a no-break space (U+00A0), a zero-width space (U+200B) or a direction override (U+202E), so two configured values could look the same yet differ.
+  - **The pattern.** `LISTING_STATUS_PATTERN` now also refuses C1 (`\x7f-\x9f`), so the published schema refuses every control character.
+  - **The validator.** The rest of the rule is a new after-validator, `settings_schema.listing_status_value`. It trims the value and then requires `str.isprintable()`.
+    - Refused: the format characters (zero-width space, direction marks and overrides, soft hyphen, BOM, and the zero-width joiner, so emoji ZWJ and tag sequences are refused); every separator except the space; and private-use, surrogate and unassigned code points.
+    - Still valid: accented letters, symbols, and emoji without a joiner.
+  - **Where the rule applies.**
+    - `ListingStatusValue` uses the validator, so both bodies apply it.
+    - `search.catalog_query` now validates the filter through the same type (a `TypeAdapter`), so a query is refused at `query.listing_status` (422 `validation_error`) by the same rule.
+    - The field descriptions now say "printable". `docs/openapi.json` was regenerated: the pattern in four places and two descriptions.
+  - **Exact comparison.** Values are still compared exactly as written. Canonically equivalent spellings (an NFC and an NFD `é`) and look-alike letters from other scripts stay distinct values. I added no normalisation, because the plan names none.
+  - **Tests.**
+    - 422 cases for U+0085, U+00A0 and U+200B in:
+      - `test_listing_status_values_setting` (the setting);
+      - `test_listing_status_writes` (the body);
+      - `test_list_requests_are_checked` (the filter, at the route's pattern and at `catalog_query`);
+      - `test_requests_are_normalised_and_checked` (unit).
+    - Complement: `en révision ✓` is configured, set (trimmed) and filtered by over REST, and `catalog_query` keeps it.
+    - The new unit test `test_the_documented_pattern_refuses_every_control_character` pins the published pattern against C0, DEL and C1 at the start, middle and end of a value.
+  - **Mutation-checked.** Without the printable check, 4 tests fail. With the pattern's C1 range dropped, the new unit test fails, and `openapi --check` flags the document.
+  - **Stored data.** None is affected: the column is new in this milestone (migration 0027), and its defaults are printable.
+  **Why:** This is the fix hint's first option. The plan line is explicit, and this log's entry for the column already said "no control character", which C1 contradicted. `str.isprintable` is the standard library's definition of printable, so no hand-kept table is needed. The pattern carries the part a schema can state. Cost if wrong: a consumer cannot use a joiner sequence or an invisible character in a value. Relaxing the check later is additive.
+  **Issue:** #110
+- **Decision:** Filed #321 (`needs-triage`). The principal rule refuses only C0 and DEL: `PRINCIPAL_PATTERN`, `principal_problem`, and the principal part of `RELATION_FILTER_PATTERN`. But its messages and the `X-Epistrel-Principal` description say a principal "holding a control character" is refused, and C1 controls are accepted. This is M2's FR-AUTH-4 rule, outside #110's scope, so it was not fixed inline.
+  **Why:** The verifier noted that the principal rule shares the convention gap 5 corrected. Cost if wrong: none.
+  **Issue:** #110, #321

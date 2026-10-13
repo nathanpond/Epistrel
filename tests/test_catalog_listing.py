@@ -9,6 +9,7 @@ behaviour over a database is ``tests/integration/test_i_21.py``'s ``test_i_21__l
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -21,8 +22,12 @@ from epistrel.core.catalog.service import CatalogService
 from epistrel.core.enums import EntryStatus
 from epistrel.core.errors import CursorInvalid, InvalidRequest
 from epistrel.core.ownership import RelationFilter
+from epistrel.core.seeds.ratings import EVERYONE_ID
+from epistrel.core.settings_schema import LISTING_STATUS_PATTERN, listing_status_value
 
 SERVICES = (characters.SERVICE, scenarios.SERVICE)
+ENTRY = "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+"""An entry id for the cursors these tests make."""
 
 FILTERS: dict[str, tuple[dict[str, Any], str]] = {
     "owner": ({"owner": "p-owner"}, "owner_principal"),
@@ -86,8 +91,10 @@ def test_the_default_list_reads_status_and_nothing_a_filter_reads() -> None:
 def test_requests_are_normalised_and_checked() -> None:
     """Labels are trimmed, lower-cased and kept once; a listing status is trimmed; relations
     split at the first colon; no status means ``published``. A blank or overlong ``q``, ``q``
-    with ``status=draft``, a malformed label, rating id or listing status, an unknown status and
-    more than 30 labels are each 422 at their query field."""
+    with ``status=draft``, a malformed label or rating id, a listing status that is overlong or
+    not printable text (a C0 or C1 control character, a no-break or zero-width space), an
+    unknown status and more than 30 labels are each 422 at their query field. Complement: a
+    listing status of printable text outside ASCII is kept, trimmed."""
     query = catalog_query(
         labels=(" Family ", "family", "NOIR"),
         listing_status="  in review ",
@@ -110,6 +117,9 @@ def test_requests_are_normalised_and_checked() -> None:
         ({"labels": tuple(f"l{n}" for n in range(31))}, "query.label"),
         ({"content_rating": "not-a-rating"}, "query.content_rating"),
         ({"listing_status": "a\x01b"}, "query.listing_status"),
+        ({"listing_status": "pub\x85lic"}, "query.listing_status"),
+        ({"listing_status": "public\xa0"}, "query.listing_status"),
+        ({"listing_status": "pub\u200blic"}, "query.listing_status"),
         ({"listing_status": "x" * 41}, "query.listing_status"),
         ({"status": "deleted"}, "query.status"),
         ({"q": "a\x00b"}, "query.q"),
@@ -120,6 +130,21 @@ def test_requests_are_normalised_and_checked() -> None:
             catalog_query(**request)
         assert caught.value.details["field"] == field, request
     assert catalog_query(q="x" * 200).q == "x" * 200
+    assert catalog_query(listing_status="\ten révision ✓ ").listing_status == "en révision ✓"
+
+
+def test_the_documented_pattern_refuses_every_control_character() -> None:
+    """``LISTING_STATUS_PATTERN``, which the OpenAPI document gives every listing status field,
+    refuses a control character (C0, DEL or C1) anywhere in a value, so a client that checks
+    against the schema refuses one too. The rest of the rule, printable text, is
+    ``listing_status_value``'s: a no-break space passes the pattern, and it refuses it."""
+    for control in ("\x00", "\x1f", "\x7f", "\x80", "\x85", "\x9f"):
+        for value in (f"{control}public", f"pub{control}lic", f"public{control}"):
+            assert re.fullmatch(LISTING_STATUS_PATTERN, value) is None, repr(value)
+    assert re.fullmatch(LISTING_STATUS_PATTERN, "public\xa0") is not None
+    with pytest.raises(ValueError, match="printable"):
+        listing_status_value("public\xa0")
+    assert listing_status_value(" \tin review ") == "in review"
 
 
 def test_cursors_bind_their_filters() -> None:
@@ -156,3 +181,38 @@ def test_cursors_bind_their_filters() -> None:
     assert refused(naive, fingerprint) == "malformed"
     ranked = search.encode_cursor(Position(0.25, moment, position.id), fingerprint)
     assert search.decode_cursor(ranked, fingerprint, ranked=True).rank == 0.25
+
+
+BOUND: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+    "q": ({"q": "garden"}, {"q": "orchard"}),
+    "label": ({}, {"labels": ("family",)}),
+    "content_rating": ({}, {"content_rating": EVERYONE_ID}),
+    "listing_status": ({}, {"listing_status": "public"}),
+    "owner": ({}, {"owner": "p-owner"}),
+    "relation": ({}, {"relations": ("editor:p-editor",)}),
+    "status": ({}, {"status": "archived"}),
+    "include_companions": ({}, {"include_companions": True}),
+}
+"""Two listing requests that differ in exactly one filter, by the filter."""
+
+
+@pytest.mark.parametrize("service", SERVICES, ids=lambda s: s.entity_type.value)
+@pytest.mark.parametrize("name", sorted(BOUND))
+def test_a_cursor_binds_every_filter(service: CatalogService, name: str) -> None:
+    """A page's cursor, sent again with exactly one filter changed (whichever it is: ``q``'s
+    words, ``label``, ``content_rating``, ``listing_status``, ``owner``, ``relation``,
+    ``status`` or ``include_companions``), is 422 ``cursor_invalid`` (``filters_changed``):
+    every filter is in the hash the cursor carries.
+
+    Complement asserted: the same filters decode the same cursor to its position."""
+    first, second = (catalog_query(**request) for request in BOUND[name])
+    ranked = first.q is not None
+    kind = service.entity_type
+    bound = first.fingerprint(kind)
+    assert second.fingerprint(kind) != bound
+    position = Position(0.5 if ranked else None, datetime(2026, 10, 13, tzinfo=UTC), ENTRY)
+    cursor = search.encode_cursor(position, bound)
+    assert search.decode_cursor(cursor, bound, ranked=ranked) == position
+    with pytest.raises(CursorInvalid) as caught:
+        search.decode_cursor(cursor, second.fingerprint(kind), ranked=ranked)
+    assert caught.value.details["reason"] == "filters_changed"

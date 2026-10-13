@@ -69,7 +69,7 @@ from epistrel.core.db import make_engine
 from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.media.sweep import sweep
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
-from epistrel.core.seeds.ratings import EVERYONE_ID
+from epistrel.core.seeds.ratings import EVERYONE_ID, TEEN_ID
 from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import stories
 from epistrel.core.tables.ownership import EntityType
@@ -828,12 +828,13 @@ async def test_i_21__listing_filters(pg_url: str) -> None:
     ``label`` (all must hold) or ``listing_status`` exactly when the request names the filter,
     to exactly the entries that match it, and the same whoever asks: A, B, a stranger or no
     principal (never narrowed to the asker). Without a filter, the published list, with the
-    ``draft`` and ``archived`` ones, is every row of the table: the counts are asserted. A
+    ``draft`` and ``archived`` ones, is every row of the table: the counts are asserted. With
+    ``status=draft``, ``label`` and ``content_rating`` match a never-published entry's draft. A
     story whose character came from catalog entry X stays byte-identical while X's listing
     status changes.
 
-    Complements asserted: each filter leaves out the entries that do not match it; the story
-    snapshot does see the story's own archive."""
+    Complements asserted: each filter leaves out the entries that do not match it (a draft's
+    other label or rating too); the story snapshot does see the story's own archive."""
     a, b, c, d = "p-list-a", "p-list-b", "p-list-c", "p-list-d"
     async with (
         scratch_catalog(pg_url) as (settings, db),
@@ -933,6 +934,16 @@ async def test_i_21__listing_filters(pg_url: str) -> None:
         assert await listed_ids(client, CHARACTERS, status="draft") == [c4]
         assert await listed_ids(client, CHARACTERS, status="archived") == [c5]
         assert await listed_ids(client, SCENARIOS, status="draft") == [s4]
+
+        # Under `status=draft`, `label` and `content_rating` read each entry's draft.
+        for filters, expected_draft in (
+            ({"label": "family"}, [s4]),
+            ({"label": "noir"}, []),
+            ({"content_rating": EVERYONE_ID}, [s4]),
+            ({"content_rating": TEEN_ID}, []),
+        ):
+            found_draft = await listed_ids(client, SCENARIOS, status="draft", **filters)
+            assert found_draft == expected_draft, filters
 
         # A listing-status change never touches a story made from the entry.
         story = await create_story(client, a, None)

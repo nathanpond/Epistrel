@@ -557,21 +557,38 @@ DEFAULT_LISTING_STATUS_VALUES = ("private", "in_review", "public")
 """The listing status values a deployment starts with; a new catalog entry takes the first."""
 LISTING_STATUS_VALUE_MAX = 40
 LISTING_STATUS_VALUES_MAX = 50
+_CONTROLS = r"\x00-\x1f\x7f-\x9f"
+"""Every control character (Unicode ``Cc``: C0, DEL and C1), as a regular expression range."""
 LISTING_STATUS_PATTERN = (
-    rf"^[\t ]*[^\x00-\x1f\x7f\t ]([^\x00-\x1f\x7f]{{0,{LISTING_STATUS_VALUE_MAX - 2}}}"
-    r"[^\x00-\x1f\x7f\t ])?[\t ]*$"
+    rf"^[\t ]*[^{_CONTROLS}\t ]([^{_CONTROLS}]{{0,{LISTING_STATUS_VALUE_MAX - 2}}}"
+    rf"[^{_CONTROLS}\t ])?[\t ]*$"
 )
-"""A listing status value as sent: 1 to 40 characters without control characters, between
-optional spaces and tabs (which are trimmed). Case-sensitive: ``Public`` is not ``public``."""
+"""A listing status value as sent: 1 to 40 characters without control characters (C0, DEL or
+C1), between optional spaces and tabs (which are trimmed). ``listing_status_value`` adds the
+rest of the rule, which a pattern cannot state: every character is printable. Case-sensitive:
+``Public`` is not ``public``."""
 
 
-def _trimmed(value: str) -> str:
-    """``value`` without the spaces and tabs ``LISTING_STATUS_PATTERN`` lets surround it."""
-    return value.strip(" \t")
+def listing_status_value(value: str) -> str:
+    """A listing status value as sent (``LISTING_STATUS_PATTERN`` already matched), as stored:
+    trimmed of the spaces and tabs the pattern lets surround it. ``ValueError`` unless every
+    character is printable (``str.isprintable``): a format character (a zero-width space, a
+    direction override) or a separator other than the space (a no-break space) is refused, so
+    two values cannot differ by one of those alone."""
+    trimmed = value.strip(" \t")
+    if not trimmed.isprintable():
+        raise ValueError(
+            "a listing status value holds printable characters only: no control or format "
+            "character, and no separator but the space"
+        )
+    return trimmed
 
 
-ListingStatusValue = Annotated[str, Field(pattern=LISTING_STATUS_PATTERN), AfterValidator(_trimmed)]
-"""One listing status value (FR-CAT-11): consumer-defined, never interpreted."""
+ListingStatusValue = Annotated[
+    str, Field(pattern=LISTING_STATUS_PATTERN), AfterValidator(listing_status_value)
+]
+"""One listing status value (FR-CAT-11): consumer-defined, never interpreted; 1 to 40 printable
+characters, trimmed."""
 
 DEPLOYMENT_COLUMNS = (
     "default_content_rating_id",
@@ -645,8 +662,9 @@ class DeploymentSettings(
     """The listing status values a catalog character or scenario may hold (FR-CAT-11; #110),
     in order: a new entry starts at the first. Consumer-defined publishing-workflow values that
     Epistrel never interprets: they restrict no read, no story creation and no transition
-    (FR-AUTH-8). Each is 1 to 40 characters without control characters (trimmed), the list
-    holds no value twice, and the values are case-sensitive. A write replaces the whole list (a
+    (FR-AUTH-8). Each is 1 to 40 printable characters (trimmed of surrounding spaces and tabs;
+    no control or format character, and no separator but the space), the list holds no value
+    twice, and the values are case-sensitive. A write replaces the whole list (a
     reorder is a change); removing a value that any catalog entry still holds is 409
     ``listing_status_in_use``. Prospective: a change applies to the writes that start after
     it."""

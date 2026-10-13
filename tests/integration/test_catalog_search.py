@@ -20,14 +20,17 @@ from typing import Any
 
 import httpx2 as httpx
 import pytest
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.api import create_app
 from epistrel.core.catalog import listing
+from epistrel.core.config_changes import lock_deployment
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.seeds.ratings import EVERYONE_ID, TEEN_ID
+from epistrel.core.tables import deployment_state
+from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.ownership import EntityType
 from epistrel.engine import Engine
 from epistrel.testing import pauses
@@ -342,17 +345,48 @@ async def test_character_search_reads_labels_and_aliases(space: Space) -> None:
 
 async def test_list_items_are_the_single_read_cards(space: Space) -> None:
     """Every listed item is exactly the card a single read answers (the latest published
-    version; a never-published entry's draft, ``version`` null; an archived entry's latest
-    version), plus the entry's ``owner_principal`` and ``updated_at`` as ``full`` reads them,
-    and ``rank`` only on a search."""
+    version, whatever its draft holds since; a never-published entry's draft, ``version`` null;
+    an archived entry's latest version), plus the entry's ``owner_principal`` and
+    ``updated_at`` as ``full`` reads them, and ``rank`` only on a search. The published
+    entries' drafts are edited after their publish (name, public description and, for the
+    scenario, labels and rating), so a list that showed a draft would differ from the read. The
+    label, rating and text filters read the same published version: the draft's new label,
+    rating or name finds nothing until it is published.
+
+    Complements asserted: each edited entry's draft read shows the edit (so the listed card's
+    published values are the list's doing); the published label and rating do find the
+    scenario."""
     client = space.client
     mara = await _character(client, "Mara Venn")
     draft = await _character(client, "Ada Lowe", publish=False)
     archived = await _character(client, "Tom Reed")
-    await _ok(await client.post(f"{CHARACTERS}/{archived}/archive", headers=WRITE))
     cast = await scenarios.cast_characters(client)  # the characters its roles name (#111)
     complete = await _scenario(client, scenarios.complete_with(*cast))
     unpublished = await _scenario(client, scenarios.scenario("Attic"), publish=False)
+    edits: dict[str, tuple[str, dict[str, Any], str, str]] = {
+        mara: (
+            CHARACTERS,
+            {"name": "Margaret Venn", "public_description": "Keeps the orchard now."},
+            "Mara Venn",
+            "Margaret Venn",
+        ),
+        archived: (CHARACTERS, {"name": "Thomas Reed"}, "Tom Reed", "Thomas Reed"),
+        complete: (
+            SCENARIOS,
+            {
+                "public_card": {"name": "The Harrow Sale", "public_description": "Sold at last."},
+                "metadata": {"labels": ["noir"], "content_rating_id": TEEN_ID},
+            },
+            scenarios.COMPLETE["public_card"]["name"],
+            "The Harrow Sale",
+        ),
+    }
+    for entry_id, (base, fields, _, _) in edits.items():
+        saved = await client.patch(
+            f"{base}/{entry_id}", json={"draft_revision": 2, **fields}, headers=WRITE
+        )
+        assert saved.status_code == 200, saved.text
+    await _ok(await client.post(f"{CHARACTERS}/{archived}/archive", headers=WRITE))
     expected = [
         (CHARACTERS, mara, "published", {}),
         (CHARACTERS, draft, "draft", {"draft": "true"}),
@@ -364,6 +398,12 @@ async def test_list_items_are_the_single_read_cards(space: Space) -> None:
         (item,) = [i for i in await every(client, base, status=status) if i["id"] == entry_id]
         card = await _ok(await client.get(f"{base}/{entry_id}", params=read_as, headers=READ))
         assert {k: v for k, v in item.items() if k not in LIST_EXTRA_KEYS} == card, entry_id
+        if entry_id in edits:
+            _, _, published_name, drafted_name = edits[entry_id]
+            drafted = await _ok(
+                await client.get(f"{base}/{entry_id}", params={"draft": "true"}, headers=READ)
+            )
+            assert (item["name"], drafted["name"]) == (published_name, drafted_name), entry_id
         full = await _ok(
             await client.get(
                 f"{base}/{entry_id}", params={**read_as, "projection": "full"}, headers=READ
@@ -378,6 +418,18 @@ async def test_list_items_are_the_single_read_cards(space: Space) -> None:
     assert [set(item) for item in listed] == [CARD_KEYS | LIST_EXTRA_KEYS] * 3
     (found,) = (await _ok(await list_page(client, CHARACTERS, q="mara")))["items"]
     assert set(found) == CARD_KEYS | LIST_EXTRA_KEYS | {"rank"}
+
+    # The filters read the published version as the cards do, never the draft's edit.
+    drafted = await _ok(
+        await client.get(f"{SCENARIOS}/{complete}", params={"draft": "true"}, headers=READ)
+    )
+    assert (drafted["labels"], drafted["content_rating"]["id"]) == (["noir"], TEEN_ID)
+    assert await ids(client, SCENARIOS, label="family") == [complete]
+    assert await ids(client, SCENARIOS, content_rating=EVERYONE_ID) == [complete]
+    assert await ids(client, SCENARIOS, label="noir") == []
+    assert await ids(client, SCENARIOS, content_rating=TEEN_ID) == []
+    assert await ids(client, SCENARIOS, q="sale") == []
+    assert await ids(client, CHARACTERS, q="margaret") == []
     projected = await list_page(client, CHARACTERS, projection="full")
     assert _error(projected)[:2] == (422, "validation_error")
     assert (await list_page(client, CHARACTERS, projection="card")).status_code == 200
@@ -421,10 +473,12 @@ async def test_statuses_and_companions(space: Space) -> None:
 async def test_list_requests_are_checked(space: Space) -> None:
     """Each malformed listing request is 422 at its field, nothing listed: a blank or overlong
     ``q``, ``q`` with ``status=draft``, ``limit`` out of 1 to 200, an unknown status, a
-    malformed label or rating id, a listing status the deployment does not have
-    (``invalid_listing_status``), and a cursor no listing gave or one given for other filters or
-    the other kind (``cursor_invalid``). Unknown parameters are ignored. The library refuses a
-    type that is not a catalog kind."""
+    malformed label or rating id, a listing status that is not printable text or that the
+    deployment does not have (``invalid_listing_status``), and a cursor no listing gave or one
+    given for the other kind or other filters (``cursor_invalid``): a page's cursor sent with
+    any one filter changed (``q``'s words, ``label``, ``content_rating``, ``listing_status``,
+    ``owner``, ``relation``, ``status`` or ``include_companions``) is ``filters_changed``.
+    Unknown parameters are ignored. The library refuses a type that is not a catalog kind."""
     client = space.client
     for n in range(3):
         await _character(client, f"Sailor {n}")
@@ -443,6 +497,18 @@ async def test_list_requests_are_checked(space: Space) -> None:
             CHARACTERS,
             {"listing_status": "featured"},
             "invalid_listing_status",
+            "query.listing_status",
+        ),
+        (
+            CHARACTERS,
+            {"listing_status": "pub\u0085lic"},
+            "validation_error",
+            "query.listing_status",
+        ),
+        (
+            CHARACTERS,
+            {"listing_status": "public\u00a0"},
+            "validation_error",
             "query.listing_status",
         ),
         (SCENARIOS, {"relation": "editor"}, "validation_error", "query.relation[0]"),
@@ -466,11 +532,29 @@ async def test_list_requests_are_checked(space: Space) -> None:
         (CHARACTERS, {"owner": "p-a"}),
         (CHARACTERS, {"q": "sailor"}),
         (CHARACTERS, {"status": "archived"}),
+        (CHARACTERS, {"label": "sailor"}),
+        (CHARACTERS, {"content_rating": EVERYONE_ID}),
+        (CHARACTERS, {"listing_status": "private"}),
+        (CHARACTERS, {"relation": "editor:"}),
         (SCENARIOS, {}),
     ):
         status, code, details = _error(await list_page(client, base, cursor=cursor, **params))
         assert (status, code) == (422, "cursor_invalid"), (base, params)
         assert details["reason"] == ("malformed" if "q" in params else "filters_changed")
+    # A search's cursor is bound to its words, and a scenario list's to `include_companions`.
+    searched = await _ok(await list_page(client, CHARACTERS, q="sailor", limit=1))
+    ranked = searched["next_cursor"]
+    assert ranked is not None
+    following = await _ok(await list_page(client, CHARACTERS, q="sailor", cursor=ranked))
+    assert len(following["items"]) == 2
+    voyages = await _ok(await list_page(client, SCENARIOS, limit=1))
+    assert voyages["next_cursor"] is not None
+    for base, params in (
+        (CHARACTERS, {"q": "sailor 1", "cursor": ranked}),
+        (SCENARIOS, {"include_companions": True, "cursor": voyages["next_cursor"]}),
+    ):
+        status, code, details = _error(await list_page(client, base, **params))
+        assert (status, code, details["reason"]) == (422, "cursor_invalid", "filters_changed")
     ignored = await list_page(client, CHARACTERS, colour="blue", sort="name")
     assert len((await _ok(ignored))["items"]) == 3
     with pytest.raises(InvalidRequest) as refused:
@@ -487,7 +571,9 @@ async def test_listing_status_writes(space: Space) -> None:
     not 409); the current value changes and records nothing; an archived entry changes too;
     the change moves ``updated_at`` (so the entry lists first) and records one ``control``
     operation by the requester. The body's value is trimmed, and a blank, overlong or
-    malformed body is 422 at its field; an unknown entry is 404 (after the value's check).
+    malformed body, or a value that is not printable text (a C0 or C1 control character, a
+    no-break or zero-width space), is 422 at its field; an unknown entry is 404 (after the
+    value's check).
 
     Complement asserted: the no-op left the ``ownership_events`` count and ``updated_at``
     alone."""
@@ -545,6 +631,9 @@ async def test_listing_status_writes(space: Space) -> None:
         ({"value": "   "}, "body.value"),
         ({"value": "x" * 41}, "body.value"),
         ({"value": "a\nb"}, "body.value"),
+        ({"value": "pub\u0085lic"}, "body.value"),
+        ({"value": "public\u00a0"}, "body.value"),
+        ({"value": "pub\u200blic"}, "body.value"),
         ({"value": 7}, "body.value"),
         ({}, "body.value"),
         ({"value": "public", "why": "x"}, "body.why"),
@@ -625,11 +714,15 @@ async def test_companions_follow_and_hooks_run(space: Space) -> None:
 async def test_listing_status_values_setting(space: Space) -> None:
     """``GET /admin/settings`` shows ``listing_status_values`` (default ``private``,
     ``in_review``, ``public``). A write replaces the list: its values are trimmed, and an empty
-    list, a repeated, blank, overlong or control-character value is 422 at the setting. A
-    reorder is a change, recorded as one prospective configuration change, after which new
-    entries start at the new first value; the same values again write nothing. Removing a
-    value is 409 ``listing_status_in_use`` while any entry holds it, counting every holder:
-    published, never published, archived, companion, either kind."""
+    list, a repeated, blank or overlong value, or one that is not printable text (a C0 or C1
+    control character, a no-break or zero-width space) is 422 at the setting. A reorder is a
+    change, recorded as one prospective configuration change, after which new entries start at
+    the new first value; the same values again write nothing. Removing a value is 409
+    ``listing_status_in_use`` while any entry holds it, counting every holder: published, never
+    published, archived, companion, either kind.
+
+    Complement asserted: printable text outside ASCII (an accent, a symbol) is a value like any
+    other: configured, set (trimmed) and filtered by."""
     client, db = space.client, space.db
     shown = await _ok(await client.get("/admin/settings", headers=READ))
     assert shown["listing_status_values"] == ["private", "in_review", "public"]
@@ -639,7 +732,18 @@ async def test_listing_status_values_setting(space: Space) -> None:
             "/admin/settings", json={"listing_status_values": values}, headers=WRITE
         )
 
-    for values in ([], ["a", "a"], ["a", "   "], ["x" * 41], ["a\tb\x01"], [7], "public"):
+    for values in (
+        [],
+        ["a", "a"],
+        ["a", "   "],
+        ["x" * 41],
+        ["a\tb\x01"],
+        ["private", "in_review", "public", "pub\u0085lic"],
+        ["private", "in_review", "public", "public\u00a0"],
+        ["private", "in_review", "public", "pub\u200blic"],
+        [7],
+        "public",
+    ):
         refused = await write(values)
         assert refused.status_code == 422, (values, refused.text)
         assert _error(refused)[2]["field"].startswith("body.listing_status_values"), values
@@ -685,6 +789,13 @@ async def test_listing_status_values_setting(space: Space) -> None:
         "in_review",
     ]
 
+    # Printable text outside ASCII is a value like any other, in a body and in a filter.
+    widened = await _ok(await write(["private", "in_review", "en révision ✓"]))
+    assert widened["listing_status_values"] == ["private", "in_review", "en révision ✓"]
+    moved = await set_listing_status(client, CHARACTERS, published, " en révision ✓ ")
+    assert (await _ok(moved))["listing_status"] == "en révision ✓"
+    assert await ids(client, CHARACTERS, listing_status="en révision ✓") == [published]
+
 
 async def _lock_waiters(db: AsyncEngine, wanted: int, within: float = 10.0) -> None:
     """Return once ``wanted`` backends of this database wait on a lock."""
@@ -721,3 +832,51 @@ async def test_a_value_is_never_removed_while_a_change_sets_it(space: Space) -> 
     assert _error(removed)[:2] == (409, "listing_status_in_use")
     shown = await _ok(await client.get("/admin/settings", headers=READ))
     assert shown["listing_status_values"] == ["private", "in_review", "public"]
+
+
+async def test_writes_waiting_on_a_removal_read_the_values_it_left(space: Space) -> None:
+    """A listing-status change checks its value again, and a creation reads the first value,
+    with the deployment row held ``FOR SHARE``. So while an operator's write holds the row
+    ``FOR UPDATE`` (as every settings write does, ``lock_deployment``) to remove ``in_review``
+    and put ``public`` first, both wait for it; once it commits, each reads the values it left:
+
+    - a change to ``in_review``, whose own check passed before its key was claimed (the removal
+      had not committed then), is 422 ``invalid_listing_status`` naming the new values, and
+      changes and records nothing (no event, no operation);
+    - a new entry starts at ``public``, the new first value, not ``private``.
+
+    So no entry ever takes a value the deployment no longer has. Complement asserted: both
+    requests were waiting on the lock when the removal committed."""
+    client, db = space.client, space.db
+    mara = await _character(client, "Mara Venn")
+    key = "status-race-1"
+    async with db.connect() as conn:
+        async with conn.begin():
+            await lock_deployment(conn)
+            change = asyncio.ensure_future(
+                set_listing_status(client, CHARACTERS, mara, "in_review", key=key)
+            )
+            creation = asyncio.ensure_future(
+                client.post(CHARACTERS, json=character("Ada Lowe"), headers=WRITE)
+            )
+            await _lock_waiters(db, 2)
+            await conn.execute(
+                update(deployment_state)
+                .where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+                .values(listing_status_values=["public", "private"])
+            )
+        changed, created = await asyncio.gather(change, creation)
+    assert changed.status_code == 422, changed.text
+    _, code, details = _error(changed)
+    assert (code, details["value"], details["allowed_values"]) == (
+        "invalid_listing_status",
+        "in_review",
+        ["public", "private"],
+    )
+    assert (await _ok(created, 201))["listing_status"] == "public"
+    shown = await _ok(await client.get(f"{CHARACTERS}/{mara}", headers=READ))
+    assert shown["listing_status"] == "private"
+    events = "SELECT count(*) FROM ownership_events WHERE kind = 'listing_status'"
+    assert await count(db, events) == 0
+    keyed = "SELECT count(*) FROM operations WHERE idempotency_key = :k"
+    assert await count(db, keyed, k=key) == 0

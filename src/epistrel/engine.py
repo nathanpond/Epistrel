@@ -1994,11 +1994,11 @@ class Engine:
         entity_type: EntityType | str,
         *,
         q: str | None = None,
-        label: Sequence[str] = (),
+        label: str | Sequence[str] = (),
         content_rating: str | None = None,
         listing_status: str | None = None,
         owner: str | None = None,
-        relation: Sequence[str] = (),
+        relation: str | Sequence[str] = (),
         status: EntryStatus | str | None = None,
         include_companions: bool = False,
         limit: int = catalog_search.DEFAULT_PAGE,
@@ -2007,11 +2007,13 @@ class Engine:
         """A page of catalog characters or scenarios as cards (FR-API-6): the ``published``
         ones (``status``: the ``draft`` or ``archived`` ones), newest first, every owner and
         listing status included. ``q`` searches the latest published version's public card
-        (best match first, with each card's ``rank``); ``label`` (all must hold),
-        ``content_rating``, ``listing_status``, ``owner`` and ``relation`` (``name:principal``,
-        or ``name:`` for any principal; all must hold) narrow the list only when given
-        (FR-AUTH-8). Companion scenarios are listed only with ``include_companions``.
-        ``cursor`` (a page's ``next_cursor``) continues with the same filters."""
+        (best match first, with each card's ``rank``); ``label`` (one, or several that must all
+        hold), ``content_rating``, ``listing_status``, ``owner`` and ``relation``
+        (``name:principal``, or ``name:`` for any principal; one, or several that must all
+        hold) narrow the list only when given (FR-AUTH-8). A plain string ``label`` or
+        ``relation`` is one value, as one query parameter is. Companion scenarios are listed
+        only with ``include_companions``. ``cursor`` (a page's ``next_cursor``) continues with
+        the same filters."""
         service = catalog_kinds.service_of(entity_type)
         query = catalog_search.catalog_query(
             q=q,

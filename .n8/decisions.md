@@ -3699,3 +3699,34 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - #323 is cross-referenced on #111.
   **Why:** The field list belongs to #108 and the index to #123, both outside #111's scope. Cost if wrong: none.
   **Issue:** #111, #323, #108, #123, #124
+- **Decision:** #110 verification fixes, round 2 (gap 1 of 2). The gap was real, and it was a gap in test coverage only. No source file changed for it. Every paged search in the story's tests tied on rank, so nothing pinned the rank that the cursor carries and the next page's bound compares. Two assertions now page a search whose ranks differ:
+  - `test_search_reads_only_the_latest_published_public_card` pages `q=harbour` one entry at a time and expects `[named, described]`. The name match is the older entry, so rank order and newest-first order disagree, and page 2 is reached only through the cursor's rank. This is the fix hint.
+  - `test_catalog_search` holds the test plan's "cursor paging returns every entry exactly once" check. It now adds a newer but weaker match after the seven tied `Sailor n` entries: `Ned Rowe`, with "sailor" in the description only. `q=sailor` with `limit=3` must list the seven, newest first, then `Ned Rowe`. This pins pages of several entries, ties inside a rank, and the step across a rank boundary.
+  - **Mutation-checked.** The verifier's mutant bounds the next page on `(updated_at, id)` only and keeps rank first in the `ORDER BY` (the `after` block of `search.statement`). It passed every story test before. Now the story's tests give 2 failed, 39 passed: both new assertions fail, each losing the weaker match. The tests run were `test_catalog_search.py`, `test_catalog_listing.py`, `test_c_15__listing_status` and `test_i_21__listing_filters`. The source's SHA-1 matched before and after.
+  **Why:** The hint's assertion closes the gap. I added the second one because the plan puts its paging clause in `test_catalog_search`, and the hint's case pages one entry at a time, so no page in it crosses a rank boundary. It costs one more character. Cost if wrong: none.
+  **Issue:** #110
+- **Decision (Rule 1):** #110 verification fixes, round 2 (gap 2 of 2). The library's `Engine.search_catalog` now takes a plain-string `label` or `relation` as one value, just as REST takes one `?label=` or `?relation=` parameter as one value. Before, a `str` passed where a `Sequence[str]` was expected was iterated by character:
+  - `label="family"` became six one-letter labels, ANDed together, so the list was silently empty.
+  - `relation="editor:p-c"` was refused with 422 "the colon is missing". The message was about the letter `e`, not the value.
+  - **The fix.** `search.catalog_query` passes both through a new helper, `_repeated` (`(value,) if isinstance(value, str) else value`), before the NUL check and validation. A malformed plain string is therefore refused at `query.label[0]` or `query.relation[0]`. On `catalog_query` and `Engine.search_catalog` the parameters are now typed `str | Sequence[str]`, and the docstrings say so. REST is unchanged, because its routes always pass lists.
+  - **Tests.**
+    - **Unit** (`test_requests_are_normalised_and_checked`):
+      - `labels=" Family "` and `relations="editor:p-c"` give one label and one relation.
+      - That query equals the tuple form, so its cursor fingerprint is the same too.
+      - `labels="no:colon"` and `labels="a\x00b"` are refused at `query.label[0]`. Before the fix they were refused at `query.label[2]` and `query.label[1]`.
+    - **Integration** (`test_catalog_search`):
+      - the library's `label="family"` lists exactly what REST's `?label=family` lists, in the same order;
+      - `label=["family", "noir"]` lists only the entry that has both labels;
+      - `relation="editor:p-c"` lists the related entry.
+  - **Checked against the old behaviour.** With `_repeated` returning its input unchanged, the story's tests give 2 failed, 39 passed:
+    - `test_catalog_search`, where the library's `label="family"` lists `[]`;
+    - the unit test.
+  **Why:** The fix hint offered this or a 422 refusal. I chose one value because the library mirrors REST, where one `label` parameter is one label. A refusal would make the library stricter than REST for the same request. Cost if wrong: if a refusal is preferred, `_repeated` raises 422 at the field instead, a two-line change.
+  **Issue:** #110
+- **Decision:** Filed #324 (`needs-triage`) and did not fix it. Library methods outside #110 have the same pattern: each types a repeatable parameter `Sequence[str]` and iterates a plain string by character.
+  - `Engine.config_changes(settings=...)` (M2) fails silently: a plain setting name lists nothing. REST is safe, because it checks names against the closed vocabulary (#279).
+  - `list_stories`, `list_media` and `list_profiles` (#104, #105, #106) refuse a plain `relation` with a misleading 422.
+  - `get_media_content` (#105) never answers `not_modified` when the entity tag is passed in `if_none_match` as a string. The bytes are served again.
+  - #324 is cross-referenced on #110.
+  **Why:** These methods belong to M2 and to earlier M3 stories, outside #110's scope. Cost if wrong: none.
+  **Issue:** #110, #324

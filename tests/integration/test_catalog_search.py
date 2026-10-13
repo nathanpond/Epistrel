@@ -93,6 +93,12 @@ def _error(response: httpx.Response) -> tuple[int, str, dict[str, Any]]:
     return response.status_code, error["code"], error["details"]
 
 
+async def _found(space: Space, entity_type: EntityType, **filters: Any) -> list[str]:
+    """The ids the library's ``search_catalog`` lists on its first page, in order."""
+    page = await space.lib.search_catalog(RequestContext(), entity_type, **filters)
+    return [item.id for item in page.items]
+
+
 async def _character(
     client: httpx.AsyncClient, name: str, *, owner: str = "p-a", publish: bool = True, **fields: Any
 ) -> str:
@@ -183,7 +189,10 @@ async def test_catalog_search(space: Space) -> None:
     """``q=garden`` finds the character whose public description says it, not the one whose
     private definition does (which ``full`` returns); labels filter with AND semantics; the
     owner and relation filters each keep exactly their entries; and paging with a small
-    ``limit`` returns every entry exactly once, newest first, for a list and for a search.
+    ``limit`` returns every entry exactly once, newest first, for a list and for a search (a
+    search lists the best match first, also when a newer entry matches less well). The
+    library takes one label or one relation as a plain string, as REST takes one ``label`` or
+    ``relation`` parameter.
 
     Complements asserted: the private phrase is in the definition (so its absence from the
     results is the index's doing); each single label lists more than the two together."""
@@ -217,6 +226,11 @@ async def test_catalog_search(space: Space) -> None:
     assert set(await ids(client, SCENARIOS, label="noir")) == {both, noir}
     assert await ids(client, SCENARIOS, label=["family", "noir"]) == [both]
     assert await ids(client, SCENARIOS, label=["family", "noir", "comedy"]) == []
+    # The library: a plain string is one label (never the labels of its letters), as one
+    # `label` parameter is over REST.
+    by_label = await ids(client, SCENARIOS, label="family")
+    assert await _found(space, EntityType.SCENARIO, label="family") == by_label
+    assert await _found(space, EntityType.SCENARIO, label=["family", "noir"]) == [both]
 
     owned = await _character(client, "Wren Hale", owner="p-b")
     await _ok(
@@ -229,6 +243,7 @@ async def test_catalog_search(space: Space) -> None:
     )
     assert await ids(client, CHARACTERS, owner="p-b") == [owned]
     assert await ids(client, CHARACTERS, relation="editor:p-c") == [owned]
+    assert await _found(space, EntityType.CHARACTER, relation="editor:p-c") == [owned]
     assert await ids(client, CHARACTERS, relation="editor:p-d") == []
     assert set(await ids(client, CHARACTERS, owner="p-a")) == {shown, hidden}
 
@@ -243,6 +258,10 @@ async def test_catalog_search(space: Space) -> None:
     assert sorted(item["id"] for item in searched) == sorted(many)
     ranks = [item["rank"] for item in searched]
     assert ranks == sorted(ranks, reverse=True)
+    # A newer but weaker match ("sailor" in its description only) pages after the seven tied
+    # better ones, which stay newest first: each entry once, across the rank boundary.
+    deckhand = await _character(client, "Ned Rowe", public_description="A sailor.")
+    assert await ids(client, CHARACTERS, q="sailor", limit=3) == [*reversed(many), deckhand]
 
 
 async def test_search_reads_only_the_latest_published_public_card(space: Space) -> None:
@@ -250,9 +269,10 @@ async def test_search_reads_only_the_latest_published_public_card(space: Space) 
     found only once published, and the version it replaced is no longer found by its old words.
     A scenario's name, labels, role public labels and public description are searched; its
     world (description and entity aliases), seeds and director guidance never are. A name
-    match ranks above a description match. Quoted phrases and ``-word`` follow
-    ``websearch_to_tsquery``; a ``q`` with no word lists nothing; archived entries are
-    searched when asked for.
+    match ranks above a description match, also when the search is paged one entry at a time
+    and the better match is the older entry (so the next page is bounded by rank first, not by
+    ``updated_at``). Quoted phrases and ``-word`` follow ``websearch_to_tsquery``; a ``q`` with
+    no word lists nothing; archived entries are searched when asked for.
 
     Complement asserted: each private phrase is in the scenario's ``full`` read."""
     client = space.client
@@ -289,6 +309,9 @@ async def test_search_reads_only_the_latest_published_public_card(space: Space) 
     ranked = await _ok(await list_page(client, CHARACTERS, q="harbour"))
     assert [item["id"] for item in ranked["items"]] == [named, described]
     assert ranked["items"][0]["rank"] > ranked["items"][1]["rank"]
+    # One a page: the better match is the older entry, so rank order and newest-first order
+    # disagree, and the second page is reached only through the rank its cursor carries.
+    assert await ids(client, CHARACTERS, q="harbour", limit=1) == [named, described]
     assert await ids(client, CHARACTERS, q='"rows the harbour"') == [described]
     assert await ids(client, CHARACTERS, q='"the rows harbour"') == []
     assert await ids(client, CHARACTERS, q="harbour -pilot") == [described]

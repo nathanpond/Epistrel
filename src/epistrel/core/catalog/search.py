@@ -148,6 +148,12 @@ class CatalogPage:
 # -- the request ----------------------------------------------------------------------------------
 
 
+def _repeated(values: str | Sequence[str]) -> Sequence[str]:
+    """A repeatable filter's values: a plain string is one value, as one query parameter is
+    (``label="family"`` is the label ``family``, never the six labels of its letters)."""
+    return (values,) if isinstance(values, str) else values
+
+
 def _labels(values: Sequence[str]) -> tuple[str, ...]:
     if len(values) > LABEL_FILTERS_MAX:
         raise InvalidRequest(f"at most {LABEL_FILTERS_MAX} label filters", {"field": "query.label"})
@@ -165,26 +171,28 @@ def _labels(values: Sequence[str]) -> tuple[str, ...]:
 def catalog_query(
     *,
     q: str | None = None,
-    labels: Sequence[str] = (),
+    labels: str | Sequence[str] = (),
     content_rating: str | None = None,
     listing_status: str | None = None,
     owner: str | None = None,
-    relations: Sequence[str] = (),
+    relations: str | Sequence[str] = (),
     status: EntryStatus | str | None = None,
     include_companions: bool = False,
 ) -> CatalogQuery:
     """The listing a request asks for, each filter checked and normalised: 422
     ``validation_error`` at ``query.<name>`` for a value no entry could match (a blank or too
     long ``q``, a malformed label, rating id or listing status, an unknown ``status``), and for
-    ``q`` with ``status=draft`` (drafts are not searchable)."""
+    ``q`` with ``status=draft`` (drafts are not searchable). ``labels`` and ``relations`` are
+    each one value (a plain string) or several."""
+    label_values, relation_values = _repeated(labels), _repeated(relations)
     refuse_nul(
         {
             "q": q,
-            "label": list(labels),
+            "label": list(label_values),
             "content_rating": content_rating,
             "listing_status": listing_status,
             "owner": owner,
-            "relation": list(relations),
+            "relation": list(relation_values),
         },
         ("query",),
     )
@@ -218,13 +226,13 @@ def catalog_query(
             ) from None
     return CatalogQuery(
         q=q,
-        labels=_labels(labels),
+        labels=_labels(label_values),
         content_rating=content_rating,
         listing_status=value,
         owner=ownership.owner_filter(owner),
         relations=tuple(
             ownership.parse_relation_filter(item, field=f"query.relation[{index}]")
-            for index, item in enumerate(relations)
+            for index, item in enumerate(relation_values)
         ),
         status=wanted,
         include_companions=include_companions,

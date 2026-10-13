@@ -90,11 +90,12 @@ def test_the_default_list_reads_status_and_nothing_a_filter_reads() -> None:
 
 def test_requests_are_normalised_and_checked() -> None:
     """Labels are trimmed, lower-cased and kept once; a listing status is trimmed; relations
-    split at the first colon; no status means ``published``. A blank or overlong ``q``, ``q``
-    with ``status=draft``, a malformed label or rating id, a listing status that is overlong or
-    not printable text (a C0 or C1 control character, a no-break or zero-width space), an
-    unknown status and more than 30 labels are each 422 at their query field. Complement: a
-    listing status of printable text outside ASCII is kept, trimmed."""
+    split at the first colon; no status means ``published``; a plain string label or relation
+    is one value (as one query parameter is), never its characters. A blank or overlong ``q``,
+    ``q`` with ``status=draft``, a malformed label or rating id, a listing status that is
+    overlong or not printable text (a C0 or C1 control character, a no-break or zero-width
+    space), an unknown status and more than 30 labels are each 422 at their query field.
+    Complement: a listing status of printable text outside ASCII is kept, trimmed."""
     query = catalog_query(
         labels=(" Family ", "family", "NOIR"),
         listing_status="  in review ",
@@ -108,11 +109,17 @@ def test_requests_are_normalised_and_checked() -> None:
         RelationFilter("player", None),
     )
     assert (query.owner, query.status, query.q) == ("p-a", EntryStatus.PUBLISHED, None)
+    single = catalog_query(labels=" Family ", relations="editor:p-c")
+    assert single.labels == ("family",)
+    assert single.relations == (RelationFilter("editor", "p-c"),)
+    assert single == catalog_query(labels=("family",), relations=("editor:p-c",))
     refused: list[tuple[dict[str, Any], str]] = [
         ({"q": ""}, "query.q"),
         ({"q": "x" * 201}, "query.q"),
         ({"q": "garden", "status": "draft"}, "query.q"),
         ({"labels": ("ok", "no:colon")}, "query.label[1]"),
+        ({"labels": "no:colon"}, "query.label[0]"),
+        ({"labels": "a\x00b"}, "query.label[0]"),
         ({"labels": ("   ",)}, "query.label[0]"),
         ({"labels": tuple(f"l{n}" for n in range(31))}, "query.label"),
         ({"content_rating": "not-a-rating"}, "query.content_rating"),

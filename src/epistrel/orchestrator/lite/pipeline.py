@@ -40,7 +40,11 @@
    configuration before it commits (``policies.rebase``, #64). A regeneration the budget's
    unreserved remainder cannot pay for is 409 ``revision_conflict`` (``reason=budget``).
 4. **The result**: the finished message (never "verified": under ``lite`` no claim is
-   checked), the turn's beats for the resolved viewpoint, the new revision, and the model calls
+   checked), the turn's beats for the resolved viewpoint, the new revision, the configuration
+   it ran under (#109, FR-PROF-16: ``fingerprint``, ``capabilities`` and ``quality_status``,
+   stamped at turn start from the story's profile and version, ``core.profiles.effective``, and
+   recorded in ``operations.config_revisions`` with the profile, the version and each purpose's
+   model, read in the snapshot the prompt is read in), and the model calls
    the turn made (``model_calls``, #54, and ``call_counts`` by purpose) with its ``elapsed_ms``
    (fixed at the commit), its ``budget`` ``{max_calls, reserved, used}`` (#69), and the
    output gate's ``guardrail`` report (``degradation`` ``["safe_fallback"]`` when the reply is
@@ -84,6 +88,8 @@ from epistrel.core.errors import RevisionConflict, StoryArchived, TimelineChange
 from epistrel.core.events import Operation
 from epistrel.core.events.types import GuardrailOutputRejected, RejectedViolation
 from epistrel.core.history import turn_beats
+from epistrel.core.profiles import effective
+from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.settings_schema import (
     GenerationSettings,
     ResolvedGeneration,
@@ -124,6 +130,7 @@ from epistrel.orchestrator.lite.schemas import (
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelResult
 from epistrel.orchestrator.models.errors import EmptyCompletion, ModelError
+from epistrel.orchestrator.models.facts import runtime_facts
 from epistrel.orchestrator.models.metrics import CallLog, recording
 from epistrel.orchestrator.policies.input_gate import input_policies, model_assisted
 from epistrel.orchestrator.policies.output_gate import (
@@ -452,6 +459,9 @@ async def _play(
     say, do = request.player_input.say_text, request.player_input.do_text
     before_turn = regenerating.turn if regenerating is not None else None
 
+    stamped: list[Stamp] = []
+    """The configuration the turn runs under (#109), stamped by its latest read phase."""
+
     async def begin(conn: AsyncConnection) -> tuple[TurnInputs, ResolvedGeneration]:
         reading = time.perf_counter()
         inputs = await read_turn_inputs(conn, story_id, before_turn=before_turn)
@@ -459,10 +469,16 @@ async def _play(
         resolved = resolve_generation(
             inputs.deployment_generation, inputs.story_generation, request.prompt_params
         )
+        # The configuration's fingerprint (FR-PROF-16), from the story's profile and version
+        # and the models and templates, in this snapshot.
+        configuration = (await effective.story_profile(conn, story_id)).configuration()
+        facts = await runtime_facts(conn)
+        stamped[:] = [configuration.stamp(facts)]
         # Recorded on the operation row (inserted right after this read).
         op.config_revisions = {
             **(op.config_revisions or {}),
             "generation_settings": resolved.model_dump(mode="json"),
+            **stamped[0].record(configuration.profile_id, configuration.version, facts),
         }
         return inputs, resolved
 
@@ -609,6 +625,7 @@ async def _play(
             "queued_ms": timing.queued_ms,
             "first_call_offset_ms": timing.first_call_offset_ms(calls),
             **_guardrail_fields(gated[0] if gated else None),
+            **_stamp_fields(stamped[0] if stamped else None),
         }
         if regenerating is not None:
             return RegenerateResult(**fields, previous_variant=regenerating.variant)
@@ -681,6 +698,17 @@ def _guardrail_fields(outcome: Gated | None) -> dict[str, Any]:
         "guardrail": report,
         "degradation": [SAFE_FALLBACK] if outcome.fallback_used else [],
         "degradation_details": _degradation_details(outcome),
+    }
+
+
+def _stamp_fields(stamped: Stamp | None) -> dict[str, Any]:
+    """The result's ``fingerprint``, ``capabilities`` and ``quality_status`` (#109)."""
+    if stamped is None:  # pragma: no cover - a committed turn always read its configuration
+        return {}
+    return {
+        "fingerprint": stamped.fingerprint,
+        "capabilities": list(stamped.capabilities),
+        "quality_status": stamped.quality_status,
     }
 
 

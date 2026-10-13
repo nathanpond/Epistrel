@@ -10,7 +10,11 @@ the in-flight turn marker. #104 adds ``owner_principal`` (FR-AUTH-5): the story'
 creation and changed only by a transfer (``core.ownership``); it decides nothing (FR-AUTH-8).
 #106 adds ``engine_profile_id`` (FR-PROF-1): the engine profile the story runs under, the
 deployment's default when it was created (a fork keeps its source's). It references
-``engine_profiles``, so a profile is never purged while a story uses it.
+``engine_profiles``, so a profile is never purged while a story uses it. #109 adds
+``engine_profile_version_pin`` (FR-PROF-7,8's interim rule until M7): ``NULL`` while the story
+follows its profile's latest version; the version it keeps when a confirmed data-producing edit
+could not apply to it (``upgrade_unavailable``: it has history and M3 has no backfill). The pair
+references ``engine_profile_versions``, so a pinned version always exists.
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -24,6 +28,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     SmallInteger,
@@ -39,6 +44,9 @@ from epistrel.core.tables.base import metadata, ulid_type
 
 INITIAL_TURN_INDEX = 1
 """``stories.next_turn_index`` of a new story: the first turn is turn 1."""
+
+PIN_FOREIGN_KEY = "fk_stories_engine_profile_version_pin"
+"""The pinned version references its profile's versions (#109)."""
 
 STATUS_CHECK = "status IN ({})".format(", ".join(f"'{s.value}'" for s in StoryStatus))
 TURN_CONCURRENCY_CHECK = "turn_concurrency IN ('reject', 'queue')"
@@ -90,6 +98,14 @@ stories = Table(
     # FR-PROF-1 (#106): every story runs under exactly one profile. No server default: story
     # creation names the deployment's default, and a fork copies its source's.
     Column("engine_profile_id", ulid_type(), ForeignKey("engine_profiles.id"), nullable=False),
+    # FR-PROF-7,8 interim (#109): the version an ``upgrade_unavailable`` story keeps; ``NULL``:
+    # the story follows its profile's latest version.
+    Column("engine_profile_version_pin", Integer, nullable=True),
+    ForeignKeyConstraint(
+        ["engine_profile_id", "engine_profile_version_pin"],
+        ["engine_profile_versions.profile_id", "engine_profile_versions.version"],
+        name=PIN_FOREIGN_KEY,
+    ),
     CheckConstraint(STATUS_CHECK, name="status"),
     CheckConstraint(TURN_CONCURRENCY_CHECK, name="turn_concurrency"),
     CheckConstraint(TURN_QUEUE_MAX_CHECK, name="turn_queue_max"),

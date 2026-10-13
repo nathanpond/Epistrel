@@ -151,6 +151,15 @@ if TYPE_CHECKING:
         Relations,
         RelationWrite,
     )
+    from epistrel.core.profiles.effective import EffectiveConfig
+    from epistrel.core.profiles.fingerprint import QualityStatus
+    from epistrel.core.profiles.impact import (
+        AffectedStory,
+        BackfillEstimate,
+        ImpactPreviewRequest,
+        ImpactReport,
+        TwoStageResult,
+    )
     from epistrel.core.profiles.schema import ProfileSettings
     from epistrel.core.profiles.store import (
         DeletedProfile,
@@ -255,6 +264,7 @@ _EXPORTS: dict[str, str] = {
     "ProfileCopy": "epistrel.core.profiles.store",
     "ProfileValidate": "epistrel.core.profiles.store",
     "ProfileSettings": "epistrel.core.profiles.schema",
+    "ImpactPreviewRequest": "epistrel.core.profiles.impact",
     # results
     "RespondResult": "epistrel.orchestrator.lite.schemas",
     "RegenerateResult": "epistrel.orchestrator.lite.schemas",
@@ -302,6 +312,12 @@ _EXPORTS: dict[str, str] = {
     "ProfileWarning": "epistrel.core.profiles.store",
     "ProfileSchema": "epistrel.core.profiles.store",
     "ProfileValidation": "epistrel.core.profiles.validate",
+    "TwoStageResult": "epistrel.core.profiles.impact",
+    "ImpactReport": "epistrel.core.profiles.impact",
+    "AffectedStory": "epistrel.core.profiles.impact",
+    "BackfillEstimate": "epistrel.core.profiles.impact",
+    "QualityStatus": "epistrel.core.profiles.fingerprint",
+    "EffectiveConfig": "epistrel.core.profiles.effective",
     # errors (REST answers each as ``{"error": {code, message, details}}``)
     "EpistrelError": "epistrel.core.errors",
     "BudgetBelowSafetyMinimum": "epistrel.core.errors",
@@ -374,7 +390,9 @@ _EXPORTS: dict[str, str] = {
 """Each public name and the module that defines it."""
 
 __all__ = [
+    "AffectedStory",
     "ApiKeyBody",
+    "BackfillEstimate",
     "BudgetBelowSafetyMinimum",
     "BudgetExhausted",
     "ByteRange",
@@ -405,6 +423,7 @@ __all__ = [
     "DraftStale",
     "DraftTooLarge",
     "DraftWrite",
+    "EffectiveConfig",
     "Engine",
     "EngineProfile",
     "EntityNotFound",
@@ -418,6 +437,8 @@ __all__ = [
     "GuardrailViolation",
     "History",
     "IdempotencyConflict",
+    "ImpactPreviewRequest",
+    "ImpactReport",
     "IngestEvent",
     "IngestRequest",
     "IngestResult",
@@ -477,6 +498,7 @@ __all__ = [
     "PublishInvalid",
     "PublishRequest",
     "Published",
+    "QualityStatus",
     "RangeNotSatisfiable",
     "RatingFields",
     "RatingNotFound",
@@ -521,6 +543,7 @@ __all__ = [
     "TruncateRequest",
     "Truncation",
     "TurnAccepted",
+    "TwoStageResult",
     "UnknownChain",
     "UntruncateRequest",
     "Untruncation",

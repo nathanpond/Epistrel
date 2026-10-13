@@ -83,7 +83,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Annotated, Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
 from pydantic.fields import FieldInfo
 
 from epistrel.core.settings_schema import (
@@ -679,6 +679,79 @@ def enabled_modules(settings: ProfileSettings) -> dict[str, str]:
     return found
 
 
+# -- data-producing increases (FR-PROF-6,8; #109) -------------------------------------------------
+
+
+def level_rank(module: str, level: str | None) -> int:
+    """Where ``level`` sits on ``module``'s ladder: ``-1`` when off, then each level in the
+    order the module declares them (``lite`` before ``structured``, ``declared`` before
+    ``extraction``)."""
+    if level is None:
+        return -1
+    names = MODULE[module].level_names
+    return names.index(level) if level in names else 0
+
+
+def _switch_tag(module: Module) -> Tag | None:
+    return None if module.switch is None else tags_of(_field_at(module.switch)).tag
+
+
+DATA_PRODUCING_MODULES: frozenset[str] = frozenset(
+    m.name for m in MODULES if _switch_tag(m) is Tag.data_producing
+)
+"""Modules whose switch is tagged data-producing: turning one on, or raising its level, makes the
+engine write structured data that a story's existing history lacks (FR-PROF-6). In M3 none of
+them is delivered. Read at call time, so a test may mark a delivered module data-producing
+(``epistrel.testing.profiles.data_producing``)."""
+
+DATA_PRODUCING_DIALS: Mapping[str, str] = types.MappingProxyType(
+    {
+        path: owner[0]
+        for path, tags in setting_tags().items()
+        if tags.tag is Tag.data_producing
+        and path not in SWITCHES
+        and (owner := owner_of(path)) is not None
+    }
+)
+"""Data-producing settings that are not a module's switch, with their module: raising one
+(``verification.extraction_mode`` from ``gated`` to ``always``, a deeper nested-belief depth)
+adds data too while the module is on."""
+
+
+def _raised(path: str, before: Any, after: Any) -> bool:
+    """Whether ``after`` is a higher value of the setting at ``path`` than ``before``: later
+    in its declared options (``False`` before ``True``), or a larger number."""
+    options = _literal_options(path)
+    if options is not None and before in options and after in options:
+        return options.index(after) > options.index(before)
+    numbers = (int, float)
+    if isinstance(before, numbers) and isinstance(after, numbers):
+        return after > before
+    return False
+
+
+def data_increases(before: ProfileSettings, after: ProfileSettings) -> list[str]:
+    """The modules whose data a change from ``before`` to ``after`` adds, in schema order: each
+    data-producing module (``DATA_PRODUCING_MODULES``) switched on or raised to a higher level,
+    and each module that stays on while one of its data-producing dials rises."""
+    found: list[str] = []
+    for module in MODULES:
+        old, new = level_of(before, module.name), level_of(after, module.name)
+        if module.name in DATA_PRODUCING_MODULES and level_rank(module.name, new) > level_rank(
+            module.name, old
+        ):
+            found.append(module.name)
+            continue
+        if old is None or new is None:
+            continue
+        if any(
+            owner == module.name and _raised(path, value_at(before, path), value_at(after, path))
+            for path, owner in DATA_PRODUCING_DIALS.items()
+        ):
+            found.append(module.name)
+    return found
+
+
 # -- the dependency graph (FR-PROF-4) -------------------------------------------------------------
 
 
@@ -848,6 +921,30 @@ def delivered_schema() -> dict[str, Any]:
     return _prune(_inline(full, defs), "")
 
 
+SETTINGS_SCHEMA: dict[str, Any] = delivered_schema()
+SettingsDocument = Annotated[dict[str, Any], WithJsonSchema(SETTINGS_SCHEMA)]
+"""A profile's settings as JSON: any delivered module, any subset of its settings (what it
+leaves out takes the default). Documented as the delivered schema; validated by
+``validate.require_valid``."""
+
+
+def delivered_values(settings: ProfileSettings) -> dict[str, Any]:
+    """``settings`` as JSON with every delivered setting at its value and nothing undelivered:
+    what an effective-configuration read shows (#109)."""
+
+    def keep(node: Mapping[str, Any], prefix: str) -> dict[str, Any]:
+        found: dict[str, Any] = {}
+        for name, value in node.items():
+            path = f"{prefix}{name}"
+            if not exposed(path):
+                continue
+            nested = isinstance(value, Mapping) and path not in LEAF_PATHS
+            found[name] = keep(value, f"{path}.") if nested else value
+        return found
+
+    return keep(settings.model_dump(mode="json"), "")
+
+
 def delivered_tags() -> dict[str, SettingTags]:
     """The tags of every delivered setting, by dotted path."""
     return {path: tags for path, tags in setting_tags().items() if _leaf_exposed(path)}
@@ -892,6 +989,8 @@ class Purposes:
 __all__ = [
     "BEHAVIORAL",
     "DATA_PRODUCING",
+    "DATA_PRODUCING_DIALS",
+    "DATA_PRODUCING_MODULES",
     "DELIVERED",
     "DEPENDENCIES",
     "FR_PROF_4",
@@ -904,6 +1003,7 @@ __all__ = [
     "PROSPECTIVE",
     "PURPOSE_PATTERN",
     "RELEVANT",
+    "SETTINGS_SCHEMA",
     "SWITCHES",
     "Budgets",
     "Clause",
@@ -918,15 +1018,19 @@ __all__ = [
     "Requirement",
     "RouteParams",
     "SettingTags",
+    "SettingsDocument",
     "Tag",
     "allowed_values",
+    "data_increases",
     "delivered_levels",
     "delivered_schema",
     "delivered_tags",
+    "delivered_values",
     "enabled_modules",
     "exposed",
     "is_delivered",
     "level_of",
+    "level_rank",
     "missing_tags",
     "owner_of",
     "setting_tags",

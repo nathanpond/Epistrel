@@ -367,6 +367,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "update_profile": ("invalid_profile", "profile_deleted"),
     "validate_profile": ("invalid_profile",),
     "delete_profile": _ADMIN_CONFIG,
+    # A story's configuration (#109): a preview refuses what the change itself would.
+    "impact_preview": ("invalid_profile", "profile_deleted"),
     # A companion scenario's owner and relations follow its character (#104, #116).
     **{
         operation_id: ("companion_follows_character",)

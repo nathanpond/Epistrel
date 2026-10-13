@@ -1,10 +1,17 @@
-"""A test-only dependency rule for engine profiles (#106).
+"""Test-only switches for engine profiles (#106, #109).
 
 No two modules delivered in M3 depend on each other, so the dependency graph's delivered path
 (``epistrel.core.profiles.validate.missing_dependencies``) has no real rule to fire. While a
 test holds ``extra_rule(rule)``, validation reads ``rule`` as one more entry of
-``schema.DEPENDENCIES``; leaving the block restores the declared graph. Nothing in ``Engine`` or
-``create_app`` imports this module, and Core never does.
+``schema.DEPENDENCIES``; leaving the block restores the declared graph.
+
+No module delivered in M3 is data-producing either, so FR-PROF-7's ``upgrade_unavailable`` path
+(``epistrel.core.profiles.impact``) has nothing real to report. While a test holds
+``data_producing(*modules)``, the impact report reads those delivered modules as data-producing
+(``schema.DATA_PRODUCING_MODULES``): switching one on, or raising its level, adds data a story's
+history lacks. Leaving the block restores the schema's own tags.
+
+Nothing in ``Engine`` or ``create_app`` imports this module, and Core never does.
 """
 
 from __future__ import annotations
@@ -20,6 +27,20 @@ TEST_CLAUSE = "test"
 
 
 @contextmanager
+def data_producing(*modules: str) -> Iterator[frozenset[str]]:
+    """Read ``modules`` as data-producing for the block (each must be a schema module)."""
+    unknown = [name for name in modules if name not in schema.MODULE]
+    if unknown:
+        raise ValueError(f"not modules: {unknown}")
+    declared = schema.DATA_PRODUCING_MODULES
+    schema.DATA_PRODUCING_MODULES = declared | frozenset(modules)
+    try:
+        yield schema.DATA_PRODUCING_MODULES
+    finally:
+        schema.DATA_PRODUCING_MODULES = declared
+
+
+@contextmanager
 def extra_rule(rule: DependencyRule) -> Iterator[DependencyRule]:
     """Validate with ``rule`` added to the dependency graph for the block."""
     declared = schema.DEPENDENCIES
@@ -30,4 +51,4 @@ def extra_rule(rule: DependencyRule) -> Iterator[DependencyRule]:
         schema.DEPENDENCIES = declared
 
 
-__all__ = ["TEST_CLAUSE", "extra_rule"]
+__all__ = ["TEST_CLAUSE", "data_producing", "extra_rule"]

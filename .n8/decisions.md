@@ -2734,3 +2734,93 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
     - a fork taking Lite.
   **Why:** The Discretion line prescribes it, and REST must answer as the library does (C-03). Cost if wrong: none; an optional body only adds accepted requests.
   **Issue:** #106
+- **Decision (Rule 3, blocker):** I cherry-picked #93's two verified commits onto the milestone branch before writing #109: `146fe95` → `26d21c3` and `8681341` → `d4ccffd` (`git cherry-pick -x`, so each names its source). They touch only `tools/gates/traceability.py` and `tests/gates/test_traceability.py`.
+  **Why:** AC3 needs a test part with `interim_until="M7"`, which needs an interim annotation in docs/04 §15 (`C-16 (M4, interim until M7)`). check-traceability at the milestone's HEAD splits a §15 cell on every comma, so it cannot parse that annotation (exit 2): exactly #93's bug. The drift note says #93's fix must land first, and the plan cherry-picks it before group A's gate anyway. Cost if wrong: when the orchestrator cherry-picks `m3/bug-93`, both commits are already applied, so git stops on an empty cherry-pick that should be skipped (`git cherry-pick --skip`). #93's decisions still go in with the lane-2 entries.
+  **Issue:** #109, #93
+- **Decision (drift):** The upgrade-unavailable slice is `test_c_16__upgrade_unavailable`, `part("M4", "FR-PROF-7", interim_until="M7")`, the drift reviewers' Option G. It uses the slot docs/04's C-16 text already defines: "[M4: FR-PROF-7] *(interim until M7)*". The test plan's `part("M3", …)` was not used. §15's FR-PROF-7 row now reads `C-16 (M3), C-16 (M4, interim until M7), S-PROFILE-SWITCH (M7)`; `--write` cannot produce this, because the row is above `current_milestone`. `test_c_16__two_stage` keeps `part("M3", "FR-PROF-7; FR-SCN-2")`. Both C-16 slices are in `tests/integration/test_engine_profiles.py`, beside #106's `test_c_16__crud`. M4's own C-16 (M4) slices (the consolidation interim clause, the gate-threshold edit) must join that file. C-18 (M3) and the detailed tests are in `tests/integration/test_two_stage.py`. With the annotation removed, check-traceability reports `interim mismatch FR-PROF-7 C-16 (M4)`, so the gate does read it.
+  **Why:** Two `(C-16, M3)` parts for FR-PROF-7, one interim and one not, can never both match one §15 entry. Dropping FR-PROF-7 from the M3 slice (Option A) would make all of FR-PROF-7's M3 coverage interim, which is wrong for the two-stage flow, a permanent rule. Cost if wrong: the interim part gates from M4, not M3. The behaviour is still tested in every CI run, and M3's FR-PROF-7 gate is the two-stage slice.
+  **Issue:** #109
+- **Decision (drift):** #109 builds the minimal per-story resolution and read the AC need, ahead of #113, the drift reviewers' sequencing (1)+(2):
+  - `core/profiles/effective.py` resolves a story's profile at the version it runs on: its pin, else the latest. That version's settings are read over `ProfileSettings`' defaults, with optional preview overrides laid on top, and the result is validated as a whole.
+  - `GET /stories/{id}/effective-config` answers `{story_id, profile: {id, version, pinned, deleted}, effective, fingerprint, capabilities, quality_status}`, where `effective` holds the delivered settings at their effective values.
+  - Migration `0026` adds `stories.engine_profile_version_pin`: nullable, with a composite foreign key `(engine_profile_id, engine_profile_version_pin)` to `engine_profile_versions`. A fork copies the pin, as it copies every column.
+
+  #113 extends these: `deployment_defaults` and `overrides` in the read, `profile_defaults` and stored overrides in the resolution. Its assign route must clear the pin, or set it for an upgrade-unavailable single story, and its routes join `api/routes/story_profile.py`, the file #109 created.
+  **Why:** AC3 asserts through the effective-config read and AC4 names the read; the turn needs the same resolution to stamp itself. The column is the Discretion's (`stories.engine_profile_version_pin`) and a new column the AC need, not Rule 4. Cost if wrong: #113 reshapes a route and a module nobody consumes yet.
+  **Issue:** #109, #113
+- **Decision:** The answer and library result of `PUT /engine-profiles/{id}` are now the two-stage envelope.
+  - REST: `ProfileEditBody`, `{applied, impact, result, config_revision, idempotency_key}`, where `result` is the profile, or `null` when held. The status is 200 either way.
+  - The library returns `TwoStageResult[ProfileWrite]`.
+  - `ignore_warnings` is a field of the request model (`ProfileUpdate` extends `TwoStageRequest`), not a separate keyword on the method, so REST and the library carry it the same way. `ignoreWarnings` is accepted and documented in the OpenAPI schema. Both spellings with different values are 422 at `body`.
+  - `Engine._keyed` gains `keep=`: a held result (`TwoStageResult.kept()` false) releases the key instead of storing it. A held call therefore leaves no operation and no key, and the confirmation under the same key is its first execution.
+  - Existing tests changed because the shape changed: `test_c_16__crud`, `test_i_21__profiles`, `test_validate_without_a_body_checks_the_latest_version` and `test_edits_record_their_requester_and_replay` read `["result"]`, and `test_library_matches_rest` reads `.result.profile`. C-03 renders `ProfileEditBody`. No assertion was loosened.
+  **Why:** The Discretion's `{applied, impact, result}` and `TwoStageResult(applied, impact, result)`, and the drift note's rule that a report-only path must not be stored under `_keyed`. Cost if wrong: a flat body (profile fields plus `applied` and `impact`) would be one route's change.
+  **Issue:** #109
+- **Decision:** The fingerprint is `sha256:` over the canonical JSON of the AC's three keys:
+  - `profile_version: {profile_id, version}`;
+  - `models`, holding every delivered purpose, each `{id, reported_version}`: the purpose's own `model_config` model, else the `default` row's; the reported version is null in M3;
+  - `quality_relevant_settings`, holding every leaf tagged `Quality.relevant` at its effective value (delivered or not), plus `prompt_templates`, the SHA-256 of each delivered purpose's template file.
+
+  The Orchestrator resolves the models and templates (`orchestrator/models/facts.py`) and passes them as `RuntimeFacts`. A turn reads the models in its read-phase snapshot. One consequence: a new profile version changes the fingerprint even when it changes only a quality-irrelevant setting, because FR-PROF-16 makes the version an input. So the complement for "a non-quality-relevant change keeps it" is a story override in a preview (`pins.max_pinned`) and the story's `turn_concurrency`, never a profile edit. `test_a_new_profile_version_is_a_new_fingerprint` pins this.
+  **Why:** FR-PROF-16 lists the profile version, each purpose's model and reported version, and the tagged settings. The Discretion names the profile id: a bare version number would make two profiles' configurations share a fingerprint. Cost if wrong: dropping the version or the id changes every fingerprint once, before anything stores them (#112 comes later).
+  **Issue:** #109, #112
+- **Decision:** Every Lite turn stamps itself at turn start (`pipeline.begin`, in its REPEATABLE READ read phase): respond, regenerate and queued turns. `operations.config_revisions` gains `fingerprint`, `profile`, `profile_version`, `models`, `quality_status` (`{status}`) and `capabilities`. `RespondResult` and `RespondResponse` gain `fingerprint`, `capabilities` and `quality_status`. They are nullable, or empty, only for a stored result from before #109, so that a replay still loads. I-07's `RESPONSE_FIELDS` gains the three names. Ingest operations record no stamp: no configuration produced their text.
+  **Why:** The AC says respond responses (#57), and the key_link says the stamp is computed at turn start from the effective configuration. `recapture_config` merges keys, so the stamp survives a re-check. Cost if wrong: one more call site if #112 wants ingested messages stamped.
+  **Issue:** #109, #112
+- **Decision:** What a report holds and when it warns:
+  - Capabilities are module names, sorted, with the pipeline named by its level. `capabilities_gained` and `capabilities_lost` also count a module that stays on at a higher or lower level.
+  - A data-producing increase is a module in `schema.DATA_PRODUCING_MODULES` (derived from the switches' `Tag`) switched on or raised a level, or a data-producing dial (`schema.DATA_PRODUCING_DIALS`) raised while its module stays on.
+  - "History" means at least one committed, active `turn` operation, generated or ingested. That is the drift correction: turn 1 is the first played turn.
+  - An upgrade-unavailable entry keeps its configuration, so its `fingerprint_after` is its `fingerprint_before`, while `capabilities_gained` still shows what the change would add.
+  - `warnings` lists the reasons in `impact.WARNING_KINDS` order. This field is beyond the AC's shape: it saves consumers from deriving them.
+  - `guarantees_lost` is the FR-VERIFY-15 delta. A report over zero stories warns of nothing.
+  - A profile edit's report covers only the stories that follow the latest version (pin `NULL`): a pinned story is neither listed nor moved by later edits.
+  - The Discretion's `neutralised: true` is not implemented, because no story state of that name exists anywhere, plans included. The erasure stories add it if they need it.
+  - `recommendations_unmet` is `[]` for story mutations until a story carries a scenario snapshot (#119). The machinery is in place: `Recommendation`, `unmet` and `creation_report`.
+  **Why:** The Discretion lines (sorted flat names, `lite` included, per-entry fingerprints, cap and count), filled in where they are silent. Cost if wrong: the shapes are additive.
+  **Issue:** #109, #119
+- **Decision:** In M3 no delivered module is data-producing, so `epistrel.testing.profiles.data_producing(*modules)` marks one for a block, as #106's `extra_rule` does for dependencies. The test switch is the polish pass. `test_c_16__upgrade_unavailable` has a complement: unmarked, the same edit moves a story with history to the new version.
+  **Why:** The Discretion: "the fixture marks a module data-producing through `epistrel.testing`". Cost if wrong: none.
+  **Issue:** #109
+- **Decision:** Locks and the residual race. A profile edit reads the deployment row `FOR SHARE` first, keeping M2's order, then holds the profile `FOR NO KEY UPDATE`. Only when the edit is a data-producing increase does it also hold every following story `FOR NO KEY UPDATE`, in id order, before reading their history. A turn's commit then waits, while a story insert's foreign-key check does not (#104's lesson). Report and apply run in one transaction, and there is no `impact_changed` code (pass 1). Known residual race: a fork whose snapshot was read before the edit commits a story that follows the new version even though it has history. That is #106's purge race again; there is no real data-producing module before M4, so it is not closed here.
+  **Why:** Locking every following story on every edit would block their turns even for a rename. Cost if wrong: one lock clause.
+  **Issue:** #109
+- **Decision (drift):** The estimate's constants are in `core/profiles/estimates.py`, and nothing reads `docs/` at run time:
+  - chunks of 30 messages, one call per chunk for each module whose data the change adds;
+  - tokens are the characters over 4, read once per module;
+  - the calls run one after another at `CALL_LATENCY_MS = 13_398`.
+
+  That latency is the model matrix's largest median per-call latency: the policies-off row, at one generation call per turn. `test_the_estimate_and_its_measured_latency` derives it from `docs/model-matrix.json` again, so a re-measured matrix fails until the constant follows it. The matrix has no cost field, so the estimate carries none: FR-PROF-7 asks for model calls, tokens and duration.
+  **Why:** The drift note: `docs/` does not ship, and no per-call figure exists. The largest per-call latency makes an estimate err long. Cost if wrong: one constant.
+  **Issue:** #109
+- **Decision:** The preview, `POST /stories/{id}/impact-preview`, is `mutating=False`: no `Idempotency-Key`, no expected revision, but the principal is still required by its method. It refuses:
+  - a body naming neither `profile_id` nor `overrides` (422 at `body`);
+  - a profile that cannot be assigned (422 `profile_deleted` with `reason` `unknown`/`deleted`, at `body.profile_id`, like `require_assignable`);
+  - a result that cannot run (422 `validation_error` at `body.overrides.<path>`, or `invalid_profile`).
+
+  Naming the story's own profile is no reassignment: the story keeps its pinned version, even when the profile is deleted. Its body is the `ImpactReport` itself.
+
+  `overrides` is a sparse settings document, validated strictly as a profile's settings are, whose settings replace the profile's (`effective.layered`). It is not an RFC 7396 merge patch, which my first build used: C-01 caught it. Schemathesis sent `"overrides": {"repair": null}`, which the published schema forbids, and the merge patch accepted it as "remove the key" (`AcceptedNegativeData`). A `null` is now accepted only where a setting takes one. `test_preview_refusals_write_nothing` asserts 422 at `body.overrides.repair`, and the preview's 100 generated C-01 examples pass. #113 decides how its `PATCH …/profile-overrides` (a merge patch over the stored overrides) is previewed; if it previews a patch, its published schema must allow the `null`s. The route, and `GET …/effective-config`, are in the closed `profiles` tag. Both have C-03 parity steps (`PROFILE_ANSWERS` gains two) and nothing-gates `CALLS` entries. C-03 normalises a fingerprint by first-seen position, like an id, since it hashes a profile id each surface mints.
+  **Why:** The Discretion and the drift note's route-flag pointer. Cost if wrong: none.
+  **Issue:** #109
+- **Decision:** The creation path is #119's, so `test_c_16__two_stage` covers the test plan's "creation with an unmet recommendation → report first, success with `ignore_warnings`" at the machinery level: `creation_report` (only an unmet recommendation can make a creation warn) through `two_stage`, held and then confirmed. #113 covers its two story routes. These follow the coverage line ("#109's tests exercise `two_stage` on `PUT /engine-profiles/{id}` and `impact_preview` only").
+  **Why:** No story is created from a scenario before #119. Cost if wrong: #119 adds the route-level assertion, as planned.
+  **Issue:** #109, #113, #119
+- **Decision:** `SettingsDocument` and `SETTINGS_SCHEMA` moved from `core/profiles/store.py` to `schema.py`; `store` re-exports both. The dependency order is now `store → impact → effective → fingerprint → schema`, with no cycle. The status enum is `QualityStatusValue` and its model `QualityStatus {status}`: an enum named `QualityState` would publish an OpenAPI component whose name a part must spell, and "State" is an M6 lexicon term. Parts reach later terms through `tests/profile_support.py` constants: `REDERIVATION` ("backfill", M7), `QUALITY_STATUSES` and `STATUS_COMPONENT`. README and docs/02 §4.11 describe the two stages, the preview, the read, the fingerprint and the pin.
+  **Why:** An acyclic import order; the lexicon (the M2 lesson); docs that match the code. Cost if wrong: renames only.
+  **Issue:** #109
+- **Decision:** Filed #319 (`needs-triage`) and did not fix it. `tests/integration/test_respond.py::test_openapi_calls_the_message_finished_never_verified` fails on the milestone branch. #105's `DepictedSubject` description says "unverified", and the test checks every OpenAPI description for the substring "verified". The committed `docs/openapi.json` at `9b855a9` already holds that text, so the failure predates #109. None of #109's descriptions trips the check. Group A's full run will fail on this test until #319 is decided. It is cross-referenced on #109.
+  **Why:** It is out of #109's scope, and choosing between rewording #105's description and narrowing an M2 assertion is a triage call.
+  **Issue:** #109, #319, #105
+- **Decision:** I mutation-checked the story. Each mutation was applied by a script, which ran the named tests and restored the sources (SHA-1 checked over every changed file afterwards). An unmutated control passes. All 20 mutations fail a test:
+  - in `two_stage`: always applying, or ignoring the confirmation (C-16);
+  - in `_keyed`: storing a held result under the key (C-16, and the held-key test);
+  - in the following report: ignoring history, writing no pin, resolving without the pin, no data increase ever, the kept story reporting the new fingerprint, listing not by id, the cap ignored (the interim slice, C-16 or the cap test);
+  - in the fingerprint: no relevant settings, irrelevant settings included, the own model ignored, the edit's report built without the models (C-18 or C-16);
+  - in the turn: no stamp recorded, no stamp answered (C-18);
+  - in the preview: overrides ignored (C-16, C-18);
+  - in the estimate and request: tokens not divided (the interim slice); the two spellings at odds accepted, a lost capability not warned (C-16).
+
+  Branch coverage of `epistrel.core.profiles` over its three test modules is 98%.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
+  **Issue:** #109

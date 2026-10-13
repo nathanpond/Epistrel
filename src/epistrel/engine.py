@@ -66,7 +66,10 @@ from epistrel.core.media.store import BlobStore
 from epistrel.core.media.stores import make_store
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.ports import Ports
+from epistrel.core.profiles import effective, impact
 from epistrel.core.profiles import store as profiles
+from epistrel.core.profiles.fingerprint import RuntimeFacts
+from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
 from epistrel.core.settings_schema import ConfigClass, StorySettings
@@ -109,6 +112,7 @@ from epistrel.orchestrator.lite.schemas import (
 )
 from epistrel.orchestrator.models import ModelAccessLayer
 from epistrel.orchestrator.models import config as model_config
+from epistrel.orchestrator.models import facts as model_facts
 from epistrel.orchestrator.models import metrics as model_metrics
 from epistrel.orchestrator.models import registry as model_registry
 from epistrel.orchestrator.policies import admin as policy_admin
@@ -222,7 +226,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "abort_upload": ResultCodec.of(media_uploads.UploadAborted, status=204, revision_field=_CONFIG),
     # Engine profiles (#106): deployment-scoped like the catalog's writes.
     "create_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
-    "update_profile": ResultCodec.of(profiles.ProfileWrite, revision_field=_CONFIG),
+    # Two-stage (#109): stored only once applied; a report alone releases its key.
+    "update_profile": ResultCodec.of(TwoStageResult[profiles.ProfileWrite], revision_field=_CONFIG),
     "copy_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
     "delete_profile": ResultCodec.of(profiles.DeletedProfile, revision_field=_CONFIG),
 }
@@ -484,6 +489,7 @@ class Engine:
         story_id: str | None = None,
         material: Mapping[str, Any] | None = None,
         respond_async: bool = False,
+        keep: Callable[[T], bool] | None = None,
     ) -> T:
         """Run ``run`` as one idempotent call (see the class docstring).
 
@@ -492,7 +498,9 @@ class Engine:
         means ``run`` claims the key itself at its slot in the precheck order (respond, whose
         hash needs the resolved viewpoint). A retry whose original waits in the story's turn
         queue waits for that turn (#63), like the original: up to ``turn_deadline``, or not at
-        all with ``respond_async`` (then ``TurnAccepted``, REST 202)."""
+        all with ``respond_async`` (then ``TurnAccepted``, REST 202). ``keep``: whether a
+        result is stored under the key; one it rejects (a two-stage report that applied
+        nothing, #109) releases the key instead, so the call leaves no trace."""
         principal = self.require_principal(ctx)
         key = ctx.idempotency_key
         key = new_ulid() if key is None else idempotency.validate_key(key)
@@ -531,6 +539,9 @@ class Engine:
             except BaseException:
                 await call.release()
                 raise
+            if keep is not None and not keep(value):
+                await call.release()
+                return value
             # Committed, not yet answered (#75): a crash here leaves the key for the retry.
             crash.hit("after_commit_before_response", operation)
             finished: T = await call.finish(value)
@@ -2360,19 +2371,34 @@ class Engine:
 
     async def update_profile(
         self, ctx: RequestContext, profile_id: str, request: profiles.ProfileUpdate
-    ) -> profiles.ProfileWrite:
+    ) -> TwoStageResult[profiles.ProfileWrite]:
         """Replace the profile's name and settings; a new version is made only when the
         settings differ from the latest version's (FR-PROF-1). Presets are edited like any
-        profile (FR-PROF-3). 404 for an unknown profile, 422 ``profile_deleted`` for a deleted
-        one, and the settings are refused as on creation."""
+        profile (FR-PROF-3). Two-stage (FR-PROF-7, #109): the impact report lists every story
+        following the profile, and a change it warns of applies only with
+        ``request.ignore_warnings``; otherwise the result is the report (``applied`` false),
+        nothing is written and the ``Idempotency-Key`` is released. A data-producing increase
+        cannot apply to a following story with history: a confirmed edit keeps that story on its
+        version. 404 for an unknown profile, 422 ``profile_deleted`` for a deleted one, and the
+        settings are refused as on creation, confirmed or not."""
         principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> TwoStageResult[profiles.ProfileWrite]:
+            return await profiles.update_profile(
+                self.db,
+                profile_id,
+                request,
+                principal=principal,
+                facts=await self._runtime_facts(),
+                purposes=self.purposes,
+            )
+
         return await self._keyed(
             ctx,
             "update_profile",
-            lambda _: profiles.update_profile(
-                self.db, profile_id, request, principal=principal, purposes=self.purposes
-            ),
+            run,
             material={"profile_id": profile_id, "body": _body(request)},
+            keep=TwoStageResult.kept,
         )
 
     async def copy_profile(
@@ -2434,6 +2460,39 @@ class Engine:
         delivered modules and levels, every delivered setting's three tags, the delivered
         modules with their levels, and the model purposes a profile may route."""
         return profiles.profile_schema(self.purposes)
+
+    # -- a story's configuration: fingerprint, preview (FR-PROF-5,7,16; #109) ------------------
+
+    async def _runtime_facts(self) -> RuntimeFacts:
+        """The model each delivered purpose resolves to and the prompt templates' hashes: what
+        a fingerprint needs from the Orchestrator."""
+        async with self.db.connect() as conn:
+            return await model_facts.runtime_facts(conn)
+
+    async def impact_preview(
+        self, ctx: RequestContext, story_id: str, request: ImpactPreviewRequest
+    ) -> ImpactReport:
+        """The impact report of assigning ``request.profile_id`` to the story and/or applying
+        ``request.overrides`` (FR-PROF-7), with the fingerprints before and after (FR-PROF-16).
+        Writes nothing, so it takes no ``Idempotency-Key``. 404 for an unknown story, 422
+        ``profile_deleted`` for a profile that cannot be assigned, 422 ``validation_error`` or
+        ``invalid_profile`` for a configuration that cannot run."""
+        return await impact.preview(
+            self.db,
+            story_id,
+            request,
+            facts=await self._runtime_facts(),
+            purposes=self.purposes,
+        )
+
+    async def get_effective_config(
+        self, ctx: RequestContext, story_id: str
+    ) -> effective.EffectiveConfig:
+        """The story's effective configuration (FR-PROF-5,16): the profile and the version it
+        runs on (``pinned`` when an unavailable upgrade kept an earlier one), every delivered
+        setting at its effective value, the fingerprint, the capabilities and the quality
+        status. 404 for an unknown story."""
+        return await effective.read(self.db, story_id, await self._runtime_facts())
 
 
 # One span, summary line and count per outermost call of every public coroutine method (#74).

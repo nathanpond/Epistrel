@@ -701,7 +701,7 @@ Generated from the explicit requirement references in each test in §§3–12 (r
 | FR-PROF-4 | M | M3 | U-28 (M3), U-28 (M4), U-28 (M5), U-28 (M6), C-17 (M3) |
 | FR-PROF-5 | M | M3 | U-28 (M3), I-18 (M3) |
 | FR-PROF-6 | M | M3 | U-28 (M3), C-16 (M3), S-PROFILE-SWITCH (M7) |
-| FR-PROF-7 | M | M3 | C-16 (M3), C-16 (M4), S-PROFILE-SWITCH (M7) |
+| FR-PROF-7 | M | M3 | C-16 (M3), C-16 (M4, interim until M7), S-PROFILE-SWITCH (M7) |
 | FR-PROF-8 | M | M7 | I-19 (M7), C-16 (M7), S-PROFILE-SWITCH (M7) |
 | FR-PROF-9 | M | M7 | I-19 (M7), S-PROFILE-SWITCH (M7) |
 | FR-PROF-10 | M | M7 | I-19 (M7) |

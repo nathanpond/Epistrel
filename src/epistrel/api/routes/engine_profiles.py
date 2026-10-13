@@ -11,7 +11,8 @@ dials (FR-PROF-1..4, FR-API-6; #106).
   the delivered modules with their levels, and the model purposes a profile may route.
 - ``GET /engine-profiles/{id}``: the profile at its latest version (``?version=n``: that one).
 - ``PUT /engine-profiles/{id}``: the name and settings, replaced; a new version only when the
-  settings differ.
+  settings differ. Two-stage (FR-PROF-7, #109): the answer is ``{applied, impact, result}``,
+  and a change its impact report warns of applies only with ``ignore_warnings``.
 - ``POST /engine-profiles/{id}/copy``: a new profile with the settings of the latest version (or
   ``?version=n``); 201.
 - ``POST /engine-profiles/{id}/validate``: validates the body's settings (a dry run), or the
@@ -50,6 +51,7 @@ from epistrel.api.routes.stories import (
     RelationFilterParam,
 )
 from epistrel.core.context import PRINCIPAL_PATTERN
+from epistrel.core.profiles.impact import ImpactReport, TwoStageResult
 from epistrel.core.profiles.schema import Quality, SettingTags, Tag
 from epistrel.core.profiles.store import (
     DEFAULT_PAGE,
@@ -90,6 +92,27 @@ class ProfileBody(EngineProfile, DeploymentMutationResponse):
     @classmethod
     def of(cls, write: ProfileWrite) -> ProfileBody:
         return cls(**write.profile.model_dump(), config_revision=write.config_revision)
+
+
+class ProfileEditBody(DeploymentMutationResponse):
+    """An edit's two stages (FR-PROF-7): ``applied``; the ``impact`` report over every story
+    following the profile; and ``result``, the profile at its latest version once the edit
+    applied (``null`` when the report held it back and nothing was written). ``config_revision``
+    is the deployment's (unchanged)."""
+
+    applied: bool
+    impact: ImpactReport
+    result: EngineProfile | None
+
+    @classmethod
+    def of(cls, edit: TwoStageResult[ProfileWrite]) -> ProfileEditBody:
+        assert edit.config_revision is not None  # noqa: S101 - a deployment-scoped result
+        return cls(
+            applied=edit.applied,
+            impact=edit.impact,
+            result=edit.result.profile if edit.result is not None else None,
+            config_revision=edit.config_revision,
+        )
 
 
 class ProfileListBody(BaseModel):
@@ -280,7 +303,7 @@ async def get_profile(
 
 @router.put(
     "/{profile_id}",
-    response_model=ProfileBody,
+    response_model=ProfileEditBody,
     operation_id="update_profile",
     summary="Edit an engine profile (a new version)",
     description=(
@@ -289,6 +312,17 @@ async def get_profile(
         "changes nothing records nothing. A preset is edited like any profile (FR-PROF-3). A "
         "deleted profile cannot be edited (422 `profile_deleted`; copy it instead). "
         f"{_SETTINGS_RULES}"
+        "\n\nAn edit runs in two stages (FR-PROF-7). Its `impact` report lists every story "
+        "that follows the profile's latest version: the capabilities each gains and loses, its "
+        "fingerprint before and after (FR-PROF-16), whether a backfill would be needed and "
+        "whether its upgrade is unavailable. When the report has `warnings` and the body does "
+        "not set `ignore_warnings` (`ignoreWarnings`), nothing is written and the answer is 200 "
+        "with `applied: false` and the report; the `Idempotency-Key` is not kept, so the "
+        "confirmation may reuse it. With `ignore_warnings`, or a report without warnings, the "
+        "edit applies: `applied: true`, the report, and the profile in `result`. A "
+        "data-producing increase (none is delivered in M3) cannot apply to a following story "
+        "with history: that story keeps the version it ran on, and every other story moves to "
+        "the new one. Settings that cannot run are refused whatever `ignore_warnings` says."
     ),
 )
 async def update_profile(
@@ -297,9 +331,9 @@ async def update_profile(
     response: Response,
     ctx: ContextDep,
     engine: EngineDep,
-) -> ProfileBody:
-    write = await engine.update_profile(ctx, profile_id, body)
-    return answered(ProfileBody.of(write), ctx, response, replayed=write.replayed)
+) -> ProfileEditBody:
+    edit = await engine.update_profile(ctx, profile_id, body)
+    return answered(ProfileEditBody.of(edit), ctx, response, replayed=edit.replayed)
 
 
 @router.post(

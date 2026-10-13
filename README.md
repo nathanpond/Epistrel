@@ -77,12 +77,15 @@ An engine profile is a named, versioned set of capability modules and dials that
 
 - `POST /engine-profiles` creates a profile at version 1 with any of those settings. What it leaves out takes the default.
 - A setting outside the delivered schema, or a module whose dependencies are off, is 422 `invalid_profile`, and the answer names each one.
-- `PUT /engine-profiles/{id}` makes a new version when the settings change.
+- `PUT /engine-profiles/{id}` makes a new version when the settings change. It runs in two stages (FR-PROF-7): its `impact` report lists every story that follows the profile, with the capabilities each would gain or lose and its fingerprint before and after. When the report has `warnings`, nothing is written and the answer is `applied: false`, until you send the edit again with `ignore_warnings: true` (or `ignoreWarnings`). Settings that cannot run are refused all the same.
 - `POST …/copy` copies a profile, and `POST …/validate` checks settings without saving them.
+- `POST /stories/{id}/impact-preview` reports what assigning a profile, or applying overrides, would do to one story, and changes nothing. `GET /stories/{id}/effective-config` shows the profile and version a story runs on and its settings.
 
 The Lite preset ships owned by `system`. It is an ordinary profile: edit it, copy it, or delete it once another profile is the default.
 
 Every story runs under one profile. A new story gets the deployment's default (`default_engine_profile_id` in `/admin/settings`, Lite until you choose another), and a fork keeps its source's. `DELETE /engine-profiles/{id}` hides a profile and answers with warnings that name the stories still using it and the scenarios recommending it. Those stories keep running on it, and the daily retention sweep purges the profile once no story uses it. The default profile cannot be deleted. For now a story only records its profile, and its turns still read the story's and the deployment's settings.
+
+Every respond response, effective-configuration read and impact report states the configuration's `fingerprint` (`sha256:` over the profile version, each purpose's model and every quality-relevant setting, prompt templates included), the `capabilities` it enables and its `quality_status`, which is `uncertified` until certification arrives (FR-PROF-16). Each turn records them in `config_revisions`. No delivered module produces structured data yet. Once one does, an edit that adds it cannot reach a story with history until backfill exists (M7): the report marks that story `upgrade_unavailable`, and a confirmed edit leaves it on the version it ran on.
 
 ## The minors policy
 

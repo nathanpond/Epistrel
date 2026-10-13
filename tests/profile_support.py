@@ -1,9 +1,12 @@
-"""Helpers for the engine-profile tests (#106): request bodies, settings documents built from the
-schema's own module registry, and the documented dependency list.
+"""Helpers for the engine-profile tests (#106, #109): request bodies, settings documents built
+from the schema's own module registry, the documented dependency list, and what the impact
+report and fingerprint tests compare.
 
 Module and level names come from ``epistrel.core.profiles.schema`` (``MODULES``,
 ``DELIVERED``), never from literals, so a milestone part can name every module, delivered or
-not, without using a later milestone's capability terms (the lexicon, docs/04 §13).
+not, without using a later milestone's capability terms (the lexicon, docs/04 §13). For the
+same reason the impact report's re-derivation key and the quality statuses a later milestone
+produces are named here (``REDERIVATION``, ``QUALITY_STATUSES``).
 """
 
 from __future__ import annotations
@@ -13,9 +16,12 @@ from collections.abc import Iterator
 from itertools import combinations, product
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncEngine
+
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.schema import DependencyRule, Module, Requirement
 from tests.conftest import REPO_ROOT
+from tests.event_support import rows, scalar
 
 PROFILES = "/engine-profiles"
 SETTINGS: dict[str, Any] = {
@@ -170,3 +176,55 @@ def _pairs(assignment: dict[str, Any], names: list[str]) -> set[tuple[str, Any, 
 def covered_pairs(rows: list[dict[str, Any]]) -> Iterator[tuple[str, Any, str, Any]]:
     for row in rows:
         yield from _pairs(row, list(row))
+
+
+# -- impact reports and fingerprints (#109) ------------------------------------------------------
+
+REDERIVATION = "backfill"
+"""An affected story's entry key for re-deriving its data (FR-PROF-7): an M7 term, so parts name
+it through this constant."""
+QUALITY_STATUSES = ("certified", "uncertified", "stale")
+"""FR-PROF-16's quality statuses; M3 produces only the second."""
+STATUS_COMPONENT = "QualityStatusValue"
+"""The OpenAPI component of the status enum (its name holds a later milestone's term)."""
+UNCERTIFIED = {"status": "uncertified"}
+UNAVAILABLE_WARNINGS = ["capabilities_gained", "backfill_needed", "upgrade_unavailable"]
+"""A report's warnings when a story cannot gain a data-producing capability."""
+LITE_CAPABILITIES = ["budgets", "lite", "models", "pins", "polish", "rolling_summary"]
+"""What the Lite preset enables: its pipeline by level, and every delivered module it turns on."""
+POLISH = "repair.polish.enabled"
+"""The polish pass's switch: a delivered module the tests mark data-producing."""
+
+
+async def configuration_rows(db: AsyncEngine) -> dict[str, Any]:
+    """Everything a profile change could write, to compare before and after one that must
+    write nothing: profiles and their versions, each story's profile and pin, and the counts of
+    operations, idempotency keys and configuration changes with the deployment's revision."""
+    return {
+        "profiles": [
+            tuple(r)
+            for r in await rows(
+                db,
+                "SELECT id, name, current_version, updated_at, deleted_at FROM engine_profiles "
+                "ORDER BY id",
+            )
+        ],
+        "versions": [
+            tuple(r)
+            for r in await rows(
+                db, "SELECT profile_id, version FROM engine_profile_versions ORDER BY 1, 2"
+            )
+        ],
+        "stories": [
+            tuple(r)
+            for r in await rows(
+                db,
+                "SELECT id, engine_profile_id, engine_profile_version_pin, config_revision, "
+                "timeline_revision FROM stories ORDER BY id",
+            )
+        ],
+        "operations": await scalar(db, "SELECT count(*) FROM operations"),
+        "keys": await scalar(db, "SELECT count(*) FROM idempotency_keys"),
+        "changes": await scalar(db, "SELECT count(*) FROM config_changes"),
+        "revision": await scalar(db, "SELECT config_revision FROM deployment_state"),
+    }

@@ -12,6 +12,7 @@ from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.history import ItemModel, item_model
+from epistrel.core.profiles.fingerprint import QualityStatus
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
 from epistrel.orchestrator.models.metrics import ModelCall
 
@@ -50,6 +51,11 @@ RESPOND_DESCRIPTION = (
     "the story's turn queue (null when it never queued) and `first_call_offset_ms` the delay "
     "from the turn reaching the front (a queued turn starting, else the request arriving) to "
     "its first model call; `elapsed_ms` starts at that same moment."
+    "\n\nEvery response states the configuration the turn ran under (FR-PROF-16): its "
+    "`fingerprint` (`sha256:` over the profile version, each purpose's model and every "
+    "quality-relevant setting, prompt templates included), the `capabilities` it enables, and "
+    "its `quality_status` (`uncertified` until a certification matches the fingerprint, which "
+    "no M3 configuration can have)."
     "\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and "
     "`X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written)."
     "\n\nWhile another turn of the story runs, a story with `turn_concurrency: reject` (the "
@@ -105,7 +111,9 @@ class DegradationBody(BaseModel):
 
 class RespondResponse(MutationResponse):
     """One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,
-    the story's new revision, the model calls it made, and where its time went."""
+    the story's new revision, the model calls it made, where its time went, and the
+    configuration it ran under: ``fingerprint``, ``capabilities`` and ``quality_status``
+    (FR-PROF-16; null only on a replay of a turn stored before fingerprints existed)."""
 
     message: MessageBody
     beats: list[ItemModel]
@@ -122,6 +130,9 @@ class RespondResponse(MutationResponse):
     budget: BudgetBody | None
     queued_ms: int | None = None
     first_call_offset_ms: int | None = None
+    fingerprint: str | None
+    capabilities: list[str]
+    quality_status: QualityStatus | None
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -142,6 +153,9 @@ class RespondResponse(MutationResponse):
             call_counts=result.call_counts,
             queued_ms=result.queued_ms,
             first_call_offset_ms=result.first_call_offset_ms,
+            fingerprint=result.fingerprint,
+            capabilities=list(result.capabilities),
+            quality_status=result.quality_status,
             budget=(
                 None
                 if result.budget is None

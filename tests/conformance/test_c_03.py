@@ -6,9 +6,10 @@ Each surface gets its own fresh database (migrated to head), and the same script
 calls (``STEPS``) runs on both, so stories, ratings, policies and deployment settings evolve the
 same way and even the revisions must agree. A library result is rendered through the response
 model its route uses (``…Body.of``), so the two surfaces are compared on the JSON a consumer
-sees. Normalised away: ids (each ULID becomes its first-seen position), timestamps, durations,
-the stub's request ids and the echoed ``Idempotency-Key``; ``Prefer: respond-async``, 204 bodies
-and replay flags are out of scope.
+sees. Normalised away: ids (each ULID becomes its first-seen position), configuration
+fingerprints (likewise: a fingerprint hashes its profile's id, which each surface mints; #109),
+timestamps, durations, the stub's request ids and the echoed ``Idempotency-Key``;
+``Prefer: respond-async``, 204 bodies and replay flags are out of scope.
 
 The parity list is generated from ``Engine``'s public operations (``epistrel.engine.operations``):
 an operation without a route, or without a step here, fails ``test_c_03``.
@@ -56,6 +57,7 @@ from epistrel.api.routes.catalog_scenarios import (
 from epistrel.api.routes.engine_profiles import (
     ProfileBody,
     ProfileDeletedBody,
+    ProfileEditBody,
     ProfileListBody,
     ProfileSchemaBody,
     ProfileVersionsBody,
@@ -119,6 +121,7 @@ from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
+from epistrel.core.profiles.impact import ImpactPreviewRequest
 from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpdate, ProfileValidate
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
@@ -148,6 +151,8 @@ REPLY = "The innkeeper sets down a mug and says nothing."
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 SIGNED = re.compile(r"([?&](?:exp|sig)=)[^&]*")
 """A signed media URL's expiry and signature (#107): the signature covers the real asset id."""
+FINGERPRINT = re.compile(r"^sha256:[0-9a-f]{64}$")
+"""A configuration's fingerprint (#109): it hashes the profile's id, minted per surface."""
 DROPPED = frozenset({"idempotency_key"})
 """Transport fields: the key REST echoes (generated per request)."""
 ZEROED = frozenset(
@@ -399,11 +404,15 @@ PROFILE_ANSWERS = [
     ("delete_profile", 409),
     ("delete_profile", 200),
     ("transfer_owner", 200),
+    ("impact_preview", 200),
+    ("get_effective_config", 200),
 ]
 """What the engine-profile steps (#106) answer on both surfaces: a profile created, read, listed,
-edited into version 2, read at version 1, its versions listed, copied, validated (and refused for
-an undelivered level), the schema read, the default refused deletion, the copy deleted, and the
-profile transferred."""
+edited into version 2 (two-stage, #109: no story follows it, so it applies at once), read at
+version 1, its versions listed, copied, validated (and refused for an undelivered level), the
+schema read, the default refused deletion, the copy deleted, and the profile transferred; then
+(#109) the impact of assigning it to the story previewed, and the story's effective
+configuration read."""
 PROFILE_GROUP = "profiles"
 """The ``Step.group`` of the engine-profile steps (#106)."""
 
@@ -987,7 +996,7 @@ def _steps() -> list[Step]:
         Step(
             "update_profile",
             lambda ids: Rest("PUT", "/engine-profiles/{profile}", PROFILE_EDIT),
-            lambda e, ids: _profile_write(
+            lambda e, ids: _profile_edit(
                 e.update_profile(CTX, ids["profile"], ProfileUpdate(**PROFILE_EDIT))
             ),
             group=PROFILE_GROUP,
@@ -1060,6 +1069,19 @@ def _steps() -> list[Step]:
                     OwnerTransferRequest(**NEW_OWNER),
                 )
             ),
+            group=PROFILE_GROUP,
+        ),
+        # -- a story's configuration (#109): a preview that writes nothing, and the read
+        Step(
+            "impact_preview",
+            lambda ids: Rest("POST", f"{s}/impact-preview", {"profile_id": ids["profile"]}),
+            lambda e, ids: _impact(e, ids["story"], {"profile_id": ids["profile"]}),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "get_effective_config",
+            lambda ids: Rest("GET", f"{s}/effective-config"),
+            lambda e, ids: _effective(e, ids["story"]),
             group=PROFILE_GROUP,
         ),
         # -- the operator surface
@@ -1386,6 +1408,19 @@ async def _profile_write(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(ProfileBody.of(await call))
 
 
+async def _profile_edit(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ProfileEditBody.of(await call))
+
+
+async def _impact(engine: Engine, story_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    request = ImpactPreviewRequest.model_validate(body)
+    return dump(await engine.impact_preview(CTX, story_id, request))
+
+
+async def _effective(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(await engine.get_effective_config(CTX, story_id))
+
+
 async def _profile(engine: Engine, profile_id: str, **params: Any) -> dict[str, Any]:
     return dump(await engine.get_profile(CTX, profile_id, **params))
 
@@ -1518,6 +1553,8 @@ def normalise(value: Any, normalizer: Normalizer) -> Any:
         return [normalise(item, normalizer) for item in value]
     if isinstance(value, str) and TIMESTAMP.match(value):
         return "<time>"
+    if isinstance(value, str) and FINGERPRINT.match(value):
+        return normalizer.placeholder(value)
     if isinstance(value, str):
         value = SIGNED.sub(r"\1<signed>", value)
     return normalizer(value)

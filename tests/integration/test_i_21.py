@@ -756,7 +756,7 @@ async def test_i_21__profiles(stub_settings: Settings, engine: AsyncEngine) -> N
                 headers=headers(c),
             )
         )
-        assert (edited["version"], edited["owner_principal"]) == (2, a)
+        assert (edited["result"]["version"], edited["result"]["owner_principal"]) == (2, a)
         await ok(
             await client.post(f"{PROFILES}/{mine['id']}/validate", json={}, headers=headers(c))
         )

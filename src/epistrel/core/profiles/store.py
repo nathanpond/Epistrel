@@ -11,7 +11,14 @@ stories follow their profile).
   else the requester (never ``system``).
 - **Edit** (``PUT``) replaces the name and the settings. A new version is made only when the
   settings differ from the latest version's; a name-only edit makes none. A deleted profile
-  cannot be edited (422 ``profile_deleted``).
+  cannot be edited (422 ``profile_deleted``). An edit is two-stage (FR-PROF-7, #109;
+  ``core.profiles.impact``): its impact report lists every story that follows the profile's
+  latest version, and a change the report warns of (a capability gained or lost by those
+  stories, an upgrade unavailable) applies only with ``ignore_warnings``; otherwise the answer is
+  the report and nothing is written. A data-producing increase cannot apply to a following story
+  with history (M3's interim rule until M7): a confirmed edit pins that story to the version it
+  ran on (``stories.engine_profile_version_pin``), and every other following story moves to the
+  new version.
 - **Copy** makes a new profile, owned by the requester (or the named ``owner``), at version 1
   with the settings of the source's latest version (or of ``version``). A deleted profile may be
   copied; the copy is an ordinary, live profile (``preset`` is false).
@@ -30,7 +37,9 @@ stories follow their profile).
 other; ``preset`` records provenance only.
 
 **Locks.** Edits and deletes hold the profile row ``FOR NO KEY UPDATE``, which leaves free the
-``FOR KEY SHARE`` a story insert's foreign key check takes. A delete first reads the deployment
+``FOR KEY SHARE`` a story insert's foreign key check takes. An edit that adds data-producing
+capability also holds its following stories ``FOR NO KEY UPDATE``, in id order, from its report
+to its commit (``impact.following_report``). An edit and a delete first read the deployment
 row ``FOR SHARE`` and assigning a default takes it ``FOR UPDATE`` (``core.deployment``), so the
 default never changes under either. The purge holds a profile ``FOR UPDATE``, so a story insert
 naming it waits and then fails its foreign key, instead of naming a profile that is gone. Under
@@ -44,6 +53,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import dataclasses
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -51,7 +61,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, WithJsonSchema
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import and_, delete, exists, func, insert, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -60,11 +70,15 @@ from epistrel.core.context import SYSTEM_PRINCIPAL
 from epistrel.core.errors import ConfigConflict, InvalidRequest, ProfileDeleted, ProfileNotFound
 from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.ownership import Owner, RelationFilter
-from epistrel.core.profiles import schema
-from epistrel.core.profiles.schema import Purposes
+from epistrel.core.profiles import impact, schema
+from epistrel.core.profiles.effective import Configuration
+from epistrel.core.profiles.fingerprint import RuntimeFacts
+from epistrel.core.profiles.impact import ImpactReport, TwoStageRequest, TwoStageResult
+from epistrel.core.profiles.schema import SETTINGS_SCHEMA, Purposes, SettingsDocument
 from epistrel.core.profiles.validate import (
     ProfileValidation,
     canonical,
+    parse_settings,
     refusal,
     require_valid,
     validate_profile,
@@ -93,11 +107,6 @@ PURGE_BATCH = 1_000
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX)]
 
-SETTINGS_SCHEMA: dict[str, Any] = schema.delivered_schema()
-SettingsDocument = Annotated[dict[str, Any], WithJsonSchema(SETTINGS_SCHEMA)]
-"""A profile's settings as JSON: any delivered module, any subset of its settings (what it
-leaves out takes the default). Documented as the delivered schema; validated by
-``validate.require_valid``."""
 
 EXAMPLE_SETTINGS: dict[str, Any] = {
     "memory": {"rolling_summary": {"window_messages": 20}},
@@ -125,9 +134,10 @@ class ProfileCreate(BaseModel):
     owner: Owner | None = None
 
 
-class ProfileUpdate(BaseModel):
+class ProfileUpdate(TwoStageRequest):
     """``PUT /engine-profiles/{id}``: the profile's name and settings, replaced in full. A new
-    version is made only when the settings differ from the latest version's."""
+    version is made only when the settings differ from the latest version's. ``ignore_warnings``
+    (``ignoreWarnings``) confirms a change the impact report warns of (FR-PROF-7)."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -442,35 +452,73 @@ async def update_profile(
     request: ProfileUpdate,
     *,
     principal: str,
+    facts: RuntimeFacts,
     purposes: Purposes | None = None,
-) -> ProfileWrite:
-    """Replace the profile's name and settings: a new version when the settings differ; 404
-    for an unknown profile, 422 ``profile_deleted`` for a deleted one."""
+) -> TwoStageResult[ProfileWrite]:
+    """Replace the profile's name and settings, in two stages (see the module docstring): a new
+    version when the settings differ. The impact report covers every story following the
+    profile's latest version; ``facts`` are the model ids and template hashes their fingerprints
+    need. 404 for an unknown profile, 422 ``profile_deleted`` for a deleted one, and 422
+    ``invalid_profile`` for settings that cannot run, whatever ``ignore_warnings`` says."""
     settings = require_valid(request.settings, purposes=purposes)
     async with db.begin() as conn:
+        await default_profile(conn)  # the deployment row first, as every configuration write
         head = await _head(conn, profile_id, lock="no_key_update")
         if head.deleted_at is not None:
             raise ProfileDeleted(
                 f"engine profile {profile_id} is deleted and cannot be edited (copy it instead)",
                 {"profile_id": profile_id, "field": "path.profile_id", "reason": "deleted"},
             )
-        latest = await _version(conn, profile_id, int(head.current_version))
+        current = int(head.current_version)
+        latest = await _version(conn, profile_id, current)
         new_version = canonical(settings) != canonical(latest.settings)
-        if not new_version and request.name == head.name:
-            return ProfileWrite(
-                await _read(conn, profile_id), await config_revision(conn), changed=False
-            )
-        now = clock.now()
-        values: dict[str, Any] = {"name": request.name, "updated_at": now}
-        if new_version:
-            version = int(head.current_version) + 1
-            await _insert_version(conn, profile_id, version, settings, principal, now)
-            values["current_version"] = version
-        await conn.execute(
-            update(engine_profiles).where(engine_profiles.c.id == profile_id).values(**values)
+        version = current + 1 if new_version else current
+        change = impact.delta(
+            Configuration(profile_id, current, parse_settings(latest.settings)),
+            Configuration(profile_id, version, parse_settings(settings)),
+            facts,
         )
-        await control.record_control_operation(conn, actor=principal)
-        return ProfileWrite(await _read(conn, profile_id), await config_revision(conn))
+        following = await impact.following_report(conn, profile_id, change)
+
+        async def report() -> ImpactReport:
+            return following.report
+
+        async def apply(_: ImpactReport) -> ProfileWrite:
+            if not new_version and request.name == head.name:
+                return ProfileWrite(
+                    await _read(conn, profile_id), await config_revision(conn), changed=False
+                )
+            now = clock.now()
+            values: dict[str, Any] = {"name": request.name, "updated_at": now}
+            if new_version:
+                await _insert_version(conn, profile_id, version, settings, principal, now)
+                values["current_version"] = version
+                await _pin(conn, profile_id, current, following.keep)
+            await conn.execute(
+                update(engine_profiles).where(engine_profiles.c.id == profile_id).values(**values)
+            )
+            await control.record_control_operation(conn, actor=principal)
+            return ProfileWrite(await _read(conn, profile_id), await config_revision(conn))
+
+        outcome = await impact.two_stage(report, apply, ignore_warnings=request.ignore_warnings)
+        return dataclasses.replace(outcome, config_revision=await config_revision(conn))
+
+
+async def _pin(
+    conn: AsyncConnection, profile_id: str, version: int, story_ids: frozenset[str]
+) -> None:
+    """Keep ``story_ids`` (following stories whose upgrade is unavailable) on ``version``."""
+    if not story_ids:
+        return
+    await conn.execute(
+        update(stories)
+        .where(
+            stories.c.id.in_(sorted(story_ids)),
+            stories.c.engine_profile_id == profile_id,
+            stories.c.engine_profile_version_pin.is_(None),
+        )
+        .values(engine_profile_version_pin=version)
+    )
 
 
 async def copy_profile(

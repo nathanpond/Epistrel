@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from epistrel.core.history import HistoryItem
 from epistrel.core.ids import Ulid
+from epistrel.core.profiles.fingerprint import QualityStatus
 from epistrel.core.settings_schema import (
     MAX_CALLS_PER_TURN,
     MAX_TURN_DEADLINE_S,
@@ -224,7 +225,8 @@ class DegradationStep:
 @dataclass(frozen=True, slots=True)
 class RespondResult:
     """What a Lite turn returns (FR-RESP-1): the finished message, the turn's beats for the
-    resolved viewpoint, its position, the new revision, and what it cost."""
+    resolved viewpoint, its position, the new revision, what it cost, and the configuration it
+    ran under (its fingerprint, capabilities and quality status, FR-PROF-12,16)."""
 
     message: FinishedMessage
     beats: list[HistoryItem]
@@ -250,6 +252,13 @@ class RespondResult:
     first_call_offset_ms: int | None = None
     """From the turn reaching the front (a queued turn starting, else the request arriving) to
     its first model call starting (#76); ``elapsed_ms`` starts at the same moment."""
+    fingerprint: str | None = None
+    """The fingerprint of the configuration the turn ran under (FR-PROF-16; #109); ``None``
+    only in a result stored before fingerprints existed."""
+    capabilities: list[str] = field(default_factory=list)
+    """The capabilities that configuration enables (#109)."""
+    quality_status: QualityStatus | None = None
+    """That configuration's quality status: ``uncertified`` in M3 (#109)."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 

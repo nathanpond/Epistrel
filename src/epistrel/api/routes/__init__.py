@@ -21,6 +21,7 @@ from epistrel.api.routes import (
     operations,
     respond,
     stories,
+    story_profile,
     story_texts,
     timeline,
 )
@@ -41,6 +42,7 @@ router.include_router(catalog_characters.router)
 router.include_router(catalog_scenarios.router)
 router.include_router(media.router)
 router.include_router(engine_profiles.router)
+router.include_router(story_profile.router)
 router.include_router(admin.router)
 
 signed_router = APIRouter()

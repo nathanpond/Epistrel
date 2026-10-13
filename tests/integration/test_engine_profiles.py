@@ -1,10 +1,11 @@
-"""U-28, C-16 and C-17 (docs/04), their M3 parts for engine profiles (#106), and the detailed
-tests behind them.
+"""U-28, C-16 and C-17 (docs/04), their M3 parts for engine profiles (#106, #109), and the
+detailed tests behind them.
 
 Every U-28 (M3) and C-16 (M3) part lives in this file, because traceability counts a test ID per
-milestone in one file: #109's and #113's U-28 and C-16 parts join it. The C-17 (M3) parts are
-here too. The I-21 part (profiles' owners) is ``test_i_21__profiles`` in
-``tests/integration/test_i_21.py``.
+milestone in one file: #113's U-28 and C-16 parts join it. So does C-16's M4 interim slice
+(#109's ``test_c_16__upgrade_unavailable``), and any later C-16 (M4) part. The C-17 (M3) parts
+are here too. The I-21 part (profiles' owners) is ``test_i_21__profiles`` in
+``tests/integration/test_i_21.py``; C-18 (#109) is in ``tests/integration/test_two_stage.py``.
 
 - ``test_u_28__schema``: the schema's three tags on every setting, the published schema holding
   only what is delivered, the Lite preset validating, undelivered names refused, and the
@@ -13,6 +14,13 @@ here too. The I-21 part (profiles' owners) is ``test_i_21__profiles`` in
   REST; presets edited and copied like any profile; the default cannot be deleted; a story is
   created under the default; deleting a profile a story uses warns, hides it and keeps the
   story running; the retention sweep purges it once no story uses it.
+- ``test_c_16__two_stage`` (#109): a profile edit that its following stories would feel is
+  held for confirmation, then applied with ``ignore_warnings``; one they would not feel applies
+  at once; settings that cannot run are refused even when confirmed; the impact preview; and a
+  creation held until confirmed, through the same flow.
+- ``test_c_16__upgrade_unavailable`` (#109; M4's slot, interim until M7): a data-producing
+  edit cannot reach a story with history, which keeps its version, while one without turns
+  upgrades.
 - ``test_c_17__profiles``: a pairwise covering array over the delivered modules' settings; each
   configuration is accepted and a story runs a turn under it, or it is refused by validation.
 - ``test_c_17__dependencies``: ``missing_dependencies`` end to end: the undelivered path for
@@ -51,6 +59,16 @@ from epistrel.config import Settings
 from epistrel.core import fork as forking
 from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.core.errors import InvalidRequest
+from epistrel.core.profiles.effective import Configuration
+from epistrel.core.profiles.estimates import CALL_LATENCY_MS
+from epistrel.core.profiles.fingerprint import RuntimeFacts
+from epistrel.core.profiles.impact import (
+    CAMEL_CASE,
+    Recommendation,
+    TwoStageResult,
+    creation_report,
+    two_stage,
+)
 from epistrel.core.profiles.schema import (
     BEHAVIORAL,
     DATA_PRODUCING,
@@ -88,15 +106,21 @@ from epistrel.orchestrator.jobs.handlers import retention
 from epistrel.orchestrator.models.registry import DELIVERED as DELIVERED_PURPOSES
 from epistrel.orchestrator.models.registry import RESERVED as RESERVED_PURPOSES
 from epistrel.testing import pauses
-from epistrel.testing.profiles import TEST_CLAUSE, extra_rule
+from epistrel.testing.profiles import TEST_CLAUSE, data_producing, extra_rule
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
 from tests.conftest import alembic_config
 from tests.event_support import rows, scalar
 from tests.profile_support import (
     EDITED,
+    LITE_CAPABILITIES,
+    POLISH,
     PROFILES,
+    REDERIVATION,
     SETTINGS,
+    UNAVAILABLE_WARNINGS,
+    UNCERTIFIED,
+    configuration_rows,
     covered_pairs,
     covering_array,
     documented_rules,
@@ -187,6 +211,17 @@ async def _default(client: httpx.AsyncClient, profile_id: str) -> dict[str, Any]
         headers=headers(A),
     )
     return await ok(response)
+
+
+async def _effective(client: httpx.AsyncClient, story_id: str) -> dict[str, Any]:
+    return await ok(await client.get(f"/stories/{story_id}/effective-config", headers=READ))
+
+
+async def _play(client: httpx.AsyncClient, story_id: str, actor: str) -> dict[str, Any]:
+    played = await client.post(
+        f"/stories/{story_id}/respond", json=respond_body(actor), headers=headers(A)
+    )
+    return await ok(played)
 
 
 def _schema_leaves(node: dict[str, Any], prefix: str = "") -> set[str]:
@@ -373,22 +408,27 @@ async def test_c_16__crud(scratch: Space) -> None:
         shipped = await ok(await client.get(PROFILES, params={"owner": "system"}, headers=READ))
         assert [item["id"] for item in shipped["items"]] == [LITE_PRESET_ID]
 
-        # -- edit into version 2; a name-only edit makes none
-        edited = await ok(
-            await client.put(
-                f"{PROFILES}/{profile}",
-                json={"name": "Brisk Lite", "settings": EDITED},
-                headers=headers(B),
+        # -- edit into version 2; a name-only edit makes none (no story follows the profile, so
+        # each edit applies at once: #109's two stages)
+        edited = (
+            await ok(
+                await client.put(
+                    f"{PROFILES}/{profile}",
+                    json={"name": "Brisk Lite", "settings": EDITED},
+                    headers=headers(B),
+                )
             )
-        )
+        )["result"]
         assert (edited["version"], edited["current_version"], edited["settings"]) == (2, 2, EDITED)
-        renamed = await ok(
-            await client.put(
-                f"{PROFILES}/{profile}",
-                json={"name": "Renamed", "settings": EDITED},
-                headers=headers(A),
+        renamed = (
+            await ok(
+                await client.put(
+                    f"{PROFILES}/{profile}",
+                    json={"name": "Renamed", "settings": EDITED},
+                    headers=headers(A),
+                )
             )
-        )
+        )["result"]
         assert (renamed["name"], renamed["version"]) == ("Renamed", 2)
         first = await ok(
             await client.get(f"{PROFILES}/{profile}", params={"version": 1}, headers=READ)
@@ -434,13 +474,15 @@ async def test_c_16__crud(scratch: Space) -> None:
 
         # -- presets are ordinary profiles: edited and copied like any other
         lite = merged(lite_settings(), nest("memory.rolling_summary.window_messages", 40))
-        lite_v2 = await ok(
-            await client.put(
-                f"{PROFILES}/{LITE_PRESET_ID}",
-                json={"name": "Lite", "settings": lite},
-                headers=headers(A),
+        lite_v2 = (
+            await ok(
+                await client.put(
+                    f"{PROFILES}/{LITE_PRESET_ID}",
+                    json={"name": "Lite", "settings": lite},
+                    headers=headers(A),
+                )
             )
-        )
+        )["result"]
         assert (lite_v2["version"], lite_v2["preset"], lite_v2["owner_principal"]) == (
             2,
             True,
@@ -545,6 +587,320 @@ async def test_c_16__crud(scratch: Space) -> None:
             p=profile,
         )
         assert [tuple(e) for e in events] == [("deleted", "system")]
+
+
+@pytest.mark.part("M3", "FR-PROF-7; FR-SCN-2")
+async def test_c_16__two_stage(scratch: Space) -> None:
+    """A profile edit runs in two stages (FR-PROF-7). Two stories follow a profile, one of them
+    with a played turn. Turning the rolling summary off is answered 200 with ``applied: false``
+    and no ``result``: the impact report lists both stories by id, each losing the rolling
+    summary, with its fingerprint before (the one its effective configuration states) and a new
+    one after, and warns of the lost capability. Nothing changed: the profiles, versions,
+    stories, operations, keys and configuration rows compare equal, so the ``Idempotency-Key``
+    was not kept. Sent again under that key with ``ignoreWarnings: true``, the edit applies:
+    version 2 in ``result``, the same report, both stories running on version 2 without the
+    rolling summary under the fingerprint the report gave; a retry replays the answer. An edit
+    the stories would not feel as a lost or gained capability (a temperature) applies at once,
+    with a new fingerprint. Settings that cannot run are refused 422 ``invalid_profile`` even
+    with ``ignore_warnings``, and nothing changes; a preview of them is refused the same way.
+    So is a confirmed edit sent without the service credential (401). ``ignore_warnings`` and
+    ``ignoreWarnings`` with different values are 422.
+
+    The impact preview of assigning Lite to a story states the one-story report with the
+    fingerprints at the top too, and writes nothing (no key is echoed). A story creation whose
+    profile lacks a capability its scenario recommends goes through the same flow (#119 sends
+    ``POST /stories`` through it): held, with the recommendation unmet and nothing created,
+    until ``ignore_warnings``."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        profile = (
+            await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
+        )["id"]
+        await _default(client, profile)
+        played, actor = await _story(client)
+        await _play(client, played, actor)
+        idle, _ = await _story(client)
+        await _default(client, LITE_PRESET_ID)
+        followers = sorted([played, idle])
+        before = {story: (await _effective(client, story))["fingerprint"] for story in followers}
+
+        # -- a lost capability: held, nothing written, the key not kept
+        quiet = merged(SETTINGS, nest("memory.rolling_summary.enabled", False))
+        edit = {"name": "Brisk Lite", "settings": quiet}
+        key = f"edit-{secrets.token_hex(6)}"
+        unchanged = await configuration_rows(scratch.db)
+        held = await ok(
+            await client.put(f"{PROFILES}/{profile}", json=edit, headers=headers(B, key))
+        )
+        assert (held["applied"], held["result"]) == (False, None)
+        report = held["impact"]
+        assert [entry["story_id"] for entry in report["affected_stories"]] == followers
+        assert (report["affected_count"], report["warnings"]) == (2, ["capabilities_lost"])
+        assert (report["recommendations_unmet"], report["guarantees_lost"]) == ([], [])
+        assert (report["fingerprint_before"], report["fingerprint_after"]) == (None, None)
+        for entry in report["affected_stories"]:
+            assert (entry["capabilities_gained"], entry["capabilities_lost"]) == (
+                [],
+                ["rolling_summary"],
+            )
+            assert entry[REDERIVATION] == {"needed": False, "estimate": None}
+            assert entry["upgrade_unavailable"] is False
+            assert entry["fingerprint_before"] == before[entry["story_id"]]
+            assert entry["fingerprint_after"] != entry["fingerprint_before"]
+            assert entry["quality_status_after"] == UNCERTIFIED
+        assert await configuration_rows(scratch.db) == unchanged
+
+        # -- confirmed under the same key (camelCase): applied, and replayed on a retry
+        confirm = {**edit, CAMEL_CASE: True}
+        applied = await client.put(f"{PROFILES}/{profile}", json=confirm, headers=headers(B, key))
+        done = await ok(applied)
+        assert (done["applied"], done["result"]["version"], done["impact"]) == (True, 2, report)
+        after = {e["story_id"]: e["fingerprint_after"] for e in report["affected_stories"]}
+        for story in followers:
+            now = await _effective(client, story)
+            assert (now["profile"]["version"], now["profile"]["pinned"]) == (2, False)
+            assert now["fingerprint"] == after[story]
+            assert now["capabilities"] == [c for c in LITE_CAPABILITIES if c != "rolling_summary"]
+        again = await client.put(f"{PROFILES}/{profile}", json=confirm, headers=headers(B, key))
+        assert (again.headers.get("Idempotent-Replay"), again.json()) == ("true", done)
+        (recorded,) = await rows(
+            scratch.db, "SELECT kind, principal FROM operations WHERE idempotency_key = :k", k=key
+        )
+        assert tuple(recorded) == ("control", B)
+
+        # -- a change no story feels as a capability: applied at once, a new fingerprint
+        warmer = merged(quiet, nest("models.generation.temperature", 0.5))
+        warm = await ok(
+            await client.put(
+                f"{PROFILES}/{profile}",
+                json={"name": "Brisk Lite", "settings": warmer},
+                headers=headers(A),
+            )
+        )
+        assert (warm["applied"], warm["result"]["version"], warm["impact"]["warnings"]) == (
+            True,
+            3,
+            [],
+        )
+        for entry in warm["impact"]["affected_stories"]:
+            assert (entry["capabilities_gained"], entry["capabilities_lost"]) == ([], [])
+            assert entry["fingerprint_before"] == after[entry["story_id"]]
+            assert entry["fingerprint_after"] != entry["fingerprint_before"]
+
+        # -- what cannot run is refused, confirmed or not; so are both spellings at odds
+        still = await configuration_rows(scratch.db)
+        invalid = {"name": "Brisk Lite", "settings": {"pipeline": "structured"}}
+        for body in (invalid, {**invalid, "ignore_warnings": True}):
+            refused(
+                await client.put(f"{PROFILES}/{profile}", json=body, headers=headers(A)),
+                422,
+                "invalid_profile",
+            )
+        refused(
+            await client.post(
+                f"/stories/{idle}/impact-preview",
+                json={"overrides": {"pipeline": "structured"}},
+                headers=headers(A),
+            ),
+            422,
+            "invalid_profile",
+        )
+        uncredentialed = await client.put(
+            f"{PROFILES}/{profile}",
+            json={**edit, "ignore_warnings": True},
+            headers={"X-Epistrel-Principal": A},
+        )
+        refused(uncredentialed, 401, "unauthenticated")
+        clash = {**edit, "ignore_warnings": True, CAMEL_CASE: False}
+        error = refused(
+            await client.put(f"{PROFILES}/{profile}", json=clash, headers=headers(A)),
+            422,
+            "validation_error",
+        )
+        assert error["details"]["field"] == "body"
+        assert await configuration_rows(scratch.db) == still
+
+        # -- the preview: one story, the fingerprints at the top, nothing written
+        shown = await client.post(
+            f"/stories/{idle}/impact-preview",
+            json={"profile_id": LITE_PRESET_ID},
+            headers=headers(A),
+        )
+        preview = await ok(shown)
+        assert "Idempotency-Key" not in shown.headers
+        (entry,) = preview["affected_stories"]
+        assert (entry["story_id"], entry["capabilities_gained"]) == (idle, ["rolling_summary"])
+        assert (preview["affected_count"], preview["warnings"]) == (1, ["capabilities_gained"])
+        current = (await _effective(client, idle))["fingerprint"]
+        assert preview["fingerprint_before"] == entry["fingerprint_before"] == current
+        assert preview["fingerprint_after"] == entry["fingerprint_after"] != current
+        assert preview["quality_status_after"] == UNCERTIFIED
+        assert await configuration_rows(scratch.db) == still
+
+    # -- a creation the scenario's recommendation is not met by: held, then confirmed
+    lacking = undelivered_modules()[0].name
+    lite = Configuration(LITE_PRESET_ID, 1, parse_settings(lite_settings()))
+    facts = RuntimeFacts(models={}, templates={})
+    recommended = Recommendation(capabilities=(lacking, "lite"), recommended_by="SCN@1")
+    created: list[str] = []
+
+    async def report_fn() -> Any:
+        return creation_report(lite.stamp(facts), lite.settings, recommended)
+
+    async def create(_: Any) -> str:
+        created.append("story")
+        return "story"
+
+    first: TwoStageResult[str] = await two_stage(report_fn, create, ignore_warnings=False)
+    assert (first.applied, first.result, created) == (False, None, [])
+    assert first.impact.warnings == ["recommendations_unmet"]
+    assert [(u.capability, u.recommended_by) for u in first.impact.recommendations_unmet] == [
+        (lacking, "SCN@1")
+    ]
+    assert first.impact.fingerprint_after == lite.stamp(facts).fingerprint
+    second: TwoStageResult[str] = await two_stage(report_fn, create, ignore_warnings=True)
+    assert (second.applied, second.result, created) == (True, "story", ["story"])
+    assert second.impact == first.impact
+
+
+@pytest.mark.part("M4", "FR-PROF-7", interim_until="M7")
+async def test_c_16__upgrade_unavailable(scratch: Space) -> None:
+    """Until M7 nothing re-derives a story's data from its transcript, so a data-producing
+    increase cannot reach a story with history. A delivered module is marked data-producing for
+    the test (none is in M3; M4's own slice uses consolidation). Two stories follow a profile
+    with the polish pass off; one has played a turn. Turning the polish pass on, without
+    ``ignore_warnings``, changes nothing and reports, by story id: the story with history
+    ``upgrade_unavailable``, its re-derivation needed with an estimate over its transcript (one
+    call per 30 messages, its characters over four in tokens, the measured per-call latency),
+    and keeping its fingerprint; the story without turns gaining the polish pass with nothing to
+    re-derive. With ``ignore_warnings`` the edit applies to the second story, which runs on
+    version 2 with the polish pass, while the first keeps version 1 (pinned, as its effective
+    configuration states) and its next turn runs on it. A preview of the same increase reports
+    the same for each story alone.
+
+    Complement asserted: without the marking, the same kind of edit moves a story with history
+    to the new version, as an ordinary gained capability."""
+    off = merged(SETTINGS, nest(POLISH, False))
+    on = merged(SETTINGS, nest(POLISH, True))
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        profile = (
+            await ok(
+                await client.post(PROFILES, json=profile_body(settings=off), headers=headers(A)),
+                201,
+            )
+        )["id"]
+        await _default(client, profile)
+        played, actor = await _story(client)
+        await _play(client, played, actor)
+        fresh, _ = await _story(client)
+        before = {s: (await _effective(client, s))["fingerprint"] for s in (played, fresh)}
+        sizes = await rows(
+            scratch.db,
+            "SELECT count(*), sum(length(text)) FROM transcript_messages "
+            "WHERE story_id = :s AND membership = 'active'",
+            s=played,
+        )
+        (messages, characters) = tuple(sizes[0])
+        edit = {"name": "Brisk Lite", "settings": on}
+        with data_producing("polish"):
+            unchanged = await configuration_rows(scratch.db)
+            held = await ok(
+                await client.put(f"{PROFILES}/{profile}", json=edit, headers=headers(A))
+            )
+            assert held["applied"] is False
+            assert await configuration_rows(scratch.db) == unchanged
+            report = held["impact"]
+            assert report["warnings"] == UNAVAILABLE_WARNINGS
+            entries = {e["story_id"]: e for e in report["affected_stories"]}
+            assert list(entries) == sorted([played, fresh])
+            kept, moved = entries[played], entries[fresh]
+            assert (kept["upgrade_unavailable"], kept["capabilities_gained"]) == (True, ["polish"])
+            assert kept[REDERIVATION] == {
+                "needed": True,
+                "estimate": {
+                    "model_calls": -(-messages // 30),
+                    "tokens": characters // 4,
+                    "duration_s": -(-messages // 30) * CALL_LATENCY_MS / 1000,
+                },
+            }
+            assert kept["fingerprint_before"] == kept["fingerprint_after"] == before[played]
+            assert (moved["upgrade_unavailable"], moved["capabilities_gained"]) == (
+                False,
+                ["polish"],
+            )
+            assert moved[REDERIVATION] == {"needed": False, "estimate": None}
+            assert moved["fingerprint_before"] == before[fresh] != moved["fingerprint_after"]
+
+            preview = await ok(
+                await client.post(
+                    f"/stories/{played}/impact-preview",
+                    json={"overrides": nest(POLISH, True)},
+                    headers=headers(A),
+                )
+            )
+            assert preview["warnings"] == UNAVAILABLE_WARNINGS
+            assert preview["affected_stories"][0]["upgrade_unavailable"] is True
+            alone = await ok(
+                await client.post(
+                    f"/stories/{fresh}/impact-preview",
+                    json={"overrides": nest(POLISH, True)},
+                    headers=headers(A),
+                )
+            )
+            assert alone["warnings"] == ["capabilities_gained"]
+
+            confirmed = await ok(
+                await client.put(
+                    f"{PROFILES}/{profile}",
+                    json={**edit, "ignore_warnings": True},
+                    headers=headers(A),
+                )
+            )
+            assert (confirmed["applied"], confirmed["result"]["version"]) == (True, 2)
+        stays = await _effective(client, played)
+        goes = await _effective(client, fresh)
+        assert (stays["profile"]["version"], stays["profile"]["pinned"]) == (1, True)
+        assert "polish" not in stays["capabilities"]
+        assert stays["fingerprint"] == before[played]
+        assert (goes["profile"]["version"], goes["profile"]["pinned"]) == (2, False)
+        assert "polish" in goes["capabilities"]
+        assert goes["fingerprint"] == moved["fingerprint_after"]
+        pins = await rows(
+            scratch.db,
+            "SELECT id, engine_profile_version_pin FROM stories WHERE id IN (:a, :b)",
+            a=played,
+            b=fresh,
+        )
+        assert dict((r[0], r[1]) for r in pins) == {played: 1, fresh: None}
+        turn = await _play(client, played, actor)
+        assert turn["fingerprint"] == before[played]
+        assert "polish" not in turn["capabilities"]
+
+        # -- complement: unmarked, the same kind of edit moves a story with history along
+        other = (
+            await ok(
+                await client.post(PROFILES, json=profile_body(settings=off), headers=headers(A)),
+                201,
+            )
+        )["id"]
+        await _default(client, other)
+        lived, hero = await _story(client)
+        await _play(client, lived, hero)
+        ordinary = await ok(await client.put(f"{PROFILES}/{other}", json=edit, headers=headers(A)))
+        assert ordinary["impact"]["warnings"] == ["capabilities_gained"]
+        assert ordinary["impact"]["affected_stories"][0]["upgrade_unavailable"] is False
+        moved_on = await ok(
+            await client.put(
+                f"{PROFILES}/{other}", json={**edit, "ignore_warnings": True}, headers=headers(A)
+            )
+        )
+        assert moved_on["applied"] is True
+        assert (await _effective(client, lived))["profile"] == {
+            "id": other,
+            "version": 2,
+            "pinned": False,
+            "deleted": False,
+        }
+        await _default(client, LITE_PRESET_ID)
 
 
 # -- C-17 --------------------------------------------------------------------------------------
@@ -802,7 +1158,7 @@ async def test_validate_without_a_body_checks_the_latest_version(
                 json={"name": "Brisk Lite", "settings": having},
                 headers=headers(A),
             )
-            assert (await ok(edited))["version"] == 2
+            assert (await ok(edited))["result"]["version"] == 2
             assert await ok(await client.post(path, headers=headers(A))) == valid
             assert (await lib.validate_profile(ctx, profile)).valid
         unknown = await client.post(f"{PROFILES}/{'0' * 26}/validate", headers=headers(A))
@@ -855,7 +1211,7 @@ async def test_edits_record_their_requester_and_replay(
             json={"name": "Brisk Lite", "settings": SETTINGS},
             headers=headers(A, noop_key),
         )
-        assert (await ok(noop))["version"] == 1
+        assert (await ok(noop))["result"]["version"] == 1
         recorded = await scalar(
             engine, "SELECT count(*) FROM operations WHERE idempotency_key = :k", k=noop_key
         )
@@ -1269,7 +1625,9 @@ async def test_library_matches_rest(stub_settings: Settings, engine: AsyncEngine
         edited = await lib.update_profile(
             ctx, profile, ProfileUpdate.model_validate({"name": "Brisk Lite", "settings": EDITED})
         )
-        assert edited.profile.version == 2
+        assert edited.applied
+        assert edited.result is not None
+        assert edited.result.profile.version == 2
         copied = await lib.copy_profile(ctx, profile, ProfileCopy(name="Mine"), version=1)
         assert copied.profile.settings == SETTINGS
         checked = await lib.validate_profile(ctx, profile, ProfileValidate())

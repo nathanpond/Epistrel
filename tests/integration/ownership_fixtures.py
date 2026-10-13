@@ -352,8 +352,10 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{S}/owner"): Call(200, {"principal": NEW_OWNER}),
     ("POST", f"{S}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
     ("DELETE", f"{S}{RELATION}"): Call(204, prepare=_related),
+    # -- stories: the configuration preview (#109), which writes nothing
+    ("POST", f"{S}/impact-preview"): Call(200, {"overrides": {"pins": {"max_pinned": 10}}}),
     # -- stories: reads, each finding content the owner put there (the story and its history
-    # in the default viewpoint and the omniscient one too)
+    # in the default viewpoint and the omniscient one too; its effective configuration, #109)
     ("GET", S): Call(200, queries=({}, OMNISCIENT)),
     ("GET", f"{S}/history"): Call(200, queries=({}, OMNISCIENT), prepare=_played),
     ("GET", f"{S}/settings"): Call(200, prepare=_configured),
@@ -362,6 +364,7 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/custom-instructions"): Call(200, prepare=_instructed),
     ("GET", f"{S}/variants"): Call(200, prepare=_regenerated),
     ("GET", f"{S}/relations"): Call(200, prepare=_related),
+    ("GET", f"{S}/effective-config"): Call(200, prepare=_played),
     # -- catalog characters: writes
     ("PATCH", C): Call(200, {"draft_revision": 1, "public_description": "Keeps the logbook."}),
     ("POST", f"{C}/publish"): Call(201, {"draft_revision": 1}),

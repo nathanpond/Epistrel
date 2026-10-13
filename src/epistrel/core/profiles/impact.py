@@ -28,10 +28,12 @@ whether the upgrade is unavailable, and FR-PROF-16's stamp of the configuration 
 under: its fingerprint before and after, and the capabilities enabled and the quality status
 after (``capabilities_after``, ``quality_status_after``). Then the scenario recommendations the
 result does not meet (``recommended_by`` is the scenario's ``<catalog id>@<version>``), the
-FR-VERIFY-15 guarantees it loses, and the warning kinds that made it two-stage. A single-story
-report (a preview, an assignment, overrides, a creation) also states the fingerprints, the
-capabilities and the quality status at the top; a report over a profile's following stories
-leaves them null there.
+FR-VERIFY-15 guarantees it loses, and the warning kinds that made it two-stage. A report on one
+story (a preview, an assignment, overrides) also states the fingerprints, the capabilities and
+the quality status at its top. So does a report that lists no story, since no entry can state
+them: a creation's states the new story's, and an edit's, when no story follows the profile,
+states the profile's own before and after the edit (what a story following it would run under).
+A report that lists a profile's following stories leaves them null at its top.
 
 **M3's interim rule (FR-PROF-8, until M7).** A change that adds data-producing capability
 (``schema.data_increases``) to a story with history, meaning at least one committed, active
@@ -155,9 +157,10 @@ class ImpactReport(BaseModel):
     """What a change would do before it is applied (FR-PROF-7): the affected stories (ordered by
     story id, at most 1,000; ``affected_count`` counts them all), the scenario recommendations
     left unmet, the FR-VERIFY-15 guarantees lost, the fingerprints, the capabilities enabled
-    and the quality status after (FR-PROF-16: at the top for one story; inside each entry for a
-    profile's following stories, with the top ones null), and the ``warnings`` that hold the
-    change for confirmation (empty: it applies at once)."""
+    and the quality status after (FR-PROF-16: at the top of a report on one story, or on none,
+    where an edit of a profile no story follows states the profile's own; inside each entry of a
+    report on a profile's following stories, with the top ones null), and the ``warnings`` that
+    hold the change for confirmation (empty: it applies at once)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -373,7 +376,9 @@ async def following_report(conn: AsyncConnection, profile_id: str, change: Delta
     story pinned to an earlier version does not follow it, and is not affected). When the
     change adds data-producing capability, those stories are locked ``FOR NO KEY UPDATE``, in
     id order, before their history is read: a turn cannot commit on one until the edit has, so
-    the stories kept are exactly the ones with history."""
+    the stories kept are exactly the ones with history. Each entry states the stamp its story
+    would run under; when the report lists no story, its top states the profile's own, before
+    and after the change (FR-PROF-16: every impact report states one)."""
     following = (
         stories.c.engine_profile_id == profile_id,
         stories.c.engine_profile_version_pin.is_(None),
@@ -400,11 +405,16 @@ async def following_report(conn: AsyncConnection, profile_id: str, change: Delta
     entries = [
         affected(s, change, history=s in keep, transcript=sizes.get(s, (0, 0))) for s in listed
     ]
+    unlisted = not entries  # no entry states a stamp, so the top states the profile's own
     report = ImpactReport(
         affected_stories=entries,
         affected_count=count,
         recommendations_unmet=[],
         guarantees_lost=list(change.guarantees_lost) if count else [],
+        fingerprint_before=change.before.fingerprint if unlisted else None,
+        fingerprint_after=change.after.fingerprint if unlisted else None,
+        capabilities_after=list(change.after.capabilities) if unlisted else None,
+        quality_status_after=change.after.quality_status if unlisted else None,
         warnings=_warnings(change, affects=count > 0, unavailable=bool(keep), recommendations=()),
     )
     return Following(report, frozenset(keep))

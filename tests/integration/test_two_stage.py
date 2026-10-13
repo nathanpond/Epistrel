@@ -159,6 +159,10 @@ async def test_c_18__fingerprint(scratch: Space) -> None:
     with the capabilities enabled and the status after it: a preview's at its top and in its
     entry, a profile edit's in each story's entry (its top ones are null, as it may list many
     stories). Turning the rolling summary off in a preview leaves it out of those capabilities.
+    An edit of a profile no story follows lists none, so its top states the profile's own: before
+    it, the fingerprint a preview of assigning the profile gave; after it, a new one, which such a
+    preview then gives, with the capabilities the edit leaves (it turns the rolling summary off)
+    and the status.
 
     A change to a quality-relevant setting gives a new fingerprint: another generation model, a
     summary-window override and the rolling summary turned off in a preview, and an edit of the
@@ -251,6 +255,36 @@ async def test_c_18__fingerprint(scratch: Space) -> None:
         assert quiet["fingerprint_before"] == read["fingerprint"] != quiet["fingerprint_after"]
         assert quiet["fingerprint_after"] == shown["fingerprint_after"]
         assert quiet["quality_status_after"] == shown["quality_status_after"] == UNCERTIFIED
+
+        # -- an edit of a profile no story follows: no entry, so the top states the profile's own
+        unfollowed = (
+            await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
+        )["id"]
+        assigned = await ok(await _preview(client, story, {"profile_id": unfollowed}))
+        assert assigned["capabilities_after"] == LITE_CAPABILITIES
+        alone_edit = {
+            "name": "Brisk Lite",
+            "settings": merged(SETTINGS, nest("memory.rolling_summary.enabled", False)),
+        }
+        lone = await ok(
+            await client.put(f"{PROFILES}/{unfollowed}", json=alone_edit, headers=headers(A))
+        )
+        assert (lone["applied"], lone["result"]["version"]) == (True, 2)
+        own = lone["impact"]
+        assert (own["affected_stories"], own["affected_count"], own["warnings"]) == ([], 0, [])
+        assert own["fingerprint_before"] == assigned["fingerprint_after"]
+        assert re.fullmatch(FINGERPRINT_PATTERN, own["fingerprint_after"])
+        assert own["fingerprint_after"] != own["fingerprint_before"]
+        assert (own["capabilities_after"], own["quality_status_after"]) == (
+            without_summary,
+            UNCERTIFIED,
+        )
+        reassigned = await ok(await _preview(client, story, {"profile_id": unfollowed}))
+        assert (reassigned["fingerprint_after"], reassigned["capabilities_after"]) == (
+            own["fingerprint_after"],
+            without_summary,
+        )
+
         lite = (await ok(await client.get(f"{PROFILES}/{LITE_PRESET_ID}", headers=READ)))[
             "settings"
         ]

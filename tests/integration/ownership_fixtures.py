@@ -121,7 +121,9 @@ async def create_profile(client: httpx.AsyncClient, principal: str, owner: str |
 class Kind:
     """A delivered owned type: where its entities live and how to make one. ``retires``: its
     delete retires the entity instead of removing it (media, #105; engine profiles, #106, until
-    the sweep purges them). ``deleted_status``: what its delete answers."""
+    the sweep purges them). ``deleted_status``: what its delete answers. ``listed``: the query
+    its list needs to show a fresh entity (a catalog list shows published entries unless asked
+    for drafts, #110)."""
 
     entity_type: EntityType
     create: Create
@@ -129,6 +131,7 @@ class Kind:
     """``SELECT owner_principal …`` of one entity (``:id``)."""
     retires: bool = False
     deleted_status: int = 204
+    listed: tuple[tuple[str, str], ...] = ()
 
     @property
     def base(self) -> str:
@@ -151,11 +154,13 @@ KINDS: dict[EntityType, Kind] = {
         EntityType.CHARACTER,
         create_character,
         "SELECT owner_principal FROM catalog.character_catalog WHERE id = :id",
+        listed=(("status", "draft"),),
     ),
     EntityType.SCENARIO: Kind(
         EntityType.SCENARIO,
         create_scenario,
         "SELECT owner_principal FROM catalog.scenario_catalog WHERE id = :id",
+        listed=(("status", "draft"),),
     ),
     EntityType.MEDIA: Kind(
         EntityType.MEDIA,
@@ -374,6 +379,7 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{C}/owner"): Call(200, {"principal": NEW_OWNER}),
     ("POST", f"{C}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
     ("DELETE", f"{C}{RELATION}"): Call(204, prepare=_related),
+    ("PUT", f"{C}/listing-status"): Call(200, {"value": "public"}),
     # -- catalog characters: reads of a `private` entry: the latest version as the card (the
     # default) and in full, version 1, and the draft in both projections
     ("GET", C): Call(200, queries=ENTRY_READS, prepare=_published),
@@ -388,6 +394,7 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{SC}/owner"): Call(200, {"principal": NEW_OWNER}),
     ("POST", f"{SC}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
     ("DELETE", f"{SC}{RELATION}"): Call(204, prepare=_related),
+    ("PUT", f"{SC}/listing-status"): Call(200, {"value": "public"}),
     # -- scenarios: reads of a `private` scenario, as for catalog characters
     ("GET", SC): Call(200, queries=ENTRY_READS, prepare=_published),
     ("GET", f"{SC}/versions"): Call(200, prepare=_published),

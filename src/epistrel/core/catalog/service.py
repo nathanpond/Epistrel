@@ -2,20 +2,24 @@
 #108).
 
 A catalog entry is one row of its kind's catalog table: its owner (the ``owner`` a creation
-names, else the requesting principal; FR-AUTH-5), its listing status (``private`` until #110
-makes the set configurable), its status (``draft`` until the first publish, then
-``published``, or ``archived``), its latest published version (``current_version``, ``None``
-before the first publish) and its one draft: a JSON document with the ``draft_revision`` every
-save and publish compares (FR-CAT-3). Its versions are rows of the kind's versions table.
+names, else the requesting principal; FR-AUTH-5), its listing status (one of the deployment's
+``listing_status_values``; ``core.catalog.listing``, #110), its status (``draft`` until the
+first publish, then ``published``, or ``archived``), its latest published version
+(``current_version``, ``None`` before the first publish) and its one draft: a JSON document with
+the ``draft_revision`` every save and publish compares (FR-CAT-3). Its versions are rows of the
+kind's versions table.
 
 ``CatalogService`` holds the lifecycle; a kind (catalog characters, scenarios) subclasses it and
 fills in its hooks: the tables and nouns, how a document is validated and stored (``stored``),
 the checks a save makes against the database (``checked``), the version's extra columns
-(``version_values``), what a write records beside the row (``recorded``/``forgotten``), and the
-projections (``project``, ``envelope``). Publishing asks the kind's ``Validator`` for a
-``PublishReport`` (#111 replaces the validators with its full runner).
+(``version_values``), what a write records beside the row (``recorded``/``forgotten``), the
+projections (``project``, ``envelope``, and the listings' ``list_item``), and the entries that
+follow one (``followers``: a character's companion scenarios). Publishing asks the kind's
+``Validator`` for a ``PublishReport`` (#111 replaces the validators with its full runner).
 
-- **Create** stores the request's draft at draft revision 1, status ``draft``.
+- **Create** stores the request's draft at draft revision 1, status ``draft``, at the first of
+  the deployment's listing status values (read with the deployment row ``FOR SHARE``, so it
+  cannot be removed meanwhile).
 - **Save** applies a JSON merge patch (RFC 7386: a key sets a field, ``null`` removes it, an
   array replaces the stored one) to the draft, validates the result, caps it (413
   ``draft_too_large``) and writes it with a compare-and-set on ``draft_revision``. A save based
@@ -36,9 +40,12 @@ projections (``project``, ``envelope``). Publishing asks the kind's ``Validator`
   changed when there is nothing to change. **Delete** removes the entry and its versions, from
   any status, and writes a ``catalog_entry_deleted`` audit row. It also removes the entry's
   relations and records a ``deleted`` ownership event (``core.ownership.drop_entity``, #104).
+- **Set the listing status** (FR-CAT-11; #110) changes the entry's value, and its followers',
+  to one of the deployment's values, recorded per entry as a ``listing_status`` ownership event
+  (``core.catalog.listing``); allowed in any status. A follower (a companion) is refused alone.
 
 The owner and the relations are ``core.ownership``'s: transfers and relation changes happen
-there, and nothing here reads them to decide anything (FR-AUTH-8).
+there, and nothing here reads them, or the listing status, to decide anything (FR-AUTH-8).
 
 Every write is one transaction that also records a committed, story-less ``control`` operation
 with the requesting principal and binds the call's ``Idempotency-Key`` to it
@@ -65,9 +72,11 @@ from sqlalchemy import delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import audit, clock, control, ownership
+from epistrel.core.catalog import listing
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import EntryStatus
 from epistrel.core.errors import (
+    CompanionFollowsCharacter,
     DraftStale,
     DraftTooLarge,
     EntryArchived,
@@ -85,11 +94,9 @@ from epistrel.core.tables import deployment_state
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.core.tables.catalog import ERASURE_GUC
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
-from epistrel.core.tables.ownership import EntityType
+from epistrel.core.tables.ownership import EntityType, OwnershipEventKind
 from epistrel.testing import pauses
 
-LISTING_STATUS = "private"
-"""Every new entry's listing status until #110 makes the values configurable (FR-CAT-11)."""
 FIRST_DRAFT_REVISION = 1
 REVISION_MAX = 2**31 - 1
 """``draft_revision`` and ``version`` are ``INTEGER`` columns: a larger value is a 422 at the
@@ -251,6 +258,17 @@ class Shown:
     draft_revision: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class Follower:
+    """An entry that follows another (a character's companion scenario, #116): its type, its
+    table, its id and its listing status, as read, locked, by ``CatalogService.followers``."""
+
+    entity_type: EntityType
+    table: Table
+    id: str
+    listing_status: str
+
+
 async def config_revision(conn: AsyncConnection) -> int:
     """The deployment's ``config_revision`` (catalog writes leave it as it is)."""
     found = await conn.scalar(
@@ -273,6 +291,9 @@ class CatalogService(ABC):
     catalog: ClassVar[Table]
     versions: ClassVar[Table]
     not_found_error: ClassVar[type[EpistrelError]]
+    list_item: ClassVar[type[BaseModel]]
+    """A listing's item (#110): the kind's card plus ``owner_principal``, ``updated_at`` and,
+    for a search, ``rank``."""
 
     def __init__(self, validator: Validator) -> None:
         self.validator = validator
@@ -324,6 +345,28 @@ class CatalogService(ABC):
     @abstractmethod
     async def envelope(self, conn: AsyncConnection, entry: Any) -> Any:
         """The entry without a document: what archive and unarchive answer with."""
+
+    async def followers(self, conn: AsyncConnection, entry_id: str) -> list[Follower]:
+        """The entries that follow ``entry_id``'s listing status (its companions), locked
+        ``FOR UPDATE`` in id order inside ``conn``'s transaction. None by default."""
+        return []
+
+    def leader(self, entry: Any) -> str | None:
+        """The id of the entry ``entry`` follows (a companion's character), or ``None``."""
+        return None
+
+    async def list_card(self, conn: AsyncConnection, shown: Shown, *, rank: float | None) -> Any:
+        """``shown`` as a listing's item: exactly the single-entry read's card, plus the owner,
+        ``updated_at`` and, for a search, the rank (#110)."""
+        card = await self.project(conn, shown, Projection.CARD)
+        return self.list_item.model_validate(
+            {
+                **card.model_dump(),
+                "owner_principal": shown.entry.owner_principal,
+                "updated_at": shown.entry.updated_at,
+                "rank": rank,
+            }
+        )
 
     # -- rows --------------------------------------------------------------------------------
 
@@ -413,19 +456,21 @@ class CatalogService(ABC):
         principal: str,
         values: Mapping[str, Any] | None = None,
     ) -> tuple[Any, int]:
-        """A new entry whose draft is ``document`` at draft revision 1 (status ``draft``,
-        listing status ``private``), owned by ``owner``; ``values`` are further columns. Answers
-        the draft in ``full`` and the deployment's ``config_revision``."""
+        """A new entry whose draft is ``document`` at draft revision 1 (status ``draft``, at
+        the first of the deployment's listing status values), owned by ``owner``; ``values``
+        are further columns. Answers the draft in ``full`` and the deployment's
+        ``config_revision``."""
         draft = self.stored(document)
         self.check_size(draft)
         entry_id = new_ulid()
         now = clock.now()
         async with db.begin() as conn:
+            first = (await listing.allowed_values(conn, lock=True))[0]
             await conn.execute(
                 insert(self.catalog).values(
                     id=entry_id,
                     owner_principal=owner,
-                    listing_status=LISTING_STATUS,
+                    listing_status=first,
                     status=EntryStatus.DRAFT.value,
                     current_version=None,
                     draft=draft,
@@ -597,6 +642,70 @@ class CatalogService(ABC):
             )
         return int(versions or 0)
 
+    async def set_listing_status(
+        self, db: AsyncEngine, entry_id: str, value: str, *, principal: str
+    ) -> listing.ListingStatusChange:
+        """Set the entry's listing status to ``value`` (FR-CAT-11), and its followers' with it,
+        in one transaction: 422 ``invalid_listing_status`` unless ``value`` is one of the
+        deployment's values (read with the deployment row ``FOR SHARE``), 404 for an unknown
+        entry, 422 ``companion_follows_character`` for a follower. Each entry whose value
+        changes is updated (``updated_at`` too) and recorded as a ``listing_status`` ownership
+        event by ``principal``, and the listing-status hooks run for it; the write records one
+        ``control`` operation. Setting the entry's current value changes and records nothing (a
+        follower out of step is left as it is then). Allowed whatever the entry's status."""
+        async with db.begin() as conn:
+            allowed = await listing.allowed_values(conn, lock=True)
+            listing.refuse_unknown(value, allowed, field="body.value")
+            await pauses.pause(pauses.CATALOG_LISTING_STATUS_LOCKED)
+            entry = await self.entry(conn, entry_id, lock=True)
+            leader = self.leader(entry)
+            if leader is not None:
+                raise CompanionFollowsCharacter(
+                    f"{self.noun} {entry_id} is the companion of catalog character {leader}: its "
+                    "listing status follows the character's; change it on the character",
+                    {
+                        "entity_type": self.entity_type.value,
+                        "entity_id": entry_id,
+                        "character_id": leader,
+                    },
+                )
+            previous = str(entry.listing_status)
+            changed = previous != value
+            if changed:
+                moved = [Follower(self.entity_type, self.catalog, entry_id, previous)]
+                moved += await self.followers(conn, entry_id)
+                now = clock.now()
+                for item in moved:
+                    if item.listing_status == value:
+                        continue
+                    await conn.execute(
+                        update(item.table)
+                        .where(item.table.c.id == item.id)
+                        .values(listing_status=value, updated_at=now)
+                    )
+                    await ownership.record_event(
+                        conn,
+                        OwnershipEventKind.LISTING_STATUS,
+                        item.entity_type,
+                        item.id,
+                        old=item.listing_status,
+                        new=value,
+                        principal=principal,
+                    )
+                    await listing.run_hooks(
+                        conn, item.entity_type, item.id, item.listing_status, value, principal
+                    )
+                await control.record_control_operation(conn, actor=principal)
+            revision = await config_revision(conn)
+        return listing.ListingStatusChange(
+            entity_type=self.entity_type,
+            id=entry_id,
+            listing_status=value,
+            previous=previous,
+            changed=changed,
+            config_revision=revision,
+        )
+
     # -- reads -------------------------------------------------------------------------------
 
     async def get(
@@ -678,10 +787,10 @@ class CatalogService(ABC):
 
 __all__ = [
     "FIRST_DRAFT_REVISION",
-    "LISTING_STATUS",
     "REVISION_MAX",
     "CardRating",
     "CatalogService",
+    "Follower",
     "Projection",
     "PublishReport",
     "PublishRequest",

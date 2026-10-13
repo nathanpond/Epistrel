@@ -853,6 +853,144 @@
         "title": "CharacterFull",
         "type": "object"
       },
+      "CharacterListBody": {
+        "description": "A page of catalog characters as cards (#110), newest first (a search: best match\nfirst), and the cursor of the next page (``null`` on the last). No total.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CharacterListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "CharacterListBody",
+        "type": "object"
+      },
+      "CharacterListItem": {
+        "additionalProperties": false,
+        "description": "A catalog character as a listing shows it (``GET /catalog/characters``; #110): exactly\nits public card (what a single read answers with ``projection=card``), plus its\n``owner_principal`` (recorded for listing and attribution only, FR-AUTH-8) and when it last\nchanged (``updated_at``: a draft save, publish, archive, listing-status change or owner\ntransfer). ``rank`` is present on a search (``q``): its text-search rank, the order's first\nkey.",
+        "properties": {
+          "content_rating": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CardRating"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/components/schemas/CardImage"
+            },
+            "title": "Images",
+            "type": "array"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "listing_status": {
+            "title": "Listing Status",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "public_description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Description"
+          },
+          "rank": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EntryStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "name",
+          "public_description",
+          "images",
+          "labels",
+          "content_rating",
+          "listing_status",
+          "status",
+          "owner_principal",
+          "updated_at"
+        ],
+        "title": "CharacterListItem",
+        "type": "object"
+      },
       "CharacterPatch": {
         "additionalProperties": false,
         "description": "``PATCH /catalog/characters/{id}``: a JSON merge patch (RFC 7386) over the draft — a key\nsets that field, ``null`` removes it, and ``definition`` merges the same way — with the\n``draft_revision`` it is based on (FR-CAT-3).",
@@ -3875,6 +4013,63 @@
           "replayed"
         ],
         "title": "IngestedEventBody",
+        "type": "object"
+      },
+      "ListingStatusBody": {
+        "description": "A catalog entry's listing status after a ``PUT …/listing-status`` (FR-CAT-11): one of\nthe deployment's ``listing_status_values``, never interpreted by Epistrel.\n``config_revision`` is the deployment's, unchanged.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "listing_status": {
+            "title": "Listing Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_revision",
+          "id",
+          "listing_status"
+        ],
+        "title": "ListingStatusBody",
+        "type": "object"
+      },
+      "ListingStatusRequest": {
+        "additionalProperties": false,
+        "description": "``PUT /catalog/{characters|scenarios}/{id}/listing-status``: the entry's new listing\nstatus, one of the deployment's ``listing_status_values`` (FR-CAT-11). Surrounding spaces\nand tabs are trimmed; values are case-sensitive. Epistrel never interprets it.",
+        "examples": [
+          {
+            "value": "public"
+          }
+        ],
+        "properties": {
+          "value": {
+            "description": "One of the deployment's `listing_status_values` (default `private`, `in_review`, `public`): 1 to 40 characters, case-sensitive.",
+            "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f\\t ]([^\\x00-\\x1f\\x7f]{0,38}[^\\x00-\\x1f\\x7f\\t ])?[\\t ]*$",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "ListingStatusRequest",
         "type": "object"
       },
       "MediaAsset": {
@@ -10208,6 +10403,160 @@
         "title": "ScenarioFull",
         "type": "object"
       },
+      "ScenarioListBody": {
+        "description": "A page of scenarios as cards (#110), newest first (a search: best match first), and the\ncursor of the next page (``null`` on the last). No total.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ScenarioListBody",
+        "type": "object"
+      },
+      "ScenarioListItem": {
+        "additionalProperties": false,
+        "description": "A scenario as a listing shows it (``GET /catalog/scenarios``; #110): exactly its public\ncard (what a single read answers with ``projection=card``, ``companion_of`` included), plus\nits ``owner_principal`` (recorded for listing and attribution only, FR-AUTH-8) and when it\nlast changed (``updated_at``: a draft save, publish, archive, listing-status change or owner\ntransfer). ``rank`` is present on a search (``q``): its text-search rank, the order's first\nkey.",
+        "properties": {
+          "companion_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Companion Of"
+          },
+          "content_rating": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CardRating"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "listing_status": {
+            "title": "Listing Status",
+            "type": "string"
+          },
+          "media": {
+            "$ref": "#/components/schemas/ScenarioCardMediaSet"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "public_description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Description"
+          },
+          "rank": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioCardRole"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EntryStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "listing_status",
+          "status",
+          "companion_of",
+          "name",
+          "public_description",
+          "media",
+          "labels",
+          "content_rating",
+          "roles",
+          "owner_principal",
+          "updated_at"
+        ],
+        "title": "ScenarioListItem",
+        "type": "object"
+      },
       "ScenarioLocation": {
         "additionalProperties": false,
         "description": "A named place in the world: an id roles and the opening start at, a name and a\ndescription.",
@@ -11338,6 +11687,16 @@
             "title": "Job Retention Days",
             "type": "integer"
           },
+          "listing_status_values": {
+            "items": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f\\t ]([^\\x00-\\x1f\\x7f]{0,38}[^\\x00-\\x1f\\x7f\\t ])?[\\t ]*$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Listing Status Values",
+            "type": "array"
+          },
           "lite_generation_defaults": {
             "$ref": "#/components/schemas/GenerationSettings",
             "default": {
@@ -11542,7 +11901,7 @@
       },
       "SettingsPatch": {
         "additionalProperties": false,
-        "description": "A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,\n``lite_generation_defaults`` merges key by key, and ``null`` is refused for a top-level\nfield (except ``max_model_calls_per_turn``, whose ``null`` restores the formula, and\n``media_moderation_webhook_url``, ``public_base_url`` and\n``max_characters_at_start_ceiling``, whose ``null`` unsets them). A list\n(``media_allowed_types``) replaces the stored one. Bounds are ``DeploymentSettings``'s,\nchecked on the merged settings (422 ``validation_error`` at ``body.<field>``).",
+        "description": "A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,\n``lite_generation_defaults`` merges key by key, and ``null`` is refused for a top-level\nfield (except ``max_model_calls_per_turn``, whose ``null`` restores the formula, and\n``media_moderation_webhook_url``, ``public_base_url`` and\n``max_characters_at_start_ceiling``, whose ``null`` unsets them). A list\n(``media_allowed_types``, ``listing_status_values``) replaces the stored one. Bounds are\n``DeploymentSettings``'s, checked on the merged settings (422 ``validation_error`` at\n``body.<field>``).",
         "examples": [
           {
             "lite_window_messages": 40,
@@ -11615,6 +11974,20 @@
               }
             ],
             "title": "Job Retention Days"
+          },
+          "listing_status_values": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Listing Status Values"
           },
           "lite_generation_defaults": {
             "anyOf": [
@@ -13856,6 +14229,7 @@
                           "default_safe_fallback",
                           "idempotency_result_window",
                           "job_retention_days",
+                          "listing_status_values",
                           "lite_generation_defaults",
                           "lite_generation_defaults.length",
                           "lite_generation_defaults.temperature",
@@ -16358,7 +16732,7 @@
         ]
       },
       "put": {
-        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `max_model_calls_per_turn` accepts `null` (the Lite formula `9 + G`), and so do `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` (unset: no hook, no base URL, no ceiling); no other key does.",
+        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `max_model_calls_per_turn` accepts `null` (the Lite formula `9 + G`), and so do `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` (unset: no hook, no base URL, no ceiling); no other key does. A list replaces the stored one. `listing_status_values` lists the catalog's listing status values in order (a new entry takes the first; distinct, case-sensitive, 1 to 40 characters each); removing a value a catalog entry still holds is 409 `listing_status_in_use` (`details.value`, `details.count`).",
         "operationId": "update_deployment_settings",
         "parameters": [
           {
@@ -16455,7 +16829,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `config_conflict`, `idempotency_conflict`."
+            "description": "Conflict; nothing was written: `config_conflict`, `idempotency_conflict`, `listing_status_in_use`."
           },
           "422": {
             "content": {
@@ -16708,8 +17082,206 @@
       }
     },
     "/catalog/characters": {
+      "get": {
+        "description": "A page of catalog characters as cards (each exactly the card a single read answers, plus `owner_principal` and `updated_at`), newest first: the `published` ones of every owner and listing status, or with `status` the `draft` (never published, shown by their draft) or `archived` ones. `q` searches the latest published version's public card (the name, aliases, labels and public description; never a private field, and drafts are not searchable) with `websearch_to_tsquery` (quoted phrases, `or`, `-word`), words as written: best match first, each card with its `rank`. `label` (repeatable; every one must hold), `content_rating` (exactly that rating), `listing_status`, `owner` and `relation` (`name:principal`, or `name:` for any principal; repeatable) narrow the list. `limit` (1 to 200, default 50) cards at a time; `next_cursor` continues, with the same filters (else 422 `cursor_invalid`). Cards only: `projection=full` is 422. Listing status, owners, relations and labels gate nothing (FR-AUTH-8): a list is narrowed by one only when the request names it, whoever asks.",
+        "operationId": "search_catalog_character",
+        "parameters": [
+          {
+            "description": "Full-text search over each entry's latest published public card.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only entries with this label (repeatable; all must hold). Matched exactly, trimmed and lower-cased.",
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "items": {
+                "pattern": "^[A-Za-z0-9 _-]{1,40}$",
+                "type": "string"
+              },
+              "maxItems": 30,
+              "title": "Label",
+              "type": "array"
+            }
+          },
+          {
+            "description": "Only entries with exactly this content rating.",
+            "in": "query",
+            "name": "content_rating",
+            "required": false,
+            "schema": {
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Content Rating",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only entries with this listing status (one of the deployment's values).",
+            "in": "query",
+            "name": "listing_status",
+            "required": false,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f\\t ]([^\\x00-\\x1f\\x7f]{0,38}[^\\x00-\\x1f\\x7f\\t ])?[\\t ]*$",
+              "title": "Listing Status",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the entries this principal owns.",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the entries with this relation: `name:principal`, or `name:` for any principal (repeatable; all must hold).",
+            "in": "query",
+            "name": "relation",
+            "required": false,
+            "schema": {
+              "items": {
+                "pattern": "^[A-Za-z0-9_-]{1,64}:[\\t ]*([^\\x00-\\x1f\\x7f]{1,256}[\\t ]*)?$",
+                "type": "string"
+              },
+              "title": "Relation",
+              "type": "array"
+            }
+          },
+          {
+            "description": "`published` (the default), `draft` or `archived`.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "draft",
+                "published",
+                "archived"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Lists show cards only (FR-SCN-10): `card`.",
+            "in": "query",
+            "name": "projection",
+            "required": false,
+            "schema": {
+              "const": "card",
+              "default": "card",
+              "description": "Lists show cards only (FR-SCN-10): `card`.",
+              "title": "Projection",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CharacterListBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `cursor_invalid`, `invalid_listing_status`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List and search catalog characters",
+        "tags": [
+          "catalog"
+        ]
+      },
       "post": {
-        "description": "Create a catalog character whose draft holds the given fields: draft revision 1, status `draft`, listing status `private`. `owner` names its owner principal (default: the requesting principal; never `system`). Answers 201 with the draft in `full`. A draft larger than 256 KiB is 413 `draft_too_large`.",
+        "description": "Create a catalog character whose draft holds the given fields: draft revision 1, status `draft`, and the first of the deployment's `listing_status_values` (`private` by default) as its listing status. `owner` names its owner principal (default: the requesting principal; never `system`). Answers 201 with the draft in `full`. A draft larger than 256 KiB is 413 `draft_too_large`.",
         "operationId": "create_character_draft",
         "parameters": [
           {
@@ -17481,6 +18053,172 @@
           }
         ],
         "summary": "Archive a catalog character",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/catalog/characters/{character_id}/listing-status": {
+      "put": {
+        "description": "Set the entry's listing status (FR-CAT-11): `value` must be one of the deployment's `listing_status_values` (`GET /admin/settings`; default `private`, `in_review`, `public`), else 422 `invalid_listing_status` (`details.value`, `details.allowed_values`). Values are case-sensitive; surrounding spaces and tabs are trimmed. The change is recorded with the acting principal and time; setting the current value changes and records nothing (200). Allowed whatever the entry's status. The value is the consumer's own publishing workflow: Epistrel restricts no read, no story creation and no transition because of it (FR-AUTH-8). The character's companion scenarios change with it.",
+        "operationId": "set_listing_status_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListingStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListingStatusBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_listing_status`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set a catalog character's listing status",
         "tags": [
           "catalog"
         ]
@@ -18544,8 +19282,218 @@
       }
     },
     "/catalog/scenarios": {
+      "get": {
+        "description": "A page of scenarios as cards (each exactly the card a single read answers, plus `owner_principal` and `updated_at`), newest first: the `published` ones of every owner and listing status, or with `status` the `draft` (never published, shown by their draft) or `archived` ones. `q` searches the latest published version's public card (the name, labels, every role's public label and the public description; never a private field, and drafts are not searchable) with `websearch_to_tsquery` (quoted phrases, `or`, `-word`), words as written: best match first, each card with its `rank`. `label` (repeatable; every one must hold), `content_rating` (exactly that rating), `listing_status`, `owner` and `relation` (`name:principal`, or `name:` for any principal; repeatable) narrow the list. Companion scenarios (a character's, `companion_of` set) are listed only with `include_companions=true`; they still read directly. `limit` (1 to 200, default 50) cards at a time; `next_cursor` continues, with the same filters (else 422 `cursor_invalid`). Cards only: `projection=full` is 422. Listing status, owners, relations and labels gate nothing (FR-AUTH-8): a list is narrowed by one only when the request names it, whoever asks.",
+        "operationId": "search_catalog_scenario",
+        "parameters": [
+          {
+            "description": "Full-text search over each entry's latest published public card.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only entries with this label (repeatable; all must hold). Matched exactly, trimmed and lower-cased.",
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "items": {
+                "pattern": "^[A-Za-z0-9 _-]{1,40}$",
+                "type": "string"
+              },
+              "maxItems": 30,
+              "title": "Label",
+              "type": "array"
+            }
+          },
+          {
+            "description": "Only entries with exactly this content rating.",
+            "in": "query",
+            "name": "content_rating",
+            "required": false,
+            "schema": {
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Content Rating",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only entries with this listing status (one of the deployment's values).",
+            "in": "query",
+            "name": "listing_status",
+            "required": false,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f\\t ]([^\\x00-\\x1f\\x7f]{0,38}[^\\x00-\\x1f\\x7f\\t ])?[\\t ]*$",
+              "title": "Listing Status",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the entries this principal owns.",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the entries with this relation: `name:principal`, or `name:` for any principal (repeatable; all must hold).",
+            "in": "query",
+            "name": "relation",
+            "required": false,
+            "schema": {
+              "items": {
+                "pattern": "^[A-Za-z0-9_-]{1,64}:[\\t ]*([^\\x00-\\x1f\\x7f]{1,256}[\\t ]*)?$",
+                "type": "string"
+              },
+              "title": "Relation",
+              "type": "array"
+            }
+          },
+          {
+            "description": "`published` (the default), `draft` or `archived`.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "draft",
+                "published",
+                "archived"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "description": "List companion scenarios too (default: authored ones only).",
+            "in": "query",
+            "name": "include_companions",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "List companion scenarios too (default: authored ones only).",
+              "title": "Include Companions",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Lists show cards only (FR-SCN-10): `card`.",
+            "in": "query",
+            "name": "projection",
+            "required": false,
+            "schema": {
+              "const": "card",
+              "default": "card",
+              "description": "Lists show cards only (FR-SCN-10): `card`.",
+              "title": "Projection",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioListBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `cursor_invalid`, `invalid_listing_status`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List and search scenarios",
+        "tags": [
+          "catalog"
+        ]
+      },
       "post": {
-        "description": "Create a scenario whose draft holds the given groups: draft revision 1, status `draft`, listing status `private`. `owner` names its owner principal (default: the requesting principal; never `system`). The draft must keep the save rules (422 `validation_error` at the field): unique, unreserved role ids; at most one player role, `open`; a `locked` or `default` role names its `character` and an `open` one none; relationships, holders, starting locations and the opening name declared roles and locations. A `max_characters_at_start` above the deployment's ceiling is 422 `cast_limit_exceeded`; a content rating or media asset that cannot be referenced is 422 `rating_retired` or `media_retired`. Each seed gets an `id`. Answers 201 with the draft in `full`. A draft larger than 1 MiB is 413 `draft_too_large`.",
+        "description": "Create a scenario whose draft holds the given groups: draft revision 1, status `draft`, and the first of the deployment's `listing_status_values` (`private` by default) as its listing status. `owner` names its owner principal (default: the requesting principal; never `system`). The draft must keep the save rules (422 `validation_error` at the field): unique, unreserved role ids; at most one player role, `open`; a `locked` or `default` role names its `character` and an `open` one none; relationships, holders, starting locations and the opening name declared roles and locations. A `max_characters_at_start` above the deployment's ceiling is 422 `cast_limit_exceeded`; a content rating or media asset that cannot be referenced is 422 `rating_retired` or `media_retired`. Each seed gets an `id`. Answers 201 with the draft in `full`. A draft larger than 1 MiB is 413 `draft_too_large`.",
         "operationId": "create_scenario_draft",
         "parameters": [
           {
@@ -19317,6 +20265,172 @@
           }
         ],
         "summary": "Archive a scenario",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/listing-status": {
+      "put": {
+        "description": "Set the entry's listing status (FR-CAT-11): `value` must be one of the deployment's `listing_status_values` (`GET /admin/settings`; default `private`, `in_review`, `public`), else 422 `invalid_listing_status` (`details.value`, `details.allowed_values`). Values are case-sensitive; surrounding spaces and tabs are trimmed. The change is recorded with the acting principal and time; setting the current value changes and records nothing (200). Allowed whatever the entry's status. The value is the consumer's own publishing workflow: Epistrel restricts no read, no story creation and no transition because of it (FR-AUTH-8). A companion scenario's listing status follows its character's: 422 `companion_follows_character` (change it on the character).",
+        "operationId": "set_listing_status_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ListingStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListingStatusBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `companion_follows_character`, `invalid_listing_status`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set a scenario's listing status",
         "tags": [
           "catalog"
         ]

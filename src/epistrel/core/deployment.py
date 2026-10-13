@@ -2,8 +2,10 @@
 
 The settings are ``DeploymentSettings`` (``core/settings_schema.py``): the
 ``deployment_state`` columns (``default_content_rating_id``, ``minor_age_threshold``, the
-starting-cast limits ``max_characters_at_start_default``/``_ceiling``, #108, and the default
-engine profile ``default_engine_profile_id``, #106) and the sections of
+starting-cast limits ``max_characters_at_start_default``/``_ceiling``, #108, the default
+engine profile ``default_engine_profile_id``, #106, and the catalog's
+``listing_status_values``, #110: a write replaces the whole list, and removing a value a catalog
+entry still holds is 409 ``listing_status_in_use``) and the sections of
 its ``settings`` document — the Lite defaults (#57), the story-level text caps
 (#60), the idempotency result window (#61), the default ``turn_queue_max`` (#63), the
 structured-result settings (#53), the safe fallback (#68), the default
@@ -28,6 +30,7 @@ from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock
+from epistrel.core.catalog import listing
 from epistrel.core.config_changes import (
     DeploymentState,
     bump_config_revision,
@@ -96,8 +99,9 @@ class SettingsPatch(BaseModel):
     field (except ``max_model_calls_per_turn``, whose ``null`` restores the formula, and
     ``media_moderation_webhook_url``, ``public_base_url`` and
     ``max_characters_at_start_ceiling``, whose ``null`` unsets them). A list
-    (``media_allowed_types``) replaces the stored one. Bounds are ``DeploymentSettings``'s,
-    checked on the merged settings (422 ``validation_error`` at ``body.<field>``)."""
+    (``media_allowed_types``, ``listing_status_values``) replaces the stored one. Bounds are
+    ``DeploymentSettings``'s, checked on the merged settings (422 ``validation_error`` at
+    ``body.<field>``)."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -134,6 +138,7 @@ class SettingsPatch(BaseModel):
     media_signed_url_ttl: int | None = None
     media_multipart_threshold: int | None = None
     media_upload_ttl: int | None = None
+    listing_status_values: list[str] | None = None
 
     def changes(self) -> dict[str, Any]:
         present: dict[str, Any] = {}
@@ -164,7 +169,8 @@ async def apply_settings(
 ) -> DeploymentState:
     """Merge ``changes`` into the deployment's settings; see the module docstring. A default
     rating that is unknown or retired is 422 ``rating_retired``; a default engine profile that is
-    unknown or deleted is 422 ``profile_deleted``."""
+    unknown or deleted is 422 ``profile_deleted``; removing a listing status value a catalog
+    entry still holds is 409 ``listing_status_in_use``."""
     async with db.begin() as conn:
         current = await lock_deployment(conn)
         before = current.as_settings()
@@ -180,6 +186,10 @@ async def apply_settings(
             )
         if "default_engine_profile_id" in changed:
             await profiles.require_assignable(conn, wanted.default_engine_profile_id)
+        if listing.SETTING in changed:
+            await listing.refuse_removal(
+                conn, before.listing_status_values, wanted.listing_status_values
+            )
         revision = await bump_config_revision(conn, current)
         document = await raw_document(conn)
         await conn.execute(

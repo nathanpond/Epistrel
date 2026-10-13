@@ -3158,3 +3158,141 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - The trade-off: story n+1 may build on code in which story n's verifier later finds gaps. The fixer then works at the newer HEAD and runs the later stories' tests for every module it touches, and group B's full run still gates all of it.
   - Cost if wrong: an extra fix round on a later story.
   **Issue:** #110, #111, #112, #113, #114, #115, #116, #117, #118, #119
+- **Decision (drift):** #110's parts follow docs/04 §15 and the shared-file rule.
+  - `test_c_15__listing_status`, `part("M3", "FR-CAT-11; FR-AUTH-8; FR-API-6")`, is in `tests/conformance/test_c_15.py`.
+  - `test_i_21__listing_filters`, `part("M3", "FR-CAT-9,11; FR-AUTH-8")` (the coverage line's marker), is in `tests/integration/test_i_21.py`.
+  - The detailed tests are unmarked, in `tests/integration/test_catalog_search.py`, and their docstrings name no FR id.
+  - The repository check (compile the query with and without each filter) is a database-free unit test in `tests/test_catalog_listing.py`. The must-have puts it in `test_catalog_search.py`; a unit test belongs with the unit tests. Its behavioural matrix is the I-21 slice.
+  - The parts and the search tests each run on their own scratch database (`catalog_support.scratch_catalog`), because they count whole tables or rewrite `listing_status_values`. So no test changes the shared database's values; the drift note's restore-in-`finally` pattern is unneeded.
+  - check-parts counts 166 parts; check-lexicon reports 0 violations; check-traceability passes.
+  **Why:** traceability counts one file per test ID and milestone (the drift note). Cost if wrong: the unit test moves files.
+  **Issue:** #110
+- **Decision (drift):** `listing_status_values` is a `deployment_state` column, not the jsonb settings section the drift note preferred.
+  - The column is `text[]` NOT NULL, with server default `{private,in_review,public}` (migration `0027_catalog_search`).
+  - It is a prospective `DeploymentSettings` leaf: in `DEPLOYMENT_COLUMNS`, `DeploymentState`, `config_changes._COLUMNS`, `SettingsPatch` and U-18's `EXPECTED`.
+  - Rules: 1 to 50 values (the cap is mine); distinct; each trimmed of spaces and tabs, then 1 to 40 characters with no control character; case-sensitive. The request pattern admits the surrounding blanks, as the principal rule does.
+  - A write replaces the whole list. A pure reorder is a change: one prospective `config_changes` row. The same values again, blanks included, write nothing.
+  **Why:** AC1 names `deployment_state.listing_status_values`, the pass-1 Discretion says "a `text[]` column", and the drift note allowed a column given these hooks. Cost if wrong: one column moved into the settings document.
+  **Issue:** #110
+- **Decision (drift):** Removing a value that an entry holds is 409 `listing_status_in_use`, the Discretion's own code, not M2's `ConfigConflict` (`validation_error` with `details.reason`). The drift note flagged that difference.
+  - It is checked in `apply_settings`, under that write's `FOR UPDATE` deployment lock, by `listing.refuse_removal`.
+  - The count covers every row of both catalog tables (archived, draft-only and companions included). It names the first removed value in the old list's order, with `details {value, count, field}`.
+  **Why:** the plan names the code, and a consumer can branch on it without parsing `reason`. Cost if wrong: the error becomes `ConfigConflict` with `reason: listing_status_in_use`.
+  **Issue:** #110
+- **Decision:** The listing-status write is one Engine method, `set_listing_status(ctx, entity_type, entity_id, request)`.
+  - The request is `ListingStatusRequest {value}`: a model, as every Engine write takes, not the Discretion's bare value.
+  - Its routes are `set_listing_status_character` and `set_listing_status_scenario`. The suffix is the entity type, as #104's ownership routes have it; the drift note suggested plurals. There is one codec per kind, and the key is per deployment.
+  - The order of checks:
+    1. The value against the deployment's set (422 `invalid_listing_status` at `body.value`), before `_keyed` claims the key.
+    2. The same check again in the transaction, under the deployment row `FOR SHARE`.
+    3. The entry `FOR UPDATE` (404).
+    4. 422 `companion_follows_character` for a companion.
+    5. The write: `updated_at` moves; an `ownership_events` row of kind `listing_status` (`old`/`new` bare strings, the acting principal); the hooks; one `control` operation.
+  - The current value again answers 200 and records no event and no operation; `updated_at` stays.
+  - An archived entry changes too.
+  - The answer is `ListingStatusBody {id, listing_status, config_revision, idempotency_key}`. The errors' `details` also carry `field`, beyond the Discretion's `{value, allowed_values}`.
+  - A new pause point, `catalog.listing_status.locked`, drives the race test: a removal waits on a change that has found its value, then answers 409.
+  - A creation reads the first value under the same `FOR SHARE`, so a removal never races it either.
+  **Why:** the pass-2 Discretion's order ("body validation before the idempotency lookup", "`not_found` precedes `companion_follows_character`") and its `FOR SHARE`. Mutation-checked: without the early check, a used key with a bad value answers 409, not 422; without `FOR SHARE`, the race test fails. Cost if wrong: none to stored data.
+  **Issue:** #110
+- **Decision (deviation):** #110 enforces the companion rule itself, as well as offering the hook.
+  - `CatalogService.followers` returns, for a character, its scenarios whose `companion_of` names it, locked `FOR UPDATE` in id order after the character. `leader` returns a scenario's `companion_of`.
+  - A character's change moves each companion that is not already at the value, with one event each.
+  - A companion's own change is 422 `companion_follows_character`.
+  - `core.catalog.listing.on_listing_status_change` (empty by default) still runs inside the transaction, once for each entry changed: the entry, then each companion.
+  - The pass-1 Discretion had left the propagation to a hook that #116 fills.
+  **Why:**
+  - `companion_of` exists (#108), and #104 already moves owners through it.
+  - So AC1's "a companion scenario's status always equals its character's and changes with it" holds now. It is tested on companions that SQL makes, as #104's I-21 companion slice does.
+  - Hand-off to #116: do not register a propagating hook, which would double the events. Create each companion, and backfill one in the migration, at its character's listing status.
+  Cost if wrong: #116 moves the cascade behind the hook.
+  **Issue:** #110, #116
+- **Decision (deviation):** The search vector is a GENERATED `tsvector` column `search` on `catalog.character_versions` and `catalog.scenario_versions`, GIN indexed, not the pass-2 "trigger-maintained column on the catalog row".
+  - `IMMUTABLE` SQL functions compute it: `catalog.epistrel_character_search`, `catalog.epistrel_scenario_search`, and their helper `catalog.epistrel_search_words(document, jsonpath)`.
+  - A listing joins each entry to its current version.
+  - Migration 0027 also adds `(updated_at, id)` indexes on both catalog tables.
+  - The two table-shape tests gain the `search` column.
+  **Why:**
+  - AC2 says "a generated `tsvector` column".
+  - A generated column needs no trigger, and it follows every path that inserts a version, #116's companion publishes included.
+  - Postgres recomputes it when #124's erasure rewrites a version's content.
+  Cost if wrong: a migration moves the vector to the catalog row.
+  **Issue:** #110, #124
+- **Decision (deviation):** The documents and every `q` (`websearch_to_tsquery('simple', q)`) use the `simple` configuration, as the base planner line says. Pass 2's English-parsed prose, concatenated with simple label tokens, is not used.
+  - Each list's strings are joined, so positions run on across elements, and a quoted phrase may span two labels.
+  - Weights: the name is A. Aliases, labels and (for scenarios) role public labels are B. The public description is C.
+  - `ts_rank` uses the default weights and normalization 0.
+  **Why:** one query cannot match both configurations. On PostgreSQL 16, `to_tsvector('simple', 'chatty') @@ websearch_to_tsquery('english', 'chatty')` is false, because English stems the query to `chatti`. Under pass 2, a label would never be found. `simple` also assumes no language for a consumer's content. Cost if wrong: there is no stemming, so `garden` does not find `gardens`.
+  **Issue:** #110
+- **Decision:** What the vector reads.
+  - For a character: its name and public description, at the top level (#103's interim draft) or under `public_card` (#115's planned shape); its aliases and labels under `metadata` (#115's plan, the path #105's `ALIASES_PATH` already reads).
+  - For a scenario: the name, the public description, the labels and every role's public label.
+  - Never a private field: a scenario's world (its entities' aliases are knowledge seeds), seeds and drivers; a character's definition.
+  - The jsonpaths keep strings only, so a malformed document indexes less instead of failing a publish.
+  - The `label` and `content_rating` filters read `metadata.labels` and `metadata.content_rating_id` of the shown document: the latest published version, or the draft of an entry never published. The rating filter matches that id exactly, with no inheritance.
+  - Hand-off to #115: keep these paths, or change the functions in a migration.
+  - AC2's "aliases" has no public field on a scenario, so scenario search covers role public labels instead.
+  **Why:** the pass-1 field list; the test plan's complement that a private phrase is never found. Mutation-checked: indexing a character's definition, or a scenario's world description, fails the search tests.
+  **Issue:** #110, #115
+- **Decision:** The listing's shape.
+  - `Engine.search_catalog(ctx, entity_type, *, q, label, content_rating, listing_status, owner, relation, status, include_companions, limit, cursor)` returns a `CatalogPage`. Its routes are `search_catalog_character` and `search_catalog_scenario`.
+  - Items are `CharacterListItem` and `ScenarioListItem`: the kind's card model plus `owner_principal`, `updated_at`, and `rank` only when there is a `q`. They are built through the service's own `project`, so they equal the single read's card by construction, and a test checks it.
+  - A character's item has no `companion_of`. The Discretion's "plus `companion_of`" is the scenario card's own key; a character has none.
+  - The default status is `published`; `status=draft` lists entries never published, each card the draft with `version` null.
+  - Refusals:
+    - an unknown rating is 422 `validation_error` at `query.content_rating`;
+    - a listing status outside the set is 422 `invalid_listing_status` at `query.listing_status`;
+    - other malformed values are 422 at their field;
+    - `projection` is declared `card` only, so `full` is 422.
+  - Optional parameters are documented without a `null` branch (#104's C-01 lesson).
+  - Each scenario card still makes its own media and rating queries (`project`), which is acceptable at 200 cards or fewer.
+  **Why:** the pass-1 and pass-2 Discretion lines. One method per operation gives one C-03 step each. Cost if wrong: response fields are additive.
+  **Issue:** #110
+- **Decision:** The cursor is base64url of JSON `[rank|null, updated_at, id, fingerprint]`.
+  - The fingerprint is a 16-hex SHA-256 of the kind and the normalised filters, order-free where filters repeat, with `limit` excluded.
+  - `rank` is compared as `float8` (`ts_rank` cast to it), so it survives the JSON exactly.
+  - `cursor_invalid` gives `reason` `malformed` (including a list's cursor sent to a search) or `filters_changed`. A request's cursor may be at most 256 characters.
+  - Hand-off: #114, #117 and #126 plan to use "#110's keyset/encoding". It is `core.catalog.search.encode_cursor`/`decode_cursor` with `Position` (any time plus ULID keyset; rank optional). A story that reuses it may move it to a shared module.
+  **Why:** the Discretion: base64, keyset on `(updated_at, id)` with the rank folded in, the hash binding the filters. Cost if wrong: an encoding change, before any consumer stores cursors.
+  **Issue:** #110, #114, #117, #126
+- **Decision:** Existing tests changed because the story changes what they pin. No assertion was loosened.
+  - The catalog table-shape tests list the new `search` column.
+  - U-18 pins `listing_status_values` as prospective.
+  - `ownership_fixtures.CALLS` gains both `PUT …/listing-status` routes, so the nothing-gates matrix covers them.
+  - `Kind.listed` gives the catalog kinds `status=draft`, so `test_relation_names_at_the_length_bounds` finds its fresh draft through the new lists' relation filter. That test's lower bound now includes characters and scenarios.
+  - C-03 gains one `set_listing_status` step and two `search_catalog` steps, with `LISTING_ANSWERS`. It also asserts that each search found its one entry. The body says "listing" and never "catalog", which is an M3 lexicon term in an M2 part.
+  **Why:** the delivered-type guard and the parity rule require them. Cost if wrong: none.
+  **Issue:** #110
+- **Decision:** I mutation-checked the story. A script applied each mutation and restored the sources byte for byte (SHA-1 checked). Each of these fails at least one of the story's tests:
+  - a list always gated on listing status;
+  - the owner filter ignored;
+  - label AND reduced to the first label;
+  - the status change without `FOR SHARE`;
+  - companions not moved;
+  - a companion's own change not refused;
+  - a value removal not refused;
+  - creation always `private`;
+  - a no-op that records an event;
+  - the value checked after the key;
+  - a cursor that binds no filter;
+  - companions always left out;
+  - drafts listed by default;
+  - `q` allowed with drafts;
+  - the rating filter ignored;
+  - an inclusive keyset;
+  - rank not ordered;
+  - a character's definition indexed;
+  - a scenario's world description indexed;
+  - hooks not run.
+
+  Against the two parts alone, the gating, owner, label, companion (both), removal, first-value, drafts and include-companions mutants each fail a part. The include-companions mutant first survived the parts, so C-15 now asserts the default scenario list and `include_companions`.
+  **Why:** under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #110
+- **Decision:** These docs follow the build.
+  - docs/02 §9 describes the list and search parameters, paging and the listing-status route; §4.10 describes where the values live and the removal and companion rules.
+  - README gains a Catalog section, and its Configuration section names `listing_status_values`.
+  - `PUT /admin/settings`'s description names the setting and its 409.
+  - `docs/openapi.json` is regenerated.
+  - `epistrel` exports `ListingStatusRequest`, `ListingStatusChange`, `CatalogPage`, `CharacterListItem`, `ScenarioListItem`, `InvalidListingStatus`, `ListingStatusInUse` and `CursorInvalid`.
+  **Why:** docs/02 is authoritative and should describe the routes as built, as #104 did. Cost if wrong: none.
+  **Issue:** #110

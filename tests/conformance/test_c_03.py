@@ -44,12 +44,15 @@ from epistrel.api.routes.admin.settings import SettingsBody
 from epistrel.api.routes.admin.stories import RebuildQueuedResponse, RebuildResponse
 from epistrel.api.routes.catalog_characters import (
     CharacterDraftBody,
+    CharacterListBody,
     CharacterPublishedBody,
     CharacterStatusBody,
     CharacterVersionsBody,
 )
+from epistrel.api.routes.catalog_listing import ListingStatusBody
 from epistrel.api.routes.catalog_scenarios import (
     ScenarioDraftBody,
+    ScenarioListBody,
     ScenarioPublishedBody,
     ScenarioStatusBody,
     ScenarioVersionsBody,
@@ -109,6 +112,7 @@ from epistrel.core.catalog.characters import (
     Projection,
     PublishRequest,
 )
+from epistrel.core.catalog.listing import ListingStatusRequest
 from epistrel.core.catalog.scenario_models import ScenarioCreate, ScenarioPatch
 from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import RequestContext
@@ -336,6 +340,18 @@ listed, archived and unarchived; a second draft never published (422 ``not_publi
 deleted; and the first scenario's owner and relations."""
 ENTRY_GROUP = "scenario"
 """The ``Step.group`` of the scenario steps (#108)."""
+PUBLIC = {"value": "public"}
+CHARACTER_SEARCH = {"q": "Mara", "listing_status": "public"}
+SCENARIO_SEARCH = {"label": ["family"]}
+LISTING_ANSWERS = [
+    ("set_listing_status", 200),
+    ("search_catalog", 200),
+    ("search_catalog", 200),
+]
+"""What the listing steps (#110) answer on both surfaces: the character's listing status set,
+the character found by a search filtered by that status, and the scenarios listed by a label."""
+LISTING_GROUP = "listing"
+"""The ``Step.group`` of the listing steps (#110)."""
 NEW_OWNER = {"principal": "p-parity-owner"}
 RELATION = {"principal": "p-parity-d", "relation": "co_author"}
 MODEL_OVERRIDE = {"model": "parity-model", "params": {"temperature": 0.5}}
@@ -884,6 +900,30 @@ def _steps() -> list[Step]:
             lambda e, ids: _relations(e, EntityType.SCENARIO, ids["scenario"]),
             group=ENTRY_GROUP,
         ),
+        # -- listing status and listings (#110): the character made `public`, then found by a
+        # search with that status, and the scenarios listed by a label
+        Step(
+            "set_listing_status",
+            lambda ids: Rest("PUT", "/catalog/characters/{character}/listing-status", PUBLIC),
+            lambda e, ids: _listing_status(
+                e.set_listing_status(
+                    CTX, EntityType.CHARACTER, ids["character"], ListingStatusRequest(**PUBLIC)
+                )
+            ),
+            group=LISTING_GROUP,
+        ),
+        Step(
+            "search_catalog",
+            lambda ids: Rest("GET", "/catalog/characters", params=CHARACTER_SEARCH),
+            lambda e, ids: _characters_found(e, CHARACTER_SEARCH),
+            group=LISTING_GROUP,
+        ),
+        Step(
+            "search_catalog",
+            lambda ids: Rest("GET", "/catalog/scenarios", params=SCENARIO_SEARCH),
+            lambda e, ids: _scenarios_found(e, SCENARIO_SEARCH),
+            group=LISTING_GROUP,
+        ),
         # -- media assets (#105)
         Step(
             "upload_media",
@@ -1361,6 +1401,20 @@ async def _scenario_versions(engine: Engine, scenario_id: str) -> dict[str, Any]
     return dump(ScenarioVersionsBody.of(await engine.list_scenario_versions(CTX, scenario_id)))
 
 
+async def _listing_status(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ListingStatusBody.of(await call))
+
+
+async def _characters_found(engine: Engine, filters: dict[str, Any]) -> dict[str, Any]:
+    page = await engine.search_catalog(CTX, EntityType.CHARACTER, **filters)
+    return dump(CharacterListBody.of(page))
+
+
+async def _scenarios_found(engine: Engine, filters: dict[str, Any]) -> dict[str, Any]:
+    page = await engine.search_catalog(CTX, EntityType.SCENARIO, **filters)
+    return dump(ScenarioListBody.of(page))
+
+
 async def _uploaded(engine: Engine, fields: dict[str, Any]) -> dict[str, Any]:
     request = MediaUpload.model_validate(fields)
     written = await engine.upload_media(CTX, request, MEDIA_BYTES, content_type="image/png")
@@ -1749,6 +1803,14 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         if step.group == ENTRY_GROUP
     ]
     assert entries == ENTRY_ANSWERS
+    listings = [
+        (step.operation, status, body)
+        for step, (status, body) in zip(steps, rest, strict=True)
+        if step.group == LISTING_GROUP
+    ]
+    assert [(operation, status) for operation, status, _ in listings] == LISTING_ANSWERS
+    found = [len(body["items"]) for _, _, body in listings if "items" in body]
+    assert found == [1, 1], "each list found its one entry"
     profiles = [
         (step.operation, status)
         for step, (status, _) in zip(steps, rest, strict=True)

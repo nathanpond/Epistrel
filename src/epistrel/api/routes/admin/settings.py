@@ -52,7 +52,10 @@ async def read_settings(ctx: ContextDep, engine: EngineDep) -> SettingsBody:
         "changes nothing writes nothing. `max_model_calls_per_turn` accepts `null` (the Lite "
         "formula `9 + G`), and so do `media_moderation_webhook_url`, `public_base_url` and "
         "`max_characters_at_start_ceiling` (unset: no hook, no base URL, no ceiling); no other "
-        "key does."
+        "key does. A list replaces the stored one. `listing_status_values` lists the catalog's "
+        "listing status values in order (a new entry takes the first; distinct, case-sensitive, "
+        "1 to 40 characters each); removing a value a catalog entry still holds is 409 "
+        "`listing_status_in_use` (`details.value`, `details.count`)."
     ),
 )
 async def update_settings(

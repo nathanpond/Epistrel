@@ -941,6 +941,19 @@ class ScenarioCard(BaseModel):
     roles: list[ScenarioCardRole]
 
 
+class ScenarioListItem(ScenarioCard):
+    """A scenario as a listing shows it (``GET /catalog/scenarios``; #110): exactly its public
+    card (what a single read answers with ``projection=card``, ``companion_of`` included), plus
+    its ``owner_principal`` (recorded for listing and attribution only, FR-AUTH-8) and when it
+    last changed (``updated_at``: a draft save, publish, archive, listing-status change or owner
+    transfer). ``rank`` is present on a search (``q``): its text-search rank, the order's first
+    key."""
+
+    owner_principal: str
+    updated_at: datetime
+    rank: float | None = Field(default=None, exclude_if=lambda rank: rank is None)
+
+
 class ScenarioFull(BaseModel):
     """A scenario in full (``projection=full``; FR-SCN-10): the entry's envelope and every field
     of the document. ``draft_revision`` is present only on a draft read (``?draft=true``): the
@@ -1016,6 +1029,7 @@ __all__ = [
     "ScenarioDrivers",
     "ScenarioEntity",
     "ScenarioFull",
+    "ScenarioListItem",
     "ScenarioLocation",
     "ScenarioMedia",
     "ScenarioMetadata",

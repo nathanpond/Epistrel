@@ -144,6 +144,7 @@ async def test_scenario_tables_have_the_planned_shape(engine: AsyncEngine) -> No
             "pinned_character_version",
             "published_at",
             "published_by",
+            "search",
         ],
     }
     types = {(r.table_name, r.column_name): (r.udt_name, r.is_nullable) for r in found}
@@ -151,6 +152,7 @@ async def test_scenario_tables_have_the_planned_shape(engine: AsyncEngine) -> No
     assert types[("scenario_catalog", "draft")] == ("jsonb", "NO")
     assert types[("scenario_catalog", "companion_of")] == ("bpchar", "YES")
     assert types[("scenario_versions", "content")] == ("jsonb", "NO")
+    assert types[("scenario_versions", "search")] == ("tsvector", "YES")  # generated (#110)
     constraints = await rows(
         engine,
         "SELECT conrelid::regclass::text AS tbl, pg_get_constraintdef(oid) AS definition "

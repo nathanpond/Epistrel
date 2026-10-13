@@ -13,7 +13,10 @@ and #115 add their rules. A character carries no world truths of its own: those 
 scenario, normally the character's companion scenario (FR-CAT-5).
 
 A read returns one projection (FR-SCN-10): ``card`` (the default), only the public card, or
-``full``, which adds the entry's envelope and every definition field.
+``full``, which adds the entry's envelope and every definition field. A listing
+(``core.catalog.search``, #110) shows each entry as a ``CharacterListItem``: its card, its owner
+and ``updated_at``. A character's companion scenarios (``scenario_catalog.companion_of``, #116)
+follow its listing status (FR-CAT-11).
 """
 
 from __future__ import annotations
@@ -30,14 +33,15 @@ from pydantic import (
     StringConstraints,
     ValidationError,
 )
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.catalog.service import (
     FIRST_DRAFT_REVISION,
-    LISTING_STATUS,
     REVISION_MAX,
     CardRating,
     CatalogService,
+    Follower,
     Projection,
     Published,
     PublishReport,
@@ -54,7 +58,7 @@ from epistrel.core.enums import EntryStatus
 from epistrel.core.errors import CharacterNotFound, InvalidRequest
 from epistrel.core.ownership import Owner
 from epistrel.core.ports import Ports
-from epistrel.core.tables.catalog import character_catalog, character_versions
+from epistrel.core.tables.catalog import character_catalog, character_versions, scenario_catalog
 from epistrel.core.tables.ownership import EntityType
 
 ENTITY_TYPE = EntityType.CHARACTER.value
@@ -219,6 +223,19 @@ class CharacterCard(BaseModel):
     status: EntryStatus
 
 
+class CharacterListItem(CharacterCard):
+    """A catalog character as a listing shows it (``GET /catalog/characters``; #110): exactly
+    its public card (what a single read answers with ``projection=card``), plus its
+    ``owner_principal`` (recorded for listing and attribution only, FR-AUTH-8) and when it last
+    changed (``updated_at``: a draft save, publish, archive, listing-status change or owner
+    transfer). ``rank`` is present on a search (``q``): its text-search rank, the order's first
+    key."""
+
+    owner_principal: str
+    updated_at: datetime
+    rank: float | None = Field(default=None, exclude_if=lambda rank: rank is None)
+
+
 class CharacterFull(BaseModel):
     """A catalog character in full (``projection=full``; FR-SCN-10): the entry's envelope, the
     public card's fields and the private ``definition``. ``draft_revision`` is present only on a
@@ -375,9 +392,24 @@ class CharacterCatalog(CatalogService):
     catalog = character_catalog
     versions = character_versions
     not_found_error = CharacterNotFound
+    list_item = CharacterListItem
 
     def max_bytes(self) -> int:
         return DRAFT_MAX_BYTES  # read at call time, so a test may lower it
+
+    async def followers(self, conn: AsyncConnection, entry_id: str) -> list[Follower]:
+        """The character's companion scenarios (``companion_of``; #116 creates them), locked
+        after the character, in id order: their listing status follows the character's."""
+        rows = await conn.execute(
+            select(scenario_catalog.c.id, scenario_catalog.c.listing_status)
+            .where(scenario_catalog.c.companion_of == entry_id)
+            .order_by(scenario_catalog.c.id)
+            .with_for_update()
+        )
+        return [
+            Follower(EntityType.SCENARIO, scenario_catalog, str(row.id), str(row.listing_status))
+            for row in rows
+        ]
 
     def stored(self, document: Any) -> dict[str, Any]:
         return _validated(document)
@@ -412,8 +444,9 @@ SERVICE = CharacterCatalog(CharacterValidator())
 
 
 async def create(db: AsyncEngine, request: CharacterCreate, *, principal: str) -> DraftWrite:
-    """A new entry with ``request``'s draft fields at draft revision 1 (status ``draft``,
-    listing status ``private``), owned by ``request.owner`` or else ``principal``."""
+    """A new entry with ``request``'s draft fields at draft revision 1 (status ``draft``, at
+    the deployment's first listing status value), owned by ``request.owner`` or else
+    ``principal``."""
     character, revision = await SERVICE.create(
         db, request.document(), owner=request.owner or principal, principal=principal
     )
@@ -499,7 +532,6 @@ __all__ = [
     "DRAFT_MAX_BYTES",
     "ENTITY_TYPE",
     "FIRST_DRAFT_REVISION",
-    "LISTING_STATUS",
     "REVISION_MAX",
     "SERVICE",
     "CardImage",
@@ -511,6 +543,7 @@ __all__ = [
     "CharacterDefinitionPatch",
     "CharacterDraft",
     "CharacterFull",
+    "CharacterListItem",
     "CharacterPatch",
     "CharacterValidator",
     "DeletedCharacter",

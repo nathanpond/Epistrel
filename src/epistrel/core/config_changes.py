@@ -41,6 +41,7 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.settings_schema import (
+    DEFAULT_LISTING_STATUS_VALUES,
     DEFAULT_MAX_CHARACTERS_AT_START,
     DEPLOYMENT_COLUMNS,
     ConfigClass,
@@ -213,6 +214,9 @@ class DeploymentState:
     max_characters_at_start_default: int = DEFAULT_MAX_CHARACTERS_AT_START
     max_characters_at_start_ceiling: int | None = None
     default_engine_profile_id: str = LITE_PRESET_ID
+    listing_status_values: list[str] = field(
+        default_factory=lambda: list(DEFAULT_LISTING_STATUS_VALUES)
+    )
     settings: dict[str, Any] = field(default_factory=dict)
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
@@ -227,6 +231,7 @@ class DeploymentState:
                 "max_characters_at_start_default": self.max_characters_at_start_default,
                 "max_characters_at_start_ceiling": self.max_characters_at_start_ceiling,
                 "default_engine_profile_id": self.default_engine_profile_id,
+                "listing_status_values": self.listing_status_values,
             }
         )
 
@@ -247,6 +252,7 @@ def _state(row: Any) -> DeploymentState:
         max_characters_at_start_default=int(row.max_characters_at_start_default),
         max_characters_at_start_ceiling=row.max_characters_at_start_ceiling,
         default_engine_profile_id=row.default_engine_profile_id,
+        listing_status_values=list(row.listing_status_values),
         settings=document_settings(row.settings),
     )
 
@@ -258,6 +264,7 @@ _COLUMNS = (
     deployment_state.c.max_characters_at_start_default,
     deployment_state.c.max_characters_at_start_ceiling,
     deployment_state.c.default_engine_profile_id,
+    deployment_state.c.listing_status_values,
     deployment_state.c.settings,
 )
 

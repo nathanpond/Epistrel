@@ -447,6 +447,36 @@ class CastLimitExceeded(EpistrelError):
     http_status = 422
 
 
+class InvalidListingStatus(EpistrelError):
+    """A listing status that is not one of the deployment's ``listing_status_values``
+    (FR-CAT-11; #110): set on an entry, or named as a list filter. Nothing is written.
+    ``details``: ``value`` (as sent, trimmed), ``allowed_values`` (the deployment's, in order)
+    and ``field``."""
+
+    code = "invalid_listing_status"
+    http_status = 422
+
+
+class ListingStatusInUse(EpistrelError):
+    """A ``listing_status_values`` write that removes a value some catalog entry still holds
+    (FR-CAT-11; #110): move those entries to another value first. Nothing is written.
+    ``details``: ``value`` (the first such value, in the old list's order) and ``count`` (the
+    entries holding it: characters and scenarios of every status, companions included)."""
+
+    code = "listing_status_in_use"
+    http_status = 409
+
+
+class CursorInvalid(EpistrelError):
+    """A catalog listing's ``cursor`` that cannot continue this request (#110): it is not a
+    cursor a listing gave (``reason`` ``malformed``), or it was given for another entry type or
+    other filters (``filters_changed``; a cursor binds the filters, not ``limit``). Start again
+    without it. ``details``: ``field`` (``query.cursor``) and ``reason``."""
+
+    code = "cursor_invalid"
+    http_status = 422
+
+
 # -- ownership (#104) ---------------------------------------------------------------------------
 
 

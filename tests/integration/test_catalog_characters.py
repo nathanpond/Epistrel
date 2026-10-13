@@ -123,6 +123,7 @@ async def test_catalog_tables_have_the_planned_shape(engine: AsyncEngine) -> Non
             "content_rating_version_id",
             "published_at",
             "published_by",
+            "search",
         ],
     }
     types = {(r.table_name, r.column_name): (r.udt_name, r.is_nullable) for r in found}
@@ -131,6 +132,7 @@ async def test_catalog_tables_have_the_planned_shape(engine: AsyncEngine) -> Non
     assert types[("character_catalog", "current_version")][1] == "YES"
     assert types[("character_versions", "content")] == ("jsonb", "NO")
     assert types[("character_versions", "content_rating_version_id")][1] == "YES"
+    assert types[("character_versions", "search")] == ("tsvector", "YES")  # generated (#110)
     constraints = await rows(
         engine,
         "SELECT conname, contype, pg_get_constraintdef(oid) AS definition FROM pg_constraint "

@@ -24,6 +24,8 @@ The points:
   found it open with every part; it has not assembled the parts yet (#107).
 - ``profiles.purge.before_lock``: the profile purge (``retention_sweep``) found a deleted engine
   profile that no story uses; it has not locked the profile's row to purge it yet (#106).
+- ``catalog.listing_status.locked``: a listing-status change holds the deployment row ``FOR
+  SHARE`` and found its value among the configured ones; it has not locked the entry yet (#110).
 
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 """
@@ -41,6 +43,7 @@ MEDIA_SWEEP_BEFORE_PURGE = "media.sweep.before_purge"
 MEDIA_UPLOAD_BEFORE_COMMIT = "media.upload.before_commit"
 MEDIA_COMPLETE_LOCKED = "media.complete.locked"
 PROFILE_PURGE_BEFORE_LOCK = "profiles.purge.before_lock"
+CATALOG_LISTING_STATUS_LOCKED = "catalog.listing_status.locked"
 POINTS = (
     CATALOG_SAVE_BEFORE_CAS,
     CATALOG_PUBLISH_LOCKED,
@@ -49,6 +52,7 @@ POINTS = (
     MEDIA_UPLOAD_BEFORE_COMMIT,
     MEDIA_COMPLETE_LOCKED,
     PROFILE_PURGE_BEFORE_LOCK,
+    CATALOG_LISTING_STATUS_LOCKED,
 )
 
 ARRIVAL_TIMEOUT_S = 10.0

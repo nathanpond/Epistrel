@@ -191,7 +191,8 @@ async def test_relation_names_at_the_length_bounds(
     ``name:principal``, and the removal answers 204. A name one character longer is 422 at the
     body, the path and the filter, and nothing is written. The filtered lists are the ones whose
     operation in the served OpenAPI document takes a ``relation`` query parameter, so a type
-    whose list gains the filter is covered without a change here."""
+    whose list gains the filter is covered without a change here (a list that shows fresh
+    entities only when asked, the catalog's drafts, gets the type's ``Kind.listed`` query)."""
     longest = f"{'r' * 52}{secrets.token_hex(6)}"  # 64 characters, and no other test's name
     names = ("q", longest)
     overlong = f"{longest}r"
@@ -221,12 +222,16 @@ async def test_relation_names_at_the_length_bounds(
                 filtered.add(kind.entity_type)
                 for name in names:
                     found = await client.get(
-                        kind.base, params={"relation": f"{name}:{related}"}, headers=READ
+                        kind.base,
+                        params={"relation": f"{name}:{related}", **dict(kind.listed)},
+                        headers=READ,
                     )
                     listed = [item["id"] for item in (await ok(found))["items"]]
                     assert listed == [entity.id], (kind.entity_type, name)
                 refused = await client.get(
-                    kind.base, params={"relation": f"{overlong}:{related}"}, headers=READ
+                    kind.base,
+                    params={"relation": f"{overlong}:{related}", **dict(kind.listed)},
+                    headers=READ,
                 )
                 assert _code(refused) == (422, "validation_error", "query.relation[0]"), (
                     kind.entity_type
@@ -251,8 +256,15 @@ async def test_relation_names_at_the_length_bounds(
                 )
                 assert removed.status_code == 204, (kind.entity_type, name, removed.text)
             assert (await ok(await client.get(relations, headers=READ)))["items"] == []
-    # The derivation found the lists known to filter (a type that gains the filter joins them).
-    assert {EntityType.STORY, EntityType.MEDIA, EntityType.ENGINE_PROFILE} <= filtered
+    # The derivation found the lists known to filter (a type that gains the filter joins them;
+    # the catalog's lists did with #110).
+    assert {
+        EntityType.STORY,
+        EntityType.CHARACTER,
+        EntityType.SCENARIO,
+        EntityType.MEDIA,
+        EntityType.ENGINE_PROFILE,
+    } <= filtered
 
 
 async def test_unknown_entities_and_types(stub_settings: Settings, engine: AsyncEngine) -> None:

@@ -3,13 +3,19 @@ row snapshots."""
 
 from __future__ import annotations
 
+import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx2 as httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from tests.auth_support import bearer
+from epistrel.config import Settings
+from epistrel.core.db import make_engine
+from tests.auth_support import auth_settings, bearer
+from tests.conformance.conftest import migrated_database
 
 BASE = "/catalog/characters"
 PRINCIPAL = "p-catalog"
@@ -122,9 +128,82 @@ async def count(engine: AsyncEngine, sql: str, **params: Any) -> int:
         return int(await conn.scalar(text(sql), params) or 0)
 
 
+# -- listing status and listings (#110) ------------------------------------------------------------
+
+LIST_EXTRA_KEYS = frozenset({"owner_principal", "updated_at"})
+"""What a listing's card adds to the single read's card (and ``rank`` on a search)."""
+
+
+async def set_listing_status(
+    client: httpx.AsyncClient,
+    base: str,
+    entry_id: str,
+    value: str,
+    *,
+    principal: str = PRINCIPAL,
+    key: str | None = None,
+) -> httpx.Response:
+    """``PUT {base}/{id}/listing-status`` (``base``: ``/catalog/characters`` or
+    ``/catalog/scenarios``)."""
+    return await client.put(
+        f"{base}/{entry_id}/listing-status",
+        json={"value": value},
+        headers=headers(key, principal),
+    )
+
+
+async def listing(
+    client: httpx.AsyncClient, base: str, *, principal: str | None = None, **params: Any
+) -> httpx.Response:
+    """One page of ``GET {base}`` with ``params``, as ``principal`` (``None``: no principal)."""
+    sent = READ if principal is None else {**READ, "X-Epistrel-Principal": principal}
+    query = {k: str(v).lower() if isinstance(v, bool) else v for k, v in params.items()}
+    return await client.get(base, params=query, headers=sent)
+
+
+async def every(
+    client: httpx.AsyncClient, base: str, *, principal: str | None = None, **params: Any
+) -> list[dict[str, Any]]:
+    """Every item of ``GET {base}`` with ``params``, page after page (``next_cursor``)."""
+    found: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        page = await listing(
+            client, base, principal=principal, **params, **({"cursor": cursor} if cursor else {})
+        )
+        assert page.status_code == 200, page.text
+        body = page.json()
+        found.extend(body["items"])
+        cursor = body["next_cursor"]
+        if cursor is None:
+            return found
+
+
+async def ids(
+    client: httpx.AsyncClient, base: str, *, principal: str | None = None, **params: Any
+) -> list[str]:
+    """The ids ``GET {base}`` lists with ``params``, every page, in order."""
+    return [item["id"] for item in await every(client, base, principal=principal, **params)]
+
+
+@asynccontextmanager
+async def scratch_catalog(pg_url: str) -> AsyncIterator[tuple[Settings, AsyncEngine]]:
+    """A fresh database migrated to head (dropped afterwards), for a test that counts the whole
+    catalog or changes the deployment's listing status values: the app's settings and an
+    engine on it."""
+    with migrated_database(pg_url, f"epistrel_catalog_{secrets.token_hex(4)}") as url:
+        settings = auth_settings(url, model_adapter="stub")
+        db = make_engine(settings)
+        try:
+            yield settings, db
+        finally:
+            await db.dispose()
+
+
 __all__ = [
     "BASE",
     "CARD_KEYS",
+    "LIST_EXTRA_KEYS",
     "PRINCIPAL",
     "READ",
     "VERSION_KEYS",
@@ -133,10 +212,15 @@ __all__ = [
     "count",
     "create",
     "entry_row",
+    "every",
     "headers",
+    "ids",
+    "listing",
     "publish",
     "published",
     "read",
     "save",
+    "scratch_catalog",
+    "set_listing_status",
     "version_rows",
 ]

@@ -2,7 +2,8 @@
 FR-API-6; #108). The same lifecycle as ``/catalog/characters``:
 
 - ``POST /catalog/scenarios``: a new scenario whose draft holds the request's groups (draft
-  revision 1, status ``draft``, listing status ``private``); 201 with the draft in ``full``.
+  revision 1, status ``draft``, the deployment's first listing status, ``private`` by
+  default); 201 with the draft in ``full``.
 - ``PATCH /catalog/scenarios/{id}``: a JSON merge patch over the draft with the
   ``draft_revision`` it is based on; 409 ``draft_stale`` when another save or publish came first.
 - ``POST /catalog/scenarios/{id}/publish``: the draft becomes the next immutable version (201).
@@ -11,6 +12,10 @@ FR-API-6; #108). The same lifecycle as ``/catalog/characters``:
 - ``GET /catalog/scenarios/{id}/versions``: every published version, oldest first.
 - ``POST /catalog/scenarios/{id}/archive`` and ``…/unarchive`` (200); ``DELETE
   /catalog/scenarios/{id}`` (204).
+- ``GET /catalog/scenarios``: list and search, a page of cards, companions only when asked
+  (#110; ``routes.catalog_listing``).
+- ``PUT /catalog/scenarios/{id}/listing-status``: the scenario's listing status (FR-CAT-11;
+  #110); a companion's follows its character's (422 ``companion_follows_character``).
 - ``PUT /catalog/scenarios/{id}/owner``, ``POST``/``GET …/relations`` and ``DELETE
   …/relations/{relation}/{principal}``: the scenario's owner and relations
   (``routes.ownership``, #104); a companion's follow its character's (#116). Nothing gates on
@@ -34,14 +39,34 @@ from epistrel.api.deps import ContextDep, EngineDep, ScenarioId
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse
 from epistrel.api.routes.catalog_characters import PublishReportBody
+from epistrel.api.routes.catalog_listing import (
+    SET_LISTING_STATUS,
+    ContentRatingParam,
+    CursorParam,
+    LabelParam,
+    LimitParam,
+    ListingStatusBody,
+    ListingStatusParam,
+    OwnerParam,
+    ProjectionParam,
+    QParam,
+    RelationParam,
+    StatusParam,
+    list_description,
+    page_fields,
+)
 from epistrel.api.routes.ownership import mount_ownership_routes
+from epistrel.core.catalog.listing import ListingStatusRequest
 from epistrel.core.catalog.scenario_models import (
     ScenarioCard,
     ScenarioCreate,
     ScenarioFull,
+    ScenarioListItem,
     ScenarioPatch,
 )
 from epistrel.core.catalog.scenarios import ScenarioDraftWrite, ScenarioStatusChange
+from epistrel.core.catalog.search import DEFAULT_PAGE as DEFAULT_LIST_PAGE
+from epistrel.core.catalog.search import CatalogPage
 from epistrel.core.catalog.service import (
     REVISION_MAX,
     Projection,
@@ -148,6 +173,64 @@ class ScenarioVersionsBody(BaseModel):
         )
 
 
+class ScenarioListBody(BaseModel):
+    """A page of scenarios as cards (#110), newest first (a search: best match first), and the
+    cursor of the next page (``null`` on the last). No total."""
+
+    items: list[ScenarioListItem]
+    next_cursor: str | None
+
+    @classmethod
+    def of(cls, page: CatalogPage) -> ScenarioListBody:
+        return cls(**page_fields(page))
+
+
+@router.get(
+    "",
+    response_model=ScenarioListBody,
+    operation_id="search_catalog_scenario",
+    summary="List and search scenarios",
+    description=list_description(
+        "scenarios",
+        "the name, labels, every role's public label and the public description",
+        "Companion scenarios (a character's, `companion_of` set) are listed only with "
+        "`include_companions=true`; they still read directly. ",
+    ),
+)
+async def search_catalog_scenario(
+    ctx: ContextDep,
+    engine: EngineDep,
+    q: QParam = None,
+    label: LabelParam = None,
+    content_rating: ContentRatingParam = None,
+    listing_status: ListingStatusParam = None,
+    owner: OwnerParam = None,
+    relation: RelationParam = None,
+    status: StatusParam = None,
+    include_companions: Annotated[
+        bool, Query(description="List companion scenarios too (default: authored ones only).")
+    ] = False,
+    limit: LimitParam = DEFAULT_LIST_PAGE,
+    cursor: CursorParam = None,
+    projection: ProjectionParam = "card",
+) -> ScenarioListBody:
+    page = await engine.search_catalog(
+        ctx,
+        EntityType.SCENARIO,
+        q=q,
+        label=label or (),
+        content_rating=content_rating,
+        listing_status=listing_status,
+        owner=owner,
+        relation=relation or (),
+        status=status,
+        include_companions=include_companions,
+        limit=limit,
+        cursor=cursor,
+    )
+    return ScenarioListBody.of(page)
+
+
 @router.post(
     "",
     status_code=http_status.HTTP_201_CREATED,
@@ -156,7 +239,8 @@ class ScenarioVersionsBody(BaseModel):
     summary="Create a scenario (a draft)",
     description=(
         "Create a scenario whose draft holds the given groups: draft revision 1, status "
-        "`draft`, listing status `private`. `owner` names its owner principal (default: the "
+        "`draft`, and the first of the deployment's `listing_status_values` (`private` by "
+        "default) as its listing status. `owner` names its owner principal (default: the "
         "requesting principal; never `system`). The draft must keep the save rules (422 "
         "`validation_error` at the field): unique, unreserved role ids; at most one player "
         "role, `open`; a `locked` or `default` role names its `character` and an `open` one "
@@ -305,6 +389,26 @@ async def unarchive_scenario(
 ) -> ScenarioStatusBody:
     change = await engine.unarchive_scenario(ctx, scenario_id)
     return answered(ScenarioStatusBody.of(change), ctx, response, replayed=change.replayed)
+
+
+@router.put(
+    "/{scenario_id}/listing-status",
+    response_model=ListingStatusBody,
+    operation_id="set_listing_status_scenario",
+    summary="Set a scenario's listing status",
+    description=SET_LISTING_STATUS
+    + " A companion scenario's listing status follows its character's: 422 "
+    "`companion_follows_character` (change it on the character).",
+)
+async def set_listing_status_scenario(
+    scenario_id: ScenarioId,
+    body: ListingStatusRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> ListingStatusBody:
+    change = await engine.set_listing_status(ctx, EntityType.SCENARIO, scenario_id, body)
+    return answered(ListingStatusBody.of(change), ctx, response, replayed=change.replayed)
 
 
 @router.delete(

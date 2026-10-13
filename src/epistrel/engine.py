@@ -41,11 +41,14 @@ from epistrel.core import (
 )
 from epistrel.core import story_settings as settings_store
 from epistrel.core.catalog import characters as catalog_characters
+from epistrel.core.catalog import kinds as catalog_kinds
+from epistrel.core.catalog import listing as catalog_listing
 from epistrel.core.catalog import scenario_models
 from epistrel.core.catalog import scenarios as catalog_scenarios
+from epistrel.core.catalog import search as catalog_search
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
-from epistrel.core.enums import StoryStatus
+from epistrel.core.enums import EntryStatus, StoryStatus
 from epistrel.core.errors import InvalidRequest, PrincipalRequired, refuse_nul
 from epistrel.core.history import DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT
 from epistrel.core.history import History, read_history
@@ -258,6 +261,16 @@ def _ownership_codecs() -> dict[str, ResultCodec[Any]]:
 
 
 CODECS.update(_ownership_codecs())
+# A catalog entry's listing status (#110): one method, one codec per catalog kind (the key is the
+# route's ``operation_id``, ``set_listing_status_character``), deployment-scoped.
+CODECS.update(
+    {
+        f"set_listing_status_{kind.value}": ResultCodec.of(
+            catalog_listing.ListingStatusChange, revision_field=_CONFIG
+        )
+        for kind in catalog_kinds.SERVICES
+    }
+)
 
 IDEMPOTENCY_WAIT_S = DEFAULT_TURN_DEADLINE_S + idempotency.WAIT_SLACK_S
 """How long a duplicate waits for its original (the turn deadline + 5 s), then 503."""
@@ -1915,6 +1928,77 @@ class Engine:
     ) -> list[catalog_scenarios.VersionSummary]:
         """Every published version of the scenario, oldest first: number, time and publisher."""
         return await catalog_scenarios.versions(self.db, scenario_id)
+
+    # -- listing status and listings (FR-CAT-11, FR-API-6, FR-AUTH-8; #110) ----------------------
+    # One method per operation for both catalog kinds (``entity_type`` ``character`` or
+    # ``scenario``), each served by one route per kind. Nothing here gates on the listing status,
+    # an owner, a relation or a label: a list filters by them only when asked.
+
+    async def set_listing_status(
+        self,
+        ctx: RequestContext,
+        entity_type: EntityType | str,
+        entity_id: str,
+        request: catalog_listing.ListingStatusRequest,
+    ) -> catalog_listing.ListingStatusChange:
+        """Set a catalog entry's listing status (FR-CAT-11) to ``request.value``, one of the
+        deployment's ``listing_status_values`` (422 ``invalid_listing_status`` otherwise,
+        checked before the call's ``Idempotency-Key`` is claimed). The change is recorded with
+        the acting principal and time; a character's companion scenarios change with it, and a
+        companion cannot change alone (422 ``companion_follows_character``). The current value
+        changes nothing. Allowed in any status. The value gates nothing (FR-AUTH-8)."""
+        principal = self.require_principal(ctx)
+        service = catalog_kinds.service_of(entity_type)
+        await catalog_listing.require_allowed(self.db, request.value)
+        return await self._keyed(
+            ctx,
+            f"set_listing_status_{service.entity_type.value}",
+            lambda _: service.set_listing_status(
+                self.db, entity_id, request.value, principal=principal
+            ),
+            material={
+                "entity_type": service.entity_type.value,
+                "entity_id": entity_id,
+                "body": _body(request),
+            },
+        )
+
+    async def search_catalog(
+        self,
+        ctx: RequestContext,
+        entity_type: EntityType | str,
+        *,
+        q: str | None = None,
+        label: Sequence[str] = (),
+        content_rating: str | None = None,
+        listing_status: str | None = None,
+        owner: str | None = None,
+        relation: Sequence[str] = (),
+        status: EntryStatus | str | None = None,
+        include_companions: bool = False,
+        limit: int = catalog_search.DEFAULT_PAGE,
+        cursor: str | None = None,
+    ) -> catalog_search.CatalogPage:
+        """A page of catalog characters or scenarios as cards (FR-API-6): the ``published``
+        ones (``status``: the ``draft`` or ``archived`` ones), newest first, every owner and
+        listing status included. ``q`` searches the latest published version's public card
+        (best match first, with each card's ``rank``); ``label`` (all must hold),
+        ``content_rating``, ``listing_status``, ``owner`` and ``relation`` (``name:principal``,
+        or ``name:`` for any principal; all must hold) narrow the list only when given
+        (FR-AUTH-8). Companion scenarios are listed only with ``include_companions``.
+        ``cursor`` (a page's ``next_cursor``) continues with the same filters."""
+        service = catalog_kinds.service_of(entity_type)
+        query = catalog_search.catalog_query(
+            q=q,
+            labels=label,
+            content_rating=content_rating,
+            listing_status=listing_status,
+            owner=owner,
+            relations=relation,
+            status=status,
+            include_companions=include_companions,
+        )
+        return await catalog_search.search(self.db, service, query, limit=limit, cursor=cursor)
 
     # -- ownership (FR-AUTH-5,6,8; #104) --------------------------------------------------------
     # One owner and any number of relations per story, catalog character, scenario, persona,

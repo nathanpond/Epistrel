@@ -528,15 +528,40 @@ CAST_LIMIT_MIN = 1
 CAST_LIMIT_MAX = 1_000
 """The bounds of every starting-cast limit: the deployment's default and ceiling, a scenario's
 own value and (#119) a story creation's override."""
+
+# -- catalog listing status (FR-CAT-11; #110) ---------------------------------------------------
+
+DEFAULT_LISTING_STATUS_VALUES = ("private", "in_review", "public")
+"""The listing status values a deployment starts with; a new catalog entry takes the first."""
+LISTING_STATUS_VALUE_MAX = 40
+LISTING_STATUS_VALUES_MAX = 50
+LISTING_STATUS_PATTERN = (
+    rf"^[\t ]*[^\x00-\x1f\x7f\t ]([^\x00-\x1f\x7f]{{0,{LISTING_STATUS_VALUE_MAX - 2}}}"
+    r"[^\x00-\x1f\x7f\t ])?[\t ]*$"
+)
+"""A listing status value as sent: 1 to 40 characters without control characters, between
+optional spaces and tabs (which are trimmed). Case-sensitive: ``Public`` is not ``public``."""
+
+
+def _trimmed(value: str) -> str:
+    """``value`` without the spaces and tabs ``LISTING_STATUS_PATTERN`` lets surround it."""
+    return value.strip(" \t")
+
+
+ListingStatusValue = Annotated[str, Field(pattern=LISTING_STATUS_PATTERN), AfterValidator(_trimmed)]
+"""One listing status value (FR-CAT-11): consumer-defined, never interpreted."""
+
 DEPLOYMENT_COLUMNS = (
     "default_content_rating_id",
     "minor_age_threshold",
     "max_characters_at_start_default",
     "max_characters_at_start_ceiling",
     "default_engine_profile_id",
+    "listing_status_values",
 )
 """Deployment settings kept in their own ``deployment_state`` columns (#48; the starting-cast
-limits, #108; the default engine profile, #106) rather than in its ``settings`` document."""
+limits, #108; the default engine profile, #106; the listing status values, #110) rather than in
+its ``settings`` document."""
 
 
 class DeploymentSettings(
@@ -588,6 +613,27 @@ class DeploymentSettings(
     Lite preset until an operator chooses another). It must be a profile that exists and is not
     deleted (422 ``profile_deleted``), and the default cannot be deleted. Prospective: a story
     created after a change runs under the new default; existing stories keep theirs."""
+
+    listing_status_values: Annotated[list[ListingStatusValue], PROSPECTIVE] = Field(
+        default_factory=lambda: list(DEFAULT_LISTING_STATUS_VALUES),
+        min_length=1,
+        max_length=LISTING_STATUS_VALUES_MAX,
+    )
+    """The listing status values a catalog character or scenario may hold (FR-CAT-11; #110),
+    in order: a new entry starts at the first. Consumer-defined publishing-workflow values that
+    Epistrel never interprets: they restrict no read, no story creation and no transition
+    (FR-AUTH-8). Each is 1 to 40 characters without control characters (trimmed), the list
+    holds no value twice, and the values are case-sensitive. A write replaces the whole list (a
+    reorder is a change); removing a value that any catalog entry still holds is 409
+    ``listing_status_in_use``. Prospective: a change applies to the writes that start after
+    it."""
+
+    @field_validator("listing_status_values")
+    @classmethod
+    def _distinct_listing_status_values(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("lists a listing status value more than once")
+        return value
 
     def document(self) -> dict[str, Any]:
         """The fields stored in ``deployment_state.settings`` (JSON)."""

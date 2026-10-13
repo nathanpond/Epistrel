@@ -33,6 +33,11 @@ a scenario's own:
 
 ``effective_cast_limit`` (``scenario_models``) gives the starting-cast limit a story created from
 a scenario has; #119 calls it.
+
+A companion (``companion_of``, #116) follows its character's listing status: it changes with the
+character's and is refused on its own (422 ``companion_follows_character``; FR-CAT-11, #110).
+A listing (``core.catalog.search``) shows a scenario as a ``ScenarioListItem`` and leaves
+companions out unless asked.
 """
 
 from __future__ import annotations
@@ -58,6 +63,7 @@ from epistrel.core.catalog.scenario_models import (
     ScenarioCreate,
     ScenarioDraft,
     ScenarioFull,
+    ScenarioListItem,
     ScenarioPatch,
     card_roles,
 )
@@ -557,9 +563,16 @@ class ScenarioCatalog(CatalogService):
     catalog = scenario_catalog
     versions = scenario_versions
     not_found_error = ScenarioNotFound
+    list_item = ScenarioListItem
 
     def max_bytes(self) -> int:
         return DRAFT_MAX_BYTES  # read at call time, so a test may lower it
+
+    def leader(self, entry: Any) -> str | None:
+        """A companion's character (``companion_of``, #116): its listing status follows the
+        character's (FR-CAT-11)."""
+        found = entry.companion_of
+        return None if found is None else str(found)
 
     def stored(self, document: Any) -> dict[str, Any]:
         return stored_document(document)
@@ -689,7 +702,8 @@ def _creation_document(request: ScenarioCreate) -> dict[str, Any]:
 
 async def create(db: AsyncEngine, request: ScenarioCreate, *, principal: str) -> ScenarioDraftWrite:
     """A new scenario whose draft holds ``request``'s groups, at draft revision 1 (status
-    ``draft``, listing status ``private``), owned by ``request.owner`` or else ``principal``."""
+    ``draft``, at the deployment's first listing status value), owned by ``request.owner`` or
+    else ``principal``."""
     scenario, revision = await SERVICE.create(
         db, _creation_document(request), owner=request.owner or principal, principal=principal
     )

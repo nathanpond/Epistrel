@@ -1,14 +1,16 @@
 """The catalog, in its own schema ``catalog`` (docs/02 §4.10; FR-CAT-1,3, FR-SCN-1; #103, #108).
 
 Each kind of entry has two tables. ``character_catalog`` and ``scenario_catalog`` hold one row
-per entry: its owner principal (FR-AUTH-5), its listing status (FR-CAT-11; the literal
-``private`` until #110 makes the set configurable), its version status
+per entry: its owner principal (FR-AUTH-5), its listing status (FR-CAT-11: one of the
+deployment's ``listing_status_values``, checked by the application, never by a constraint, so an
+operator adds a value without a migration; #110), its version status
 (``catalog.entry_status``), its latest published version (``current_version``, NULL before the
 first publish) and its one draft: a ``jsonb`` document with the ``draft_revision`` every save
 and publish compares (FR-CAT-3). ``created_at`` and ``updated_at`` are written by the
-application (``core.clock.now()``). A scenario also has ``companion_of``: the catalog character
-whose companion it is (#116), a foreign key that cascades, so deleting a character takes its
-companion with it.
+application (``core.clock.now()``); ``updated_at`` moves on every draft save, publish, archive,
+listing-status change and owner transfer, and ``(updated_at, id)`` is the listings' keyset
+(#110). A scenario also has ``companion_of``: the catalog character whose companion it is
+(#116), a foreign key that cascades, so deleting a character takes its companion with it.
 
 ``character_versions`` and ``scenario_versions`` hold one row per publish, ``(catalog_id,
 version)``, with the published document (``content``), the content rating's version it was
@@ -20,6 +22,15 @@ NULL if that character version is erased. Versions are immutable: a trigger refu
 UPDATE, DELETE and TRUNCATE with SQLSTATE ``EPI01``, except an UPDATE or DELETE in a
 transaction that set ``epistrel.erasure`` to ``on`` (catalog delete, and #124's erasure). The
 foreign key cascades a deleted entry's versions.
+
+Each version also has ``search``, a generated ``tsvector`` of its public card (#110), GIN
+indexed: ``q`` searches an entry's latest published version, so drafts are never searchable. It
+is computed by ``catalog.epistrel_character_search`` and ``catalog.epistrel_scenario_search``
+(``IMMUTABLE`` SQL functions over the content, ``CHARACTER_SEARCH``/``SCENARIO_SEARCH``): the
+name (weight A), the labels and aliases, or a scenario's labels and role public labels
+(weight B), and the public description (weight C), parsed with the ``simple`` configuration (no
+stemming, no stop words), never a private field. A version rewritten by erasure (#124) gets its
+vector recomputed with it.
 
 Catalog tables live outside story data: no story table references them, and they reference no
 story (FR-CAT-1); a story names where a character came from with identifiers only
@@ -33,6 +44,7 @@ from sqlalchemy import (
     TIMESTAMP,
     CheckConstraint,
     Column,
+    Computed,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -40,7 +52,7 @@ from sqlalchemy import (
     Table,
     Text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 
 from epistrel.core.enums import EntryStatus
 from epistrel.core.tables.base import metadata, pg_enum, ulid_type
@@ -48,6 +60,15 @@ from epistrel.core.tables.events import APPEND_ONLY_SQLSTATE
 
 CATALOG_SCHEMA = "catalog"
 """The Postgres schema every catalog table lives in."""
+
+SEARCH_CONFIG = "simple"
+"""The text-search configuration of the versions' ``search`` vectors and of every ``q``
+(``websearch_to_tsquery``): words as written, lower-cased, without stemming or stop words, so a
+label matches exactly and no language is assumed (#110)."""
+CHARACTER_SEARCH = "catalog.epistrel_character_search(content)"
+"""A character version's ``search`` vector (#110; the function is migration 0027's)."""
+SCENARIO_SEARCH = "catalog.epistrel_scenario_search(content)"
+"""A scenario version's ``search`` vector (#110; the function is migration 0027's)."""
 
 ERASURE_GUC = "epistrel.erasure"
 """Set (transaction-local) to ``on`` to let catalog versions be deleted or rewritten: catalog
@@ -75,8 +96,10 @@ character_catalog = Table(
     schema=CATALOG_SCHEMA,
 )
 
-# Listing by owner and principal lookup (#104, #117) read the owner column.
+# Listing by owner and principal lookup (#104, #117) read the owner column; the listings page
+# newest first on (updated_at, id) (#110).
 Index("ix_character_catalog_owner_principal", character_catalog.c.owner_principal)
+Index("ix_character_catalog_updated_at_id", character_catalog.c.updated_at, character_catalog.c.id)
 
 character_versions = Table(
     "character_versions",
@@ -92,8 +115,11 @@ character_versions = Table(
     Column("content_rating_version_id", ulid_type(), nullable=True),
     Column("published_at", TIMESTAMP(timezone=True), nullable=False),
     Column("published_by", Text, nullable=False),
+    Column("search", TSVECTOR, Computed(CHARACTER_SEARCH, persisted=True)),
     schema=CATALOG_SCHEMA,
 )
+
+Index("ix_character_versions_search", character_versions.c.search, postgresql_using="gin")
 
 scenario_catalog = Table(
     "scenario_catalog",
@@ -121,9 +147,10 @@ scenario_catalog = Table(
 )
 
 # Listing by owner and principal lookup (#104, #117); a character's companions (#104's transfer,
-# #116, and the cascade of a character's delete).
+# #116, and the cascade of a character's delete); the listings' keyset (#110).
 Index("ix_scenario_catalog_owner_principal", scenario_catalog.c.owner_principal)
 Index("ix_scenario_catalog_companion_of", scenario_catalog.c.companion_of)
+Index("ix_scenario_catalog_updated_at_id", scenario_catalog.c.updated_at, scenario_catalog.c.id)
 
 PIN_COMPLETE_CHECK = "(pinned_character_id IS NULL) = (pinned_character_version IS NULL)"
 """A companion version's pin names a character and its version together, or nothing."""
@@ -144,6 +171,7 @@ scenario_versions = Table(
     Column("pinned_character_version", Integer, nullable=True),
     Column("published_at", TIMESTAMP(timezone=True), nullable=False),
     Column("published_by", Text, nullable=False),
+    Column("search", TSVECTOR, Computed(SCENARIO_SEARCH, persisted=True)),
     ForeignKeyConstraint(
         ["pinned_character_id", "pinned_character_version"],
         [character_versions.c.catalog_id, character_versions.c.version],
@@ -152,6 +180,8 @@ scenario_versions = Table(
     CheckConstraint(PIN_COMPLETE_CHECK, name="pin_complete"),
     schema=CATALOG_SCHEMA,
 )
+
+Index("ix_scenario_versions_search", scenario_versions.c.search, postgresql_using="gin")
 
 # The pin's foreign key: a character version's erasure finds the versions pinned to it.
 Index(

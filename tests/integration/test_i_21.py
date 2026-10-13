@@ -32,6 +32,11 @@ The detailed tests are in ``tests/integration/test_ownership.py``. The story-cre
   a transfer moves it with the acting principal recorded, a ``system``-owned profile's too; and
   owning one grants nothing: another principal edits, copies, validates and deletes it. The
   nothing-gates matrix covers every profile route (``ownership_fixtures.CALLS``).
+- ``test_i_21__listing_filters`` (#110): the catalog lists narrow by owner, relation, label or
+  listing status only when a request names the filter, whoever asks; unfiltered, they list the
+  whole table (counted); and a listing-status change leaves a story made from the entry
+  byte-identical. On its own scratch database, so the table is the test's alone. The
+  nothing-gates matrix covers each entry's listing-status route (``CALLS``).
 """
 
 from __future__ import annotations
@@ -68,6 +73,9 @@ from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import stories
 from epistrel.core.tables.ownership import EntityType
 from tests.auth_support import auth_settings, bearer
+from tests.catalog_support import character as catalog_character
+from tests.catalog_support import ids as listed_ids
+from tests.catalog_support import scratch_catalog, set_listing_status
 from tests.conformance.conftest import migrated_database
 from tests.event_support import rows, scalar
 from tests.integration.ownership_fixtures import (
@@ -90,6 +98,7 @@ from tests.media_support import blob_path, media_client, scratch, uploaded
 from tests.model_support import config_key
 from tests.profile_support import EDITED, PROFILES, profile_body
 from tests.respond_support import respond_client
+from tests.scenario_support import scenario as catalog_scenario
 from tests.story_support import story_body
 
 READ = bearer()
@@ -763,3 +772,179 @@ async def test_i_21__profiles(stub_settings: Settings, engine: AsyncEngine) -> N
         deleted = await ok(await client.delete(f"{PROFILES}/{mine['id']}", headers=headers(c)))
         assert deleted["deleted_at"] is not None
         assert await owner_of(engine, KINDS[EntityType.ENGINE_PROFILE], mine["id"]) == a
+
+
+# -- listing filters (#110) ------------------------------------------------------------------------
+
+CHARACTERS = "/catalog/characters"
+SCENARIOS = "/catalog/scenarios"
+
+
+async def _entry(
+    client: Any,
+    base: str,
+    body: dict[str, Any],
+    *,
+    owner: str,
+    listing: str | None = None,
+    related: tuple[str, str] | None = None,
+    published: bool = True,
+    archived: bool = False,
+) -> str:
+    """A catalog entry ``owner`` creates (published unless ``published`` is false), at
+    ``listing`` and holding the relation ``related`` (``(name, principal)``) when given."""
+    as_owner = headers(owner)
+    entry_id = (await ok(await client.post(base, json=body, headers=as_owner), 201))["id"]
+    if published:
+        await ok(
+            await client.post(
+                f"{base}/{entry_id}/publish", json={"draft_revision": 1}, headers=as_owner
+            ),
+            201,
+        )
+    if listing is not None:
+        await ok(await set_listing_status(client, base, entry_id, listing, principal=owner))
+    if related is not None:
+        name, principal = related
+        await ok(
+            await client.post(
+                f"{base}/{entry_id}/relations",
+                json={"principal": principal, "relation": name},
+                headers=as_owner,
+            ),
+            201,
+        )
+    if archived:
+        await ok(await client.post(f"{base}/{entry_id}/archive", headers=as_owner))
+    return str(entry_id)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-CAT-9,11; FR-AUTH-8")
+async def test_i_21__listing_filters(pg_url: str) -> None:
+    """Catalog characters and scenarios of two owners, A and B, at every listing status, some
+    holding relations and (scenarios) labels. Each list is narrowed by ``owner``, ``relation``,
+    ``label`` (all must hold) or ``listing_status`` exactly when the request names the filter,
+    to exactly the entries that match it, and the same whoever asks: A, B, a stranger or no
+    principal (never narrowed to the asker). Without a filter, the published list, with the
+    ``draft`` and ``archived`` ones, is every row of the table: the counts are asserted. A
+    story whose character came from catalog entry X stays byte-identical while X's listing
+    status changes.
+
+    Complements asserted: each filter leaves out the entries that do not match it; the story
+    snapshot does see the story's own archive."""
+    a, b, c, d = "p-list-a", "p-list-b", "p-list-c", "p-list-d"
+    async with (
+        scratch_catalog(pg_url) as (settings, db),
+        respond_client(settings, db) as (
+            client,
+            _,
+        ),
+    ):
+        c1 = await _entry(
+            client,
+            CHARACTERS,
+            catalog_character("Mara"),
+            owner=a,
+            listing="public",
+            related=("editor", c),
+        )
+        c2 = await _entry(client, CHARACTERS, catalog_character("Ivo"), owner=b)
+        c3 = await _entry(
+            client,
+            CHARACTERS,
+            catalog_character("Wren"),
+            owner=a,
+            listing="in_review",
+            related=("co_author", d),
+        )
+        c4 = await _entry(client, CHARACTERS, catalog_character("Ada"), owner=b, published=False)
+        c5 = await _entry(
+            client,
+            CHARACTERS,
+            catalog_character("Tom"),
+            owner=a,
+            listing="public",
+            archived=True,
+        )
+
+        def scenario(name: str, *labels: str) -> dict[str, Any]:
+            return catalog_scenario(name, metadata={"labels": list(labels)})
+
+        s1 = await _entry(
+            client,
+            SCENARIOS,
+            scenario("Harbour", "family", "noir"),
+            owner=a,
+            listing="public",
+            related=("editor", c),
+        )
+        s2 = await _entry(client, SCENARIOS, scenario("Orchard", "family"), owner=b)
+        s3 = await _entry(
+            client,
+            SCENARIOS,
+            scenario("Lighthouse", "noir"),
+            owner=b,
+            listing="in_review",
+            related=("editor", d),
+        )
+        s4 = await _entry(client, SCENARIOS, scenario("Attic", "family"), owner=a, published=False)
+
+        published = {CHARACTERS: {c1, c2, c3}, SCENARIOS: {s1, s2, s3}}
+        cases: list[tuple[str, dict[str, Any], set[str]]] = [
+            (CHARACTERS, {"owner": a}, {c1, c3}),
+            (CHARACTERS, {"owner": b}, {c2}),
+            (CHARACTERS, {"relation": f"editor:{c}"}, {c1}),
+            (CHARACTERS, {"relation": "co_author:"}, {c3}),
+            (CHARACTERS, {"listing_status": "public"}, {c1}),
+            (CHARACTERS, {"listing_status": "private"}, {c2}),
+            (CHARACTERS, {"listing_status": "in_review"}, {c3}),
+            (SCENARIOS, {"owner": b}, {s2, s3}),
+            (SCENARIOS, {"relation": "editor:"}, {s1, s3}),
+            (SCENARIOS, {"relation": f"editor:{d}"}, {s3}),
+            (SCENARIOS, {"label": "family"}, {s1, s2}),
+            (SCENARIOS, {"label": "NOIR"}, {s1, s3}),
+            (SCENARIOS, {"label": ["family", "noir"]}, {s1}),
+            (SCENARIOS, {"listing_status": "private"}, {s2}),
+            (SCENARIOS, {"owner": a, "listing_status": "public"}, {s1}),
+        ]
+        for asker in (a, b, "p-list-stranger", None):
+            for base, every in published.items():
+                assert set(await listed_ids(client, base, principal=asker)) == every, asker
+            for base, filters, expected in cases:
+                found = set(await listed_ids(client, base, principal=asker, **filters))
+                assert found == expected, (asker, base, filters)
+                assert found < published[base], (base, filters)
+
+        # Unfiltered, the published list with the draft and archived ones is the whole table.
+        for base, table in ((CHARACTERS, "character_catalog"), (SCENARIOS, "scenario_catalog")):
+            shown = [
+                await listed_ids(client, base, status=status, limit=2)
+                for status in ("published", "draft", "archived")
+            ]
+            assert shown[0] == await listed_ids(client, base, limit=2)
+            stored = await rows(db, f"SELECT id, status FROM catalog.{table}")  # noqa: S608
+            assert sorted(i for page in shown for i in page) == sorted(str(r.id) for r in stored)
+            for status, page in zip(("published", "draft", "archived"), shown, strict=True):
+                assert len(page) == sum(1 for row in stored if row.status == status), status
+        assert await listed_ids(client, CHARACTERS, status="draft") == [c4]
+        assert await listed_ids(client, CHARACTERS, status="archived") == [c5]
+        assert await listed_ids(client, SCENARIOS, status="draft") == [s4]
+
+        # A listing-status change never touches a story made from the entry.
+        story = await create_story(client, a, None)
+        async with db.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE characters SET source_catalog_id = :e, source_catalog_version = 1 "
+                    "WHERE id = :c"
+                ),
+                {"e": c1, "c": story.ids["ada"]},
+            )
+        before = await _snapshot(db, story.id)
+        for value in ("private", "in_review", "public"):
+            await ok(await set_listing_status(client, CHARACTERS, c1, value, principal=b))
+        assert await _snapshot(db, story.id) == before
+        archived = await client.post(f"/stories/{story.id}/archive", headers=headers(a))
+        assert archived.status_code == 200, archived.text
+        assert await _snapshot(db, story.id) != before

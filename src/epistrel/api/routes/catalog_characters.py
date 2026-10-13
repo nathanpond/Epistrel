@@ -2,7 +2,8 @@
 (FR-CAT-1,3,9, FR-SCN-10, FR-API-6; #103).
 
 - ``POST /catalog/characters``: a new entry whose draft holds the request's fields (draft
-  revision 1, status ``draft``, listing status ``private``); 201 with the draft in ``full``.
+  revision 1, status ``draft``, the deployment's first listing status, ``private`` by
+  default); 201 with the draft in ``full``.
 - ``PATCH /catalog/characters/{id}``: a JSON merge patch over the draft with the
   ``draft_revision`` it is based on; 409 ``draft_stale`` when another save or publish came first.
 - ``POST /catalog/characters/{id}/publish``: the draft becomes the next immutable version (201).
@@ -11,6 +12,8 @@
 - ``GET /catalog/characters/{id}/versions``: every published version, oldest first.
 - ``POST /catalog/characters/{id}/archive`` and ``…/unarchive`` (200); ``DELETE
   /catalog/characters/{id}`` (204).
+- ``GET /catalog/characters``: list and search, a page of cards (#110; ``routes.catalog_listing``).
+- ``PUT /catalog/characters/{id}/listing-status``: the entry's listing status (FR-CAT-11; #110).
 - ``PUT /catalog/characters/{id}/owner``, ``POST``/``GET …/relations`` and ``DELETE
   …/relations/{relation}/{principal}``: the entry's owner and relations (``routes.ownership``,
   #104). Nothing gates on them (FR-AUTH-8).
@@ -32,12 +35,29 @@ from pydantic import BaseModel
 from epistrel.api.deps import CharacterId, ContextDep, EngineDep
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse
+from epistrel.api.routes.catalog_listing import (
+    SET_LISTING_STATUS,
+    ContentRatingParam,
+    CursorParam,
+    LabelParam,
+    LimitParam,
+    ListingStatusBody,
+    ListingStatusParam,
+    OwnerParam,
+    ProjectionParam,
+    QParam,
+    RelationParam,
+    StatusParam,
+    list_description,
+    page_fields,
+)
 from epistrel.api.routes.ownership import mount_ownership_routes
 from epistrel.core.catalog.characters import (
     REVISION_MAX,
     CharacterCard,
     CharacterCreate,
     CharacterFull,
+    CharacterListItem,
     CharacterPatch,
     DraftWrite,
     Projection,
@@ -48,6 +68,9 @@ from epistrel.core.catalog.characters import (
     StatusChange,
     VersionSummary,
 )
+from epistrel.core.catalog.listing import ListingStatusRequest
+from epistrel.core.catalog.search import DEFAULT_PAGE as DEFAULT_LIST_PAGE
+from epistrel.core.catalog.search import CatalogPage
 from epistrel.core.enums import EntryStatus
 from epistrel.core.tables.ownership import EntityType
 
@@ -175,6 +198,57 @@ class CharacterVersionsBody(BaseModel):
         )
 
 
+class CharacterListBody(BaseModel):
+    """A page of catalog characters as cards (#110), newest first (a search: best match
+    first), and the cursor of the next page (``null`` on the last). No total."""
+
+    items: list[CharacterListItem]
+    next_cursor: str | None
+
+    @classmethod
+    def of(cls, page: CatalogPage) -> CharacterListBody:
+        return cls(**page_fields(page))
+
+
+@router.get(
+    "",
+    response_model=CharacterListBody,
+    operation_id="search_catalog_character",
+    summary="List and search catalog characters",
+    description=list_description(
+        "catalog characters", "the name, aliases, labels and public description"
+    ),
+)
+async def search_catalog_character(
+    ctx: ContextDep,
+    engine: EngineDep,
+    q: QParam = None,
+    label: LabelParam = None,
+    content_rating: ContentRatingParam = None,
+    listing_status: ListingStatusParam = None,
+    owner: OwnerParam = None,
+    relation: RelationParam = None,
+    status: StatusParam = None,
+    limit: LimitParam = DEFAULT_LIST_PAGE,
+    cursor: CursorParam = None,
+    projection: ProjectionParam = "card",
+) -> CharacterListBody:
+    page = await engine.search_catalog(
+        ctx,
+        EntityType.CHARACTER,
+        q=q,
+        label=label or (),
+        content_rating=content_rating,
+        listing_status=listing_status,
+        owner=owner,
+        relation=relation or (),
+        status=status,
+        limit=limit,
+        cursor=cursor,
+    )
+    return CharacterListBody.of(page)
+
+
 @router.post(
     "",
     status_code=http_status.HTTP_201_CREATED,
@@ -183,9 +257,10 @@ class CharacterVersionsBody(BaseModel):
     summary="Create a catalog character (a draft)",
     description=(
         "Create a catalog character whose draft holds the given fields: draft revision 1, "
-        "status `draft`, listing status `private`. `owner` names its owner principal (default: "
-        "the requesting principal; never `system`). Answers 201 with the draft in `full`. A "
-        "draft larger than 256 KiB is 413 `draft_too_large`."
+        "status `draft`, and the first of the deployment's `listing_status_values` (`private` "
+        "by default) as its listing status. `owner` names its owner principal (default: the "
+        "requesting principal; never `system`). Answers 201 with the draft in `full`. A draft "
+        "larger than 256 KiB is 413 `draft_too_large`."
     ),
 )
 async def create_character_draft(
@@ -324,6 +399,24 @@ async def unarchive_character(
 ) -> CharacterStatusBody:
     change = await engine.unarchive_character(ctx, character_id)
     return answered(CharacterStatusBody.of(change), ctx, response, replayed=change.replayed)
+
+
+@router.put(
+    "/{character_id}/listing-status",
+    response_model=ListingStatusBody,
+    operation_id="set_listing_status_character",
+    summary="Set a catalog character's listing status",
+    description=SET_LISTING_STATUS + " The character's companion scenarios change with it.",
+)
+async def set_listing_status_character(
+    character_id: CharacterId,
+    body: ListingStatusRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> ListingStatusBody:
+    change = await engine.set_listing_status(ctx, EntityType.CHARACTER, character_id, body)
+    return answered(ListingStatusBody.of(change), ctx, response, replayed=change.replayed)
 
 
 @router.delete(

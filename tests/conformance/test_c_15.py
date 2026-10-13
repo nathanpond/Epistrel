@@ -13,14 +13,22 @@ Every C-15 (M3) part lives in this file (traceability counts a test ID per miles
   its class, and that each is at the class (and use) ``CLASSES`` decides for it (FR-SCN-2). The
   details are in ``tests/integration/test_scenario_catalog.py``; the roles and the starting-cast
   limit are U-26's (``tests/test_u_26.py``).
+- #110's part, ``test_c_15__listing_status``: the listing status (FR-CAT-11) set, refused,
+  reconfigured and recorded, the lists and search that filter by it (FR-API-6), and that it
+  gates nothing (FR-AUTH-8). It runs on its own scratch database, because it changes the
+  deployment's values. The details are in ``tests/integration/test_catalog_search.py``; the
+  filters' behavioural matrix is I-21's (``tests/integration/test_i_21.py``). Using a
+  ``private`` entry to create a story is #119's ``test_i_22__creation``.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
+import httpx2 as httpx
 import pytest
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -36,17 +44,21 @@ from tests import scenario_support as scenarios
 from tests.catalog_support import (
     BASE,
     CARD_KEYS,
+    LIST_EXTRA_KEYS,
     READ,
     VERSION_KEYS,
     WRITE,
     character,
     create,
+    ids,
     publish,
     read,
     save,
+    scratch_catalog,
+    set_listing_status,
     version_rows,
 )
-from tests.event_support import execute_in_tx, sqlstate
+from tests.event_support import execute_in_tx, rows, sqlstate
 from tests.media_support import (
     READ as MEDIA_READ,
 )
@@ -482,3 +494,171 @@ the dotted path ``scenario_schema_classes()`` names it with, at its class and, f
 ``configuration``, its use. The part asserts that map equals this one, so a field retagged,
 given another use, added or removed fails the build until this map is changed with it: a
 class is decided here, never picked up from the model."""
+
+
+# -- listing status (#110) ---------------------------------------------------------------------
+
+CHARACTERS = BASE
+SCENARIOS = scenarios.BASE
+DEFAULT_VALUES = ["private", "in_review", "public"]
+
+
+async def _status_events(db: AsyncEngine, entry_id: str) -> list[tuple[Any, ...]]:
+    """The entry's listing-status events: ``(old, new, acting principal)``, oldest first."""
+    found = await rows(
+        db,
+        "SELECT old, new, acting_principal, at FROM ownership_events "
+        "WHERE entity_id = :e AND kind = 'listing_status' ORDER BY at, id",
+        e=entry_id,
+    )
+    assert all(row.at is not None for row in found)
+    return [(row.old, row.new, row.acting_principal) for row in found]
+
+
+async def _values(client: httpx.AsyncClient, values: list[str]) -> httpx.Response:
+    return await client.put(
+        "/admin/settings", json={"listing_status_values": values}, headers=WRITE
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-CAT-11; FR-AUTH-8; FR-API-6")
+async def test_c_15__listing_status(pg_url: str) -> None:
+    """A new catalog character and a new scenario start at the first of the deployment's listing
+    status values, ``private``. ``PUT …/listing-status`` accepts ``public`` and ``in_review`` and
+    refuses ``bogus`` (422 ``invalid_listing_status`` naming the allowed values, nothing
+    recorded); each change is recorded with the acting principal and its time. The lists filter
+    by the value, and an unfiltered list holds every value and every owner. A ``private`` entry
+    reads in both projections, and lists, for a principal that does not own it. A companion
+    scenario's value changes with its character's and is refused on its own; the companion
+    still reads directly, and a scenario list shows it only with ``include_companions``.
+    Reconfigured, the
+    deployment accepts its own values: a value an entry still holds cannot be removed (409
+    ``listing_status_in_use``); once no entry holds the defaults they can be removed, after
+    which a default is refused, a configured value accepted, and a new entry starts at the new
+    first value.
+
+    Complements asserted: the refused value changed nothing; the companion refused alone kept
+    its character's value; the filter for a removed value is refused, not silently empty."""
+    async with scratch_catalog(pg_url) as (settings, db), rest(settings, db) as client:
+        mara = await create(client, character("Mara Venn", owner="p-a"))
+        assert mara["listing_status"] == "private"
+        drafted = await scenarios.create(client, scenarios.scenario("Sunday Dinner", owner="p-a"))
+        assert drafted["listing_status"] == "private"
+        for base, entry in ((CHARACTERS, mara), (SCENARIOS, drafted)):
+            done = await client.post(
+                f"{base}/{entry['id']}/publish", json={"draft_revision": 1}, headers=WRITE
+            )
+            assert done.status_code == 201, done.text
+        ivo = await create(client, character("Ivo Brand", owner="p-b"))
+        await publish(client, ivo["id"], 1)
+
+        made_public = await set_listing_status(
+            client, CHARACTERS, mara["id"], "public", principal="p-editor"
+        )
+        assert made_public.status_code == 200, made_public.text
+        assert made_public.json() == {
+            "id": mara["id"],
+            "listing_status": "public",
+            "config_revision": made_public.json()["config_revision"],
+            "idempotency_key": made_public.headers["Idempotency-Key"],
+        }
+        refused = await set_listing_status(client, CHARACTERS, mara["id"], "bogus")
+        assert refused.status_code == 422, refused.text
+        error = refused.json()["error"]
+        assert (error["code"], error["details"]["value"]) == ("invalid_listing_status", "bogus")
+        assert error["details"]["allowed_values"] == DEFAULT_VALUES
+        in_review = await set_listing_status(
+            client, SCENARIOS, drafted["id"], "in_review", principal="p-reviewer"
+        )
+        assert in_review.status_code == 200, in_review.text
+        assert await _status_events(db, mara["id"]) == [("private", "public", "p-editor")]
+        assert await _status_events(db, drafted["id"]) == [("private", "in_review", "p-reviewer")]
+        assert (await read(client, mara["id"])).json()["listing_status"] == "public"
+
+        # The lists filter by the value, and only when asked: every value, every owner otherwise.
+        assert await ids(client, CHARACTERS, listing_status="public") == [mara["id"]]
+        assert await ids(client, CHARACTERS, listing_status="private") == [ivo["id"]]
+        assert await ids(client, SCENARIOS, listing_status="in_review") == [drafted["id"]]
+        assert await ids(client, SCENARIOS, listing_status="public") == []
+        everyone = await ids(client, CHARACTERS)
+        assert sorted(everyone) == sorted([mara["id"], ivo["id"]])
+
+        # Nothing gates: B's `private` entry reads in both projections, and lists, for another.
+        stranger = {**READ, "X-Epistrel-Principal": "p-stranger"}
+        for projection in ("card", "full"):
+            found = await client.get(
+                f"{CHARACTERS}/{ivo['id']}", params={"projection": projection}, headers=stranger
+            )
+            assert (found.status_code, found.json()["listing_status"]) == (200, "private")
+        assert "Ivo Brand is patient" in found.text  # the definition, in `full`
+        assert await ids(client, CHARACTERS, principal="p-stranger") == everyone
+        listed = await client.get(CHARACTERS, headers=stranger)
+        cards = {item["id"]: item for item in listed.json()["items"]}
+        assert set(cards[ivo["id"]]) == CARD_KEYS | LIST_EXTRA_KEYS
+        assert (cards[ivo["id"]]["owner_principal"], cards[ivo["id"]]["listing_status"]) == (
+            "p-b",
+            "private",
+        )
+
+        # A companion follows its character (#116 makes companions; here SQL does), and lists
+        # only when asked for.
+        companion = await scenarios.create(client, scenarios.scenario("Gull Rock"))
+        await scenarios.publish(client, companion["id"], 1)
+        async with db.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE catalog.scenario_catalog SET companion_of = :c, "
+                    "listing_status = 'public' WHERE id = :s"
+                ),
+                {"c": mara["id"], "s": companion["id"]},
+            )
+        moved = await set_listing_status(
+            client, CHARACTERS, mara["id"], "in_review", principal="p-editor"
+        )
+        assert moved.status_code == 200, moved.text
+        shown = await scenarios.read(client, companion["id"])
+        assert shown.json()["listing_status"] == "in_review"
+        assert await _status_events(db, companion["id"]) == [("public", "in_review", "p-editor")]
+        alone = await set_listing_status(client, SCENARIOS, companion["id"], "public")
+        assert alone.status_code == 422, alone.text
+        assert alone.json()["error"]["code"] == "companion_follows_character"
+        shown = await scenarios.read(client, companion["id"])
+        assert (shown.json()["listing_status"], shown.json()["companion_of"]) == (
+            "in_review",
+            mara["id"],
+        )
+        assert await ids(client, SCENARIOS) == [drafted["id"]]
+        assert await ids(client, SCENARIOS, include_companions=True) == [
+            companion["id"],
+            drafted["id"],
+        ]
+
+        # The deployment's own values: never one an entry still holds removed.
+        custom = ["pending", "live"]
+        held = await _values(client, custom)
+        assert held.status_code == 409, held.text
+        assert held.json()["error"]["code"] == "listing_status_in_use"
+        assert held.json()["error"]["details"]["value"] == "private"
+        assert held.json()["error"]["details"]["count"] == 1
+        assert (await _values(client, [*DEFAULT_VALUES, *custom])).status_code == 200
+        for base, entry_id, value in (
+            (CHARACTERS, ivo["id"], "pending"),
+            (CHARACTERS, mara["id"], "live"),
+            (SCENARIOS, drafted["id"], "live"),
+        ):
+            changed = await set_listing_status(client, base, entry_id, value)
+            assert changed.status_code == 200, changed.text
+        settled = await _values(client, custom)
+        assert settled.status_code == 200, settled.text
+        assert settled.json()["listing_status_values"] == custom
+        default = await set_listing_status(client, CHARACTERS, ivo["id"], "public")
+        assert default.status_code == 422, default.text
+        assert default.json()["error"]["details"]["allowed_values"] == custom
+        accepted = await set_listing_status(client, CHARACTERS, ivo["id"], "live")
+        assert accepted.json()["listing_status"] == "live"
+        fresh = await create(client, character("Wren Hale"))
+        assert fresh["listing_status"] == "pending"
+        gone = await client.get(CHARACTERS, params={"listing_status": "public"}, headers=READ)
+        assert (gone.status_code, gone.json()["error"]["code"]) == (422, "invalid_listing_status")
+        assert await ids(client, CHARACTERS, listing_status="live") == [ivo["id"], mara["id"]]

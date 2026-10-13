@@ -3125,3 +3125,36 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
     - Each mutant was reverted with `git checkout`. The SHA-1 was identical at the end.
   **Why:** This is the fix hint, with its optional route assertion, so that the report a client receives is pinned as well as the function that builds it. Asserting the warnings beside the list pins both outputs of the one-story path, as C-16 pins them for the following report (`test_engine_profiles.py:639-640`). Both tests stay detailed tests: neither docstring names a requirement ID, and `build/parts.json` lists neither. Cost if wrong: none.
   **Issue:** #109
+- **Decision:** Group A's full run is green at `86abc57`, so its 11 items are done. The run, `uv run pytest --cov=epistrel.core --cov-report=term-missing:skip-covered --cov-fail-under=90`, gave 1457 passed, 14 deselected, 0 failed in 962.75 s (967 s wall, one attempt, no bisect). `epistrel.core` coverage is 97.24 %.
+  - Every group A item has its AC boxes ticked and a completion comment that cites the run: #305, #93, #94, #303, #103, #104, #105, #106, #107, #108 and #109. The boxes are in the issue body, or in the plan comment where the criteria were derived (#305, #93, #94, and the owner's added criterion on #303). Each edit was read back and compared.
+  - #94's second derived criterion ("never admits a denied family, whatever the spelling") is ticked with a note: it holds as scoped in the orchestrator note on #94, and the residue is #320.
+  - #317 and #319 got a comment that their fix (`b0240c3`, under #105) is verified and included in the run. They stay open for the milestone PR to close.
+  **Why:** The owner's batched gate for M3: a group's stories are done only after one full run over all of them is green. The only late failure in group A was #319. #109's implementer caught it before the gate, and #105's follow-up fixed it. The metrics are in `.n8/memory/m3-batched-test-gate.md`.
+  **Issue:** #305, #93, #94, #303, #103, #104, #105, #106, #107, #108, #109
+- **Decision:** Before group B, the orchestrator relayed group A's hand-offs into the drift notes of the later stories that receive them:
+  - #113 gets #106's owner amendment (the Lite budgets are `{model_calls: null, deadline_ms: 45000}` and presets are editable). Its notes had predated the amendment. It also gets #109's note that the effective-config route and module already exist for #113 to extend.
+  - #115 gets #107's note that `test_c_23__optional_images` lives in `tests/integration/test_media_delivery.py`.
+  - #116 gets #108's companion rules (null version, slot freezing, and the companion's own audit row).
+  - #119 gets #109's `recommendations_unmet` for genesis. #316's half was relayed earlier.
+  - #126 and #128 get #107's notes.
+  **Why:** The implementers read their story, its drift notes and the decision log. The hand-offs are in the log already, but in the notes the one story that needs each of them sees it first. Cost if wrong: none.
+  **Issue:** #113, #115, #116, #119, #126, #128
+- **Decision:** Group B (#110 to #119) runs with pipelined verification.
+  - Stories are still implemented one at a time, in order (#110 to #119), in the main working tree.
+  - As soon as a story is committed and pushed, its independent verifier starts in a fresh git worktree, pinned to the story's last commit. Meanwhile the next story is implemented in the main tree.
+  - Fixes for verification gaps queue for the main tree and run between implementations, one agent at a time. Each re-verification runs in a fresh worktree at the fix's commit.
+  - Each story gets at most three verification rounds and two fix rounds, as in group A.
+  - A blocked implementer holds back its in-group dependents:
+    - #114 waits on #110.
+    - #115 waits on #111.
+    - #116 waits on #110 and #111.
+    - #117 waits on #114 and #116.
+    - #118 waits on #117.
+    - #119 waits on #114, #115, #116 and #118.
+  **Why:**
+  - In group A's lane 1, the next story waited for each story's verification and fixes, which took about half of each story's 2 to 3 hours.
+  - Implementing stories in parallel would conflict on shared files, such as `docs/openapi.json`, `api/openapi.py`, the conformance steps and this log.
+  - Verification only reads, so it overlaps safely.
+  - The trade-off: story n+1 may build on code in which story n's verifier later finds gaps. The fixer then works at the newer HEAD and runs the later stories' tests for every module it touches, and group B's full run still gates all of it.
+  - Cost if wrong: an extra fix round on a later story.
+  **Issue:** #110, #111, #112, #113, #114, #115, #116, #117, #118, #119

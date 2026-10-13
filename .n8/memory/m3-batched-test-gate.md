@@ -30,12 +30,35 @@ Baseline (main @ 1740e0d, before M3, measured 2026-10-12 on the owner's Mac): fu
 
 **For each story:** wall time from start to commit; time spent on per-story tests; number of per-story test runs.
 
+How the columns are measured (from each agent's own `date +%s` stamps and command timings):
+- **Dev wall** is the implementer's wall time, from start to commit and push.
+- **Per-story test time** and **Test runs** cover the per-story gate (pytest, ruff, mypy, lint-imports and the lint-job gates). They are the implementer's and every fixer's runs, including the follow-up rounds after the group workflow.
+- **Verifiers** are the independent fresh-context verifiers' runs, including their mutation checks. They are part of this run's verification, not of the per-story gate.
+- **Span** runs from the implementer's start to the story's last verification.
+- Group A ran in two lanes at once: lane 1 handled the stories in the main tree, and the bug lane handled the bugs in their own worktrees. So the timings of concurrent work include contention.
+
 | Story | Group | Dev wall (min) | Per-story test time (min) | Test runs | Notes |
 |---|---|---|---|---|---|
+| #305 | A | 53 | 29.6 | 38 | bug lane, own worktree; verified r2, 1 fix round; span 126 min; verifiers: 33 min, 37 runs |
+| #93 | A | 13 | 1.1 | 7 | bug lane, own worktree; verified r2, 1 fix round; span 38 min; verifiers: 2 min, 15 runs |
+| #94 | A | 28 | 3.0 | 37 | bug lane, own worktree; gaps after 3 verify rounds, 2 fix rounds; accepted with the out-of-scope residue filed as #320; span 131 min; verifiers: 3 min, 54 runs |
+| #303 | A | 24 | 1.0 | 5 | bug lane, own worktree; verified r1, 0 fix rounds; span 36 min; verifiers: 3 min, 16 runs |
+| #103 | A | 51 | 20.4 | 47 | lane 1; verified r3, 2 fix rounds; span 129 min; verifiers: 23 min, 41 runs |
+| #104 | A | 82 | 43.9 | 100 | lane 1; gaps after 3 verify rounds, 2 fix rounds; follow-up round: 1 fix, passed (21 min); span 178 min; verifiers: 38 min, 52 runs |
+| #105 | A | 87 | 56.9 | 99 | lane 1; gaps after 3 verify rounds, 2 fix rounds; follow-up round: 1 fix, passed (51 min); span 193 min; verifiers: 36 min, 54 runs |
+| #106 | A | 70 | 30.0 | 47 | lane 1; verified r2, 1 fix round; span 132 min; verifiers: 21 min, 36 runs |
+| #107 | A | 88 | 25.8 | 38 | lane 1; verified r1, 0 fix rounds; span 109 min; verifiers: 10 min, 21 runs |
+| #108 | A | 63 | 27.7 | 72 | lane 1; gaps after 3 verify rounds, 2 fix rounds; follow-up round: 1 fix, passed (16 min); span 153 min; verifiers: 34 min, 65 runs |
+| #109 | A | 63 | 43.5 | 78 | lane 1; gaps after 3 verify rounds, 2 fix rounds; follow-up rounds: 2 fix, passed (38 min); span 158 min; verifiers: 41 min, 92 runs |
+| **A total** | | 621 | 283 | 568 | verifiers: 244 min, 483 runs |
 
 **For each group run:**
 
 | Group | Full-run wall (min) | Attempts | Failures | Attributed by test name | Needed bisect (runs) | Rework time (min) | Failures the per-story subset missed |
 |---|---|---|---|---|---|---|---|
+| A | 16.1 (967 s wall; pytest 962.75 s; 1457 passed, 14 deselected; core coverage 97.24 %) | 1 | 0 | n/a | 0 | 0 at the gate | 1, caught before the gate: #319. #105's per-story subset did not run M2's `test_respond.py`, whose FR-RESP-1 test forbids "verified" in OpenAPI descriptions. #105's new description said "unverified". #109's implementer saw the failure in its own per-story run. A per-story full run at #105 would have caught it at once. Rework: one description reworded and the OpenAPI document regenerated, inside #105's 29-minute follow-up fix (not timed separately) |
+
+Group runs use `uv run pytest --cov=epistrel.core --cov-report=term-missing:skip-covered --cov-fail-under=90`: the full suite plus CI's coverage gate, so the times include coverage overhead. The 550 s baseline is a plain run of 856 tests; group A's run had 1457 tests.
+Time saved so far (group A, 11 items), against the baseline: 11 × 550 s = 6050 s of per-story full runs, against one 967 s group run. That is about 85 minutes saved. The figure is conservative, because the suite grew with every story, so each per-story full run would have taken longer than the baseline.
 
 **Summary to compute at the end:** time saved = (30 × the baseline full-run time) − (the actual group full runs + bisect runs). Weigh that against the rework cost of failures caught late. The key number is failures that per-story tests missed but a per-story full run would have caught.

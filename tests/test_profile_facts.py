@@ -43,6 +43,7 @@ from epistrel.core.profiles.impact import (
     CAMEL_CASE,
     WARNING_KINDS,
     ImpactPreviewRequest,
+    ImpactReport,
     TwoStageRequest,
     affected,
     creation_report,
@@ -350,6 +351,41 @@ async def test_two_stage_applies_only_when_it_may() -> None:
     assert (forced.applied, forced.result, forced.kept()) == (True, 1, True)
     plain = await two_stage(quiet, apply, ignore_warnings=False)
     assert (plain.applied, plain.result, plain.impact.warnings) == (True, 2, [])
+
+
+async def test_a_lost_guarantee_is_reported_and_held() -> None:
+    """A change that turns off the module holding a guarantee loses that guarantee: a one-story
+    report names it in ``guarantees_lost`` and warns of it after the capability lost, so the
+    change is held until it is confirmed. Raising the module's level, or turning it on, loses
+    none, and the report neither names nor warns of one."""
+    declared = Configuration(
+        LITE_PRESET_ID, 1, parse_settings({"verification": {"level": "declared"}})
+    )
+    lite = Configuration(LITE_PRESET_ID, 2, parse_settings({}))
+    gone = delta(declared, lite, FACTS)
+    report = single_report(affected("S", gone, history=False), gone)
+    assert report.guarantees_lost == ["verification"]
+    assert report.warnings == ["capabilities_lost", "guarantees_lost"]
+    calls: list[str] = []
+
+    async def lose() -> ImpactReport:
+        return report
+
+    async def apply(_: ImpactReport) -> str:
+        calls.append("applied")
+        return "applied"
+
+    held = await two_stage(lose, apply, ignore_warnings=False)
+    assert (held.applied, held.result, calls) == (False, None, [])
+    assert held.impact.guarantees_lost == ["verification"]
+    forced = await two_stage(lose, apply, ignore_warnings=True)
+    assert (forced.applied, forced.result, calls) == (True, "applied", ["applied"])
+    entailment = Configuration(
+        LITE_PRESET_ID, 2, parse_settings({"verification": {"level": "entailment"}})
+    )
+    for kept in (delta(declared, entailment, FACTS), delta(lite, declared, FACTS)):
+        same = single_report(affected("S", kept, history=False), kept)
+        assert (same.guarantees_lost, same.warnings) == ([], ["capabilities_gained"])
 
 
 def test_the_effective_values_are_the_delivered_ones() -> None:

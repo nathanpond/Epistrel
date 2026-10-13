@@ -28,7 +28,9 @@ from epistrel import ImpactPreviewRequest, ProfileUpdate, RequestContext
 from epistrel.config import Settings
 from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.core.profiles import impact
-from epistrel.core.profiles.fingerprint import FINGERPRINT_PATTERN
+from epistrel.core.profiles.effective import Configuration
+from epistrel.core.profiles.fingerprint import FINGERPRINT_PATTERN, RuntimeFacts
+from epistrel.core.profiles.validate import parse_settings
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.orchestrator.models.registry import DELIVERED as DELIVERED_PURPOSES
 from epistrel.testing.profiles import data_producing
@@ -586,6 +588,185 @@ async def test_only_a_committed_active_turn_is_history(scratch: Space) -> None:
                 "deleted": False,
             }
             assert now["capabilities"] == LITE_CAPABILITIES
+
+
+async def test_history_beyond_the_listing_is_judged_and_kept(
+    scratch: Space, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """History is judged over every story that follows the profile, not only over the ones a
+    report lists. With the listing capped at two, three stories follow a profile with the polish
+    pass off, and only the one whose id sorts last, beyond the cap, has played a turn. Turning
+    the polish pass on, marked data-producing, is held: the report lists the other two, each
+    gaining the polish pass with nothing to re-derive, counts all three, and still warns that an
+    upgrade is unavailable. Confirmed, the two listed stories run on version 2 and the unlisted
+    one keeps version 1 (pinned)."""
+    monkeypatch.setattr(impact, "AFFECTED_MAX", 2)
+    off = merged(SETTINGS, nest(POLISH, False))
+    edit = {"name": "Brisk Lite", "settings": merged(SETTINGS, nest(POLISH, True))}
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        profile = (
+            await ok(
+                await client.post(PROFILES, json=profile_body(settings=off), headers=headers(A)),
+                201,
+            )
+        )["id"]
+        await _default(client, profile)
+        (first, _), (second, _), (last, actor) = sorted([await _story(client) for _ in range(3)])
+        await _default(client, LITE_PRESET_ID)
+        await _play(client, last, actor)
+        with data_producing("polish"):
+            held = await ok(
+                await client.put(f"{PROFILES}/{profile}", json=edit, headers=headers(A))
+            )
+            assert held["applied"] is False
+            report = held["impact"]
+            assert [e["story_id"] for e in report["affected_stories"]] == [first, second]
+            assert (report["affected_count"], report["warnings"]) == (3, UNAVAILABLE_WARNINGS)
+            for entry in report["affected_stories"]:
+                assert (entry["capabilities_gained"], entry["upgrade_unavailable"]) == (
+                    ["polish"],
+                    False,
+                )
+                assert entry[REDERIVATION] == {"needed": False, "estimate": None}
+            confirmed = await client.put(
+                f"{PROFILES}/{profile}", json={**edit, "ignore_warnings": True}, headers=headers(A)
+            )
+            assert (await ok(confirmed))["applied"] is True
+        assert (await _effective(client, last))["profile"] == {
+            "id": profile,
+            "version": 1,
+            "pinned": True,
+            "deleted": False,
+        }
+        for story in (first, second):
+            assert (await _effective(client, story))["profile"] == {
+                "id": profile,
+                "version": 2,
+                "pinned": False,
+                "deleted": False,
+            }
+
+
+async def test_archived_followers_are_listed_judged_and_kept(scratch: Space) -> None:
+    """An archived story still follows its profile, so a profile edit lists it and judges its
+    history like any other story's; otherwise a story with history would run with a
+    data-producing capability, and nothing re-derived, once it is unarchived. Two stories follow
+    a profile with the polish pass off and are archived: one after playing a turn, one that never
+    played. Turning the polish pass on, marked data-producing, is held, and the report lists both:
+    the first ``upgrade_unavailable``, its re-derivation needed and its fingerprint kept, the
+    second gaining the polish pass with nothing to re-derive. Confirmed, the first keeps version 1
+    (pinned) and the second runs on version 2, as their effective configurations state while
+    archived. Unarchived, the first still runs on version 1: its next turn has no polish pass and
+    the fingerprint it kept."""
+    off = merged(SETTINGS, nest(POLISH, False))
+    edit = {"name": "Brisk Lite", "settings": merged(SETTINGS, nest(POLISH, True))}
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        profile = (
+            await ok(
+                await client.post(PROFILES, json=profile_body(settings=off), headers=headers(A)),
+                201,
+            )
+        )["id"]
+        await _default(client, profile)
+        lived, actor = await _story(client)
+        await _play(client, lived, actor)
+        idle, _ = await _story(client)
+        await _default(client, LITE_PRESET_ID)
+        for story in (lived, idle):
+            archived = await ok(await client.post(f"/stories/{story}/archive", headers=headers(A)))
+            assert archived["status"] == "archived"
+        with data_producing("polish"):
+            held = await ok(
+                await client.put(f"{PROFILES}/{profile}", json=edit, headers=headers(A))
+            )
+            assert held["applied"] is False
+            report = held["impact"]
+            assert (report["affected_count"], report["warnings"]) == (2, UNAVAILABLE_WARNINGS)
+            entries = {e["story_id"]: e for e in report["affected_stories"]}
+            assert list(entries) == sorted([lived, idle])
+            kept, moved = entries[lived], entries[idle]
+            assert (kept["upgrade_unavailable"], kept[REDERIVATION]["needed"]) == (True, True)
+            assert kept["fingerprint_after"] == kept["fingerprint_before"]
+            assert (moved["capabilities_gained"], moved["upgrade_unavailable"]) == (
+                ["polish"],
+                False,
+            )
+            assert moved[REDERIVATION] == {"needed": False, "estimate": None}
+            confirmed = await client.put(
+                f"{PROFILES}/{profile}", json={**edit, "ignore_warnings": True}, headers=headers(A)
+            )
+            assert (await ok(confirmed))["applied"] is True
+        assert (await _effective(client, lived))["profile"] == {
+            "id": profile,
+            "version": 1,
+            "pinned": True,
+            "deleted": False,
+        }
+        assert (await _effective(client, idle))["profile"] == {
+            "id": profile,
+            "version": 2,
+            "pinned": False,
+            "deleted": False,
+        }
+        unarchived = await ok(await client.post(f"/stories/{lived}/unarchive", headers=headers(A)))
+        assert unarchived["status"] == "active"
+        assert (await _effective(client, lived))["profile"]["version"] == 1
+        turn = await _play(client, lived, actor)
+        assert "polish" not in turn["capabilities"]
+        assert turn["fingerprint"] == kept["fingerprint_after"]
+
+
+async def test_a_profile_edit_reports_the_guarantees_it_loses(scratch: Space) -> None:
+    """A profile edit that loses a guarantee names it in the report on the stories following
+    the profile, and warns of it after the capability lost, so the edit is held until it is
+    confirmed. The same change to a profile no story follows affects no story: its report names
+    no guarantee and warns of nothing. No module delivered in M3 holds a guarantee, so no request
+    can make such an edit yet: the change, the verification level turned off, is built directly
+    and reported over the stored stories."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        made = [
+            await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
+            for _ in range(2)
+        ]
+        followed, unfollowed = (made_profile["id"] for made_profile in made)
+        await _default(client, followed)
+        story, _ = await _story(client)
+        await _default(client, LITE_PRESET_ID)
+    facts = RuntimeFacts(models={}, templates={})
+    declared = parse_settings(nest("verification.level", "declared"))
+    reports: dict[str, impact.Following] = {}
+    async with scratch.db.connect() as conn:
+        for profile in (followed, unfollowed):
+            change = impact.delta(
+                Configuration(profile, 1, declared),
+                Configuration(profile, 2, parse_settings({})),
+                facts,
+            )
+            assert change.guarantees_lost == ("verification",)
+            reports[profile] = await impact.following_report(conn, profile, change)
+    lost = reports[followed]
+    (entry,) = lost.report.affected_stories
+    assert (entry.story_id, entry.capabilities_lost) == (story, ["verification"])
+    assert (lost.report.affected_count, lost.keep) == (1, frozenset())
+    assert lost.report.guarantees_lost == ["verification"]
+    assert lost.report.warnings == ["capabilities_lost", "guarantees_lost"]
+    edits: list[str] = []
+
+    async def report() -> impact.ImpactReport:
+        return lost.report
+
+    async def apply(_: impact.ImpactReport) -> str:
+        edits.append("applied")
+        return "applied"
+
+    held = await impact.two_stage(report, apply, ignore_warnings=False)
+    assert (held.applied, held.result, edits) == (False, None, [])
+    assert held.impact.guarantees_lost == ["verification"]
+    confirmed = await impact.two_stage(report, apply, ignore_warnings=True)
+    assert (confirmed.applied, confirmed.result, edits) == (True, "applied", ["applied"])
+    alone = reports[unfollowed].report
+    assert (alone.affected_stories, alone.affected_count) == ([], 0)
+    assert (alone.guarantees_lost, alone.warnings) == ([], [])
 
 
 async def test_a_new_profile_version_is_a_new_fingerprint(scratch: Space) -> None:

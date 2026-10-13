@@ -251,7 +251,18 @@ async def test_draft_save_publish_and_versions(
         draft_full["draft_revision"],
         draft_full["public_description"],
         draft_full["definition"],
-    ) == (1, 4, "The second description.", {"personality": "Wry, these days."})
+    ) == (
+        1,
+        4,
+        "The second description.",
+        # #114's interim definition fields (true age, background, safe fallback) are unset.
+        {
+            "personality": "Wry, these days.",
+            "true_age": None,
+            "background_flavor": None,
+            "safe_fallback_text": None,
+        },
+    )
     second = await publish(client, cid, 4)
     assert (second.status_code, second.json()["version"]) == (201, 2)
 
@@ -295,7 +306,13 @@ async def test_save_is_a_json_merge_patch(client: httpx.AsyncClient) -> None:
     assert removed.json()["definition"] == created["definition"]
 
     merged = await save(client, cid, 2, definition={"personality": None})
-    assert merged.json()["definition"] == {"personality": None}
+    # #114's interim definition fields (true age, background, safe fallback) are unset too.
+    assert merged.json()["definition"] == {
+        "personality": None,
+        "true_age": None,
+        "background_flavor": None,
+        "safe_fallback_text": None,
+    }
     assert merged.json()["name"] == created["name"]
 
     nothing = await save(client, cid, 3)

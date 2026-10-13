@@ -37,6 +37,11 @@ The detailed tests are in ``tests/integration/test_ownership.py``. The story-cre
   whole table (counted); and a listing-status change leaves a story made from the entry
   byte-identical. On its own scratch database, so the table is the test's alone. The
   nothing-gates matrix covers each entry's listing-status route (``CALLS``).
+- ``test_i_21__persona`` (#114): deleting a saved persona leaves a story created with it
+  unchanged, whoever deletes it. Until #119's genesis creates stories from personas, the story's
+  player character is given the persona's snapshot the way genesis will
+  (``tests/persona_support.copy_into``). Personas join ``KINDS`` and ``CALLS``, so the ownership
+  slice and the nothing-gates matrix cover their creation and every persona route.
 """
 
 from __future__ import annotations
@@ -93,10 +98,12 @@ from tests.integration.ownership_fixtures import (
     headers,
     ok,
     owner_of,
+    persona_body,
     request_path,
 )
 from tests.media_support import blob_path, media_client, scratch, uploaded
 from tests.model_support import config_key
+from tests.persona_support import copy_into
 from tests.profile_support import EDITED, PROFILES, profile_body
 from tests.respond_support import respond_client
 from tests.scenario_support import scenario as catalog_scenario
@@ -975,3 +982,48 @@ async def test_i_21__listing_filters(pg_url: str) -> None:
         archived = await client.post(f"/stories/{story.id}/archive", headers=headers(a))
         assert archived.status_code == 200, archived.text
         assert await _snapshot(db, story.id) != before
+
+
+# -- #114: personas -----------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-CAT-6")
+async def test_i_21__persona(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """A saved persona is owned by its creator. Another principal, holding no relation to it,
+    deletes it, and a story whose player character was created with it stays byte-identical:
+    every row of the story, and every ``stories`` and ``characters`` row. The persona is gone,
+    with its relations.
+
+    Complement asserted: the snapshot does see a change the story itself makes (archiving the
+    story), so the equal snapshots are not vacuous."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        a, b = _unique("p-persona-a"), _unique("p-persona-b")
+        persona = await ok(
+            await client.post("/personas", json=persona_body(), headers=headers(a)), 201
+        )
+        assert persona["owner_principal"] == a
+        await ok(
+            await client.post(
+                f"/personas/{persona['id']}/relations",
+                json={"principal": a, "relation": "player"},
+                headers=headers(a),
+            ),
+            201,
+        )
+        story = await create_story(client, a, None)
+        await copy_into(engine, story.ids["wren"], persona)
+        before = await _snapshot(engine, story.id)
+        deleted = await client.delete(f"/personas/{persona['id']}", headers=headers(b))
+        assert deleted.status_code == 204, deleted.text
+        assert await _snapshot(engine, story.id) == before
+        assert (await client.get(f"/personas/{persona['id']}", headers=READ)).status_code == 404
+        relations = await scalar(
+            engine,
+            "SELECT count(*) FROM entity_relations WHERE entity_id = :p",
+            p=persona["id"],
+        )
+        assert relations == 0
+        archived = await client.post(f"/stories/{story.id}/archive", headers=headers(a))
+        assert archived.status_code == 200, archived.text
+        assert await _snapshot(engine, story.id) != before

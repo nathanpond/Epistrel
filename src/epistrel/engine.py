@@ -44,6 +44,8 @@ from epistrel.core import story_settings as settings_store
 from epistrel.core.catalog import characters as catalog_characters
 from epistrel.core.catalog import kinds as catalog_kinds
 from epistrel.core.catalog import listing as catalog_listing
+from epistrel.core.catalog import personas as catalog_personas
+from epistrel.core.catalog import promote as catalog_promote
 from epistrel.core.catalog import scenario_models
 from epistrel.core.catalog import scenarios as catalog_scenarios
 from epistrel.core.catalog import search as catalog_search
@@ -168,6 +170,10 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "archive_story": ResultCodec.of(stories.StatusChange),
     "unarchive_story": ResultCodec.of(stories.StatusChange),
     "delete_story": ResultCodec.of(stories.DeletedStory, status=204),
+    # A story's characters (#114): one added to a running story (story-scoped, like the edits),
+    # and a promotion, which only reads the story (deployment-scoped, like a catalog create).
+    "add_story_character": ResultCodec.of(stories.StoryCharacterAdded, status=201),
+    "promote_character": ResultCodec.of(catalog_promote.Promotion, status=201),
     "create_content_rating": ResultCodec.of(
         ratings.RatingWrite, status=201, revision_field=_CONFIG
     ),
@@ -231,6 +237,14 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "open_upload": ResultCodec.of(media_uploads.UploadOpened, status=201, revision_field=_CONFIG),
     "complete_upload": ResultCodec.of(media.MediaWrite, status=201, revision_field=_CONFIG),
     "abort_upload": ResultCodec.of(media_uploads.UploadAborted, status=204, revision_field=_CONFIG),
+    # Personas (#114): deployment-scoped like the catalog's writes.
+    "create_persona": ResultCodec.of(
+        catalog_personas.PersonaWrite, status=201, revision_field=_CONFIG
+    ),
+    "update_persona": ResultCodec.of(catalog_personas.PersonaWrite, revision_field=_CONFIG),
+    "delete_persona": ResultCodec.of(
+        catalog_personas.DeletedPersona, status=204, revision_field=_CONFIG
+    ),
     # Engine profiles (#106): deployment-scoped like the catalog's writes.
     "create_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
     # Two-stage (#109): stored only once applied; a report alone releases its key.
@@ -1465,6 +1479,96 @@ class Engine:
 
         return await self._keyed(ctx, "delete_story", run, material={"story_id": story_id})
 
+    # -- a story's characters: ad hoc and promoted (FR-CAT-7,8; #114) ----------------------------
+
+    async def add_story_character(
+        self, ctx: RequestContext, story_id: str, request: stories.AdHocCharacter
+    ) -> stories.StoryCharacterAdded:
+        """Add a character to a running story (FR-CAT-7): story-scoped, never a catalog entry,
+        never a player, with its required true age (FR-CAT-12). 404 for an unknown story; 422
+        for a full cast (``CAST_MAX``), a name the story has, or an image that is not a live
+        image asset; 409 ``story_archived``; 409 ``revision_conflict`` for a stale expected
+        revision; 423 ``story_busy`` while a turn is in flight; then the definition passes the
+        input gate, checked with the new character's age in the cast (422
+        ``guardrail_violation``). The addition bumps the revision (FR-CONC-1), as a
+        story-text edit does: the cast is part of every Lite prompt."""
+        principal = self.require_principal(ctx)
+
+        async def gate(texts: Sequence[tuple[str, str]]) -> None:
+            context = await policy_store.guard_context(self.db, story_id)
+            joining = CastMember(
+                character_id="new:0",
+                ordinal=max((m.ordinal for m in context.cast), default=-1) + 1,
+                true_age=request.true_age,
+            )
+            context = dataclasses.replace(context, cast=(*context.cast, joining))
+            deadline_s = (await turn_gate.read_concurrency(self.db, story_id)).turn_deadline
+            await input_gate.enforce_input(
+                self.db,
+                self.models,
+                context,
+                [GateText(locator, text) for locator, text in texts],
+                entry_point=EntryPoint.STORY_CHARACTER,
+                principal=principal,
+                story_id=story_id,
+                deadline_s=deadline_s,
+            )
+
+        async def run(ctx: RequestContext) -> stories.StoryCharacterAdded:
+            return await stories.add_story_character(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                gate=gate,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "add_story_character",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def promote_character(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        character_id: str,
+        request: catalog_promote.PromoteRequest | None = None,
+    ) -> catalog_promote.Promotion:
+        """Promote a story character to a new **draft** catalog entry (FR-CAT-8): only its
+        definition fields are copied (true age, its free-text definition as
+        ``background_flavor``, its safe fallback line, its images by reference), never a story
+        event, pin, summary or fact; the story character keeps a link to the entry in
+        ``promoted_to`` and nothing else changes. Owned by ``request.owner`` or else the
+        requesting principal, rated ``request.content_rating_id`` or else as the story. Keyed per
+        deployment; the expected revision, when sent, is checked first; allowed on an archived
+        story and while a turn is in flight. 404 for an unknown story or a character not in it;
+        422 for a player character or a rating that cannot be assigned."""
+        principal = self.require_principal(ctx)
+        request = request or catalog_promote.PromoteRequest()
+
+        async def run(ctx: RequestContext) -> catalog_promote.Promotion:
+            await self.check_expected_revision(ctx, story_id)
+            return await catalog_promote.promote(
+                self.db, story_id, character_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "promote_character",
+            run,
+            material={
+                "story_id": story_id,
+                "character_id": character_id,
+                "body": _body(request),
+            },
+        )
+
     # -- content ratings and deployment settings (FR-RATE-1,2; deployment-scoped) --------------
 
     async def list_content_ratings(
@@ -2042,6 +2146,84 @@ class Engine:
         )
         return await catalog_search.search(self.db, service, query, limit=limit, cursor=cursor)
 
+    # -- personas (FR-CAT-6, FR-AUTH-5; FR-API-6; #114) -----------------------------------------
+    # Deployment-scoped like the catalog: each write is one transaction recording a story-less
+    # ``control`` operation, keyed per deployment. Nothing here reads or changes a story: a story
+    # keeps the snapshot of the persona it was created with.
+
+    async def create_persona(
+        self, ctx: RequestContext, request: catalog_personas.PersonaCreate
+    ) -> catalog_personas.PersonaWrite:
+        """Save a persona (FR-CAT-6) owned by ``request.owner`` or else the requesting principal
+        (FR-AUTH-5); 409 ``persona_name_taken`` when the owner has one of that name (ignoring
+        case)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "create_persona",
+            lambda _: catalog_personas.create(self.db, request, principal=principal),
+            material={"body": _body(request)},
+        )
+
+    async def get_persona(self, ctx: RequestContext, persona_id: str) -> catalog_personas.Persona:
+        """The persona; 404 for an unknown one."""
+        return await catalog_personas.get(self.db, persona_id)
+
+    async def list_personas(
+        self,
+        ctx: RequestContext,
+        *,
+        owner: str | None = None,
+        relation: str | Sequence[str] = (),
+        limit: int = catalog_personas.DEFAULT_PAGE,
+        cursor: str | None = None,
+    ) -> catalog_personas.PersonaPage:
+        """A page of personas, newest first: every principal's unless ``owner`` (a principal)
+        or ``relation`` (``name:principal``, or ``name:`` for any principal; one, or several that
+        must all hold) narrow it (FR-AUTH-8). A plain string ``relation`` is one value.
+        ``cursor`` (a page's ``next_cursor``) continues with the same filters."""
+        values = (relation,) if isinstance(relation, str) else tuple(relation)
+        refuse_nul({"owner": owner, "relation": list(values), "cursor": cursor}, ("query",))
+        return await catalog_personas.list_personas(
+            self.db,
+            owner=ownership.owner_filter(owner),
+            relations=[
+                ownership.parse_relation_filter(value, field=f"query.relation[{index}]")
+                for index, value in enumerate(values)
+            ],
+            limit=limit,
+            cursor=cursor,
+        )
+
+    async def update_persona(
+        self, ctx: RequestContext, persona_id: str, patch: catalog_personas.PersonaPatch
+    ) -> catalog_personas.PersonaWrite:
+        """Edit the persona with a JSON merge patch, last write wins: ``null`` removes
+        ``gender`` and is 422 for a required field; 409 ``persona_name_taken`` for a name its
+        owner already uses. An edit that changes nothing records nothing. Stories created with
+        the persona keep their snapshot (FR-CAT-6)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "update_persona",
+            lambda _: catalog_personas.update(self.db, persona_id, patch, principal=principal),
+            material={"persona_id": persona_id, "body": patch.document()},
+        )
+
+    async def delete_persona(
+        self, ctx: RequestContext, persona_id: str
+    ) -> catalog_personas.DeletedPersona:
+        """Delete the persona (a hard delete) with its relations, recorded with a
+        ``persona_deleted`` audit row; stories created with it keep their snapshot
+        (FR-CAT-6)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "delete_persona",
+            lambda _: catalog_personas.delete(self.db, persona_id, principal=principal),
+            material={"persona_id": persona_id},
+        )
+
     # -- ownership (FR-AUTH-5,6,8; #104) --------------------------------------------------------
     # One owner and any number of relations per story, catalog character, scenario, persona,
     # media asset and engine profile: recorded for listing, attribution and offboarding, and
@@ -2084,15 +2266,19 @@ class Engine:
         owner changes nothing. Ownership confers no permission (FR-AUTH-8)."""
         self.require_principal(ctx)
         kind = ownership.entity_type_of(entity_type)
+
+        async def transfer(principal: str) -> ownership.OwnerTransfer:
+            # A persona's name is unique per owner (#114): a transfer that would give the new
+            # owner two of one name is 409 ``persona_name_taken``.
+            with catalog_personas.name_conflicts(
+                request.principal, field="body.principal", persona_id=entity_id
+            ):
+                return await ownership.transfer_owner(
+                    self.db, kind, entity_id, request.principal, principal=principal
+                )
+
         return await self._ownership_write(
-            ctx,
-            "transfer_owner",
-            kind,
-            entity_id,
-            lambda principal: ownership.transfer_owner(
-                self.db, kind, entity_id, request.principal, principal=principal
-            ),
-            {"body": _body(request)},
+            ctx, "transfer_owner", kind, entity_id, transfer, {"body": _body(request)}
         )
 
     async def add_relation(

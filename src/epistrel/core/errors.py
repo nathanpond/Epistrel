@@ -777,3 +777,31 @@ class FeedbackTagInUse(EpistrelError):
 
     code = "feedback_tag_in_use"
     http_status = 409
+
+
+# -- personas and story characters (#114) -------------------------------------------------------
+
+
+class PersonaNotFound(EpistrelError):
+    """The persona a call names does not exist (or was deleted). ``details``: ``persona_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class PersonaNameTaken(EpistrelError):
+    """The owner already has a persona with that name, ignoring case (FR-CAT-6): a creation, a
+    rename, or an owner transfer that would give one principal two personas of one name.
+    Nothing is written. ``details``: ``field``, ``owner_principal`` and, when the write names
+    one, ``persona_id``."""
+
+    code = "persona_name_taken"
+    http_status = 409
+
+
+class StoryCharacterNotFound(EpistrelError):
+    """The story has no character with that id (it may belong to another story). ``details``:
+    ``story_id`` and ``character_id``."""
+
+    code = "not_found"
+    http_status = 404

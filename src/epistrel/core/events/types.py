@@ -72,10 +72,14 @@ class StoryDeletedEvent(EventPayload):
 
 @register("character_defined", category=EventCategory.CONTROL)
 class CharacterDefined(EventPayload):
-    """A character joins the story (shell; #50 extends)."""
+    """A character joins a running story (FR-CAT-7; #114): an ad-hoc character the author adds,
+    named as the genesis event names its cast (id, name, ``is_player``), never with its age or
+    its definition, which live only in ``characters`` (FR-CAT-12). A character added in a story
+    is never a player character."""
 
     character_id: str
     name: str
+    is_player: bool = False
 
 
 @register("player_input", category=EventCategory.INPUT)

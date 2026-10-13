@@ -11,6 +11,19 @@ its guardrails (#68). ``source_catalog_id``/``source_catalog_version`` name the 
 version a character was created from (FR-CAT-3,9; #103; written by #119's genesis): provenance by
 identifiers only, with no foreign key, so archiving, editing or deleting the entry never touches
 the story.
+
+#114 adds four columns:
+
+- ``persona_id`` and ``persona_snapshot`` (FR-CAT-6): a player character's persona, as a plain
+  identifier (``null`` for an ad-hoc persona) and a copy of it as it was when the story was
+  created (``{persona_id, name, gender, age, description, snapshotted_at}``, written by #119's
+  genesis, ``core.catalog.personas.snapshot``). Editing or deleting the saved persona never
+  touches it. Only a player character holds one (``ck_characters_persona_player``).
+- ``images``: the media asset ids of a character added in the story (FR-CAT-7), in order, by
+  reference. ``core.media.assets.MEDIA_REFERENCE_SOURCES`` counts them, so an asset a story
+  character shows survives its retirement until the story goes.
+- ``promoted_to``: the catalog entries promoted from the character (FR-CAT-8), oldest first, as
+  plain ids: the one link a promotion leaves on the character.
 """
 
 from __future__ import annotations
@@ -28,6 +41,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 from epistrel.core.tables.base import metadata, ulid_type
 
@@ -54,7 +68,14 @@ characters = Table(
     ),
     Column("source_catalog_id", ulid_type(), nullable=True),
     Column("source_catalog_version", Integer, nullable=True),
+    Column("persona_id", ulid_type(), nullable=True),
+    Column("persona_snapshot", JSONB, nullable=True),
+    Column("images", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("promoted_to", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     CheckConstraint(f"true_age BETWEEN {TRUE_AGE_MIN} AND {TRUE_AGE_MAX}", name="true_age"),
+    CheckConstraint(
+        "(persona_id IS NULL AND persona_snapshot IS NULL) OR is_player", name="persona_player"
+    ),
 )
 
 Index("uq_characters_story_name", characters.c.story_id, func.lower(characters.c.name), unique=True)

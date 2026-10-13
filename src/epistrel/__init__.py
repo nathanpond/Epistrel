@@ -37,6 +37,17 @@ if TYPE_CHECKING:
         VersionSummary,
     )
     from epistrel.core.catalog.listing import ListingStatusChange, ListingStatusRequest
+    from epistrel.core.catalog.personas import (
+        DeletedPersona,
+        Persona,
+        PersonaCreate,
+        PersonaFields,
+        PersonaPage,
+        PersonaPatch,
+        PersonaSnapshot,
+        PersonaWrite,
+    )
+    from epistrel.core.catalog.promote import PromoteRequest, Promotion
     from epistrel.core.catalog.report import (
         Entry,
         EntryLocation,
@@ -106,6 +117,8 @@ if TYPE_CHECKING:
         OmniscientRequired,
         OriginalInFlightTimeout,
         PartInvalid,
+        PersonaNameTaken,
+        PersonaNotFound,
         PolicyNotFound,
         PosterExtractionFailed,
         PosterInvalid,
@@ -124,6 +137,7 @@ if TYPE_CHECKING:
         SigningKeyMissing,
         StoryArchived,
         StoryBusy,
+        StoryCharacterNotFound,
         StoryNotFound,
         SubjectsRequired,
         TimelineChanged,
@@ -145,6 +159,7 @@ if TYPE_CHECKING:
         FeedbackWrite,
     )
     from epistrel.core.fork import Forked, ForkRequest
+    from epistrel.core.genesis.models import AdHocPersona, PersonaRef, PlayerAssignment
     from epistrel.core.history import History
     from epistrel.core.idempotency import ReferenceReplay
     from epistrel.core.ingest import IngestEvent, IngestRequest, IngestResult
@@ -203,7 +218,14 @@ if TYPE_CHECKING:
     from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
     from epistrel.core.profiles.validate import ProfileValidation
     from epistrel.core.ratings import RatingFields, RatingReplacement
-    from epistrel.core.stories import CharacterSpec, CreatedStory, StorySpec, StoryView
+    from epistrel.core.stories import (
+        AdHocCharacter,
+        CharacterSpec,
+        CreatedStory,
+        StoryCharacterAdded,
+        StorySpec,
+        StoryView,
+    )
     from epistrel.core.story_texts import (
         CustomInstructions,
         CustomInstructionsRequest,
@@ -297,6 +319,14 @@ _EXPORTS: dict[str, str] = {
     "ProfileAssignment": "epistrel.core.profiles.story",
     "ProfileOverridesPatch": "epistrel.core.profiles.story",
     "FeedbackRequest": "epistrel.core.feedback",
+    "PersonaCreate": "epistrel.core.catalog.personas",
+    "PersonaPatch": "epistrel.core.catalog.personas",
+    "PersonaFields": "epistrel.core.catalog.personas",
+    "AdHocCharacter": "epistrel.core.stories",
+    "PromoteRequest": "epistrel.core.catalog.promote",
+    "PlayerAssignment": "epistrel.core.genesis.models",
+    "PersonaRef": "epistrel.core.genesis.models",
+    "AdHocPersona": "epistrel.core.genesis.models",
     # results
     "RespondResult": "epistrel.orchestrator.lite.schemas",
     "RegenerateResult": "epistrel.orchestrator.lite.schemas",
@@ -366,6 +396,13 @@ _EXPORTS: dict[str, str] = {
     "FeedbackHistoryEntry": "epistrel.core.feedback",
     "FeedbackWrite": "epistrel.core.feedback",
     "FeedbackRetraction": "epistrel.core.feedback",
+    "Persona": "epistrel.core.catalog.personas",
+    "PersonaWrite": "epistrel.core.catalog.personas",
+    "PersonaPage": "epistrel.core.catalog.personas",
+    "DeletedPersona": "epistrel.core.catalog.personas",
+    "PersonaSnapshot": "epistrel.core.catalog.personas",
+    "StoryCharacterAdded": "epistrel.core.stories",
+    "Promotion": "epistrel.core.catalog.promote",
     # errors (REST answers each as ``{"error": {code, message, details}}``)
     "EpistrelError": "epistrel.core.errors",
     "BudgetBelowSafetyMinimum": "epistrel.core.errors",
@@ -435,6 +472,9 @@ _EXPORTS: dict[str, str] = {
     "MessageNotFound": "epistrel.core.errors",
     "UnknownFeedbackTag": "epistrel.core.errors",
     "FeedbackTagInUse": "epistrel.core.errors",
+    "PersonaNotFound": "epistrel.core.errors",
+    "PersonaNameTaken": "epistrel.core.errors",
+    "StoryCharacterNotFound": "epistrel.core.errors",
     "ModelUnavailable": "epistrel.orchestrator.models.errors",
     "BudgetExhausted": "epistrel.orchestrator.models.errors",
     # control flow the library raises instead of REST's 200 reference / 202
@@ -444,6 +484,8 @@ _EXPORTS: dict[str, str] = {
 """Each public name and the module that defines it."""
 
 __all__ = [
+    "AdHocCharacter",
+    "AdHocPersona",
     "AffectedStory",
     "ApiKeyBody",
     "BackfillEstimate",
@@ -474,6 +516,7 @@ __all__ = [
     "CustomInstructionsRequest",
     "DatabaseUnavailable",
     "DeletedCharacter",
+    "DeletedPersona",
     "DeletedProfile",
     "DeletedScenario",
     "DepictedSubject",
@@ -545,8 +588,19 @@ __all__ = [
     "OwnerTransferRequest",
     "PartInvalid",
     "PartStored",
+    "Persona",
+    "PersonaCreate",
+    "PersonaFields",
+    "PersonaNameTaken",
+    "PersonaNotFound",
+    "PersonaPage",
+    "PersonaPatch",
+    "PersonaRef",
+    "PersonaSnapshot",
+    "PersonaWrite",
     "PinnedMemories",
     "PinnedMemoriesRequest",
+    "PlayerAssignment",
     "PolicyFields",
     "PolicyNotFound",
     "PolicyReplacement",
@@ -571,6 +625,8 @@ __all__ = [
     "ProfileWarning",
     "ProfileWrite",
     "Projection",
+    "PromoteRequest",
+    "Promotion",
     "PublishInvalid",
     "PublishRequest",
     "Published",
@@ -608,6 +664,8 @@ __all__ = [
     "SigningKeyMissing",
     "StoryArchived",
     "StoryBusy",
+    "StoryCharacterAdded",
+    "StoryCharacterNotFound",
     "StoryNotFound",
     "StoryPolicyItem",
     "StorySpec",

@@ -25,10 +25,10 @@ What ``build`` adds or changes:
   ``StorySettingsPatch`` (``PATCH /stories/{id}/settings``'s body, which the Engine validates)
   and ``MediaUpload`` (the ``metadata`` part of ``POST /media``'s multipart body, which the
   route reads itself, #105; ``MULTIPART_BODIES``).
-- Tags: stories, timeline, history, operations, settings, catalog, media, profiles, ownership,
-  feedback, admin, ops. Every
+- Tags: stories, timeline, history, operations, settings, catalog, media, profiles, personas,
+  ownership, feedback, admin, ops. Every
   owned type's owner and relation routes (``routes.ownership``, #104) are tagged ``ownership``,
-  whichever router serves them.
+  whichever router serves them, and a story character's promotion (#114) ``catalog``.
 - A route flagged ``mutating=False`` (``deps.route_flags``) is documented as a read with a
   principal: no ``Idempotency-Key``, idempotency errors, replay headers or expected revision.
 - A read that answers the requesting principal's own record (``PRINCIPAL_READS``: a principal's
@@ -95,6 +95,13 @@ TAGS: list[dict[str, str]] = [
         "of the deployment's defaults (FR-PROF-5,6).",
     },
     {
+        "name": "personas",
+        "description": "Player personas (FR-CAT-6): the name, gender, age and short description "
+        "a player plays as, saved per principal for reuse. A persona is not a catalog entry, "
+        "and a story keeps a snapshot of the one it was created with, so editing or deleting a "
+        "persona never changes a story.",
+    },
+    {
         "name": OWNERSHIP_TAG,
         "description": "Each owned entity's one owner and its relations (FR-AUTH-5,6): "
         "transfers and relation changes, recorded with the acting principal. Ownership and "
@@ -118,6 +125,7 @@ ROUTE_TAGS: dict[str, str] = {
     "story_settings": "settings",
     "update_story_settings": "settings",
     "config_changes_story": "settings",
+    "promote_character": "catalog",
     **{
         operation_id: OWNERSHIP_TAG
         for entity_type in REGISTRY
@@ -200,6 +208,7 @@ ERROR_STATUS: dict[str, int] = {
     "draft_stale": 409,
     "feedback_tag_in_use": 409,
     "listing_status_in_use": 409,
+    "persona_name_taken": 409,
     "upload_closed": 409,
     "upload_incomplete": 409,
     "length_required": 411,
@@ -320,6 +329,10 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "archive_story": ("story_busy",),
     "unarchive_story": ("story_busy",),
     "delete_story": ("story_busy",),
+    # A story's characters (#114): one added to a running story is gated and refused on an
+    # archived or busy story; a promotion's rating must be assignable.
+    "add_story_character": (*_GATED, "story_archived", "story_busy", "media_retired"),
+    "promote_character": ("rating_retired",),
     "update_story_settings": ("cannot_relax", "viewpoint_unresolved", "story_archived"),
     "rebuild_projections": ("story_busy",),
     "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
@@ -393,6 +406,11 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "upload_closed",
         "checksum_mismatch",
     ),
+    # Personas (#114): a name the owner already uses (a transfer too), a list's cursor.
+    "create_persona": ("persona_name_taken",),
+    "update_persona": ("persona_name_taken",),
+    "list_personas": ("cursor_invalid",),
+    "transfer_owner_persona": ("persona_name_taken",),
     # Engine profiles (#106): settings that cannot run, a deleted profile, the default.
     "create_profile": ("invalid_profile",),
     "update_profile": ("invalid_profile", "profile_deleted"),
@@ -432,6 +450,9 @@ CREATING_OPERATIONS = frozenset({"create_story", "fork"})
 
 MEDIA_CREATING_OPERATIONS = frozenset({"complete_upload"})
 """Operations that answer 201 with ``Location: /media/{id}`` (#107)."""
+
+CATALOG_CREATING_OPERATIONS = frozenset({"promote_character"})
+"""Operations that answer 201 with ``Location: /catalog/characters/{id}`` (#114)."""
 
 DOCUMENTED_BODIES = {"update_story_settings": "StorySettingsPatch"}
 """Operations whose handler takes a raw JSON object (validated by the Engine) and the component
@@ -617,6 +638,8 @@ def _success_headers(
         headers["Location"] = _header("`/stories/{id}` of the new story.")
     if status == "201" and operation_id in MEDIA_CREATING_OPERATIONS:
         headers["Location"] = _header("`/media/{id}` of the new asset.")
+    if status == "201" and operation_id in CATALOG_CREATING_OPERATIONS:
+        headers["Location"] = _header("`/catalog/characters/{id}` of the new draft entry.")
     if status == "202" and operation_id in QUEUEING_OPERATIONS:
         headers["Location"] = _header("`/operations/{id}` of the queued turn.")
     return headers

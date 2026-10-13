@@ -27,12 +27,27 @@ list filters by owner and relation only when a request asks for it (FR-AUTH-8).
 Every story runs under one engine profile (``engine_profile_id``, FR-PROF-1; #106): a story is
 created under the deployment's default profile, read with the deployment row held ``FOR SHARE``
 so the default cannot change underneath the insert, and a fork keeps its source's.
+
+**Ad-hoc characters** (FR-CAT-7, FR-CAT-12; #114): ``add_story_character`` adds a character to a
+running story, from #50's free-text shape (name, definition, a required true age, an optional
+safe fallback line) plus optional ``images`` (media asset ids, by reference), never as a player.
+It is story-scoped: a ``characters`` row with no ``source_catalog_id``, never a catalog entry
+(it becomes one only by promotion, ``core.catalog.promote``). The order of checks: the story
+(404) → the cast cap (``CAST_MAX``), a name the story already has (ignoring case) and the images
+(each a live image asset) → 409 ``story_archived`` → the expected revision → 423
+``story_busy`` while a turn is in flight → the input gate over the definition, with the new
+character's age in the cast → one ``control`` operation that bumps the revision, as #60's
+story-text edits do (the cast is a member of the Lite read set, so a turn that began before it
+regenerates). The operation records ``character_defined`` (id, name, ``is_player``; never the
+age) and inserts the row at the next ordinal, re-checking the cap, the name, the images and
+in-flight turns under the story lock. The operation has no position, like the edits: a
+truncation keeps the character, and every fork copies it.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -45,12 +60,14 @@ from pydantic import (
     StrictBool,
     StrictInt,
     StringConstraints,
+    field_validator,
     model_validator,
 )
 from sqlalchemy import Table, and_, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import audit, clock, ownership
+from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
 from epistrel.core.errors import (
     InvalidRequest,
@@ -62,13 +79,15 @@ from epistrel.core.errors import (
 from epistrel.core.events import Operation
 from epistrel.core.events.types import (
     CastMember,
+    CharacterDefined,
     StoryArchivedEvent,
     StoryCreated,
     StoryDeletedEvent,
     StoryUnarchivedEvent,
 )
 from epistrel.core.idempotency import Scope
-from epistrel.core.ids import new_ulid
+from epistrel.core.ids import Ulid, new_ulid
+from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.effective import ProfileVersionRef
@@ -92,6 +111,7 @@ from epistrel.core.tables import (
     idempotency_keys,
     jobs,
     lite_summary_segments,
+    media_assets,
     operations,
     policies,
     stories,
@@ -107,6 +127,7 @@ from epistrel.core.tables import (
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.feedback import feedback_history, message_feedback
+from epistrel.core.tables.media import MediaKind
 from epistrel.core.tables.ownership import EntityType
 
 Database = AsyncEngine | AsyncConnection
@@ -194,6 +215,51 @@ class CharacterSpec(BaseModel):
     is_player: StrictBool = False
     safe_fallback_text: str | None = Field(default=None, max_length=SAFE_FALLBACK_MAX)
     """What the character says when every regenerated reply fails its guardrails (#68)."""
+
+
+IMAGES_MAX = 20
+"""The most images a character added in a story may show (a promoted draft's primary image and
+gallery hold them all, #115's limits)."""
+
+
+class AdHocCharacter(BaseModel):
+    """``POST /stories/{id}/characters``: a character the author adds to a running story
+    (FR-CAT-7): #50's free-text shape — its name, its definition, its required true age
+    (FR-CAT-12) and optionally its safe fallback line (#68) — and optionally ``images``, media
+    asset ids it shows (each a live image), by reference. It is never a player character and
+    never a catalog entry."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "Dale",
+                    "definition": "A delivery driver in a hurry, polite and nosy.",
+                    "true_age": 52,
+                }
+            ]
+        },
+    )
+
+    name: CharacterName
+    definition: str = Field(min_length=1, max_length=DEFINITION_MAX)
+    """Free text the Lite pipeline renders verbatim."""
+    true_age: StrictInt = Field(ge=TRUE_AGE_MIN, le=TRUE_AGE_MAX)
+    safe_fallback_text: str | None = Field(default=None, max_length=SAFE_FALLBACK_MAX)
+    images: list[Ulid] = Field(
+        default_factory=list,
+        max_length=IMAGES_MAX,
+        description="Media asset ids the character shows (images, each live), in order.",
+    )
+
+    @field_validator("images")
+    @classmethod
+    def _distinct_images(cls, images: list[str]) -> list[str]:
+        if len(set(images)) != len(images):
+            raise ValueError("lists a media asset more than once")
+        return images
 
 
 class CreationSettings(StorySettings):
@@ -286,12 +352,27 @@ class CreatedStory:
 
 @dataclass(frozen=True, slots=True)
 class CharacterView:
-    """A character as a read returns it; ``true_age`` is ``None`` unless the read is omniscient."""
+    """A character as a read returns it; ``true_age`` (FR-CAT-12) and ``promoted_to`` (the
+    catalog entries promoted from it, FR-CAT-8) are ``None`` unless the read is omniscient."""
 
     id: str
     name: str
     is_player: bool
     true_age: int | None = None
+    promoted_to: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoryCharacterAdded:
+    """A character added to a running story (FR-CAT-7): its id, name and place in the cast, and
+    the story's revision after the addition."""
+
+    id: str
+    name: str
+    ordinal: int
+    timeline_revision: int
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -554,6 +635,147 @@ async def require_writable(db: AsyncEngine, story_id: str) -> None:
         )
 
 
+# -- ad-hoc characters (FR-CAT-7; #114) -----------------------------------------------------
+
+CharacterGate = Callable[[Sequence[tuple[str, str]]], Awaitable[None]]
+"""The input gate over ``(locator, text)`` pairs (the Engine's, which owns the Orchestrator);
+raises 422 ``guardrail_violation``."""
+
+
+async def _cast_full(conn: AsyncConnection, story_id: str) -> None:
+    """422 ``validation_error`` when the story's cast already holds ``CAST_MAX`` characters."""
+    count = int(
+        await conn.scalar(
+            select(func.count()).select_from(characters).where(characters.c.story_id == story_id)
+        )
+        or 0
+    )
+    if count >= CAST_MAX:
+        raise InvalidRequest(
+            f"the story's cast holds at most {CAST_MAX} characters",
+            {"field": "body", "cap": "cast_max", "limit": CAST_MAX, "actual": count + 1},
+        )
+
+
+async def _name_taken(conn: AsyncConnection, story_id: str, name: str) -> None:
+    """422 ``validation_error`` at ``body.name`` when the story has a character of that name,
+    ignoring case (the ``uq_characters_story_name`` index's rule)."""
+    found = await conn.scalar(
+        select(characters.c.id)
+        .where(
+            characters.c.story_id == story_id,
+            func.lower(characters.c.name) == func.lower(name),
+        )
+        .limit(1)
+    )
+    if found is not None:
+        raise InvalidRequest(
+            "the story already has a character of this name",
+            {"field": "body.name", "reason": "duplicate"},
+        )
+
+
+async def _images_usable(conn: AsyncConnection, images: Sequence[str]) -> None:
+    """Every image must be a live asset (422 ``media_retired`` at ``body.images[i]``, held
+    ``FOR SHARE`` until the caller's transaction ends) and an image, not a video (422
+    ``validation_error``, ``reason: not_an_image``)."""
+    if not images:
+        return
+    await assert_referenceable(conn, images, field="body.images")
+    kinds = {
+        str(row.id): str(row.kind)
+        for row in await conn.execute(
+            select(media_assets.c.id, media_assets.c.kind).where(media_assets.c.id.in_(images))
+        )
+    }
+    for index, media_id in enumerate(images):
+        if kinds.get(media_id) != MediaKind.IMAGE.value:
+            raise InvalidRequest(
+                f"media asset {media_id} is not an image",
+                {"field": f"body.images[{index}]", "reason": "not_an_image"},
+            )
+
+
+async def _addable(conn: AsyncConnection, story_id: str, request: AdHocCharacter) -> None:
+    await _cast_full(conn, story_id)
+    await _name_taken(conn, story_id, request.name)
+    await _images_usable(conn, request.images)
+
+
+async def add_story_character(
+    db: AsyncEngine,
+    story_id: str,
+    request: AdHocCharacter,
+    *,
+    principal: str,
+    gate: CharacterGate,
+    idempotency_key: str | None = None,
+    expected_revision: int | None = None,
+) -> StoryCharacterAdded:
+    """Add ``request`` to the story's cast (FR-CAT-7; see the module docstring for the rules and
+    their order)."""
+    async with db.connect() as conn, conn.begin():
+        exists = await conn.scalar(select(stories.c.id).where(stories.c.id == story_id))
+        if exists is None:
+            raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+        await _addable(conn, story_id, request)
+    await require_writable(db, story_id)
+    await check_expected_revision(db, story_id, expected_revision)
+    async with db.connect() as conn:
+        await _refuse_busy(conn, story_id, turns_only=True)
+    await gate([("definition", request.definition)])
+    character_id = new_ulid()
+    op = Operation(
+        db,
+        story_id=story_id,
+        kind=OperationKind.CONTROL,
+        principal=principal,
+        provenance=Provenance.CONSUMER,
+        bumps_revision=True,
+        idempotency_key=idempotency_key,
+    )
+    ordinal: list[int] = []
+
+    async def insert_character(conn: AsyncConnection) -> None:
+        # Under the story lock: the checks again (another addition, a turn or a retirement may
+        # have come in since), then the row at the next ordinal.
+        await _refuse_busy(conn, story_id, turns_only=True, own=op.operation_id)
+        await _addable(conn, story_id, request)
+        last = await conn.scalar(
+            select(func.max(characters.c.ordinal)).where(characters.c.story_id == story_id)
+        )
+        ordinal.append(int(last if last is not None else -1) + 1)
+        await conn.execute(
+            insert(characters).values(
+                id=character_id,
+                story_id=story_id,
+                ordinal=ordinal[0],
+                name=request.name,
+                definition=request.definition,
+                true_age=request.true_age,
+                age_recorded_at=func.transaction_timestamp(),
+                is_player=False,
+                safe_fallback_text=request.safe_fallback_text,
+                images=list(request.images),
+            )
+        )
+
+    async with op:
+        op.append(
+            "character_defined",
+            CharacterDefined(character_id=character_id, name=request.name, is_player=False),
+        )
+        op.add_commit_step(insert_character)
+        await op.commit()
+    assert op.timeline_revision is not None  # noqa: S101 - set by a committed story operation
+    return StoryCharacterAdded(
+        id=character_id,
+        name=request.name,
+        ordinal=ordinal[0],
+        timeline_revision=op.timeline_revision,
+    )
+
+
 # -- archive --------------------------------------------------------------------------------
 
 
@@ -812,6 +1034,7 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
                     characters.c.name,
                     characters.c.is_player,
                     characters.c.true_age,
+                    characters.c.promoted_to,
                 )
                 .where(characters.c.story_id == story_id)
                 .order_by(characters.c.ordinal)
@@ -825,6 +1048,7 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
                 name=c.name,
                 is_player=bool(c.is_player),
                 true_age=int(c.true_age) if omniscient else None,
+                promoted_to=tuple(str(i) for i in c.promoted_to or ()) if omniscient else None,
             )
             for c in cast
         ),

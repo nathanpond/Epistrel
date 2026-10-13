@@ -9,6 +9,11 @@
 - ``PUT /stories/{id}/owner``, ``POST``/``GET /stories/{id}/relations`` and ``DELETE
   /stories/{id}/relations/{relation}/{principal}``: the story's owner and relations
   (``routes.ownership``, #104). Nothing gates on them (FR-AUTH-8).
+- ``POST /stories/{id}/characters``: add an ad-hoc character to a running story (FR-CAT-7;
+  #114): story-scoped, never a catalog entry; 201.
+- ``POST /stories/{id}/characters/{cid}/promote``: a new **draft** catalog entry from one of the
+  story's characters, copying only its definition fields (FR-CAT-8; #114); 201 with
+  ``Location: /catalog/characters/{id}``. Tagged ``catalog``.
 - ``POST /stories/{id}/archive`` and ``…/unarchive``: control operations, idempotent (200).
 - ``DELETE /stories/{id}``: removes every row of the story and nothing else (204).
 - ``POST /stories/{id}/ingest``: record consumer events (a player-only turn, narration) without
@@ -43,13 +48,21 @@ from pydantic import (
 )
 
 from epistrel.api.config_changes import ConfigChangesBody, IsoDateTime, StorySettingFilter
-from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep, StoryId
+from epistrel.api.deps import (
+    ContextDep,
+    EngineDep,
+    RespondAsyncDep,
+    StoryCharacterId,
+    StoryId,
+)
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.ownership import mount_ownership_routes
 from epistrel.api.routes.timeline import VariantChainBody
 from epistrel.api.validation import register_body_model
 from epistrel.core import idempotency
+from epistrel.core.catalog.promote import PromoteRequest, Promotion
+from epistrel.core.catalog.report import Entry
 from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.enums import StoryStatus
@@ -59,10 +72,12 @@ from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.stories import (
+    AdHocCharacter,
     CharacterView,
     CreatedStory,
     RatingRef,
     StatusChange,
+    StoryCharacterAdded,
     StorySpec,
     StoryView,
 )
@@ -104,9 +119,49 @@ class CharacterBody(CharacterRefBody):
 
 
 class OmniscientCharacterBody(CharacterBody):
-    """A character as an omniscient read returns it: with its true age."""
+    """A character as an omniscient read returns it: with its true age (FR-CAT-12) and the
+    catalog entries promoted from it (``promoted_to``, FR-CAT-8; oldest first)."""
 
     true_age: int
+    promoted_to: list[str]
+
+
+class StoryCharacterBody(MutationResponse):
+    """A character added to the story: its id, name and place in the cast (``ordinal``), with
+    the story's revision after the addition."""
+
+    id: str
+    name: str
+    ordinal: int
+
+    @classmethod
+    def of(cls, added: StoryCharacterAdded) -> StoryCharacterBody:
+        return cls(
+            id=added.id,
+            name=added.name,
+            ordinal=added.ordinal,
+            timeline_revision=added.timeline_revision,
+        )
+
+
+class PromotionBody(MutationResponse):
+    """A promotion's new **draft** catalog entry (``catalog_id``; read it with
+    ``GET /catalog/characters/{id}?draft=true``), its draft revision, the warnings (#111's
+    entries: ``definition_truncated``, an image left out as ``media_retired``), and the story's
+    ``timeline_revision``, which a promotion leaves as it is."""
+
+    catalog_id: str
+    draft_revision: int
+    warnings: list[Entry]
+
+    @classmethod
+    def of(cls, promotion: Promotion) -> PromotionBody:
+        return cls(
+            catalog_id=promotion.catalog_id,
+            draft_revision=promotion.draft_revision,
+            warnings=list(promotion.warnings),
+            timeline_revision=promotion.timeline_revision,
+        )
 
 
 class StoryCreatedBody(MutationResponse):
@@ -478,6 +533,7 @@ def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterB
             name=character.name,
             is_player=character.is_player,
             true_age=character.true_age,
+            promoted_to=list(character.promoted_to or ()),
         )
     return CharacterBody(id=character.id, name=character.name, is_player=character.is_player)
 
@@ -676,6 +732,74 @@ async def update_story_settings(
     budget = await engine.effective_budget(ctx, story_id)
     answer = StorySettingsWriteBody.of(write, guardrails, budget)
     return answered(answer, ctx, response, replayed=write.replayed)
+
+
+@router.post(
+    "/{story_id}/characters",
+    status_code=http_status.HTTP_201_CREATED,
+    response_model=StoryCharacterBody,
+    operation_id="add_story_character",
+    summary="Add a character to a running story",
+    description=(
+        "Add an ad-hoc character to the story's cast (FR-CAT-7): its `name`, its free-text "
+        "`definition`, its required `true_age` (FR-CAT-12) and optionally its "
+        "`safe_fallback_text` and `images` (media asset ids it shows, each a live image, by "
+        "reference). It is story-scoped and never a catalog entry or a player character; "
+        "`POST /stories/{id}/characters/{cid}/promote` makes a catalog draft from it. A full "
+        "cast (20 characters), a name the story has (ignoring case) or an image that is not a "
+        "live image asset is 422. The definition passes the input gate, with the new "
+        "character's age in the cast: a violation is 422 `guardrail_violation`. 409 "
+        "`story_archived` on an archived story, 423 `story_busy` while a turn is in flight. "
+        "The addition bumps the story's revision (the cast is part of every prompt), records a "
+        "`character_defined` event and is kept by a truncation and copied by every fork, as a "
+        "story-text edit is. Answers 201 with the new character's id and place in the cast."
+    ),
+)
+async def add_story_character(
+    story_id: StoryId,
+    body: AdHocCharacter,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> StoryCharacterBody:
+    added = await engine.add_story_character(ctx, story_id, body)
+    return answered(StoryCharacterBody.of(added), ctx, response, replayed=added.replayed)
+
+
+@router.post(
+    "/{story_id}/characters/{character_id}/promote",
+    status_code=http_status.HTTP_201_CREATED,
+    response_model=PromotionBody,
+    operation_id="promote_character",
+    summary="Promote a story character to a catalog draft",
+    description=(
+        "Make a new **draft** catalog character from one of the story's characters (FR-CAT-8), "
+        "owned by `owner` (default: the requesting principal) and rated `content_rating_id` "
+        "(default: the story's rating). Only definition fields are copied: the name (or the "
+        "request's), the true age as of the story's time, the free-text definition (as "
+        "`definition.background_flavor`, cut at 4,000 characters with the warning "
+        "`definition_truncated`), the safe fallback line, and the images by reference (the "
+        "first as the primary image, the rest as the gallery; one no longer live is left out "
+        "with the warning `media_retired`). No story event, pinned memory, summary or fact is "
+        "copied. The story character keeps a link to the entry (`promoted_to`, in an "
+        "omniscient `GET /stories/{id}`) and nothing else of the story changes; its revision "
+        "does not move, so a promotion is allowed on an archived story and while a turn is in "
+        "flight. Promoting again makes another draft. A player character plays a persona and "
+        "is 422 (`reason: player_character`). Answers 201 with `Location: "
+        "/catalog/characters/{id}`."
+    ),
+)
+async def promote_character(
+    story_id: StoryId,
+    character_id: StoryCharacterId,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+    body: Annotated[PromoteRequest | None, Body()] = None,
+) -> PromotionBody:
+    promotion = await engine.promote_character(ctx, story_id, character_id, body)
+    response.headers["Location"] = f"/catalog/characters/{promotion.catalog_id}"
+    return answered(PromotionBody.of(promotion), ctx, response, replayed=promotion.replayed)
 
 
 @router.post(

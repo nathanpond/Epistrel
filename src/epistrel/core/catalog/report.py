@@ -67,12 +67,18 @@ CODES: Mapping[str, str] = types.MappingProxyType(
         "media_not_allowed": "a media asset's type or size is not allowed now",
         "media_kind_mismatch": "a video where an image belongs, or the reverse",
         "provider_undeclared": "a provider the content names is not in required_providers",
+        "persona_required": "a player's persona names a catalog character: a player plays a "
+        "persona (FR-CAT-6; story creation, #114)",
+        "player_role_fixed": "a player put in a role that is not the scenario's player role, or "
+        "the player's role filled as a character slot (FR-CAT-6; story creation, #114)",
         # warnings
         "rating_looser": "an item's rating lacks a guardrail the scenario's rating has "
         "(FR-RATE-5; kept)",
         "input_policy": "text fails an input policy (FR-GUARD-10; kept)",
         "personality_in_role": "role text asserts personality (FR-SCN-7; ignored: the "
         "character's applies)",
+        "definition_truncated": "a promoted character's definition was longer than "
+        "background_flavor holds, and was cut (FR-CAT-8, #114; kept)",
         # later milestones' (the structured pipeline, M4; nested beliefs, M5)
         "fact_conflict_dropped": "a seed's fact lost a conflict and was dropped (FR-SCN-7)",
         "belief_conflict": "two seeds give one holder contradictory beliefs (FR-SCN-7)",

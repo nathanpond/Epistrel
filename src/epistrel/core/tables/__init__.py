@@ -25,6 +25,7 @@ from epistrel.core.tables.media import media_assets, subject_references
 from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.operations import operations
 from epistrel.core.tables.ownership import entity_relations, ownership_events
+from epistrel.core.tables.personas import personas
 from epistrel.core.tables.policies import policies
 from epistrel.core.tables.profiles import (
     engine_profile_versions,
@@ -65,6 +66,7 @@ __all__ = [
     "model_config",
     "operations",
     "ownership_events",
+    "personas",
     "policies",
     "recurring_tasks",
     "scenario_catalog",

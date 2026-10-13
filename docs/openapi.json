@@ -1,6 +1,66 @@
 {
   "components": {
     "schemas": {
+      "AdHocCharacter": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/characters``: a character the author adds to a running story\n(FR-CAT-7): #50's free-text shape — its name, its definition, its required true age\n(FR-CAT-12) and optionally its safe fallback line (#68) — and optionally ``images``, media\nasset ids it shows (each a live image), by reference. It is never a player character and\nnever a catalog entry.",
+        "examples": [
+          {
+            "definition": "A delivery driver in a hurry, polite and nosy.",
+            "name": "Dale",
+            "true_age": 52
+          }
+        ],
+        "properties": {
+          "definition": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Definition",
+            "type": "string"
+          },
+          "images": {
+            "description": "Media asset ids the character shows (images, each live), in order.",
+            "items": {
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Images",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "safe_fallback_text": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Safe Fallback Text"
+          },
+          "true_age": {
+            "maximum": 150.0,
+            "minimum": 0.0,
+            "title": "True Age",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "definition",
+          "true_age"
+        ],
+        "title": "AdHocCharacter",
+        "type": "object"
+      },
       "AffectedStory": {
         "description": "One story a change affects: the capabilities it gains and loses, its backfill, whether\nthe upgrade is unavailable to it (it has history, and the change adds data-producing\ncapability), and its fingerprint before and after with the capabilities enabled and the\nquality status after: those of the configuration it would run under, which is its current\none when the upgrade is unavailable (FR-PROF-16).",
         "properties": {
@@ -344,7 +404,7 @@
       },
       "CharacterCard": {
         "additionalProperties": false,
-        "description": "A catalog character's public card (``projection=card``, the default; FR-CAT-2,\nFR-SCN-10): only what a player-facing client may show, never a definition field.\n``version`` is the version shown; a draft read shows the draft with the latest published\nversion (``null`` before the first publish). Until #115, ``images`` and ``labels`` are empty\nand ``content_rating`` is ``null``.",
+        "description": "A catalog character's public card (``projection=card``, the default; FR-CAT-2,\nFR-SCN-10): only what a player-facing client may show, never a definition field.\n``version`` is the version shown; a draft read shows the draft with the latest published\nversion (``null`` before the first publish). ``images`` are the primary image, then the\ngallery, each with its asset's alt text; ``content_rating`` is the rating's version a\npublished version recorded (for a draft, the rating's current version). Until #115,\n``labels`` are empty.",
         "properties": {
           "content_rating": {
             "anyOf": [
@@ -446,6 +506,17 @@
             "$ref": "#/components/schemas/CharacterDefinition",
             "description": "The private definition: returned only by the `full` projection."
           },
+          "metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CharacterMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The content rating (public, on the card)."
+          },
           "name": {
             "anyOf": [
               {
@@ -473,6 +544,17 @@
             "description": "The entry's owner principal (default: the requesting principal; never `system`). Recorded, never interpreted.",
             "title": "Owner"
           },
+          "public_card": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CharacterPublicCard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The card's images (public)."
+          },
           "public_description": {
             "anyOf": [
               {
@@ -492,8 +574,21 @@
       },
       "CharacterDefinition": {
         "additionalProperties": false,
-        "description": "The private character definition (FR-CAT-2): who the character is. It is seeded into\nevery story the character joins and is otherwise returned only by the ``full`` projection.\nUntil #115 adds the other fields it holds ``personality``.",
+        "description": "The private character definition (FR-CAT-2): who the character is. It is seeded into\nevery story the character joins and is otherwise returned only by the ``full`` projection.\nUntil #115 adds the other fields it holds ``personality``, the character's ``true_age``\n(FR-CAT-12), ``background_flavor`` (free text: a definition promoted from a story lands\nhere, FR-CAT-8) and ``safe_fallback_text`` (the line the character says when every\nregenerated reply fails its guardrails, #68).",
         "properties": {
+          "background_flavor": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional background, as free text (private).",
+            "title": "Background Flavor"
+          },
           "personality": {
             "anyOf": [
               {
@@ -506,6 +601,33 @@
             ],
             "description": "Personality and temperament (private).",
             "title": "Personality"
+          },
+          "safe_fallback_text": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the character says when every regenerated reply fails its guardrails (private).",
+            "title": "Safe Fallback Text"
+          },
+          "true_age": {
+            "anyOf": [
+              {
+                "maximum": 150.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The character's true age (FR-CAT-12): 0 to 150. Never on the card.",
+            "title": "True Age"
           }
         },
         "title": "CharacterDefinition",
@@ -515,6 +637,18 @@
         "additionalProperties": false,
         "description": "The ``definition`` part of a draft patch: a key sets that field, ``null`` removes it.",
         "properties": {
+          "background_flavor": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Background Flavor"
+          },
           "personality": {
             "anyOf": [
               {
@@ -526,6 +660,31 @@
               }
             ],
             "title": "Personality"
+          },
+          "safe_fallback_text": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Safe Fallback Text"
+          },
+          "true_age": {
+            "anyOf": [
+              {
+                "maximum": 150.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "True Age"
           }
         },
         "title": "CharacterDefinitionPatch",
@@ -853,6 +1012,73 @@
         "title": "CharacterFull",
         "type": "object"
       },
+      "CharacterImages": {
+        "additionalProperties": false,
+        "description": "The public card's images (FR-CAT-4; #115's shape): a ``primary`` image and a ``gallery``\n(up to 20, distinct), as media asset ids. The assets are referenced, never copied; each must\nbe ``live`` when a save adds it.",
+        "properties": {
+          "gallery": {
+            "description": "More images, in order.",
+            "items": {
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Gallery",
+            "type": "array"
+          },
+          "primary": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The primary image's media id.",
+            "title": "Primary"
+          }
+        },
+        "title": "CharacterImages",
+        "type": "object"
+      },
+      "CharacterImagesPatch": {
+        "additionalProperties": false,
+        "description": "The images part of a draft patch: ``primary`` set or removed (``null``), and ``gallery``\nreplaced as a whole.",
+        "properties": {
+          "gallery": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gallery"
+          },
+          "primary": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary"
+          }
+        },
+        "title": "CharacterImagesPatch",
+        "type": "object"
+      },
       "CharacterListBody": {
         "description": "A page of catalog characters as cards (#110), newest first (a search: best match\nfirst), and the cursor of the next page (``null`` on the last). No total.",
         "properties": {
@@ -991,9 +1217,50 @@
         "title": "CharacterListItem",
         "type": "object"
       },
+      "CharacterMetadata": {
+        "additionalProperties": false,
+        "description": "The draft's metadata (#115's shape): its ``content_rating_id`` (FR-RATE-3), which must be\nassignable when a save sets it.",
+        "properties": {
+          "content_rating_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The content rating's id.",
+            "title": "Content Rating Id"
+          }
+        },
+        "title": "CharacterMetadata",
+        "type": "object"
+      },
+      "CharacterMetadataPatch": {
+        "additionalProperties": false,
+        "description": "The ``metadata`` part of a draft patch.",
+        "properties": {
+          "content_rating_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Rating Id"
+          }
+        },
+        "title": "CharacterMetadataPatch",
+        "type": "object"
+      },
       "CharacterPatch": {
         "additionalProperties": false,
-        "description": "``PATCH /catalog/characters/{id}``: a JSON merge patch (RFC 7386) over the draft — a key\nsets that field, ``null`` removes it, and ``definition`` merges the same way — with the\n``draft_revision`` it is based on (FR-CAT-3).",
+        "description": "``PATCH /catalog/characters/{id}``: a JSON merge patch (RFC 7386) over the draft — a key\nsets that field, ``null`` removes it, and ``definition``, ``public_card`` and ``metadata``\nmerge the same way (an array, the gallery, replaces the stored one) — with the\n``draft_revision`` it is based on (FR-CAT-3).",
         "examples": [
           {
             "definition": {
@@ -1021,6 +1288,16 @@
             "title": "Draft Revision",
             "type": "integer"
           },
+          "metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CharacterMetadataPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "anyOf": [
               {
@@ -1033,6 +1310,16 @@
               }
             ],
             "title": "Name"
+          },
+          "public_card": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CharacterPublicCardPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "public_description": {
             "anyOf": [
@@ -1051,6 +1338,35 @@
           "draft_revision"
         ],
         "title": "CharacterPatch",
+        "type": "object"
+      },
+      "CharacterPublicCard": {
+        "additionalProperties": false,
+        "description": "The public card's part of the interim draft that lives under ``public_card`` (#115 moves\n``name`` and ``public_description`` here too): its ``images``.",
+        "properties": {
+          "images": {
+            "$ref": "#/components/schemas/CharacterImages"
+          }
+        },
+        "title": "CharacterPublicCard",
+        "type": "object"
+      },
+      "CharacterPublicCardPatch": {
+        "additionalProperties": false,
+        "description": "The ``public_card`` part of a draft patch.",
+        "properties": {
+          "images": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CharacterImagesPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "CharacterPublicCardPatch",
         "type": "object"
       },
       "CharacterPublishedBody": {
@@ -5832,7 +6148,7 @@
         "type": "object"
       },
       "OmniscientCharacterBody": {
-        "description": "A character as an omniscient read returns it: with its true age.",
+        "description": "A character as an omniscient read returns it: with its true age (FR-CAT-12) and the\ncatalog entries promoted from it (``promoted_to``, FR-CAT-8; oldest first).",
         "properties": {
           "id": {
             "title": "Id",
@@ -5846,6 +6162,13 @@
             "title": "Name",
             "type": "string"
           },
+          "promoted_to": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Promoted To",
+            "type": "array"
+          },
           "true_age": {
             "title": "True Age",
             "type": "integer"
@@ -5855,7 +6178,8 @@
           "id",
           "name",
           "is_player",
-          "true_age"
+          "true_age",
+          "promoted_to"
         ],
         "title": "OmniscientCharacterBody",
         "type": "object"
@@ -6596,6 +6920,307 @@
           "received_parts"
         ],
         "title": "PartStoredBody",
+        "type": "object"
+      },
+      "Persona": {
+        "description": "A saved persona (FR-CAT-6): its id, its owner (FR-AUTH-5, recorded for listing,\nattribution and offboarding only), its fields, and when it was created and last changed (an\nedit or an owner transfer).",
+        "properties": {
+          "age": {
+            "title": "Age",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gender"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "owner_principal",
+          "name",
+          "gender",
+          "age",
+          "description",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Persona",
+        "type": "object"
+      },
+      "PersonaBody": {
+        "description": "The persona after a create or an edit, with the deployment's ``config_revision``\n(unchanged).",
+        "properties": {
+          "age": {
+            "title": "Age",
+            "type": "integer"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gender"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_revision",
+          "id",
+          "owner_principal",
+          "name",
+          "gender",
+          "age",
+          "description",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "PersonaBody",
+        "type": "object"
+      },
+      "PersonaCreate": {
+        "additionalProperties": false,
+        "description": "``POST /personas``: a persona's fields and, optionally, its ``owner``: an opaque\nprincipal, by default the requesting one, never ``system`` (FR-AUTH-5). Ownership confers no\npermission (FR-AUTH-8).",
+        "examples": [
+          {
+            "age": 23,
+            "description": "Short-tempered and flies off the handle, but loyal to a fault. Tall, with a scar over one eyebrow.",
+            "gender": "man",
+            "name": "Sam Ortiz",
+            "owner": "p-7f3a9c"
+          }
+        ],
+        "properties": {
+          "age": {
+            "description": "The persona's true age (FR-CAT-12): 0 to 150.",
+            "maximum": 150.0,
+            "minimum": 0.0,
+            "title": "Age",
+            "type": "integer"
+          },
+          "description": {
+            "description": "Personality, and optionally appearance (up to 4,000 characters): what the player asserts they will play as. Never objective canon.",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free text (up to 40 characters).",
+            "title": "Gender"
+          },
+          "name": {
+            "description": "The player character's canonical name.",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The persona's owner principal (default: the requesting principal; never `system`). Recorded, never interpreted.",
+            "title": "Owner"
+          }
+        },
+        "required": [
+          "name",
+          "age",
+          "description"
+        ],
+        "title": "PersonaCreate",
+        "type": "object"
+      },
+      "PersonaListBody": {
+        "description": "A page of personas, newest first; ``next_cursor`` fetches the next page (``null`` on the\nlast).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Persona"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "PersonaListBody",
+        "type": "object"
+      },
+      "PersonaPatch": {
+        "additionalProperties": false,
+        "description": "``PATCH /personas/{id}``: a JSON merge patch (RFC 7396) over the persona, last write wins.\nA key sets that field, and ``null`` removes it: only ``gender`` may be removed, so ``null``\nfor another field is 422 at it.",
+        "examples": [
+          {
+            "age": 24,
+            "description": "Calmer since the wedding."
+          }
+        ],
+        "properties": {
+          "age": {
+            "anyOf": [
+              {
+                "maximum": 150.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required: `null` is 422.",
+            "title": "Age"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required: `null` is 422.",
+            "title": "Description"
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`null` removes it.",
+            "title": "Gender"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required: `null` is 422.",
+            "title": "Name"
+          }
+        },
+        "title": "PersonaPatch",
         "type": "object"
       },
       "PinnedItemBody": {
@@ -9590,6 +10215,104 @@
         ],
         "title": "Projection",
         "type": "string"
+      },
+      "PromoteRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/characters/{cid}/promote``: optionally the new entry's ``name``\n(default: the character's), its ``owner`` (default: the requesting principal; never\n``system``) and its ``content_rating_id`` (default: the story's rating).",
+        "examples": [
+          {},
+          {
+            "name": "Dale the courier",
+            "owner": "p-7f3a9c"
+          }
+        ],
+        "properties": {
+          "content_rating_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The entry's content rating (default: the story's).",
+            "title": "Content Rating Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The entry's name (default: the character's).",
+            "title": "Name"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The entry's owner principal (default: the requesting principal; never `system`). Recorded, never interpreted.",
+            "title": "Owner"
+          }
+        },
+        "title": "PromoteRequest",
+        "type": "object"
+      },
+      "PromotionBody": {
+        "description": "A promotion's new **draft** catalog entry (``catalog_id``; read it with\n``GET /catalog/characters/{id}?draft=true``), its draft revision, the warnings (#111's\nentries: ``definition_truncated``, an image left out as ``media_retired``), and the story's\n``timeline_revision``, which a promotion leaves as it is.",
+        "properties": {
+          "catalog_id": {
+            "title": "Catalog Id",
+            "type": "string"
+          },
+          "draft_revision": {
+            "title": "Draft Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "catalog_id",
+          "draft_revision",
+          "warnings"
+        ],
+        "title": "PromotionBody",
+        "type": "object"
       },
       "PublishRequest": {
         "additionalProperties": false,
@@ -14578,6 +15301,46 @@
           "variant_chains"
         ],
         "title": "StoryBody",
+        "type": "object"
+      },
+      "StoryCharacterBody": {
+        "description": "A character added to the story: its id, name and place in the cast (``ordinal``), with\nthe story's revision after the addition.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "id",
+          "name",
+          "ordinal"
+        ],
+        "title": "StoryCharacterBody",
         "type": "object"
       },
       "StoryCreatedBody": {
@@ -28398,6 +29161,1322 @@
         ]
       }
     },
+    "/personas": {
+      "get": {
+        "description": "Personas, newest first, `limit` at a time; `cursor` (a page's `next_cursor`) continues with the same filters (422 `cursor_invalid` otherwise). Every principal's personas are listed unless the request filters: by `owner` (only that principal's personas), or by `relation` (`name:principal`, or `name:` for any principal; repeatable, all must hold). Owners and relations narrow a list only when a request asks: they gate nothing (FR-AUTH-8).",
+        "operationId": "list_personas",
+        "parameters": [
+          {
+            "description": "Only the personas this principal owns.",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the personas with this relation: `name:principal`, or `name:` for any principal (repeatable; all must hold).",
+            "in": "query",
+            "name": "relation",
+            "required": false,
+            "schema": {
+              "items": {
+                "pattern": "^[A-Za-z0-9_-]{1,64}:[\\t ]*([^\\x00-\\x1f\\x7f]{1,256}[\\t ]*)?$",
+                "type": "string"
+              },
+              "title": "Relation",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's `next_cursor`.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonaListBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `cursor_invalid`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List personas",
+        "tags": [
+          "personas"
+        ]
+      },
+      "post": {
+        "description": "Save a player persona (FR-CAT-6): its `name` (1 to 120 characters), an optional `gender` (free text, up to 40), its `age` (0 to 150: the persona's true age) and a short `description` (personality, and optionally appearance; up to 4,000), owned by `owner` (default: the requesting principal; never `system`). A name is unique per owner, ignoring case: a second one is 409 `persona_name_taken`. A persona is not a catalog entry. A story created with a persona keeps a snapshot of it, so editing or deleting the persona never changes a story (FR-CAT-6).",
+        "operationId": "create_persona",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonaCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonaBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `persona_name_taken`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Save a persona",
+        "tags": [
+          "personas"
+        ]
+      }
+    },
+    "/personas/{persona_id}": {
+      "delete": {
+        "description": "Delete the persona and its relations (204), recorded with a `persona_deleted` audit row. A story created with a persona keeps a snapshot of it, so editing or deleting the persona never changes a story (FR-CAT-6). A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`.",
+        "operationId": "delete_persona",
+        "parameters": [
+          {
+            "description": "The persona's id (a ULID).",
+            "in": "path",
+            "name": "persona_id",
+            "required": true,
+            "schema": {
+              "description": "The persona's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Persona Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete a persona",
+        "tags": [
+          "personas"
+        ]
+      },
+      "get": {
+        "description": "The persona: its owner, its fields and when it was created and last changed.",
+        "operationId": "get_persona",
+        "parameters": [
+          {
+            "description": "The persona's id (a ULID).",
+            "in": "path",
+            "name": "persona_id",
+            "required": true,
+            "schema": {
+              "description": "The persona's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Persona Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Persona"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a persona",
+        "tags": [
+          "personas"
+        ]
+      },
+      "patch": {
+        "description": "Edit the persona with a JSON merge patch (RFC 7396), last write wins: a key sets that field and `null` removes it. Only `gender` may be removed; `null` for `name`, `age` or `description` is 422. A new name its owner already uses (ignoring case) is 409 `persona_name_taken`. An edit that changes nothing records nothing. The owner changes only by a transfer (`PUT /personas/{id}/owner`). A story created with a persona keeps a snapshot of it, so editing or deleting the persona never changes a story (FR-CAT-6).",
+        "operationId": "update_persona",
+        "parameters": [
+          {
+            "description": "The persona's id (a ULID).",
+            "in": "path",
+            "name": "persona_id",
+            "required": true,
+            "schema": {
+              "description": "The persona's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Persona Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonaPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonaBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `persona_name_taken`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Edit a persona",
+        "tags": [
+          "personas"
+        ]
+      }
+    },
+    "/personas/{persona_id}/owner": {
+      "put": {
+        "description": "Make `principal` the owner of a persona (FR-AUTH-5): it answers the owner now and the one before, with the deployment's `config_revision` (unchanged). The transfer is recorded with the acting principal and time. A transfer to the current owner changes nothing and records nothing. `system` is refused (422). Allowed whatever the entity's status. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "transfer_owner_persona",
+        "parameters": [
+          {
+            "description": "The persona's id (a ULID).",
+            "in": "path",
+            "name": "persona_id",
+            "required": true,
+            "schema": {
+              "description": "The persona's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Persona Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerTransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `persona_name_taken`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Transfer a persona's ownership",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/personas/{persona_id}/relations": {
+      "get": {
+        "description": "A persona's owner and its relations, by relation name, then principal. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "list_relations_persona",
+        "parameters": [
+          {
+            "description": "The persona's id (a ULID).",
+            "in": "path",
+            "name": "persona_id",
+            "required": true,
+            "schema": {
+              "description": "The persona's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Persona Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a persona's owner and relations",
+        "tags": [
+          "ownership"
+        ]
+      },
+      "post": {
+        "description": "Add the relation `relation` (consumer-defined, e.g. `editor`, `co_author`, `player`: 1 to 64 of `A-Z a-z 0-9 _ -`, case-sensitive) between `principal` and a persona (FR-AUTH-6): 201 with the relation, recorded with the acting principal; 200 when it already exists (nothing recorded). Relations are list filters (`?relation=name:principal`), and Epistrel never interprets a name. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "add_relation_persona",
+        "parameters": [
+          {
+            "description": "The persona's id (a ULID).",
+            "in": "path",
+            "name": "persona_id",
+            "required": true,
+            "schema": {
+              "description": "The persona's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Persona Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationBody"
+                }
+              }
+            },
+            "description": "The relation already existed; nothing was recorded.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Relate a principal to a persona",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/personas/{persona_id}/relations/{relation}/{principal}": {
+      "delete": {
+        "description": "Remove a persona's relation `relation` to `principal` (204), recorded with the acting principal; 404 `not_found` when there is no such relation. The principal is the rest of the path and may contain `/`. A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "remove_relation_persona",
+        "parameters": [
+          {
+            "description": "The persona's id (a ULID).",
+            "in": "path",
+            "name": "persona_id",
+            "required": true,
+            "schema": {
+              "description": "The persona's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Persona Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The relation's name.",
+            "in": "path",
+            "name": "relation",
+            "required": true,
+            "schema": {
+              "description": "The relation's name.",
+              "examples": [
+                "editor"
+              ],
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Relation",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The related principal: the rest of the path, so it may contain `/`.",
+            "in": "path",
+            "name": "principal",
+            "required": true,
+            "schema": {
+              "description": "The related principal: the rest of the path, so it may contain `/`.",
+              "examples": [
+                "p-7f3a9c"
+              ],
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Principal",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove a relation from a persona",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
     "/stories": {
       "get": {
         "description": "Every story, newest first, unless the request filters: by `status`, by `owner` (the owner principal, `system` included), or by `relation` (`name:principal`, or `name:` for any principal; repeat it and every one must hold). Owners and relations narrow a list only when a request asks: they gate nothing (FR-AUTH-8).",
@@ -29127,6 +31206,404 @@
         "summary": "Archive a story",
         "tags": [
           "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/characters": {
+      "post": {
+        "description": "Add an ad-hoc character to the story's cast (FR-CAT-7): its `name`, its free-text `definition`, its required `true_age` (FR-CAT-12) and optionally its `safe_fallback_text` and `images` (media asset ids it shows, each a live image, by reference). It is story-scoped and never a catalog entry or a player character; `POST /stories/{id}/characters/{cid}/promote` makes a catalog draft from it. A full cast (20 characters), a name the story has (ignoring case) or an image that is not a live image asset is 422. The definition passes the input gate, with the new character's age in the cast: a violation is 422 `guardrail_violation`. 409 `story_archived` on an archived story, 423 `story_busy` while a turn is in flight. The addition bumps the story's revision (the cast is part of every prompt), records a `character_defined` event and is kept by a truncation and copied by every fork, as a story-text edit is. Answers 201 with the new character's id and place in the cast.",
+        "operationId": "add_story_character",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdHocCharacter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryCharacterBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `media_retired`, `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Add a character to a running story",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/characters/{character_id}/promote": {
+      "post": {
+        "description": "Make a new **draft** catalog character from one of the story's characters (FR-CAT-8), owned by `owner` (default: the requesting principal) and rated `content_rating_id` (default: the story's rating). Only definition fields are copied: the name (or the request's), the true age as of the story's time, the free-text definition (as `definition.background_flavor`, cut at 4,000 characters with the warning `definition_truncated`), the safe fallback line, and the images by reference (the first as the primary image, the rest as the gallery; one no longer live is left out with the warning `media_retired`). No story event, pinned memory, summary or fact is copied. The story character keeps a link to the entry (`promoted_to`, in an omniscient `GET /stories/{id}`) and nothing else of the story changes; its revision does not move, so a promotion is allowed on an archived story and while a turn is in flight. Promoting again makes another draft. A player character plays a persona and is 422 (`reason: player_character`). Answers 201 with `Location: /catalog/characters/{id}`.",
+        "operationId": "promote_character",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2CA"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PromoteRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromotionBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              },
+              "Location": {
+                "description": "`/catalog/characters/{id}` of the new draft entry.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `rating_retired`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Promote a story character to a catalog draft",
+        "tags": [
+          "catalog"
         ]
       }
     },
@@ -33902,6 +36379,10 @@
     {
       "description": "Engine profiles: named, versioned sets of capability modules and dials that set how hard the engine works for a story (FR-PROF-1..4). The schema exposes only the modules and levels this deployment has delivered; presets are ordinary profiles. A story runs under its profile's latest version with its own overrides over it, on top of the deployment's defaults (FR-PROF-5,6).",
       "name": "profiles"
+    },
+    {
+      "description": "Player personas (FR-CAT-6): the name, gender, age and short description a player plays as, saved per principal for reuse. A persona is not a catalog entry, and a story keeps a snapshot of the one it was created with, so editing or deleting a persona never changes a story.",
+      "name": "personas"
     },
     {
       "description": "Each owned entity's one owner and its relations (FR-AUTH-5,6): transfers and relation changes, recorded with the acting principal. Ownership and relations exist for listing, attribution and offboarding only; nothing gates on them (FR-AUTH-8).",

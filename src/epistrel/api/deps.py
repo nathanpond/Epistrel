@@ -173,6 +173,23 @@ ProfileId = Annotated[
         examples=["00000000000000000000PRF001"],
     ),
 ]
+PersonaId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The persona's id (a ULID).",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"],
+    ),
+]
+StoryCharacterId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The id of one of the story's characters (a ULID), as `GET /stories/{id}` "
+        "lists them.",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2CA"],
+    ),
+]
 PolicyIdPath = Annotated[
     str,
     Path(

@@ -77,6 +77,7 @@ from epistrel.core.catalog.service import (
     Shown,
     ValidateRequest,
     VersionSummary,
+    card_rating,
 )
 from epistrel.core.catalog.validation import RUNNER, validate_entry
 from epistrel.core.config_changes import read_settings
@@ -87,7 +88,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.media.assets import assert_referenceable, rating_version
 from epistrel.core.ports import Ports
 from epistrel.core.ratings import require_assignable
-from epistrel.core.tables import content_rating_versions, content_ratings, media_assets
+from epistrel.core.tables import media_assets
 from epistrel.core.tables.catalog import scenario_catalog, scenario_versions
 from epistrel.core.tables.media import SubjectKind, subject_references
 from epistrel.core.tables.ownership import EntityType
@@ -306,29 +307,8 @@ async def _card_rating(
     conn: AsyncConnection, draft: ScenarioDraft, version_row: Any | None
 ) -> CardRating | None:
     """The rating a card shows: the version a published version recorded, or for a draft the
-    rating's current version."""
-    if version_row is not None:
-        version_id = version_row.content_rating_version_id
-    elif draft.metadata.content_rating_id is not None:
-        version_id = await conn.scalar(
-            select(content_ratings.c.current_version_id).where(
-                content_ratings.c.id == draft.metadata.content_rating_id
-            )
-        )
-    else:
-        version_id = None
-    if version_id is None:
-        return None
-    row = (
-        await conn.execute(
-            select(content_rating_versions.c.rating_id, content_rating_versions.c.name).where(
-                content_rating_versions.c.version_id == version_id
-            )
-        )
-    ).one_or_none()
-    if row is None:
-        return None
-    return CardRating(id=row.rating_id, version_id=version_id, name=row.name)
+    rating's current version (``service.card_rating``, which catalog characters share)."""
+    return await card_rating(conn, draft.metadata.content_rating_id, version_row)
 
 
 class ScenarioCatalog(CatalogService):

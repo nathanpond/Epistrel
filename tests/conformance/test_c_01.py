@@ -33,7 +33,12 @@ deleted by a generated ``delete_profile``: a deleted profile still reads and cop
 edit of it answers a documented 422 ``profile_deleted``. The fixture turn's reply is the message
 the message-rating routes (#112) are generated against: a generated rating, re-rating or
 retraction writes no ``operations``, ``events`` or ``config_changes`` row, and a generated
-``feedback_tags`` write that would drop a tag a rating carries answers a documented 409.
+``feedback_tags`` write that would drop a tag a rating carries answers a documented 409. The
+fixture persona (#114) is generated against, and ``delete_persona`` is excluded (it would end
+it). A promotion's ``character_id`` is the fixture story's non-player character, Ada (the path
+parameter shares its name with the catalog character's), so generated promotions reach the
+operation; each makes a new catalog draft, and generated characters added to the fixture story
+fill its cast up to its cap, after which an addition answers a documented 422.
 """
 
 from __future__ import annotations
@@ -69,6 +74,7 @@ from epistrel.api.auth import EXEMPT_ROUTES
 from epistrel.api.openapi import TAG_NAMES, dumps
 from epistrel.config import Settings
 from epistrel.core.catalog.characters import CharacterCreate, PublishRequest
+from epistrel.core.catalog.personas import PersonaCreate
 from epistrel.core.catalog.scenario_models import ScenarioCreate
 from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.core.deployment import SettingsPatch
@@ -114,6 +120,7 @@ EXCLUDED = (
     "archive_story",
     "delete_character",
     "delete_scenario",
+    "delete_persona",
     "set_model_api_key",
     "remove_model_api_key",
     "upload_media",
@@ -152,6 +159,8 @@ class Live:
     scenario_id: str
     profile_id: str
     message_id: str
+    persona_id: str
+    story_character_id: str
 
     def counts(self) -> dict[str, int]:
         sync = make_sync_engine(self.url)
@@ -178,14 +187,24 @@ class Live:
             "scenario_id": self.scenario_id,
             "profile_id": self.profile_id,
             "message_id": self.message_id,
+            "persona_id": self.persona_id,
         }
 
+    def path_ids_of(self, operation_id: str | None) -> dict[str, str]:
+        """``path_ids``, with the parameters an operation names differently: a promotion's
+        ``character_id`` is one of the story's characters (#114), not a catalog character."""
+        found = dict(self.path_ids)
+        if operation_id == "promote_character":
+            found["character_id"] = self.story_character_id
+        return found
 
-async def _seed(settings: Settings) -> tuple[str, str, str, str, str, str, str, str]:
+
+async def _seed(settings: Settings) -> tuple[str, ...]:
     """A two-character story with one played turn, a published catalog character, an
-    uploaded image, an open upload session (#107), a published scenario (#108) and an engine
-    profile (#106): the story's id, the turn's operation id, the character's id, the image's id,
-    the session's id, the scenario's id, the profile's id and the turn's reply (#112)."""
+    uploaded image, an open upload session (#107), a published scenario (#108), an engine
+    profile (#106) and a persona (#114): the story's id, the turn's operation id, the
+    character's id, the image's id, the session's id, the scenario's id, the profile's id, the
+    turn's reply (#112), the persona's id and the story's non-player character's id (#114)."""
     db = make_engine(settings)
     engine = Engine.from_settings(settings)
     engine.bind(db)
@@ -228,6 +247,12 @@ async def _seed(settings: Settings) -> tuple[str, str, str, str, str, str, str, 
                 {"name": "C-01 profile", "settings": {"budgets": {"deadline_ms": 30_000}}}
             ),
         )
+        persona = await engine.create_persona(
+            AUTHOR,
+            PersonaCreate.model_validate(
+                {"name": "C-01 persona", "age": 30, "description": "A persona to edit."}
+            ),
+        )
         return (
             created.story_id,
             played.beats[0].operation_id,
@@ -237,6 +262,8 @@ async def _seed(settings: Settings) -> tuple[str, str, str, str, str, str, str, 
             scenario_id,
             profile.profile.id,
             played.message.message_id,
+            persona.persona.id,
+            created.characters[1].id,
         )
     finally:
         await engine.models.aclose()
@@ -267,9 +294,10 @@ def exercise(case: Case[Any], live: Live) -> None:
     """Send one generated case and hold the answer to the contract."""
     # A well-formed path id is replaced by one that exists, so generated requests reach the
     # operation instead of stopping at 404; a negated (malformed) id is sent as generated.
+    known = live.path_ids_of(case.operation.definition.raw.get("operationId"))
     for name, value in list((case.path_parameters or {}).items()):
-        if name in live.path_ids and isinstance(value, str) and not _path_negated(case):
-            case.path_parameters[name] = live.path_ids[name]
+        if name in known and isinstance(value, str) and not _path_negated(case):
+            case.path_parameters[name] = known[name]
     negative = case.meta is not None and case.meta.generation.mode.is_negative
     before = live.counts() if negative else None
     response = case.call(app=live.app, headers=bearer())

@@ -32,6 +32,11 @@ CONTENT_FIELDS = frozenset(
         "negative_prompt",
         "generation_metadata",
         "reason",
+        # personas (#114): what a player plays as, and a story's copy of it
+        "description",
+        "gender",
+        "persona_snapshot",
+        "background_flavor",
     }
 )
 """Field names that hold story content (planner's set; any ``*_text`` field also counts, so

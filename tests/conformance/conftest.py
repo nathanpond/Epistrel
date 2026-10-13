@@ -142,6 +142,9 @@ class Surface:
                 "characters": [
                     {"id": c.id, "name": c.name, "is_player": c.is_player}
                     | ({} if c.true_age is None else {"true_age": c.true_age})
+                    # An omniscient read also names the catalog entries promoted from the
+                    # character (#114).
+                    | ({} if c.promoted_to is None else {"promoted_to": list(c.promoted_to)})
                     for c in story.characters
                 ]
             }

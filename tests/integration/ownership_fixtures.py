@@ -25,6 +25,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.ids import new_ulid
 from epistrel.core.ownership import REGISTRY
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.tables.ownership import EntityType
@@ -118,6 +119,24 @@ async def create_profile(client: httpx.AsyncClient, principal: str, owner: str |
     return Entity(created["id"])
 
 
+def persona_body(**fields: Any) -> dict[str, Any]:
+    """A ``POST /personas`` body (#114). Its name is unique (a persona's name is unique per
+    owner), and only by an id, which the matrix blanks, so two fresh personas read alike."""
+    return {
+        "name": f"Sam {new_ulid()}",
+        "gender": "man",
+        "age": 23,
+        "description": "Short-tempered, but loyal to a fault.",
+        **fields,
+    }
+
+
+async def create_persona(client: httpx.AsyncClient, principal: str, owner: str | None) -> Entity:
+    body = persona_body(**({"owner": owner} if owner is not None else {}))
+    created = await ok(await client.post("/personas", json=body, headers=headers(principal)), 201)
+    return Entity(created["id"])
+
+
 @dataclass(frozen=True)
 class Kind:
     """A delivered owned type: where its entities live and how to make one. ``retires``: its
@@ -162,6 +181,11 @@ KINDS: dict[EntityType, Kind] = {
         create_scenario,
         "SELECT owner_principal FROM catalog.scenario_catalog WHERE id = :id",
         listed=(("status", "draft"),),
+    ),
+    EntityType.PERSONA: Kind(
+        EntityType.PERSONA,
+        create_persona,
+        "SELECT owner_principal FROM personas WHERE id = :id",
     ),
     EntityType.MEDIA: Kind(
         EntityType.MEDIA,
@@ -312,6 +336,16 @@ async def _unsignable(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> 
     return {}
 
 
+async def _story_character(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The story's non-player character, Ada, for a promotion (#114)."""
+    return {"character_id": entity.ids["ada"]}
+
+
+async def _edited_persona(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    await _send(client, kind, entity, "PATCH", "", {"age": 24, "gender": None}, 200)
+    return {}
+
+
 async def _edited(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     await _send(client, kind, entity, "PUT", "", {"name": "Brisk Lite", "settings": EDITED}, 200)
     return {}
@@ -356,6 +390,7 @@ class Call:
 
 S = "/stories/{story_id}"
 C = "/catalog/characters/{character_id}"
+PE = "/personas/{persona_id}"
 SC = "/catalog/scenarios/{scenario_id}"
 M = "/media/{media_id}"
 P = "/engine-profiles/{profile_id}"
@@ -393,6 +428,12 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{S}/owner"): Call(200, {"principal": NEW_OWNER}),
     ("POST", f"{S}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
     ("DELETE", f"{S}{RELATION}"): Call(204, prepare=_related),
+    # -- stories: a character added to the running story, and one promoted to a catalog draft
+    # (#114)
+    ("POST", f"{S}/characters"): Call(
+        201, {"name": "Dale", "definition": "A delivery driver in a hurry.", "true_age": 52}
+    ),
+    ("POST", f"{S}/characters/{{character_id}}/promote"): Call(201, {}, prepare=_story_character),
     # -- stories: the configuration preview (#109), which writes nothing, and the story's
     # profile and overrides (#113): the story's own profile again (a no-op), and an override no
     # capability hangs on (applied at once)
@@ -446,6 +487,14 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", SC): Call(200, queries=ENTRY_READS, prepare=_published),
     ("GET", f"{SC}/versions"): Call(200, prepare=_published),
     ("GET", f"{SC}/relations"): Call(200, prepare=_related),
+    # -- personas (#114): writes, and the reads of an edited persona
+    ("PATCH", PE): Call(200, {"description": "Calmer since the wedding."}),
+    ("DELETE", PE): Call(204),
+    ("PUT", f"{PE}/owner"): Call(200, {"principal": NEW_OWNER}),
+    ("POST", f"{PE}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
+    ("DELETE", f"{PE}{RELATION}"): Call(204, prepare=_related),
+    ("GET", PE): Call(200, prepare=_edited_persona),
+    ("GET", f"{PE}/relations"): Call(200, prepare=_related),
     # -- media assets (#105): writes
     ("DELETE", M): Call(204),
     ("PUT", f"{M}/owner"): Call(200, {"principal": NEW_OWNER}),
@@ -509,12 +558,14 @@ __all__ = [
     "Kind",
     "create_character",
     "create_media",
+    "create_persona",
     "create_profile",
     "create_scenario",
     "create_story",
     "headers",
     "ok",
     "owner_of",
+    "persona_body",
     "request_path",
     "respond_body",
     "served_entity_routes",

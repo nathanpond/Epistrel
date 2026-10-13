@@ -3942,3 +3942,195 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - **Not run whole:** `tests/conformance`. The group B full-suite run covers it.
   **Why:** The gate rule sends route, `Engine` method and OpenAPI changes to the whole conformance directory. This fix changes only what `core.feedback.rate` does in one race, behind unchanged `Engine` methods. Cost if wrong: a conformance failure would surface in the group B full run.
   **Issue:** #112
+- **Decision (drift):** A character added to a running story (`POST /stories/{id}/characters`, `Engine.add_story_character`, `core/stories.py::add_story_character`) is recorded by one `Operation(kind=CONTROL, bumps_revision=True)`. That is the drift note's correction, not the plan's "no revision bump". It is not a control action, has no turn position, and records `character_defined`, which now carries `{character_id, name, is_player}`. The row is inserted in the commit step, at the next ordinal and under the story lock.
+  - **The checks, in order:** 404 for the story; 422 for a full cast (20), a name the story has (ignoring case, `reason: duplicate`), an image that is not live (`media_retired`), or a video (`reason: not_an_image`); 409 `story_archived`; 409 `revision_conflict`; 423 `story_busy` while a turn is in flight; then the input gate. The commit step checks the cap, the name, the images and in-flight turns again, under the lock.
+  - **Not done:** the drift note's `characters.operation_id`. The addition has no turn position, like #60's pinned-memory edits, so a truncation keeps the character and every fork copies it. `test_an_added_character_stays_through_truncation_and_forks` pins that.
+  **Why:**
+  - The Lite read-set member `definitions` reads every `characters` row, so a cast change is a prompt-input change. A turn that began before the addition must regenerate, and `X-Epistrel-Expected-Revision` must see the change.
+  - Positioning the operation at the head turn, so that truncation drops the character, would also make a regenerate of that turn drop it. Regenerating retires everything positioned at the turn. It would also mean filtering every cast read by membership: `core/turns.py`, the read set, `read_cast`, `get_story`, and fork's `_cast` and `_genesis`.
+  - Cost if wrong: a story that wants added characters to follow the timeline needs a positioned operation (an inter-turn slot, `slot_k`, which nothing writes yet), plus a membership filter on cast reads.
+  **Issue:** #114
+- **Decision:** The added character's body is `AdHocCharacter`: #50's `CharacterSpec` fields (name ≤ 80, definition ≤ 20,000, a required strict `true_age` 0–150, `safe_fallback_text` ≤ 500) plus `images`, up to 20 distinct media ids. `is_player` is refused as an unknown key.
+  - A full cast is 422 `validation_error` with `{cap: cast_max, limit, actual}`, the shape of #60's caps. It is not `cast_limit_exceeded`, which names a scenario's starting-cast limit.
+  - The input gate checks the definition (locator `definition`) under a new entry point, `story_character`. It uses the story's guard context with the new character's age added to the cast, so an age-conditioned policy applies when the newcomer is a minor.
+  - The answer is 201 `StoryCharacterBody` (`MutationResponse`: `{id, name, ordinal, timeline_revision}`, per the drift note). The key is story-scoped.
+  - `characters.images` joins `MEDIA_REFERENCE_SOURCES`, so an asset a story character shows survives its retirement until the story goes.
+  **Why:**
+  - The pass-1 Discretion gives the shape ("#50's free-text shape plus optional `images`") and the cap ("#50's cast size").
+  - The age matters: story creation gates the cast's definitions with the cast's ages (`creation_context`). Gating with the old cast's ages would let a minor's definition past a minors-only policy.
+  - Cost if wrong: a 422 code.
+  **Issue:** #114
+- **Decision:** Personas live in `public.personas`, created by migration `0031_personas`.
+  - Columns: owner, name, gender, age (CHECK 0–150), description, `created_at`, `updated_at`. The unique index `uq_personas_owner_name` on `(owner_principal, lower(name))` makes a duplicate 409 `persona_name_taken`. It applies on create, on rename, and on an owner transfer: `Engine.transfer_owner` maps the index's refusal through `personas.name_conflicts`. The `(updated_at, id)` index is the list's keyset.
+  - The CRUD is `core/catalog/personas.py`, as the plan's artifact says, though a persona is not a catalog entry. docs/02 §4.10 (and §9) are amended to say where it lives and why.
+  - Rules: name 1–120, gender optional 1–40, age a strict int, description 1–4,000 (pass 2), each trimmed.
+  - An edit is a merge patch over the four fields, last write wins. `null` removes only `gender`; for the other fields it is 422 at the field. An edit that changes nothing records nothing.
+  - Delete is a hard 204. It calls `ownership.drop_entity` and writes a `persona_deleted` audit row `{entity_type, entity_id, operation_id}`, a new `AuditKind` that the migration adds to `ck_audit_log_kind`; its downgrade deletes those rows first.
+  - Writes record #103's story-less `control` operation under a deployment key and answer `PersonaBody` (`DeploymentMutationResponse`).
+  - `GET /personas` pages newest first with #110's `encode_cursor`/`decode_cursor`, under a persona fingerprint of `owner` and `relation`. `limit` is 1–200 and the cursor at most 256 characters. A plain-string `relation` is one value in the library (#324's lesson).
+  - The routes have a new `personas` tag; the four ownership routes are mounted there.
+  **Why:** These are the pass-1 and pass-2 Discretion lines, with the drift note's corrections (§4.10, the audit CHECK, the response bases). Cost if wrong: a moved table or a renamed tag.
+  **Issue:** #114
+- **Decision:** `characters` gains four columns.
+  - `persona_id`: a plain column with no foreign key, as S-DELETE's isolation test requires.
+  - `persona_snapshot` (jsonb): `{persona_id, name, gender, age, description, snapshotted_at}`. `ck_characters_persona_player` keeps it and `persona_id` on player rows only.
+  - `images` and `promoted_to`: jsonb arrays, default `[]`.
+  - `personas.snapshot()` and `personas.player_character()` are the helpers #119's genesis calls. They also set `name` = the persona's name, `true_age` = its age, and `definition` = its description, verbatim.
+  - Until #119 exists, the snapshot clause is tested with the direct-update fixture `tests/persona_support.copy_into` (#103's FR-CAT-9 pattern).
+  **Why:** This is the pass-1 Discretion, with `is_player` in place of a `kind` (drift note). Cost if wrong: a column.
+  **Issue:** #114, #119
+- **Decision (deviation):** AC2's player checks live in `core/genesis/models.py`.
+  - The models: `PlayerAssignment {principal, persona: PersonaRef {id} | AdHocPersona {ad_hoc: PersonaFields}}`. The ad-hoc body is the persona create body without `owner`, which an unsaved persona cannot have.
+  - `player_role_entries` (pure) answers `player_role_fixed` for a `players` key naming an `npc` role, and for a player role that `slots` also names.
+  - `resolve_personas` (read-only) answers `persona_required` for a persona id that is a catalog character's.
+  - Both produce #111 report entries: outcome `rejected`, and `location.field` `players.<role>…`/`slots.<role>`.
+  - An id that is neither a persona's nor a catalog character's, and a key naming no role, are 422 `validation_error` at `body.players.<role>.persona.id` / `body.players|slots.<role>`.
+  - **Deviations from #114's pass-1 line:**
+    - A catalog character slotted into the player's role is `player_role_fixed`, not `persona_required`. That follows #119's pass-1 table, which assigns that case to #114's `player_role_fixed`.
+    - The 422 field carries the `body.` prefix every `validation_error` field has. Pass 2's literal text is `players.<role>.persona.id`.
+  - Until #119 exists, `test_c_19` runs both checks directly against the database, on a published scenario, catalog character and persona, and asserts that the `stories` count does not move.
+  **Why:** AC2 names the two codes and leaves these cases open. #119 owns the request model and its precedence, so following #119's table spares it a rewrite. Cost if wrong: one code swapped for one case.
+  **Issue:** #114, #119
+- **Decision (deviation):** Promotion is `core/catalog/promote.py` (`promote`, `PromoteRequest`, `Promotion`), not part of `personas.py` as the plan's artifact list says. Its route, `POST /stories/{story_id}/characters/{character_id}/promote`, is in `routes/stories.py`, under the router's `/stories` prefix, and is tagged `catalog` through `ROUTE_TAGS`. The plan put it in `routes/personas.py`.
+  - **One transaction:**
+    - read the story; lock the character `FOR NO KEY UPDATE`;
+    - 422 `validation_error` (`reason: player_character`) for a player character;
+    - check the rating: the request's, else the story's (`require_assignable`, 422 `rating_retired`);
+    - lock the live images `FOR SHARE`;
+    - create the draft through a new `CatalogService.create_in(conn, …)`, which `create` now calls. It writes the same entry, the same story-less `control` operation and key binding, and the same records.
+    - append the new id to `characters.promoted_to`.
+  - **No story event, no revision change.** It is allowed on archived stories and during a turn. The expected revision, when sent, is checked first, as on #104's story-path writes. The key is deployment-scoped.
+  - **The answer:** 201 `PromotionBody` (a `MutationResponse`: `{catalog_id, draft_revision, warnings, timeline_revision}`, the story's revision unchanged) with `Location: /catalog/characters/{id}`, which the OpenAPI document declares (`CATALOG_CREATING_OPERATIONS`).
+  - **The draft:**
+    - name: the request's or the character's;
+    - `definition.true_age`;
+    - `definition.background_flavor` = the free-text definition, cut at 4,000 characters with warning `definition_truncated` (outcome `kept`);
+    - `definition.safe_fallback_text`;
+    - `public_card.images {primary, gallery}` from the live images, with a retired one left out under warning `media_retired` (outcome `dropped`, `source` the media id);
+    - `metadata.content_rating_id`.
+    - Nothing else. Story rows have no aliases or deflection style yet, so none are copied.
+  **Why:**
+  - Two modules keep the persona CRUD and the promotion apart.
+  - The route shares the `/stories` prefix with the addition route (pass 2 puts that in `routes/stories.py`).
+  - One transaction makes "a new draft, plus the link on the story character" atomic. `create_in` keeps the entry an ordinary draft (key link: "via #103"), so #116's companion creation will reach promoted drafts too.
+  - Cost if wrong: files move.
+  **Issue:** #114, #116
+- **Decision (Ad-hoc, see the entry below):** The interim `CharacterDraft` gains the fields a promotion copies, at #115's planned paths and limits:
+  - `definition.true_age` (strict, 0–150), `definition.background_flavor` (≤ 4,000) and `definition.safe_fallback_text` (≤ 500);
+  - `public_card.images {primary, gallery ≤ 20 distinct}`, as media ids;
+  - `metadata.content_rating_id`.
+  - `CharacterPatch` merges them the same way.
+  - `CharacterCatalog.checked` gets the scenario save's checks: a rating that changes must be assignable, and each added image must be live (`FOR SHARE`).
+  - `version_values` records the rating's version.
+  - Card and full reads show the images (the primary first, then the gallery, with each asset's alt text) and the rating, through `service.card_rating`, which is extracted from the scenario module. The scenario module now calls it, with no change in behaviour.
+  - The `full` projection's `definition` shows the new keys as `null` when unset. `test_save_is_a_json_merge_patch`'s exact `{"personality": None}` therefore became the four-key dict.
+  **Why:**
+  - AC4 copies the true age and the images, and the pass-2 Discretion copies the rating, the definition and the fallback line. The interim draft could hold none of them, and every save re-validates the stored draft against `CharacterDraft`.
+  - #105's index, #110's search and #111's checks already read these paths.
+  - Cost if wrong: #115 moves the paths, in a migration of stored drafts.
+  **Issue:** #114, #115
+- **Decision:** Tests and parts.
+  - `test_c_19` (`part("M3", "FR-CAT-6; FR-API-6; FR-AUTH-5")`) and `test_s_promote` (`part("M3", "FR-CAT-7,8")`) are in `tests/integration/test_personas.py`, as the plan says, with the persona details. The addition and promotion details are in `tests/integration/test_story_characters.py`.
+  - A new I-21 slice, `test_i_21__persona` (`part("M3", "FR-CAT-6")`), is in `tests/integration/test_i_21.py`. It covers I-21's "deleting a saved persona leaves a story created with it unchanged". The story's rows are compared byte for byte, and the complement archives the story.
+  - check-parts counts 189 parts and check-traceability 167 code parts. check-lexicon reports 0 violations.
+  **Why:**
+  - docs/04 §15 maps FR-CAT-6 to I-21 (M3) as well as C-19. Without an I-21 part naming it, the row would be "planned but absent" once `current_milestone` reaches M3.
+  - The detailed tests' docstrings name no FR id, so they are not parts.
+  **Issue:** #114
+- **Decision:** Existing tests changed because the story changes what they pin. No assertion was loosened.
+  - `ownership_fixtures` gains the persona `Kind` (a unique name per persona, so fresh personas read alike once ids are blanked). `CALLS` gains seven persona routes and the story's two new routes, so the nothing-gates matrix and the ownership slice cover them.
+  - `test_every_delivered_type_is_covered` now expects every registered type to be delivered.
+  - C-03 gains the addition and promotion steps, which join the "character" status list asserted in its body, and nine persona steps checked against `PLAYER_ANSWERS` through `PLAYER_GROUP`. C-03 is an M2 part and "persona" is an M3 lexicon term, hence the name.
+  - C-01 seeds a persona (`persona_id`) and excludes `delete_persona`, as it excludes the other fixture deletes. It overrides `character_id` for `promote_character` with the fixture story's Ada, because the path parameter shares its name with the catalog character's.
+  - The definition dicts of `test_save_is_a_json_merge_patch` and `test_draft_save_publish_and_versions` now list the new keys, as `null`.
+  - The viewpoint-parity library surface (`tests/conformance/conftest.py`) renders `promoted_to` on an omniscient story read, as REST now does.
+  **Why:** The delivered-type guard, the parity rules, the C-01 contract run and the new definition fields and story read require them. Cost if wrong: none.
+  **Issue:** #114
+- **Decision:** `observability.content.CONTENT_FIELDS` gains `description`, `gender`, `persona_snapshot` and `background_flavor`, so the content rule drops a persona's and a promoted definition's text at any depth (invariant 3). Nothing here logs them, and C-08 runs C-03's new steps.
+  **Why:** This is the drift note's pointer. Unknown strings would otherwise be cut to 64 characters, not dropped. Cost if wrong: none.
+  **Issue:** #114
+- **Decision:** These were not done here and are handed off.
+  - **#119:** wire `player_role_entries` and `resolve_personas` into `POST /stories` with a scenario, and write `persona_snapshot` through `personas.snapshot`/`player_character`. Add the end-to-end "rejected, no `stories` row" assertion to `test_c_19` in `tests/integration/test_personas.py`; traceability allows only one file for C-19 (M3).
+  - **#119, also:** once `character_snapshots` exists, a catalog-sourced story character must promote from its snapshot's typed fields (the pass-2 line). Until then every story character promotes through the free-text path (`promote.draft_of`).
+  - **#116:** create a companion for a promoted draft too. It is made by `CatalogService.create_in`, so a creation hook in `create_in` covers it. Then assert the companion in `test_s_promote`.
+  - **#123:** index personas (`personas` records) and the new text fields: `background_flavor`, `safe_fallback_text`, a story character's `persona_snapshot`. Catalog characters do not call `index_references` yet either.
+  - **#124:** erase personas, `characters.persona_snapshot` and the promoted drafts' text.
+  - **#117:** offboarding deletes personas through `core.catalog.personas.delete`.
+  **Why:** Each belongs to that story's plan, and this one's AC do not name them. Cost if wrong: a gap caught by those stories' tests.
+  **Issue:** #114, #116, #117, #119, #123, #124
+- **Decision:** I mutation-checked the story. A script applied each mutation, ran the tests named for it and restored the source, checking the SHA-1. All 22 mutations fail a test:
+  - a persona delete clears the snapshots (C-19, the I-21 slice);
+  - a persona edit rewrites them (C-19);
+  - the list ignores `owner` (C-19);
+  - a catalog id is not `persona_required`;
+  - a player slot, or a player in an `npc` role, is not `player_role_fixed` (C-19, each);
+  - promotion copies the story's custom instructions, is deduplicated, records no `promoted_to`, or changes another column of the character (S-PROMOTE, each);
+  - a player character is promoted, or the expected revision is skipped (the promotion refusals test);
+  - an added character gets a catalog source (S-PROMOTE);
+  - an addition does not bump the revision, or skips the busy precheck (the refusal test sees the failed operation's row);
+  - the gate leaves the new age out of the cast;
+  - `characters.images` is no media reference;
+  - a transfer's name clash is not mapped;
+  - a persona delete writes the wrong audit kind;
+  - a card shows no images;
+  - a save checks nothing it adds;
+  - a version records no rating version.
+  One mutation survived its first run. It had patched the create path, not the edit path, because the two share their last lines. Retargeted at the edit, it fails C-19.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #114
+- **Decision:** #114's gate. The story changed routes, `Engine` methods, the OpenAPI document, a migration, tables and an event, so the gate ran, in one run:
+  - all of `tests/conformance`, including C-08's telemetry scan, which runs C-03's new steps;
+  - the route guard, the response bases, the route flags and `test_openapi_calls_the_message_finished_never_verified`;
+  - `test_migrations`, `test_drift`, I-08 and the event registry;
+  - every module that exercises the changed catalog, ownership, media, story, gate and observability code: catalog characters, search, scenarios and validation, I-17, I-20, I-21, ownership, media assets and delivery, I-10, S-DELETE, U-13, the input gate, the minors policy, the fork, undo-swap, determinism and isolation tests, I-04, observability, the trust boundary and the Lite cast;
+  - the new modules.
+  - The result: 600 passed, 0 failed, in 697.6 s.
+  - The first run gave 598 passed and 2 failed. The two failures were existing exact expectations that the story's additive changes moved: the viewpoint-parity library surface's story read, and `test_draft_save_publish_and_versions`' definition dict. Both are fixed, as the test-change entry above records.
+  - ruff, ruff format, mypy, the import contracts, check-assignment, check-parts (189 parts), check-lexicon (0 violations), check-traceability (167 code parts), check-deps, `openapi --check` and `model_guide --check` all pass. No dependency changed, so check-licenses was not run.
+  **Why:** This is the M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #114
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #114 changed shapes that later stories build on.
+  - **The interim catalog `CharacterDraft` (#103) gained the fields a promotion copies,** at #115's planned paths and limits:
+    - `definition.true_age` (0–150), `definition.background_flavor` (≤ 4,000) and `definition.safe_fallback_text` (≤ 500);
+    - `public_card.images {primary, gallery ≤ 20}`, as media ids;
+    - `metadata.content_rating_id`.
+    - A save checks them: a rating it sets must be assignable and each image it adds live.
+    - A version records the rating's version.
+    - Card and `full` reads show the images and the rating. `full` shows the new definition keys as `null` when unset.
+  - **`characters` gained four columns:** `persona_id`, `persona_snapshot` (player rows only), `images` (a media reference source) and `promoted_to`.
+  - **New:**
+    - `public.personas`, in the default schema: docs/02 §4.10 and §9 are amended.
+    - the `persona_deleted` audit kind;
+    - `character_defined` now carries `{character_id, name, is_player}`;
+    - `core/genesis/models.py`: `PlayerAssignment` and the player checks. A catalog character in the player's slot is `player_role_fixed`, per #119's code table.
+  - **The ad-hoc addition bumps the revision** and has no turn position: a truncation keeps the character and a fork copies it.
+  **Why:**
+  - AC4 copies a character's true age, images and rating into a draft. The interim draft could hold none of them, and #115 comes after #114 in group B.
+  - The rest is what #114's AC and Discretion prescribe, corrected by the drift notes.
+  **Affects:**
+  - **M3 #115.**
+    - Its `CharacterDraft` starts from this shape. It should keep the five paths and their limits, and move `name`/`public_description` under `public_card` beside `images`.
+    - Its migration of stored drafts must expect `public_card.images`, `metadata.content_rating_id` and the definition keys to be set already.
+    - `CharacterCatalog.checked`/`version_values` and the card's images and rating are already in place; #115 keeps them or replaces them with its own.
+    - Its publish rules (a true age and a rating required) apply to promoted drafts.
+  - **M3 #116.** A promotion creates its draft through `CatalogService.create_in`. The companion should be created there, so promoted drafts get one, and asserted in `test_s_promote` (`tests/integration/test_personas.py`).
+  - **M3 #119.**
+    - Call `core.genesis.models` (`player_role_entries`, `resolve_personas`) and `core.catalog.personas.snapshot`/`player_character`.
+    - Add the end-to-end C-19 (M3) refusal to `tests/integration/test_personas.py`; traceability allows only one file.
+    - Have a catalog-sourced story character promote from `character_snapshots.content`'s typed fields.
+    - `character_defined` already carries `is_player`.
+  - **M3 #117.** Offboarding deletes personas through `core.catalog.personas.delete`.
+  - **M3 #122.** A promoted draft's free text is `definition.background_flavor`. Render it with the other definition fields.
+  - **M3 #123 and #124.** Index and erase `personas`, `characters.persona_snapshot`, and the drafts' `background_flavor`/`safe_fallback_text`. Catalog characters call no `index_references` yet.
+  - **M3 #128.** The route table now has `/personas` (with its ownership routes), `POST /stories/{id}/characters` and `POST /stories/{id}/characters/{cid}/promote`.
+  - **The Console (nathanpond/Epistrel-Console).** It has new surfaces to cover: persona screens, adding a character to a running story, and promoting one to the catalog.
+  - **Next step:** #115, #116, #119 and #122 are later group B stories in this run. Their drift check should apply this, or `/n8-replan M3` should run before them.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after #114's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111 and #113 did. Cost if wrong: one heading.
+  **Issue:** #114

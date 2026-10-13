@@ -93,7 +93,7 @@ from epistrel.core.errors import (
 from epistrel.core.idempotency import canonical
 from epistrel.core.ids import new_ulid
 from epistrel.core.ports import Ports
-from epistrel.core.tables import deployment_state
+from epistrel.core.tables import content_rating_versions, content_ratings, deployment_state
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.core.tables.catalog import ERASURE_GUC
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -239,6 +239,34 @@ async def config_revision(conn: AsyncConnection) -> int:
         select(deployment_state.c.config_revision).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
     )
     return int(found or 0)
+
+
+async def card_rating(
+    conn: AsyncConnection, rating_id: str | None, version_row: Any | None
+) -> CardRating | None:
+    """The rating a card shows (FR-RATE-3): the rating's version a published version recorded
+    (``version_row``), or for a draft (``version_row`` ``None``) the current version of the
+    rating the document names (``rating_id``); ``None`` when there is none."""
+    if version_row is not None:
+        version_id = version_row.content_rating_version_id
+    elif rating_id is not None:
+        version_id = await conn.scalar(
+            select(content_ratings.c.current_version_id).where(content_ratings.c.id == rating_id)
+        )
+    else:
+        version_id = None
+    if version_id is None:
+        return None
+    row = (
+        await conn.execute(
+            select(content_rating_versions.c.rating_id, content_rating_versions.c.name).where(
+                content_rating_versions.c.version_id == version_id
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    return CardRating(id=row.rating_id, version_id=version_id, name=row.name)
 
 
 # -- the service -------------------------------------------------------------------------------
@@ -444,28 +472,48 @@ class CatalogService(ABC):
         ``config_revision``."""
         draft = self.stored(document)
         self.check_size(draft)
-        entry_id = new_ulid()
-        now = clock.now()
         async with db.begin() as conn:
-            first = (await listing.allowed_values(conn, lock=True))[0]
-            await conn.execute(
-                insert(self.catalog).values(
-                    id=entry_id,
-                    owner_principal=owner,
-                    listing_status=first,
-                    status=EntryStatus.DRAFT.value,
-                    current_version=None,
-                    draft=draft,
-                    draft_revision=FIRST_DRAFT_REVISION,
-                    created_at=now,
-                    updated_at=now,
-                    **dict(values or {}),
-                )
+            return await self.create_in(
+                conn, draft, owner=owner, principal=principal, values=values
             )
-            await self.checked(conn, draft, None)
-            await control.record_control_operation(conn, actor=principal)
-            await self.recorded(conn, entry_id, draft, version=None)
-            return await self.draft_shown(conn, entry_id), await config_revision(conn)
+
+    async def create_in(
+        self,
+        conn: AsyncConnection,
+        document: Any,
+        *,
+        owner: str,
+        principal: str,
+        values: Mapping[str, Any] | None = None,
+        entry_id: str | None = None,
+    ) -> tuple[Any, int]:
+        """``create`` inside ``conn``'s transaction, which the caller commits: a write that
+        makes an entry as one step of its own (a promotion from a story, #114) gets the same
+        entry, operation and records a creation gets. ``entry_id`` is the new entry's id (a
+        new ULID by default)."""
+        draft = self.stored(document)
+        self.check_size(draft)
+        entry_id = entry_id or new_ulid()
+        now = clock.now()
+        first = (await listing.allowed_values(conn, lock=True))[0]
+        await conn.execute(
+            insert(self.catalog).values(
+                id=entry_id,
+                owner_principal=owner,
+                listing_status=first,
+                status=EntryStatus.DRAFT.value,
+                current_version=None,
+                draft=draft,
+                draft_revision=FIRST_DRAFT_REVISION,
+                created_at=now,
+                updated_at=now,
+                **dict(values or {}),
+            )
+        )
+        await self.checked(conn, draft, None)
+        await control.record_control_operation(conn, actor=principal)
+        await self.recorded(conn, entry_id, draft, version=None)
+        return await self.draft_shown(conn, entry_id), await config_revision(conn)
 
     async def save(
         self,
@@ -799,6 +847,7 @@ __all__ = [
     "ValidationContext",
     "Validator",
     "VersionSummary",
+    "card_rating",
     "config_revision",
     "merge_patch",
 ]

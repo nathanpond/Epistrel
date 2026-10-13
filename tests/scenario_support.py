@@ -420,8 +420,9 @@ async def plant_character(
     rating_version_id: str | None = None,
 ) -> int:
     """Publish ``content`` as the next version of catalog character ``character_id``, as #115's
-    shape will hold it (no request field takes ``metadata`` or ``definition.true_age`` yet),
-    recorded under ``rating_version_id``: the version's number."""
+    shape will hold it (its labels and aliases have no request field yet; #114's interim draft
+    takes ``metadata.content_rating_id`` and ``definition.true_age``), recorded under
+    ``rating_version_id``: the version's number."""
     async with db.begin() as conn:
         version = int(
             await conn.scalar(

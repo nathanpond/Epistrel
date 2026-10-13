@@ -81,11 +81,14 @@ from epistrel.api.routes.ownership import (
     StoryOwnerBody,
     StoryRelationBody,
 )
+from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.stories import (
     IngestResponse,
+    PromotionBody,
     StatusBody,
     StoryBody,
+    StoryCharacterBody,
     StoryCreatedBody,
     StoryList,
     StorySettingsBody,
@@ -114,6 +117,8 @@ from epistrel.core.catalog.characters import (
     PublishRequest,
 )
 from epistrel.core.catalog.listing import ListingStatusRequest
+from epistrel.core.catalog.personas import PersonaCreate, PersonaPatch
+from epistrel.core.catalog.promote import PromoteRequest
 from epistrel.core.catalog.scenario_models import ScenarioCreate, ScenarioPatch
 from epistrel.core.catalog.service import ValidateRequest
 from epistrel.core.config_changes import ConfigScope
@@ -134,7 +139,7 @@ from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatc
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.seeds.ratings import EVERYONE_ID
-from epistrel.core.stories import StorySpec
+from epistrel.core.stories import AdHocCharacter, StorySpec
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import TruncateRequest, UntruncateRequest
@@ -472,6 +477,26 @@ RATING_ANSWERS = [("rate_message", 201), ("get_feedback", 200), ("retract_feedba
 (the principal's first rating), the rating read back, and retracted."""
 RATING_GROUP = "ratings"
 """The ``Step.group`` of the message-rating steps (#112)."""
+DRIVER = {"name": "Dale", "definition": "A delivery driver in a hurry.", "true_age": 52}
+"""A character added to the running story, then promoted (#114)."""
+PERSONA = {"name": "Sam Ortiz", "gender": "man", "age": 23, "description": "Quick to anger."}
+PERSONA_EDIT = {"age": 24, "gender": None}
+PLAYER_ANSWERS = [
+    ("create_persona", 201),
+    ("get_persona", 200),
+    ("list_personas", 200),
+    ("update_persona", 200),
+    ("create_persona", 409),
+    ("transfer_owner", 200),
+    ("add_relation", 201),
+    ("list_relations", 200),
+    ("delete_persona", 204),
+]
+"""What the persona steps (#114) answer on both surfaces: a player's persona saved, read,
+listed by owner, edited, refused a second time under its name (409 ``persona_name_taken``),
+transferred, related, its relations listed, and deleted."""
+PLAYER_GROUP = "player"
+"""The ``Step.group`` of the persona steps (#114)."""
 
 
 def _steps() -> list[Step]:
@@ -698,6 +723,24 @@ def _steps() -> list[Step]:
             lambda ids: Rest("DELETE", f"{s}/relations/co_author/p-parity-d"),
             lambda e, ids: _no_content(
                 e.remove_relation(CTX, EntityType.STORY, ids["story"], "co_author", "p-parity-d")
+            ),
+        ),
+        # -- a character added to the running story, then promoted to a catalog draft (#114)
+        Step(
+            "add_story_character",
+            lambda ids: Rest("POST", f"{s}/characters", DRIVER),
+            lambda e, ids: _added(
+                e.add_story_character(CTX, ids["story"], AdHocCharacter(**DRIVER))
+            ),
+            _keep("dale", "id"),
+        ),
+        Step(
+            "promote_character",
+            lambda ids: Rest("POST", f"{s}/characters/{{dale}}/promote", {"owner": "p-curator"}),
+            lambda e, ids: _promoted(
+                e.promote_character(
+                    CTX, ids["story"], ids["dale"], PromoteRequest(owner="p-curator")
+                )
             ),
         ),
         # -- error paths: the same error on both surfaces
@@ -1012,6 +1055,70 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", "/catalog/scenarios", params=SCENARIO_SEARCH),
             lambda e, ids: _scenarios_found(e, SCENARIO_SEARCH),
             group=LISTING_GROUP,
+        ),
+        # -- personas (#114)
+        Step(
+            "create_persona",
+            lambda ids: Rest("POST", "/personas", PERSONA),
+            lambda e, ids: _persona_write(e.create_persona(CTX, PersonaCreate(**PERSONA))),
+            _keep("persona", "id"),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "get_persona",
+            lambda ids: Rest("GET", "/personas/{persona}"),
+            lambda e, ids: _persona(e, ids["persona"]),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "list_personas",
+            lambda ids: Rest("GET", "/personas", params={"owner": PRINCIPAL}),
+            lambda e, ids: _personas(e),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "update_persona",
+            lambda ids: Rest("PATCH", "/personas/{persona}", PERSONA_EDIT),
+            lambda e, ids: _persona_write(
+                e.update_persona(CTX, ids["persona"], PersonaPatch(**PERSONA_EDIT))
+            ),
+            group=PLAYER_GROUP,
+        ),
+        Step(  # the same name again: 409 persona_name_taken on both
+            "create_persona",
+            lambda ids: Rest("POST", "/personas", PERSONA),
+            lambda e, ids: _persona_write(e.create_persona(CTX, PersonaCreate(**PERSONA))),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", "/personas/{persona}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX, EntityType.PERSONA, ids["persona"], OwnerTransferRequest(**NEW_OWNER)
+                )
+            ),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "add_relation",
+            lambda ids: Rest("POST", "/personas/{persona}/relations", RELATION),
+            lambda e, ids: _relation(
+                e.add_relation(CTX, EntityType.PERSONA, ids["persona"], RelationRequest(**RELATION))
+            ),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "list_relations",
+            lambda ids: Rest("GET", "/personas/{persona}/relations"),
+            lambda e, ids: _relations(e, EntityType.PERSONA, ids["persona"]),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "delete_persona",
+            lambda ids: Rest("DELETE", "/personas/{persona}"),
+            lambda e, ids: _no_content(e.delete_persona(CTX, ids["persona"])),
+            group=PLAYER_GROUP,
         ),
         # -- media assets (#105)
         Step(
@@ -1592,6 +1699,26 @@ async def _profile_write(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(ProfileBody.of(await call))
 
 
+async def _added(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StoryCharacterBody.of(await call))
+
+
+async def _promoted(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(PromotionBody.of(await call))
+
+
+async def _persona_write(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(PersonaBody.of(await call))
+
+
+async def _persona(engine: Engine, persona_id: str) -> dict[str, Any]:
+    return dump(await engine.get_persona(CTX, persona_id))
+
+
+async def _personas(engine: Engine) -> dict[str, Any]:
+    return dump(PersonaListBody.of(await engine.list_personas(CTX, owner=PRINCIPAL)))
+
+
 async def _profile_edit(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(ProfileEditBody.of(await call))
 
@@ -1904,6 +2031,8 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         if "character" in step.operation
     ]
     assert answered == [
+        ("add_story_character", 201),
+        ("promote_character", 201),
         ("create_character_draft", 201),
         ("save_character_draft", 200),
         ("save_character_draft", 409),
@@ -1951,6 +2080,12 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         if step.group == PROFILE_GROUP
     ]
     assert profiles == PROFILE_ANSWERS
+    players = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == PLAYER_GROUP
+    ]
+    assert players == PLAYER_ANSWERS
     ratings = [
         (step.operation, status, body)
         for step, (status, body) in zip(steps, rest, strict=True)

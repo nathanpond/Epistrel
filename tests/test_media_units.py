@@ -38,9 +38,11 @@ NOW = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
 def test_signed_urls_verify_until_they_expire() -> None:
     """A signed path verifies for its method and path until ``exp`` plus the 30 s skew; a
     changed path, method, expiry or signature, a later moment, another key, or no key at all
-    does not verify."""
+    does not verify. Unless told otherwise, a signed path lives 5 minutes (the moderation
+    hook's ``content_url``)."""
     signer = Signer(SecretStr(CONFIG_KEY))
     path = "/media/01J9Z8Q4N5V6W7X8Y9Z0A1B2C6/content"
+    assert signer.sign_path(path, now=NOW)[1] == int(NOW.timestamp()) + 5 * 60
     signed, exp = signer.sign_path(path, ttl_s=300, now=NOW)
     assert exp == int(NOW.timestamp()) + 300
     query = dict(part.split("=", 1) for part in signed.split("?", 1)[1].split("&"))
@@ -223,6 +225,44 @@ def test_the_local_store(tmp_path: Path) -> None:
             store.path(bad)
     with pytest.raises(ValueError, match="asset id"):
         store.staging_path("../escape")
+
+
+def test_the_store_lists_in_order_and_keeps_the_sweep_cursor(tmp_path: Path) -> None:
+    """``list_checksums`` lists the blobs in ascending checksum order, all of them or those after
+    a given checksum, and nothing else in the root (the staging area, the cursor, a stray file or
+    directory, a blob in the wrong shard). The sweep cursor reads back what was set, ``None``
+    when cleared, never set or unreadable; only a checksum can be set."""
+    store = LocalFilesystemStore(tmp_path / "media")
+    store.prepare()
+    digests = sorted(
+        prefix + digit * 62
+        for prefix, digit in (("ab", "1"), ("0f", "e"), ("ab", "0"), ("f0", "1"), ("ab", "f"))
+    )
+    for digest in reversed(digests):
+        path = store.path(digest)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    (store.root / "zz").mkdir()
+    (store.root / "stray").write_text("x")
+    (store.root / "ab" / ("cd" + "3" * 62)).write_bytes(b"x")  # in the wrong shard
+    assert store.sweep_cursor() is None
+    store.set_sweep_cursor(digests[2])
+    assert store.sweep_cursor() == digests[2]
+    assert list(store.list_checksums()) == digests
+    assert list(store.list_checksums(after=store.sweep_cursor())) == digests[3:]
+    assert list(store.list_checksums(after=digests[-1])) == []
+    assert list(store.list_checksums(after="0" * 64)) == digests
+    assert list(store.staged_files()) == []
+    store.set_sweep_cursor(None)
+    assert store.sweep_cursor() is None
+    store.set_sweep_cursor(None)  # clearing twice is fine
+    (store.root / ".sweep-cursor").write_text("not a checksum")
+    assert store.sweep_cursor() is None
+    with pytest.raises(ValueError, match="SHA-256"):
+        store.set_sweep_cursor("../escape")
+    assert sorted(p.name for p in store.root.iterdir() if p.name.startswith(".sweep")) == [
+        ".sweep-cursor"
+    ]
 
 
 def test_an_unwritable_root(tmp_path: Path) -> None:

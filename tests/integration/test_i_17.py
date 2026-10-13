@@ -7,10 +7,11 @@ Every I-17 (M3) part lives in this file (traceability counts a test ID per miles
   ``source_catalog_id@version`` provenance (FR-CAT-3,9). Until #119's genesis writes the
   provenance, the fixture creates a blank story and records the provenance on its character row.
 - #105's part, ``test_i_17__media_sweep``: the periodic media sweep purges an asset only when
-  nothing references it, skips candidates, and deletes bytes only when no asset row has them
-  (FR-MEDIA-2). It runs on a scratch database with its own media root, and until #115 gives
-  catalog entries image fields the reference is planted where #115 will put it. #119 adds the
-  story-snapshot half (an asset a story references survives its catalog entry's deletion).
+  nothing references it, skips candidates, and deletes bytes only when no asset row of any state
+  has them (FR-MEDIA-2). It runs on a scratch database with its own media root, and until #115
+  gives catalog entries image fields the reference is planted where #115 will put it. #119 adds
+  the story-snapshot half (an asset a story references survives its catalog entry's deletion;
+  #316).
 """
 
 from __future__ import annotations
@@ -139,7 +140,10 @@ async def test_i_17__media_sweep(pg_url: str, tmp_path: Path) -> None:
     """The sweep keeps an asset a catalog draft references and an asset in state ``candidate``,
     and purges an unreferenced retired asset (its row and, since no other row has them, its
     bytes). Identical bytes uploaded twice are stored once: purging one of the two rows keeps
-    the blob, purging both deletes it. References are found by querying the records.
+    the blob, purging both deletes it. The bytes stay while an asset row of any state has them:
+    after an unreferenced retired twin is purged, a retired asset a catalog version references
+    still serves its content, and a candidate's bytes stay too. References are found by
+    querying the records.
 
     Complement asserted: once the draft no longer names it, the referenced asset is purged too,
     so its survival was the reference's doing."""
@@ -154,9 +158,11 @@ async def test_i_17__media_sweep(pg_url: str, tmp_path: Path) -> None:
             return {str(r.id) for r in await rows(db, "SELECT id FROM media_assets")}
 
         referenced, unreferenced, candidate = await put(), await put(), await put()
-        twin_data = png()
+        twin_data, kept_data, held_data = png(), png(), png()
         twin_a, twin_b = await put(twin_data), await put(twin_data)
-        for media_id in (referenced, unreferenced, twin_a):
+        kept, kept_twin = await put(kept_data), await put(kept_data)
+        held, held_twin = await put(held_data), await put(held_data)
+        for media_id in (referenced, unreferenced, twin_a, kept, kept_twin, held_twin):
             await lib.delete_media(MEDIA_AUTHOR, media_id)
         entry = await lib.create_character_draft(
             MEDIA_AUTHOR, CharacterCreate(**catalog_character())
@@ -171,28 +177,45 @@ async def test_i_17__media_sweep(pg_url: str, tmp_path: Path) -> None:
                 {"m": referenced, "c": entry.character.id},
             )
             await conn.execute(
-                text("UPDATE media_assets SET state = 'candidate' WHERE id = :m"), {"m": candidate}
+                text(
+                    "INSERT INTO catalog.character_versions (catalog_id, version, content, "
+                    "published_at, published_by) VALUES (:c, 1, jsonb_build_object('name', "
+                    "'Mara', 'public_card', jsonb_build_object('images', jsonb_build_object("
+                    "'gallery', jsonb_build_array(CAST(:m AS text))))), now(), 'p-media')"
+                ),
+                {"m": kept, "c": entry.character.id},
+            )
+            await conn.execute(
+                text("UPDATE media_assets SET state = 'candidate' WHERE id IN (:a, :b)"),
+                {"a": candidate, "b": held},
             )
         unreferenced_sum = (await lib.get_media(MEDIA_AUTHOR, unreferenced)).checksum
         twin_blob = blob_path(space.root, sha256(twin_data))
+        kept_blob = blob_path(space.root, sha256(kept_data))
+        held_blob = blob_path(space.root, sha256(held_data))
 
         assert await sweep(db, lib.media) == {
-            "assets_purged": 2,
+            "assets_purged": 4,
             "blobs_deleted": 1,
             "staged_removed": 0,
         }
-        assert await assets() == {referenced, candidate, twin_b}
+        assert await assets() == {referenced, candidate, twin_b, kept, held}
         assert not blob_path(space.root, unreferenced_sum).exists()
         assert twin_blob.exists(), "the other row still has the bytes"
+        assert kept_blob.exists(), "a retired row still has the bytes"
+        served = await lib.get_media_content(MEDIA_AUTHOR, kept)
+        assert await served.read() == kept_data, "the version's asset still serves its content"
+        assert held_blob.exists(), "a candidate row still has the bytes"
 
         await lib.delete_media(MEDIA_AUTHOR, twin_b)
         later = datetime.now(UTC) + timedelta(days=30)
         counts = await sweep(db, lib.media, now=later)
         assert (counts["assets_purged"], counts["blobs_deleted"]) == (1, 1)
         assert not twin_blob.exists()
-        assert await assets() == {referenced, candidate}, "candidates are never swept"
+        assert await assets() == {referenced, candidate, kept, held}, "candidates are never swept"
 
         async with db.begin() as conn:
             await conn.execute(text("UPDATE catalog.character_catalog SET draft = '{}'::jsonb"))
         assert (await sweep(db, lib.media, now=later))["assets_purged"] == 1
-        assert await assets() == {candidate}
+        assert await assets() == {candidate, kept, held}
+        assert held_blob.exists()

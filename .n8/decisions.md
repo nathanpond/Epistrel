@@ -2105,3 +2105,46 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 
   **Why:** Under the batched gate, a story's correctness rests on its own tests until group A's full run.
   **Issue:** #105
+- **Decision:** #105 verification fixes, round 1 (Rule 1). Each sweep run now goes on where the previous one stopped, so the sweep frees what nothing uses however many rows and blobs there are.
+  - **Rows.** A batch now holds only assets nothing references. `assets.unreferenced` is the reference test as an anti-join (`NOT EXISTS` over each source whose table exists), applied before the batch's `LIMIT`. Before, every run began at the oldest eligible row, and referenced live assets older than a day filled all 20 × 500 places; nothing newer was ever examined.
+    - The per-batch `referenced` pre-check is gone, since the anti-join does that work. The re-check under the row lock stays.
+    - This replaces the sweep decision's line above, "The pre-lock reference query only saves work, so no test can see it": the progress test now sees it.
+    - Postgres plans the anti-join as one hash anti-join per batch (probe on a scratch database: 5,000 assets and 400 drafts, 5 ms).
+  - **Blobs.** `list_checksums(after=)` lists in ascending checksum order. The store keeps a sweep cursor, the last checksum a run examined, in `<root>/.sweep-cursor` (written by rename). The next run starts after it, and a run that reaches the last blob clears it.
+  - The `BlobStore` port gains the ordering and `sweep_cursor`/`set_sweep_cursor`. #107's S3 adapter implements them with `ListObjectsV2`'s `StartAfter` and a small object.
+  - Regression test: `test_each_run_goes_on_where_the_last_stopped`, with `BATCH` 2 and `MAX_BATCHES` 1 (monkeypatched). Three referenced assets older than a day must not keep a newer retired one from being purged in the first run. A blob nothing names, sorting after the named ones, must be deleted in the second run. Mutation-checked: it fails without the anti-join, with the cursor not read, and with `list_checksums` ignoring `after`. The store's ordering and cursor have a unit test.
+  **Why:** I chose the anti-join over carrying a `(created_at, id)` resume point between runs. A resume point needs somewhere to live: a new `recurring_tasks` column is a schema change to an M2 table (Rule 4), and a job's `result` gets purged and does not exist when `sweep()` is called directly. The anti-join needs no state, and every place in a batch becomes a purge. For blobs, a random start shard would only probably reach every blob, and an in-memory cursor resets at every restart. The cursor file sits with the blobs it indexes and is shared by every process on the root. Cost if wrong: one file in the media root, and two port methods for #107.
+  **Issue:** #105, #107
+- **Decision:** #105 verification fixes, round 1. `test_i_17__media_sweep` now proves "no asset row of any state" (AC4) with two more pairs of identical bytes.
+  - A retired asset that a catalog version references, and its unreferenced retired twin.
+  - A candidate, and its retired twin.
+
+  After the twins are purged, both blobs remain, and the version's retired asset still serves its content. The part's first sweep now purges 4 assets instead of 2, because the part plants more; no assertion was loosened. Mutation-checked: `collect_blob` counting only `live` rows, or ignoring `candidate` rows, fails the part. Both mutations passed every test before.
+  **Why:** These are the verifier's cases. They sit in the I-17 part, the milestone's evidence for FR-MEDIA-2, rather than in a detailed test. Cost if wrong: none; the part only gained assertions.
+  **Issue:** #105
+- **Decision:** #105 verification fixes, round 1. The moderation hook's content URL is now proven short-lived (AC2).
+  - `test_media_moderation` checks that `exp` is 5 minutes after the signing moment. The bounds are `time.time()` read before and after the upload.
+  - `test_the_hook_reads_the_staged_bytes` freezes the injectable time source. The staged content still serves at `exp` + 30 s (the skew) and is 404 one second later.
+  - The unit test checks `sign_path`'s default lifetime.
+
+  Mutation-checked: a one-year lifetime fails all three tests, and a signer that never expires fails the staged-bytes test.
+  **Why:** The tests use the literal 5 minutes, not the module constant, so a changed constant cannot pass them.
+  **Issue:** #105
+- **Decision:** #105 verification fixes, round 1. New pause point `media.upload.before_commit` (`pauses.MEDIA_UPLOAD_BEFORE_COMMIT`). It sits in `assets.upload` after `store.put` and before the commit, while the checksum's advisory lock is held.
+  - `test_the_sweep_waits_for_an_upload_of_the_same_bytes`:
+    1. Retire an asset, then upload its bytes again. The upload's `put` keeps the existing blob, and the upload is held at the point.
+    2. Start a sweep that purges the retired asset.
+    3. Wait until `pg_locks` shows a session waiting on a checksum lock (`classid = LOCK_CLASS`), then release the upload.
+    4. Assert that no blob was deleted, the bytes are there, and `GET /media/{id}/content` is 200 with them.
+  - Mutation-checked: a no-op `lock_checksum` fails it, because the sweep deletes the bytes under the uncommitted row. Removing the pause point also fails it (the hold times out). Five repeated runs passed.
+  **Why:** I chose the purge path because it is the realistic race: the row is purged, then its bytes are collected at once. Waiting on `pg_locks` instead of sleeping makes the race deterministic. Cost if wrong: one no-op call per upload outside tests.
+  **Issue:** #105
+- **Decision:** #105 verification fixes, round 1. `test_uploads_index_their_subjects` now names the character as a whole word in the negative prompt and expects that row (`generation_metadata.negative_prompt`, `mentioned`). The non-matching `x{name}y` case moved to the second upload's negative prompt. Mutation-checked: dropping the field from `INDEXED_FIELDS` fails it.
+  **Why:** This is the coverage line's registration. Before, no test could tell whether the field was indexed.
+  **Issue:** #105
+- **Decision:** #105 verification fixes, round 1 (discovered work). #105 does not register #108's scenario sources or #119's story-snapshot sources. I filed that handoff as #316 (`needs-triage`) and cross-referenced it on #105.
+  - #316 asks #108 to register `catalog.scenario_catalog.draft` and `catalog.scenario_versions.content`, and to call `assert_referenceable` in its saves.
+  - It asks #119 to register `public.character_snapshots.content` and `public.stories.scenario_snapshot`, to add the I-17 slice "a media asset referenced by a story survives deletion of its catalog entry", and to decide whether genesis copies must pass `assert_referenceable`.
+  - The `MEDIA_REFERENCE_SOURCES` docstring now names #316.
+  **Why:** The work is out of #105's scope. It also cannot land early: `public.stories` already exists without `scenario_snapshot`, and a registered source whose column is missing fails every sweep. The discovered-work rule allows a new issue, not edits to #108 or #119. Cost if wrong: if #108 or #119 lands without the registration, the sweep purges assets only they reference. #316 is the guard against that.
+  **Issue:** #105, #108, #119, #316

@@ -12,6 +12,11 @@ the same filesystem (when the blob already exists, the staged copy is simply dro
 then the bytes are addressable by no asset. The media sweep removes staged files a crashed
 upload left behind.
 
+``list_checksums`` lists the blobs in ascending checksum order, optionally after a given one, and
+the store keeps the **sweep cursor**: the checksum where the media sweep's last scan of the blobs
+stopped (``<root>/.sweep-cursor``), so each run goes on where the previous one stopped instead of
+starting over at the first blob.
+
 Every method is synchronous filesystem work: async callers run them with
 ``asyncio.to_thread``.
 """
@@ -29,12 +34,17 @@ from typing import BinaryIO, Protocol
 
 STAGING_DIR = "tmp"
 CHECKSUM_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+SHARD_PATTERN = re.compile(r"^[0-9a-f]{2}$")
+"""A blob's directory: the first two hex digits of its checksum."""
 STAGED_NAME_PATTERN = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 """A staged upload is named after the asset it would become (a ULID)."""
 BLOB_MODE = 0o444
 PROBE_PREFIX = ".writable-"
 """The start-up check's probe files: each process writes its own (several processes, an API and
 its workers, start on one media root at once)."""
+SWEEP_CURSOR = ".sweep-cursor"
+"""The file in the root that holds the sweep cursor (one checksum), shared by every process on
+the root."""
 
 
 class MediaRootUnwritable(Exception):
@@ -85,12 +95,23 @@ class BlobStore(Protocol):
 
     def size(self, sha256: str) -> int: ...
 
-    def list_checksums(self) -> Iterator[str]:
-        """Every stored blob's checksum, in no particular order."""
+    def list_checksums(self, after: str | None = None) -> Iterator[str]:
+        """Every stored blob's checksum in ascending order: those after ``after``, or all of
+        them when it is ``None``."""
         ...
 
     def age(self, sha256: str) -> float | None:
         """Seconds since the blob was written, or ``None`` when it is missing."""
+        ...
+
+    def sweep_cursor(self) -> str | None:
+        """The checksum where the media sweep's last scan of the blobs stopped, or ``None``
+        (the next scan starts at the first blob)."""
+        ...
+
+    def set_sweep_cursor(self, checksum: str | None) -> None:
+        """Record where the next scan of the blobs goes on (after ``checksum``; ``None``: at the
+        first blob)."""
         ...
 
 
@@ -179,15 +200,26 @@ class LocalFilesystemStore:
     def size(self, sha256: str) -> int:
         return self.path(sha256).stat().st_size
 
-    def list_checksums(self) -> Iterator[str]:
+    def list_checksums(self, after: str | None = None) -> Iterator[str]:
         if not self.root.is_dir():
             return
-        for shard in os.scandir(self.root):
-            if not (shard.is_dir(follow_symlinks=False) and len(shard.name) == 2):
+        with os.scandir(self.root) as entries:
+            shards = sorted(
+                entry.name
+                for entry in entries
+                if entry.is_dir(follow_symlinks=False) and SHARD_PATTERN.fullmatch(entry.name)
+            )
+        for shard in shards:
+            if after is not None and shard < after[:2]:
                 continue
-            for entry in os.scandir(shard.path):
-                name = entry.name
-                if CHECKSUM_PATTERN.fullmatch(name) and name[:2] == shard.name:
+            with os.scandir(self.root / shard) as entries:
+                names = sorted(
+                    entry.name
+                    for entry in entries
+                    if CHECKSUM_PATTERN.fullmatch(entry.name) and entry.name[:2] == shard
+                )
+            for name in names:
+                if after is None or name > after:
                     yield name
 
     def age(self, sha256: str) -> float | None:
@@ -196,10 +228,33 @@ class LocalFilesystemStore:
         except FileNotFoundError:
             return None
 
+    # -- the sweep cursor ----------------------------------------------------------------------
+
+    def sweep_cursor(self) -> str | None:
+        try:
+            value = (self.root / SWEEP_CURSOR).read_text(encoding="ascii").strip()
+        except OSError, ValueError:  # missing or unreadable: start at the first blob
+            return None
+        return value if CHECKSUM_PATTERN.fullmatch(value) else None
+
+    def set_sweep_cursor(self, checksum: str | None) -> None:
+        target = self.root / SWEEP_CURSOR
+        if checksum is None:
+            target.unlink(missing_ok=True)
+            return
+        value = check_checksum(checksum)
+        written = self.root / f"{SWEEP_CURSOR}.{os.getpid()}-{secrets.token_hex(4)}"
+        try:
+            written.write_text(value, encoding="ascii")
+            os.replace(written, target)
+        finally:
+            written.unlink(missing_ok=True)
+
 
 __all__ = [
     "CHECKSUM_PATTERN",
     "STAGING_DIR",
+    "SWEEP_CURSOR",
     "BlobStore",
     "LocalFilesystemStore",
     "MediaRootUnwritable",

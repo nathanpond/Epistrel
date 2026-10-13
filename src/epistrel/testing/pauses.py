@@ -17,6 +17,9 @@ The points:
   already stored (its insert did nothing); it has not read the stored row yet (#104).
 - ``media.sweep.before_purge``: the media sweep found no reference to an asset in its batch;
   it has not locked the asset's row to purge it yet (#105).
+- ``media.upload.before_commit``: an upload holds its checksum's advisory lock, has inserted its
+  row and moved its bytes into place (or found the blob already there); its transaction has not
+  committed yet (#105).
 
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 """
@@ -31,11 +34,13 @@ CATALOG_SAVE_BEFORE_CAS = "catalog.save.before_cas"
 CATALOG_PUBLISH_LOCKED = "catalog.publish.locked"
 OWNERSHIP_ADD_FOUND = "ownership.add.found"
 MEDIA_SWEEP_BEFORE_PURGE = "media.sweep.before_purge"
+MEDIA_UPLOAD_BEFORE_COMMIT = "media.upload.before_commit"
 POINTS = (
     CATALOG_SAVE_BEFORE_CAS,
     CATALOG_PUBLISH_LOCKED,
     OWNERSHIP_ADD_FOUND,
     MEDIA_SWEEP_BEFORE_PURGE,
+    MEDIA_UPLOAD_BEFORE_COMMIT,
 )
 
 ARRIVAL_TIMEOUT_S = 10.0
@@ -99,6 +104,7 @@ __all__ = [
     "CATALOG_PUBLISH_LOCKED",
     "CATALOG_SAVE_BEFORE_CAS",
     "MEDIA_SWEEP_BEFORE_PURGE",
+    "MEDIA_UPLOAD_BEFORE_COMMIT",
     "OWNERSHIP_ADD_FOUND",
     "POINTS",
     "Hold",

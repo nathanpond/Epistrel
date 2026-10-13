@@ -20,9 +20,21 @@ The ``media_sweep`` recurring job (``orchestrator.jobs.handlers.media_sweep``, e
    assets with identical bytes share one blob, so purging one keeps the bytes.
 3. **Staging.** Staged uploads older than an hour (a crashed upload's) are removed.
 
-Each run handles at most ``MAX_BATCHES`` batches of ``BATCH`` rows or blobs; the next run takes
-the rest. Every step is idempotent, so a run repeated after a crash changes nothing more. The
-result and the log line carry counts only.
+Each run handles at most ``MAX_BATCHES`` batches of ``BATCH`` rows or blobs, and the next run
+goes on from there, so the sweep eventually reaches every row and every blob however many there
+are:
+
+- Step 1's batches hold only assets nothing references (``assets.unreferenced``, an anti-join
+  over the sources, applied before the batch's limit). A referenced asset never takes a place in
+  a batch, so each run purges up to the limit and the next run purges the next ones. Only an
+  asset a writer holds, or one a reference reached since its batch was read, stays for a later
+  run.
+- Step 2 scans the blobs in checksum order from the store's sweep cursor (where the previous
+  run stopped) and leaves the cursor where it stopped; a run that reaches the last blob resets
+  it, so the next run starts again at the first.
+
+Every step is idempotent, so a run repeated after a crash changes nothing more. The result and
+the log line carry counts only.
 """
 
 from __future__ import annotations
@@ -39,7 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core import clock, ownership
 from epistrel.core.context import SYSTEM_PRINCIPAL
 from epistrel.core.erasure.index import drop_references
-from epistrel.core.media.assets import RECORD_TABLE, lock_checksum, referenced
+from epistrel.core.media.assets import RECORD_TABLE, lock_checksum, referenced, unreferenced
 from epistrel.core.media.store import LocalFilesystemStore
 from epistrel.core.tables.media import MediaState, media_assets
 from epistrel.core.tables.ownership import EntityType
@@ -100,17 +112,16 @@ async def _purge_unreferenced(
 ) -> tuple[int, int]:
     purged = blobs = 0
     after: tuple[datetime, str] | None = None
+    async with db.connect() as conn:
+        free = await unreferenced(conn)
     for _ in range(MAX_BATCHES):
-        query = select(media_assets.c.id, media_assets.c.created_at).where(_eligible(now))
+        query = select(media_assets.c.id, media_assets.c.created_at).where(_eligible(now), free)
         if after is not None:
             query = query.where(tuple_(media_assets.c.created_at, media_assets.c.id) > after)
         query = query.order_by(media_assets.c.created_at, media_assets.c.id).limit(BATCH)
         async with db.connect() as conn:
             rows = (await conn.execute(query)).all()
-            kept = await referenced(conn, [str(row.id) for row in rows])
         for row in rows:
-            if str(row.id) in kept:
-                continue
             await pauses.pause(pauses.MEDIA_SWEEP_BEFORE_PURGE)
             checksum = await _purge(db, str(row.id), now)
             if checksum is not None:
@@ -124,9 +135,12 @@ async def _purge_unreferenced(
 
 async def _collect_orphans(db: AsyncEngine, store: LocalFilesystemStore) -> int:
     deleted = 0
-    found = await asyncio.to_thread(
-        lambda: list(islice(store.list_checksums(), BATCH * MAX_BATCHES))
+    limit = BATCH * MAX_BATCHES
+    resume = await asyncio.to_thread(store.sweep_cursor)
+    listed = await asyncio.to_thread(
+        lambda: list(islice(store.list_checksums(after=resume), limit + 1))
     )
+    found, more = listed[:limit], len(listed) > limit
     for start in range(0, len(found), BATCH):
         batch = found[start : start + BATCH]
         async with db.connect() as conn:
@@ -141,6 +155,9 @@ async def _collect_orphans(db: AsyncEngine, store: LocalFilesystemStore) -> int:
             age = await asyncio.to_thread(store.age, checksum)
             if age is not None and age >= ORPHAN_AGE_S:
                 deleted += await collect_blob(db, store, checksum)
+    # The next run goes on after the last blob this one examined, or starts again at the first
+    # once this one reached the last.
+    await asyncio.to_thread(store.set_sweep_cursor, found[-1] if more else None)
     return deleted
 
 

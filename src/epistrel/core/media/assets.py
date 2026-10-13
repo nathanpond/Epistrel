@@ -40,7 +40,9 @@ listings and refuses new references (``assert_referenceable``, which #108, #115 
 422 ``media_retired``), while the records that already reference it keep reading it. The media
 sweep (``core.media.sweep``) purges it once nothing references it. **Reference discovery**
 queries the records that can reference an asset (``MEDIA_REFERENCE_SOURCES``, which later
-stories extend with ``register_reference_source``); nothing counts references.
+stories extend with ``register_reference_source``); nothing counts references. ``referenced``
+answers for given assets, and ``unreferenced`` is the same test as an anti-join a query filters
+by.
 """
 
 from __future__ import annotations
@@ -66,9 +68,21 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
 )
-from sqlalchemy import Integer, and_, cast, func, insert, select, tuple_, update
+from sqlalchemy import (
+    ColumnElement,
+    Integer,
+    and_,
+    cast,
+    func,
+    insert,
+    select,
+    true,
+    tuple_,
+    update,
+)
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.sql.elements import TextClause
 
 from epistrel.core import clock, control, ownership
 from epistrel.core.config_changes import read_section
@@ -99,6 +113,7 @@ from epistrel.core.tables.media import (
     media_assets,
 )
 from epistrel.core.tables.ownership import EntityType
+from epistrel.testing import pauses
 
 RECORD_TABLE = media_assets.name
 """``subject_references.record_table`` of an asset's rows."""
@@ -696,6 +711,9 @@ async def upload(
         await control.record_control_operation(conn, actor=principal)
         # Last, so a refused statement above leaves the bytes staged (and then discarded).
         await asyncio.to_thread(store.put, staged.path, staged.sha256)
+        # Until this commits, the checksum's lock keeps the sweep from deleting the blob ``put``
+        # may have kept rather than written (identical bytes a purge left behind).
+        await pauses.pause(pauses.MEDIA_UPLOAD_BEFORE_COMMIT)
         asset = await _read(conn, staged.asset_id)
         revision = await config_revision(conn)
     return MediaWrite(asset=asset, config_revision=revision)
@@ -905,14 +923,27 @@ MEDIA_REFERENCE_SOURCES: list[ReferenceSource] = [
     ReferenceSource("catalog.character_versions", "content"),
 ]
 """Where references to assets live (FR-MEDIA-2): catalog drafts and published versions now;
-#108 (scenarios), #119 (story snapshots) and M8 (candidates, story images) register theirs.
-A source whose table does not exist (yet) is skipped."""
+#108 (scenarios), #119 (story snapshots; #316 tracks both) and M8 (candidates, story images)
+register theirs. A source whose table does not exist (yet) is skipped; one whose column does not
+exist fails the query, so a source is registered only once its column exists."""
 
 
 def register_reference_source(source: ReferenceSource) -> None:
     """Add ``source`` to ``MEDIA_REFERENCE_SOURCES`` (once)."""
     if source not in MEDIA_REFERENCE_SOURCES:
         MEDIA_REFERENCE_SOURCES.append(source)
+
+
+async def _present_sources(conn: AsyncConnection) -> list[ReferenceSource]:
+    """The sources of ``MEDIA_REFERENCE_SOURCES`` whose table exists."""
+    present: list[ReferenceSource] = []
+    for source in MEDIA_REFERENCE_SOURCES:
+        exists = await conn.scalar(
+            sql_text("SELECT to_regclass(CAST(:t AS text)) IS NOT NULL"), {"t": source.table}
+        )
+        if exists:
+            present.append(source)
+    return present
 
 
 async def referenced(conn: AsyncConnection, media_ids: Sequence[str]) -> set[str]:
@@ -922,12 +953,7 @@ async def referenced(conn: AsyncConnection, media_ids: Sequence[str]) -> set[str
     found: set[str] = set()
     if not wanted:
         return found
-    for source in MEDIA_REFERENCE_SOURCES:
-        exists = await conn.scalar(
-            sql_text("SELECT to_regclass(CAST(:t AS text)) IS NOT NULL"), {"t": source.table}
-        )
-        if not exists:
-            continue
+    for source in await _present_sources(conn):
         hits = await conn.scalars(
             sql_text(
                 f"SELECT DISTINCT v.item #>> '{{}}' FROM {source.quoted} AS t "  # noqa: S608
@@ -939,6 +965,25 @@ async def referenced(conn: AsyncConnection, media_ids: Sequence[str]) -> set[str
         )
         found.update(str(hit) for hit in hits)
     return found
+
+
+async def unreferenced(conn: AsyncConnection) -> ColumnElement[bool]:
+    """A condition on ``media_assets`` rows that holds when no record of
+    ``MEDIA_REFERENCE_SOURCES`` names the asset: ``referenced`` as an anti-join, so a query can
+    leave the referenced assets out before it limits its rows (the media sweep's batches).
+    The sources whose table exists are read now; the condition can be reused for a run."""
+    clauses: list[TextClause] = []
+    for index, source in enumerate(await _present_sources(conn)):
+        param = f"reference_path_{index}"
+        clauses.append(
+            sql_text(
+                f"NOT EXISTS (SELECT 1 FROM {source.quoted} AS t "  # noqa: S608
+                f'CROSS JOIN LATERAL jsonb_path_query(t."{source.column}", '
+                f"CAST(:{param} AS jsonpath)) AS v(item) "
+                f"WHERE v.item #>> '{{}}' = CAST({RECORD_TABLE}.id AS text))"
+            ).bindparams(**{param: source.path})
+        )
+    return and_(true(), *clauses)
 
 
 __all__ = [
@@ -974,5 +1019,6 @@ __all__ = [
     "require_subjects",
     "retire",
     "stage",
+    "unreferenced",
     "upload",
 ]

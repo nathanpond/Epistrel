@@ -20,7 +20,7 @@ import secrets
 import stat
 import time
 from collections.abc import AsyncIterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -34,7 +34,7 @@ from epistrel.config import Settings
 from epistrel.core import clock
 from epistrel.core.ids import new_ulid
 from epistrel.core.media import assets as media
-from epistrel.core.media.signing import moderation_secret
+from epistrel.core.media.signing import CLOCK_SKEW_S, moderation_secret
 from epistrel.core.media.sweep import sweep
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.tables.media import MediaState
@@ -472,11 +472,13 @@ async def test_media_moderation(keyed: Settings, engine: AsyncEngine, defaults: 
         with hook_server() as hook:
             await set_media(client, media_moderation_webhook_url=hook.url)
             data = png()
+            earliest = int(time.time())  # the URL is signed during the upload
             accepted = await upload(
                 client,
                 data,
                 metadata(caption="Gull Rock", alt_text="The light", depicted_subjects=[]),
             )
+            latest = int(time.time())
             assert accepted.status_code == 201, accepted.text
             (sent,) = hook.received
             payload = sent.json
@@ -498,7 +500,11 @@ async def test_media_moderation(keyed: Settings, engine: AsyncEngine, defaults: 
             }
             url = urlsplit(payload["content_url"])
             assert url.path == f"/media/{accepted.json()['id']}/content"
-            assert set(parse_qs(url.query)) == {"exp", "sig"}
+            query = parse_qs(url.query)
+            assert set(query) == {"exp", "sig"}
+            # Short-lived: the URL expires 5 minutes after it was signed, during the upload.
+            (exp,) = query["exp"]
+            assert earliest + 5 * 60 <= int(exp) <= latest + 5 * 60
             timestamp = sent.headers["X-Epistrel-Timestamp"]
             secret = bytes.fromhex(moderation_secret(CONFIG_KEY))
             expected = hmac.new(secret, f"{timestamp}.".encode() + sent.body, hashlib.sha256)
@@ -558,8 +564,9 @@ async def test_the_hook_reads_the_staged_bytes(
 ) -> None:
     """While the hook decides, its ``content_url`` (with the service credential) serves the
     staged bytes, which no other request can see: without the signature, or with a tampered
-    one, the asset is 404. ``public_base_url`` prefixes the URL. After the hook accepts, the
-    content route serves the committed asset."""
+    one, the asset is 404. The URL is short-lived: it expires 5 minutes after it was signed and
+    serves until 30 seconds (the clock skew) past that, then 404. ``public_base_url`` prefixes
+    the URL. After the hook accepts, the content route serves the committed asset."""
     data = png(9, 9)
     async with media_client(keyed, engine) as client:
         with hook_server(hold=True) as hook:
@@ -581,6 +588,13 @@ async def test_the_hook_reads_the_staged_bytes(
             assert (await client.get(bare, headers=READ)).status_code == 404
             tampered = path[:-2] + ("AA" if not path.endswith("AA") else "BB")
             assert (await client.get(tampered, headers=READ)).status_code == 404
+            exp = int(parse_qs(urlsplit(path).query)["exp"][0])
+            assert 0 < exp - time.time() <= 5 * 60
+            last = datetime.fromtimestamp(exp + CLOCK_SKEW_S, UTC)
+            with clock.frozen_at(last):
+                assert (await client.get(path, headers=READ)).status_code == 200
+            with clock.frozen_at(last + timedelta(seconds=1)):
+                assert (await client.get(path, headers=READ)).status_code == 404
             hook.release.set()
             done = await pending
             assert done.status_code == 201, done.text
@@ -717,8 +731,9 @@ async def test_list_filters_and_pages(settings: Settings, engine: AsyncEngine) -
 async def test_uploads_index_their_subjects(settings: Settings, engine: AsyncEngine) -> None:
     """Every upload writes ``subject_references`` rows (``scope = catalog``, ``record_table =
     media_assets``): one ``declared`` row per depicted subject, and a ``mentioned`` row for each
-    catalog character whose name its caption, alt text or prompts hold as a whole word, ignoring
-    case. A name inside another word, or a caption naming nobody, indexes nothing."""
+    catalog character whose name its caption, alt text, prompt or negative prompt holds as a
+    whole word, ignoring case. A name inside another word, in a caption or a negative prompt,
+    indexes nothing."""
     name = f"Mara{secrets.token_hex(3)}"
     async with media_client(settings, engine) as client:
         created = await client.post(
@@ -731,7 +746,10 @@ async def test_uploads_index_their_subjects(settings: Settings, engine: AsyncEng
             client,
             caption=f"{name.upper()} at the door.",
             alt_text=f"Portrait of {name}",
-            generation_metadata={"prompt": f"{name}, oil painting", "negative_prompt": f"x{name}y"},
+            generation_metadata={
+                "prompt": f"{name}, oil painting",
+                "negative_prompt": f"blurry {name.lower()}",
+            },
             depicted_subjects=[{"kind": "persona", "id": declared}],
         )
         found = await rows(
@@ -766,11 +784,24 @@ async def test_uploads_index_their_subjects(settings: Settings, engine: AsyncEng
                 "catalog",
                 None,
                 "media_assets",
+                "generation_metadata.negative_prompt",
+                "mentioned",
+            ),
+            (
+                "catalog_character",
+                character,
+                "catalog",
+                None,
+                "media_assets",
                 "generation_metadata.prompt",
                 "mentioned",
             ),
         ]
-        plain = await uploaded(client, caption=f"Someone else entirely, {name}ish.")
+        plain = await uploaded(
+            client,
+            caption=f"Someone else entirely, {name}ish.",
+            generation_metadata={"negative_prompt": f"x{name}y"},
+        )
         assert (
             await count(
                 engine,
@@ -1246,3 +1277,93 @@ async def test_a_purge_waits_for_a_new_reference(space: Scratch) -> None:
         )
     assert (await sweep(space.db, space.lib.media, now=later))["assets_purged"] == 0
     assert (await space.lib.get_media(SWEEPER, asset)).state is MediaState.LIVE
+
+
+async def test_each_run_goes_on_where_the_last_stopped(
+    space: Scratch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run handles a bounded number of rows and blobs, and the next run goes on from there, so
+    the sweep eventually reaches everything, however much there is. With a run cut to two rows
+    and two blobs: referenced assets older than a day, more of them than a run handles, never
+    take the places of a retired, unreferenced asset created after them, which the first run
+    purges; and a blob nothing names that sorts after more named blobs than a run scans is
+    deleted by the second run, which goes on from the cursor the first one left. Once a run
+    reaches the last blob the cursor is cleared, so the next run starts again at the first.
+    Regression: every run started again at the oldest row and at the first blob, so neither was
+    ever reached."""
+    from epistrel.core.media import sweep as sweep_module
+
+    monkeypatch.setattr(sweep_module, "BATCH", 2)
+    monkeypatch.setattr(sweep_module, "MAX_BATCHES", 1)
+    in_use = [await put(space) for _ in range(3)]
+    for media_id in in_use:
+        await plant_in_draft(space, media_id)
+    retired = await put(space)
+    await space.lib.delete_media(SWEEPER, retired)
+    named = sorted([(await space.lib.get_media(SWEEPER, m)).checksum for m in in_use])
+    orphan = "f" * 64  # sorts after every named blob
+    left = blob_path(space.root, orphan)
+    left.parent.mkdir(parents=True, exist_ok=True)
+    left.write_bytes(b"left behind")
+    aged(left, OLD)
+    store = space.lib.media
+    later = clock.now() + timedelta(hours=25)
+
+    first = await sweep(space.db, store, now=later)
+    assert first == {"assets_purged": 1, "blobs_deleted": 1, "staged_removed": 0}
+    assert await ids(space) == set(in_use)
+    assert left.exists()
+    assert store.sweep_cursor() == named[1]
+
+    second = await sweep(space.db, store, now=later)
+    assert second == {"assets_purged": 0, "blobs_deleted": 1, "staged_removed": 0}
+    assert not left.exists()
+    assert store.sweep_cursor() is None
+    assert all(blob_path(space.root, checksum).exists() for checksum in named)
+
+
+async def _waiting_for_a_checksum_lock(space: Scratch, sweeping: asyncio.Future[Any]) -> None:
+    """Return once a session waits for a checksum's advisory lock, or once ``sweeping`` has
+    finished without waiting."""
+    deadline = time.monotonic() + 10
+    while not sweeping.done():
+        waiting = await scalar(
+            space.db,
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
+            "AND classid = CAST(:c AS oid) AND objsubid = 2",
+            c=media.LOCK_CLASS,
+        )
+        if waiting:
+            return
+        assert time.monotonic() < deadline, "the sweep neither waited for the lock nor finished"
+        await asyncio.sleep(0.02)
+
+
+async def test_the_sweep_waits_for_an_upload_of_the_same_bytes(space: Scratch) -> None:
+    """An upload holds its checksum's advisory lock from its insert to its commit, and the sweep
+    deletes a blob only under that lock. An asset purged while an upload of the same bytes is
+    committing (that upload's ``put`` found the blob in place and kept it) leaves the bytes: the
+    sweep waits for the upload's commit, then finds its row. The new asset serves the bytes.
+    Regression guard: without the lock, the sweep deleted the bytes under the uncommitted row,
+    whose content then answered 404 ``bytes_missing``."""
+    from epistrel.testing import pauses
+
+    data = png()
+    gone = await put(space, data)
+    await space.lib.delete_media(SWEEPER, gone)
+    stored = blob_path(space.root, sha256(data))
+    with pauses.held(pauses.MEDIA_UPLOAD_BEFORE_COMMIT) as hold:
+        uploading = asyncio.ensure_future(put(space, data))
+        await hold.arrived(1)
+        assert staged_files(space.root) == []  # ``put`` kept the blob and dropped its copy
+        sweeping = asyncio.ensure_future(sweep(space.db, space.lib.media))
+        await _waiting_for_a_checksum_lock(space, sweeping)
+        hold.release()
+        fresh = await uploading
+        counts = await sweeping
+    assert counts == {"assets_purged": 1, "blobs_deleted": 0, "staged_removed": 0}
+    assert await ids(space) == {fresh}
+    assert stored.exists()
+    async with media_client(space.settings, space.db) as client:
+        served = await client.get(f"/media/{fresh}/content", headers=READ)
+    assert (served.status_code, served.content) == (200, data)

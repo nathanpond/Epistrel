@@ -436,6 +436,15 @@ def _blanked(body: Any) -> Any:
     return body
 
 
+def _own_aside(body: Any, own: tuple[str, ...], requester: str) -> Any:
+    """``body`` with each key in ``own`` set aside when it names ``requester``: a read of the
+    requester's own record (``Call.own``)."""
+    if not own:
+        return body
+    assert all(body[key] == requester for key in own), (own, body)
+    return {key: value for key, value in body.items() if key not in own}
+
+
 @pytest.mark.integration
 @pytest.mark.part("M3", "FR-AUTH-8")
 @pytest.mark.parametrize(("route", "query"), CASES, ids=[_label(case) for case in CASES])
@@ -453,7 +462,9 @@ async def test_i_21__nothing_gates(
     version, an uploaded image's metadata and its bytes) is there for B and C, nothing
     narrowed. A ``private`` catalog character is read as
     its card (the default) and in ``full``, as version 1, and as its draft in both projections;
-    a story and its history in the default viewpoint and the omniscient one."""
+    a story and its history in the default viewpoint and the omniscient one. A message rating
+    is the requester's own (FR-AUTH-4): each of the three rated the reply alike, and each reads
+    the same rating, its own principal aside."""
     method, path = route
     kind, call = _kind_of(path), CALLS[route]
     statuses: dict[str, int] = {}
@@ -484,7 +495,9 @@ async def test_i_21__nothing_gates(
             if method == "GET":
                 json_body = response.headers["content-type"].startswith("application/json")
                 bodies[requester] = (
-                    _blanked(response.json()) if json_body else response.content  # media bytes
+                    _blanked(_own_aside(response.json(), call.own, requester))
+                    if json_body
+                    else response.content  # media bytes
                 )
     assert statuses == dict.fromkeys((OWNER, STRANGER, RELATED), call.expected)
     if method == "GET":

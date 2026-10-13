@@ -17,6 +17,15 @@ FR-CONC-6, NFR-REL-5; #71).
   (``core.profiles.store.purge_deleted``). A deleted profile a story still uses is kept, and
   the story keeps running on its last version; a fork of that story uses it too, so the purge
   waits for the fork as well.
+- message feedback past the deployment's ``feedback_retention`` when it is a number of days
+  (FR-FB-2; #112): a rating by when it was first given (``created_at``), a history entry by when
+  it was replaced (``replaced_at``). Feedback never follows the audit records' 90 days: under
+  the default ``story_lifetime`` nothing expires, and a rating goes with its story. These are
+  plain deletes of audit-category rows that no story view reads, so they leave no marker
+  (FR-STORE-1's third exception). The rows are read here by their table, never through
+  ``core.feedback``, which nothing in the Orchestrator imports (FR-FB-3: feedback is
+  flag-only). Until #123 indexes a rating's text there are no subject-index rows to drop with
+  it; #123 drops them here too.
 
 No M2 operation kind writes only audit events, so no operation row is deleted. Every delete
 runs in chunks of ``CHUNK`` rows, each its own transaction, at most ``MAX_CHUNKS`` per table and
@@ -59,9 +68,10 @@ from epistrel.core.config_changes import read_section
 from epistrel.core.enums import EventCategory, OperationStatus
 from epistrel.core.idempotency import KeyStatus, purge_expired, read_idempotency_settings
 from epistrel.core.profiles import store as profiles
-from epistrel.core.settings_schema import RetentionSettings
+from epistrel.core.settings_schema import STORY_LIFETIME, FeedbackSettings, RetentionSettings
 from epistrel.core.tables import audit_log, events, idempotency_keys, jobs, operations, stories
 from epistrel.core.tables.events import ALLOW_AUDIT_EXPIRY_GUC
+from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.orchestrator.jobs.recurring import NoPayload, RecurringTask, recording
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
 
@@ -128,6 +138,38 @@ def expired_audit_log(now: datetime, default_days: int) -> Any:
     )
 
 
+def expired_feedback(column: Any, before: datetime) -> Any:
+    """The ids of up to ``CHUNK`` rows of ``column``'s feedback table older than ``before``."""
+    return (
+        select(column.table.c.id)
+        .where(column < before)
+        .limit(CHUNK)
+        .with_for_update(skip_locked=True)
+    )
+
+
+async def _expire_feedback(db: AsyncEngine, moment: datetime) -> dict[str, int]:
+    """Delete the feedback past ``feedback_retention`` days (none under ``story_lifetime``)."""
+    retention = (await read_section(db, FeedbackSettings)).feedback_retention
+    if retention == STORY_LIFETIME:
+        return {"feedback": 0, "feedback_history": 0}
+    before = moment - timedelta(days=int(retention))
+    return {
+        "feedback": await _chunked(
+            db,
+            message_feedback,
+            expired_feedback(message_feedback.c.created_at, before),
+            audit=False,
+        ),
+        "feedback_history": await _chunked(
+            db,
+            feedback_history,
+            expired_feedback(feedback_history.c.replaced_at, before),
+            audit=False,
+        ),
+    }
+
+
 async def _chunked(db: AsyncEngine, table: Any, ids_query: Any, *, audit: bool) -> int:
     deleted = 0
     for _ in range(MAX_CHUNKS):
@@ -160,6 +202,7 @@ async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[
         "audit_log": await _chunked(db, audit_log, expired_audit_log(moment, days), audit=True),
         "jobs": await _chunked(db, jobs, finished_jobs, audit=False),
         "engine_profiles": await profiles.purge_deleted(db),
+        **await _expire_feedback(db, moment),
     }
 
 

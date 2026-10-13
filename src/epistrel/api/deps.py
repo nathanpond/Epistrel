@@ -24,9 +24,11 @@ OpenAPI object carries it too, so the document says which POST changes nothing."
 def route_flags(*, mutating: bool = True) -> dict[str, Any]:
     """Keyword arguments for a route decorator: ``@router.post(..., **route_flags(mutating=False))``
     marks a ``POST``/``PUT``/``PATCH``/``DELETE`` that changes nothing (a validation, a preview, a
-    suggestion; #103 for #109, #111, #121). Such a route takes no ``Idempotency-Key`` (none is
-    generated or echoed), checks no expected revision, and answers without a revision base; its
-    method still requires ``X-Epistrel-Principal`` (docs/02 §9: every POST/PUT/PATCH/DELETE)."""
+    suggestion; #103 for #109, #111, #121), or whose write is idempotent by itself and records no
+    operation and no story change (a message rating and its retraction, #112). Such a route takes
+    no ``Idempotency-Key`` (none is generated or echoed), checks no expected revision, and
+    answers without a revision base; its method still requires ``X-Epistrel-Principal``
+    (docs/02 §9: every POST/PUT/PATCH/DELETE)."""
     return {} if mutating else {"openapi_extra": {MUTATING_EXTRA: False}}
 
 
@@ -120,6 +122,15 @@ OperationId = Annotated[
         pattern=ULID_PATTERN,
         description="The operation's id (a ULID).",
         examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"],
+    ),
+]
+MessageId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The message's id: its `message_rendered` event's id (a ULID), as respond, "
+        "regenerate and the history answer it. A `turn:variant` form is not a message id.",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C8"],
     ),
 ]
 RatingId = Annotated[

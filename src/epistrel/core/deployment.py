@@ -5,13 +5,16 @@ The settings are ``DeploymentSettings`` (``core/settings_schema.py``): the
 starting-cast limits ``max_characters_at_start_default``/``_ceiling``, #108, the default
 engine profile ``default_engine_profile_id``, #106, and the catalog's
 ``listing_status_values``, #110: a write replaces the whole list, and removing a value a catalog
-entry still holds is 409 ``listing_status_in_use``) and the sections of
+entry still holds is 409 ``listing_status_in_use``; the message-feedback reason tags
+``feedback_tags``, #112: likewise, and removing a tag a rating or its history still carries is 409
+``feedback_tag_in_use``) and the sections of
 its ``settings`` document — the Lite defaults (#57), the story-level text caps
 (#60), the idempotency result window (#61), the default ``turn_queue_max`` (#63), the
 structured-result settings (#53), the safe fallback (#68), the default
-``max_model_calls_per_turn`` (#69), the media settings (#105) and the catalog validation's
-model-call budget ``validation_model_calls`` (#111). ``media_sweep_interval`` also moves its
-recurring task's ``recurring_tasks`` row (``RECURRING_INTERVAL_SETTINGS``).
+``max_model_calls_per_turn`` (#69), the media settings (#105), the catalog validation's
+model-call budget ``validation_model_calls`` (#111) and message feedback's text cap and
+retention (``feedback_text_max_chars``, ``feedback_retention``; #112). ``media_sweep_interval``
+also moves its recurring task's ``recurring_tasks`` row (``RECURRING_INTERVAL_SETTINGS``).
 
 A write is a JSON merge over them (``PUT /admin/settings``; the library helpers below take a
 section's values): the merged document is validated as a whole, and when anything changed the
@@ -26,11 +29,11 @@ from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, StrictInt, ValidationError
 from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import clock
+from epistrel.core import clock, feedback
 from epistrel.core.catalog import listing
 from epistrel.core.config_changes import (
     DeploymentState,
@@ -53,6 +56,7 @@ from epistrel.core.settings_schema import (
     MINOR_AGE_THRESHOLD_MIN,
     RECURRING_INTERVAL_SETTINGS,
     DeploymentSettings,
+    FeedbackRetention,
     GenerationSettings,
     IdempotencySettings,
     LiteDefaults,
@@ -93,6 +97,8 @@ NULLABLE = frozenset(
 call cap's formula (#69), no moderation hook or base URL (#105), and no starting-cast ceiling
 (#108)."""
 
+FEEDBACK_TAGS = "feedback_tags"
+
 
 class SettingsPatch(BaseModel):
     """A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,
@@ -100,9 +106,9 @@ class SettingsPatch(BaseModel):
     field (except ``max_model_calls_per_turn``, whose ``null`` restores the formula, and
     ``media_moderation_webhook_url``, ``public_base_url`` and
     ``max_characters_at_start_ceiling``, whose ``null`` unsets them). A list
-    (``media_allowed_types``, ``listing_status_values``) replaces the stored one. Bounds are
-    ``DeploymentSettings``'s, checked on the merged settings (422 ``validation_error`` at
-    ``body.<field>``)."""
+    (``media_allowed_types``, ``listing_status_values``, ``feedback_tags``) replaces the stored
+    one. Bounds are ``DeploymentSettings``'s, checked on the merged settings (422
+    ``validation_error`` at ``body.<field>``)."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -141,6 +147,9 @@ class SettingsPatch(BaseModel):
     media_upload_ttl: int | None = None
     listing_status_values: list[str] | None = None
     validation_model_calls: int | None = None
+    feedback_tags: list[str] | None = None
+    feedback_text_max_chars: StrictInt | None = None
+    feedback_retention: FeedbackRetention | None = None
 
     def changes(self) -> dict[str, Any]:
         present: dict[str, Any] = {}
@@ -172,7 +181,8 @@ async def apply_settings(
     """Merge ``changes`` into the deployment's settings; see the module docstring. A default
     rating that is unknown or retired is 422 ``rating_retired``; a default engine profile that is
     unknown or deleted is 422 ``profile_deleted``; removing a listing status value a catalog
-    entry still holds is 409 ``listing_status_in_use``."""
+    entry still holds is 409 ``listing_status_in_use``, and a feedback tag a rating or its
+    history still carries 409 ``feedback_tag_in_use``."""
     async with db.begin() as conn:
         current = await lock_deployment(conn)
         before = current.as_settings()
@@ -192,6 +202,8 @@ async def apply_settings(
             await listing.refuse_removal(
                 conn, before.listing_status_values, wanted.listing_status_values
             )
+        if FEEDBACK_TAGS in changed:
+            await feedback.refuse_tag_removal(conn, before.feedback_tags, wanted.feedback_tags)
         revision = await bump_config_revision(conn, current)
         document = await raw_document(conn)
         await conn.execute(

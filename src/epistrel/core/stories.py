@@ -92,6 +92,7 @@ from epistrel.core.tables import (
 )
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.core.tables.ownership import EntityType
 
 Database = AsyncEngine | AsyncConnection
@@ -105,6 +106,8 @@ SAFE_FALLBACK_MAX = 500
 
 STORY_TABLES: tuple[Table, ...] = (
     subject_references,
+    feedback_history,
+    message_feedback,
     client_events,
     events,
     transcript_messages,
@@ -134,14 +137,18 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         idempotency_keys.name,
         worker_heartbeats.name,
         subject_references.name,
+        message_feedback.name,
+        feedback_history.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
 ``timers``, worker heartbeats; #71), deployment-level audit
-records, idempotency keys (a fork answers its own requests), and the subject-reference index
-(#105: a story's rows name its records, so #123 re-indexes the fork). Every other table in
-``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it is
-named here."""
+records, idempotency keys (a fork answers its own requests), the subject-reference index
+(#105: a story's rows name its records, so #123 re-indexes the fork), and message feedback
+(#112: a rating belongs to the message it rated, FR-FB-2; the fork's copy of a message is a
+new message that starts unrated, and copying would count one rating twice). Every other table
+in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
+is named here."""
 
 STORY_ID_EXCEPTIONS: frozenset[str] = frozenset({audit_log.name})
 """Deployment-level tables that carry a ``story_id`` but outlive the story: deletion nulls the

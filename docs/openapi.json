@@ -2793,6 +2793,300 @@
         "title": "ErrorBody",
         "type": "object"
       },
+      "Feedback": {
+        "description": "One principal's rating of one generated message (FR-FB-1): the message (``message_id``,\nits ``turn`` and ``variant``), the ``principal``, the ``rating`` (1 to 5; null when the\nprincipal has none), its ``tags`` and ``text``, when it was first given and last changed,\n``compacted_at`` (set when an opt-in compaction removed the message; the rating is kept), the\n``context`` the message was produced under (null without a rating), and the ``history`` of\nearlier values, newest first.",
+        "properties": {
+          "compacted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compacted At"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FeedbackContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackHistoryEntry"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "turn": {
+            "title": "Turn",
+            "type": "integer"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "variant": {
+            "title": "Variant",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "story_id",
+          "message_id",
+          "turn",
+          "variant",
+          "principal",
+          "rating",
+          "tags",
+          "text",
+          "compacted_at",
+          "created_at",
+          "updated_at",
+          "context",
+          "history"
+        ],
+        "title": "Feedback",
+        "type": "object"
+      },
+      "FeedbackContext": {
+        "description": "The configuration a rated message was produced under, copied from its operation's\nrecord when the rating was first written (FR-FB-1, FR-PROF-16): the operation, its\nconfiguration fingerprint, the engine profile version (``<profile id>@<version>``), each\nmodel purpose's model and reported version, the story's content-rating version and the\nquality status. A field the operation did not record is null.",
+        "properties": {
+          "config_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Fingerprint"
+          },
+          "models": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/ModelIdentity"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Models"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "profile_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Version"
+          },
+          "quality_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QualityStatusValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rating_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating Version Id"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "title": "FeedbackContext",
+        "type": "object"
+      },
+      "FeedbackHistoryEntry": {
+        "description": "An earlier value of a principal's rating of a message: the ``rating``, ``tags`` and\n``text`` it held, when it was given (``rated_at``) and when it stopped being current\n(``replaced_at``), because a new rating ``replaced`` it or it was ``retracted``.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/HistoryKind"
+          },
+          "rated_at": {
+            "format": "date-time",
+            "title": "Rated At",
+            "type": "string"
+          },
+          "rating": {
+            "title": "Rating",
+            "type": "integer"
+          },
+          "replaced_at": {
+            "format": "date-time",
+            "title": "Replaced At",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "rating",
+          "tags",
+          "text",
+          "kind",
+          "rated_at",
+          "replaced_at"
+        ],
+        "title": "FeedbackHistoryEntry",
+        "type": "object"
+      },
+      "FeedbackRequest": {
+        "additionalProperties": false,
+        "description": "``PUT /stories/{id}/messages/{message_id}/feedback``: a ``rating`` from 1 to 5, up to ten\nreason ``tags`` of the deployment's ``feedback_tags`` (trimmed and lower-cased, compared as a\nset; none by default; an unknown one is 422 ``unknown_feedback_tag``), and optional free\n``text``, trimmed (an empty text is none) and at most the deployment's\n``feedback_text_max_chars`` characters (2000 by default; 422 ``validation_error`` beyond).",
+        "examples": [
+          {
+            "rating": 2,
+            "tags": [
+              "repetitive",
+              "too_long"
+            ],
+            "text": "She said the same line about the tide twice."
+          }
+        ],
+        "properties": {
+          "rating": {
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Rating",
+            "type": "integer"
+          },
+          "tags": {
+            "items": {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Tags",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "rating"
+        ],
+        "title": "FeedbackRequest",
+        "type": "object"
+      },
       "ForkCharacterBody": {
         "description": "A character of the fork and the source character it copies.",
         "properties": {
@@ -3425,6 +3719,15 @@
         ],
         "title": "HistoryItemModel",
         "type": "object"
+      },
+      "HistoryKind": {
+        "description": "Why an earlier value of a rating stopped being current: a new rating ``replaced`` it, or\nit was ``retracted``.",
+        "enum": [
+          "replaced",
+          "retracted"
+        ],
+        "title": "HistoryKind",
+        "type": "string"
       },
       "HistoryResponse": {
         "description": "A page of the story's corrected history for one output viewpoint, with the turns on the\npage, the revision it was read at and the cursor to the previous page.",
@@ -5171,6 +5474,38 @@
           "purpose"
         ],
         "title": "ModelConfigMutation",
+        "type": "object"
+      },
+      "ModelIdentity": {
+        "description": "One model purpose's model as a fingerprint names it: the configured model id, and the\nversion the provider reports (``null`` until an adapter reports one).",
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "reported_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported Version"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "ModelIdentity",
         "type": "object"
       },
       "ModelParams": {
@@ -11736,6 +12071,39 @@
             "title": "Default Safe Fallback",
             "type": "string"
           },
+          "feedback_retention": {
+            "anyOf": [
+              {
+                "enum": [
+                  "story_lifetime"
+                ],
+                "type": "string"
+              },
+              {
+                "maximum": 3650.0,
+                "minimum": 1.0,
+                "type": "integer"
+              }
+            ],
+            "default": "story_lifetime",
+            "title": "Feedback Retention"
+          },
+          "feedback_tags": {
+            "items": {
+              "pattern": "^[a-z0-9_]{1,40}$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Feedback Tags",
+            "type": "array"
+          },
+          "feedback_text_max_chars": {
+            "default": 2000,
+            "maximum": 20000.0,
+            "minimum": 1.0,
+            "title": "Feedback Text Max Chars",
+            "type": "integer"
+          },
           "idempotency_key": {
             "anyOf": [
               {
@@ -11982,7 +12350,7 @@
       },
       "SettingsPatch": {
         "additionalProperties": false,
-        "description": "A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,\n``lite_generation_defaults`` merges key by key, and ``null`` is refused for a top-level\nfield (except ``max_model_calls_per_turn``, whose ``null`` restores the formula, and\n``media_moderation_webhook_url``, ``public_base_url`` and\n``max_characters_at_start_ceiling``, whose ``null`` unsets them). A list\n(``media_allowed_types``, ``listing_status_values``) replaces the stored one. Bounds are\n``DeploymentSettings``'s, checked on the merged settings (422 ``validation_error`` at\n``body.<field>``).",
+        "description": "A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,\n``lite_generation_defaults`` merges key by key, and ``null`` is refused for a top-level\nfield (except ``max_model_calls_per_turn``, whose ``null`` restores the formula, and\n``media_moderation_webhook_url``, ``public_base_url`` and\n``max_characters_at_start_ceiling``, whose ``null`` unsets them). A list\n(``media_allowed_types``, ``listing_status_values``, ``feedback_tags``) replaces the stored\none. Bounds are ``DeploymentSettings``'s, checked on the merged settings (422\n``validation_error`` at ``body.<field>``).",
         "examples": [
           {
             "lite_window_messages": 40,
@@ -12033,6 +12401,50 @@
               }
             ],
             "title": "Default Safe Fallback"
+          },
+          "feedback_retention": {
+            "anyOf": [
+              {
+                "enum": [
+                  "story_lifetime"
+                ],
+                "type": "string"
+              },
+              {
+                "maximum": 3650.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback Retention"
+          },
+          "feedback_tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback Tags"
+          },
+          "feedback_text_max_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback Text Max Chars"
           },
           "idempotency_result_window": {
             "anyOf": [
@@ -14419,6 +14831,9 @@
                           "default_content_rating_id",
                           "default_engine_profile_id",
                           "default_safe_fallback",
+                          "feedback_retention",
+                          "feedback_tags",
+                          "feedback_text_max_chars",
                           "idempotency_result_window",
                           "job_retention_days",
                           "listing_status_values",
@@ -16925,7 +17340,7 @@
         ]
       },
       "put": {
-        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `max_model_calls_per_turn` accepts `null` (the Lite formula `9 + G`), and so do `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` (unset: no hook, no base URL, no ceiling); no other key does. A list replaces the stored one. `listing_status_values` lists the catalog's listing status values in order (a new entry takes the first; distinct, case-sensitive, 1 to 40 printable characters each); removing a value a catalog entry still holds is 409 `listing_status_in_use` (`details.value`, `details.count`). `validation_model_calls` (0 to 1000, default 0) is how many model calls one catalog validation (a publish, or a dry run) may spend on model-assisted input policies; those it does not reach are listed `unavailable` in the report.",
+        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `max_model_calls_per_turn` accepts `null` (the Lite formula `9 + G`), and so do `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` (unset: no hook, no base URL, no ceiling); no other key does. A list replaces the stored one. `listing_status_values` lists the catalog's listing status values in order (a new entry takes the first; distinct, case-sensitive, 1 to 40 printable characters each); removing a value a catalog entry still holds is 409 `listing_status_in_use` (`details.value`, `details.count`). `validation_model_calls` (0 to 1000, default 0) is how many model calls one catalog validation (a publish, or a dry run) may spend on model-assisted input policies; those it does not reach are listed `unavailable` in the report. `feedback_tags` lists the reason tags a message rating may carry (FR-FB-1's nine to start; distinct, 1 to 40 of `a-z 0-9 _` each, up to 50; may be empty); removing a tag a rating or its history still carries is 409 `feedback_tag_in_use` (`details.in_use`: each tag with its `current` and `history` counts). `feedback_text_max_chars` (1 to 20000, default 2000) caps a rating's free text, and `feedback_retention` keeps ratings for the story's life (`story_lifetime`, the default) or a number of days (1 to 3650).",
         "operationId": "update_deployment_settings",
         "parameters": [
           {
@@ -17022,7 +17437,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `config_conflict`, `idempotency_conflict`, `listing_status_in_use`."
+            "description": "Conflict; nothing was written: `config_conflict`, `feedback_tag_in_use`, `idempotency_conflict`, `listing_status_in_use`."
           },
           "422": {
             "content": {
@@ -28443,6 +28858,422 @@
         ]
       }
     },
+    "/stories/{story_id}/messages/{message_id}/feedback": {
+      "delete": {
+        "description": "Retract the requesting principal's rating of the message: it is removed and its final value stays in the history. 204 also when there is no rating to retract; 404 for an unknown message. A rating after a retraction is a new one (201). The call takes no `Idempotency-Key`. Feedback is an audit record that changes nothing in the story: no view, prompt, retrieval or summary reads it, and no amount of it changes how the next message is generated.",
+        "operationId": "retract_feedback",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The message's id: its `message_rendered` event's id (a ULID), as respond, regenerate and the history answer it. A `turn:variant` form is not a message id.",
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "description": "The message's id: its `message_rendered` event's id (a ULID), as respond, regenerate and the history answer it. A `turn:variant` form is not a message id.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C8"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Message Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Retract your rating of a message",
+        "tags": [
+          "feedback"
+        ],
+        "x-epistrel-mutating": false
+      },
+      "get": {
+        "description": "The requesting principal's own rating of the message, with the `history` of its earlier values, newest first; `rating` is null when the principal has none. The read needs `X-Epistrel-Principal`, whose rating it answers (400 `principal_required`), and no viewpoint. Feedback is an audit record that changes nothing in the story: no view, prompt, retrieval or summary reads it, and no amount of it changes how the next message is generated.",
+        "operationId": "get_feedback",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The message's id: its `message_rendered` event's id (a ULID), as respond, regenerate and the history answer it. A `turn:variant` form is not a message id.",
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "description": "The message's id: its `message_rendered` event's id (a ULID), as respond, regenerate and the history answer it. A `turn:variant` form is not a message id.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C8"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Message Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4), whose own record this read answers: required (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`). Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Feedback"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read your rating of a message",
+        "tags": [
+          "feedback"
+        ]
+      },
+      "put": {
+        "description": "Rate a generated message as the requesting principal (FR-FB-1): `rating` 1 to 5, up to ten `tags` from the deployment's `feedback_tags` (trimmed and lower-cased; an unknown one is 422 `unknown_feedback_tag` with `details.unknown_tags`), and optional `text`, trimmed, at most the deployment's `feedback_text_max_chars` characters (2000 by default; 422 `validation_error` beyond). `message_id` is the message's `message_rendered` event id; a message of another story, or the consumer's own narration, is 404. Each principal has one rating per message: the first is 201, with the context the message was produced under (its operation, configuration fingerprint, profile version, models per purpose, content-rating version and quality status, as recorded then); a different value replaces it (200) and the earlier value joins `history`; the same value again changes nothing (200). A regenerated message is a new message and starts unrated. Allowed on an archived story and while a turn runs. The write is idempotent by itself, so it takes no `Idempotency-Key`. Feedback is an audit record that changes nothing in the story: no view, prompt, retrieval or summary reads it, and no amount of it changes how the next message is generated.",
+        "operationId": "rate_message",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The message's id: its `message_rendered` event's id (a ULID), as respond, regenerate and the history answer it. A `turn:variant` form is not a message id.",
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "description": "The message's id: its `message_rendered` event's id (a ULID), as respond, regenerate and the history answer it. A `turn:variant` form is not a message id.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C8"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Message Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Feedback"
+                }
+              }
+            },
+            "description": "The principal's rating existed: replaced, or the same value again."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Feedback"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `unknown_feedback_tag`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Rate a message",
+        "tags": [
+          "feedback"
+        ],
+        "x-epistrel-mutating": false
+      }
+    },
     "/stories/{story_id}/owner": {
       "put": {
         "description": "Make `principal` the owner of a story (FR-AUTH-5): it answers the owner now and the one before, with its `timeline_revision` (unchanged). The transfer is recorded with the acting principal and time. A transfer to the current owner changes nothing and records nothing. `system` is refused (422). Allowed whatever the entity's status. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
@@ -31028,6 +31859,10 @@
     {
       "description": "Each owned entity's one owner and its relations (FR-AUTH-5,6): transfers and relation changes, recorded with the acting principal. Ownership and relations exist for listing, attribution and offboarding only; nothing gates on them (FR-AUTH-8).",
       "name": "ownership"
+    },
+    {
+      "description": "Message feedback: each principal's rating (1 to 5) of a generated message, with reason tags and free text, recorded with the configuration the message was produced under (FR-FB-1). Feedback is an audit record: nothing in the story reads it, and it changes no engine behavior (FR-FB-2).",
+      "name": "feedback"
     },
     {
       "description": "Operator endpoints, all under `/admin` (FR-AUTH-1).",

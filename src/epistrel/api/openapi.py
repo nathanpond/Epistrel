@@ -26,11 +26,13 @@ What ``build`` adds or changes:
   and ``MediaUpload`` (the ``metadata`` part of ``POST /media``'s multipart body, which the
   route reads itself, #105; ``MULTIPART_BODIES``).
 - Tags: stories, timeline, history, operations, settings, catalog, media, profiles, ownership,
-  admin, ops. Every
+  feedback, admin, ops. Every
   owned type's owner and relation routes (``routes.ownership``, #104) are tagged ``ownership``,
   whichever router serves them.
 - A route flagged ``mutating=False`` (``deps.route_flags``) is documented as a read with a
   principal: no ``Idempotency-Key``, idempotency errors, replay headers or expected revision.
+- A read that answers the requesting principal's own record (``PRINCIPAL_READS``: a principal's
+  rating of a message, #112) documents ``X-Epistrel-Principal`` as required, with its 400.
 """
 
 from __future__ import annotations
@@ -96,6 +98,13 @@ TAGS: list[dict[str, str]] = [
         "transfers and relation changes, recorded with the acting principal. Ownership and "
         "relations exist for listing, attribution and offboarding only; nothing gates on them "
         "(FR-AUTH-8).",
+    },
+    {
+        "name": "feedback",
+        "description": "Message feedback: each principal's rating (1 to 5) of a generated message, "
+        "with reason tags and free text, recorded with the configuration the message was "
+        "produced under (FR-FB-1). Feedback is an audit record: nothing in the story reads it, "
+        "and it changes no engine behavior (FR-FB-2).",
     },
     {"name": "admin", "description": "Operator endpoints, all under `/admin` (FR-AUTH-1)."},
     {"name": "ops", "description": "Unauthenticated operational probes."},
@@ -187,6 +196,7 @@ ERROR_STATUS: dict[str, int] = {
     "unknown_chain": 409,
     "config_conflict": 409,
     "draft_stale": 409,
+    "feedback_tag_in_use": 409,
     "listing_status_in_use": 409,
     "upload_closed": 409,
     "upload_incomplete": 409,
@@ -219,6 +229,7 @@ ERROR_STATUS: dict[str, int] = {
     "publish_invalid": 422,
     "rating_retired": 422,
     "subjects_required": 422,
+    "unknown_feedback_tag": 422,
     "unsupported_event_kind": 422,
     "validation_error": 422,
     "viewpoint_unresolved": 422,
@@ -320,6 +331,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "rating_retired",
         "profile_deleted",
         "listing_status_in_use",
+        "feedback_tag_in_use",
     ),
     "policies_create": (*_ADMIN_CONFIG, "cannot_relax"),
     "policies_update": (*_ADMIN_CONFIG, "cannot_relax"),
@@ -385,6 +397,10 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "delete_profile": _ADMIN_CONFIG,
     # A story's configuration (#109): a preview refuses what the change itself would.
     "impact_preview": ("invalid_profile", "profile_deleted"),
+    # Message feedback (#112): a tag outside the deployment's set; the read of one's own rating
+    # needs the principal.
+    "rate_message": ("unknown_feedback_tag",),
+    "get_feedback": ("principal_required",),
     # A companion scenario's owner and relations follow its character (#104, #116).
     **{
         operation_id: ("companion_follows_character",)
@@ -400,6 +416,10 @@ QUEUEING_OPERATIONS = frozenset({"respond", "ingest"})
 
 VIEWPOINT_OPERATIONS = frozenset({"respond", "regenerate", "history", "get_story", "get_operation"})
 """Operations that read the output viewpoint from ``?viewpoint=`` (FR-RESP-12)."""
+
+PRINCIPAL_READS = frozenset({"get_feedback"})
+"""Reads that answer the requesting principal's own record, so ``X-Epistrel-Principal`` is
+required on them too: a principal's rating of a message (FR-FB-1, FR-AUTH-4; #112)."""
 
 CREATING_OPERATIONS = frozenset({"create_story", "fork"})
 """Operations that answer 201 with ``Location: /stories/{id}``."""
@@ -520,6 +540,19 @@ def _parameters(
                 "`principal_required` when missing, blank, longer than 256 characters, holding a "
                 "control character, or the reserved `system`), recorded for attribution and "
                 "never interpreted. Surrounding spaces and tabs are trimmed.",
+                required=True,
+                pattern=PRINCIPAL_PATTERN,
+            )
+        )
+    elif operation_id in PRINCIPAL_READS:
+        added.append(
+            _parameter(
+                PRINCIPAL_HEADER,
+                "header",
+                "The opaque requesting principal (FR-AUTH-4), whose own record this read "
+                "answers: required (400 `principal_required` when missing, blank, longer than "
+                "256 characters, holding a control character, or the reserved `system`). "
+                "Surrounding spaces and tabs are trimmed.",
                 required=True,
                 pattern=PRINCIPAL_PATTERN,
             )

@@ -41,12 +41,14 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.settings_schema import (
+    DEFAULT_FEEDBACK_TAGS,
     DEFAULT_LISTING_STATUS_VALUES,
     DEFAULT_MAX_CHARACTERS_AT_START,
     DEPLOYMENT_COLUMNS,
     CatalogValidationSettings,
     ConfigClass,
     DeploymentSettings,
+    FeedbackSettings,
     GuardrailSettings,
     IdempotencySettings,
     LiteDefaults,
@@ -188,9 +190,11 @@ SECTIONS: tuple[type[BaseModel], ...] = (
     GuardrailSettings,
     MediaSettings,
     CatalogValidationSettings,
+    FeedbackSettings,
 )
 """The views of ``deployment_state.settings`` earlier stories read
-(#53/#57/#60/#61/#63/#68/#69), the media settings (#105) and the catalog validation's (#111)."""
+(#53/#57/#60/#61/#63/#68/#69), the media settings (#105), the catalog validation's (#111) and
+message feedback's (#112)."""
 
 
 def section[M: BaseModel](view: type[M], document: Mapping[str, Any] | None) -> M:
@@ -219,6 +223,7 @@ class DeploymentState:
     listing_status_values: list[str] = field(
         default_factory=lambda: list(DEFAULT_LISTING_STATUS_VALUES)
     )
+    feedback_tags: list[str] = field(default_factory=lambda: list(DEFAULT_FEEDBACK_TAGS))
     settings: dict[str, Any] = field(default_factory=dict)
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
@@ -234,6 +239,7 @@ class DeploymentState:
                 "max_characters_at_start_ceiling": self.max_characters_at_start_ceiling,
                 "default_engine_profile_id": self.default_engine_profile_id,
                 "listing_status_values": self.listing_status_values,
+                "feedback_tags": self.feedback_tags,
             }
         )
 
@@ -255,6 +261,7 @@ def _state(row: Any) -> DeploymentState:
         max_characters_at_start_ceiling=row.max_characters_at_start_ceiling,
         default_engine_profile_id=row.default_engine_profile_id,
         listing_status_values=list(row.listing_status_values),
+        feedback_tags=list(row.feedback_tags),
         settings=document_settings(row.settings),
     )
 
@@ -267,6 +274,7 @@ _COLUMNS = (
     deployment_state.c.max_characters_at_start_ceiling,
     deployment_state.c.default_engine_profile_id,
     deployment_state.c.listing_status_values,
+    deployment_state.c.feedback_tags,
     deployment_state.c.settings,
 )
 

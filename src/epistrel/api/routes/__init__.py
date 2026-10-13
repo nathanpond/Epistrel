@@ -15,6 +15,7 @@ from epistrel.api.routes import (
     catalog_characters,
     catalog_scenarios,
     engine_profiles,
+    feedback,
     health,
     history,
     media,
@@ -43,6 +44,7 @@ router.include_router(catalog_scenarios.router)
 router.include_router(media.router)
 router.include_router(engine_profiles.router)
 router.include_router(story_profile.router)
+router.include_router(feedback.router)
 router.include_router(admin.router)
 
 signed_router = APIRouter()

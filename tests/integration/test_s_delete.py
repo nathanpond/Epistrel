@@ -14,6 +14,7 @@ from epistrel.core import clock, turn_gate
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind
 from epistrel.core.errors import GuardrailViolation
+from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
@@ -33,12 +34,21 @@ AUTHOR = RequestContext(principal="p-author")
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:
     """Turns, background work between them, story and character policies, a rebuild, an
     ingested narration (a ``client_events`` row, #58), a rejected input (an ``audit_log``
-    row naming the story), a relation (``entity_relations``, #104) and a story-scoped subject
+    row naming the story), a relation (``entity_relations``, #104), a story-scoped subject
     reference (``subject_references``: #105 creates the index, #123 writes its story rows, so
-    the row is planted). The victim also gets a queued turn (``turn_queue``, #63)."""
+    the row is planted) and a reply rated and rated again (a rating and its history, #112). The
+    victim also gets a queued turn (``turn_queue``, #63)."""
     for n in range(1, 3):
         await play_turn(engine, story_id, f"turn {n} of {story_id}")
         await interleave(engine, story_id, after_turn=n)
+    (reply, *_) = await rows(
+        engine,
+        "SELECT id FROM events WHERE story_id = :s AND type = 'message_rendered' ORDER BY seq",
+        s=story_id,
+    )
+    rater = RequestContext(principal=f"p-rater-{story_id}")
+    for rating in (2, 4):
+        await lib.rate_message(rater, story_id, reply.id, FeedbackRequest(rating=rating))
     await lib.policies_set_story(
         AUTHOR,
         story_id,

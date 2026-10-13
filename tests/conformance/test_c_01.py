@@ -30,7 +30,10 @@ signs with the app's ``EPISTREL_CONFIG_KEY`` under the seeded ``public_base_url`
 back after each generated settings write, since a valid write may unset it and the route would
 then answer a documented 503 ``config_missing``. The fixture engine profile (#106) may be
 deleted by a generated ``delete_profile``: a deleted profile still reads and copies, and an
-edit of it answers a documented 422 ``profile_deleted``.
+edit of it answers a documented 422 ``profile_deleted``. The fixture turn's reply is the message
+the message-rating routes (#112) are generated against: a generated rating, re-rating or
+retraction writes no ``operations``, ``events`` or ``config_changes`` row, and a generated
+``feedback_tags`` write that would drop a tag a rating carries answers a documented 409.
 """
 
 from __future__ import annotations
@@ -148,6 +151,7 @@ class Live:
     upload_id: str
     scenario_id: str
     profile_id: str
+    message_id: str
 
     def counts(self) -> dict[str, int]:
         sync = make_sync_engine(self.url)
@@ -173,14 +177,15 @@ class Live:
             "upload_id": self.upload_id,
             "scenario_id": self.scenario_id,
             "profile_id": self.profile_id,
+            "message_id": self.message_id,
         }
 
 
-async def _seed(settings: Settings) -> tuple[str, str, str, str, str, str, str]:
+async def _seed(settings: Settings) -> tuple[str, str, str, str, str, str, str, str]:
     """A two-character story with one played turn, a published catalog character, an
     uploaded image, an open upload session (#107), a published scenario (#108) and an engine
     profile (#106): the story's id, the turn's operation id, the character's id, the image's id,
-    the session's id, the scenario's id and the profile's id."""
+    the session's id, the scenario's id, the profile's id and the turn's reply (#112)."""
     db = make_engine(settings)
     engine = Engine.from_settings(settings)
     engine.bind(db)
@@ -231,6 +236,7 @@ async def _seed(settings: Settings) -> tuple[str, str, str, str, str, str, str]:
             session.upload_id,
             scenario_id,
             profile.profile.id,
+            played.message.message_id,
         )
     finally:
         await engine.models.aclose()

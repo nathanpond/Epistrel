@@ -120,6 +120,7 @@ from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.deployment import SettingsPatch
 from epistrel.core.errors import EpistrelError
+from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.fork import ForkRequest
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.media.assets import MediaUpload
@@ -262,6 +263,18 @@ def _keep(name: str, *path: str | int) -> Callable[[dict[str, Any], Ids], None]:
         for part in path:
             value = value[part]
         ids[name] = value
+
+    return capture
+
+
+def _both(
+    *captures: Callable[[dict[str, Any], Ids], None],
+) -> Callable[[dict[str, Any], Ids], None]:
+    """Every capture in turn."""
+
+    def capture(body: dict[str, Any], ids: Ids) -> None:
+        for each in captures:
+            each(body, ids)
 
     return capture
 
@@ -443,6 +456,12 @@ schema read, the default refused deletion, the copy deleted, and the profile tra
 configuration read."""
 PROFILE_GROUP = "profiles"
 """The ``Step.group`` of the engine-profile steps (#106)."""
+MESSAGE_RATING = {"rating": 4, "tags": ["too_long"], "text": "Shorter, please."}
+RATING_ANSWERS = [("rate_message", 201), ("get_feedback", 200), ("retract_feedback", 204)]
+"""What the message-rating steps (#112) answer on both surfaces: the first turn's reply rated
+(the principal's first rating), the rating read back, and retracted."""
+RATING_GROUP = "ratings"
+"""The ``Step.group`` of the message-rating steps (#112)."""
 
 
 def _steps() -> list[Step]:
@@ -512,7 +531,10 @@ def _steps() -> list[Step]:
             "respond",
             lambda ids: Rest("POST", f"{s}/respond", _respond_request(ids)),
             lambda e, ids: _respond(e, ids),
-            _keep("turn_operation", "beats", 0, "operation_id"),
+            _both(
+                _keep("turn_operation", "beats", 0, "operation_id"),
+                _keep("reply", "message", "message_id"),
+            ),
         ),
         Step(
             "ingest",
@@ -540,6 +562,25 @@ def _steps() -> list[Step]:
                 params={"viewpoint": f"character:{ids['wren']}"},
             ),
             lambda e, ids: _operation(e, ids),
+        ),
+        # -- message ratings (#112): the first turn's reply rated, the rating read, retracted
+        Step(
+            "rate_message",
+            lambda ids: Rest("PUT", f"{s}/messages/{{reply}}/feedback", MESSAGE_RATING),
+            lambda e, ids: _message_rated(e, ids),
+            group=RATING_GROUP,
+        ),
+        Step(
+            "get_feedback",
+            lambda ids: Rest("GET", f"{s}/messages/{{reply}}/feedback"),
+            lambda e, ids: _message_rating(e, ids),
+            group=RATING_GROUP,
+        ),
+        Step(
+            "retract_feedback",
+            lambda ids: Rest("DELETE", f"{s}/messages/{{reply}}/feedback"),
+            lambda e, ids: _no_content(e.retract_feedback(CTX, ids["story"], ids["reply"])),
+            group=RATING_GROUP,
         ),
         # -- timeline
         Step(
@@ -1353,6 +1394,16 @@ async def _operation(engine: Engine, ids: Ids) -> dict[str, Any]:
     return dump(OperationBody.of(view))
 
 
+async def _message_rated(engine: Engine, ids: Ids) -> dict[str, Any]:
+    request = FeedbackRequest.model_validate(MESSAGE_RATING)
+    write = await engine.rate_message(CTX, ids["story"], ids["reply"], request)
+    return dump(write.feedback)
+
+
+async def _message_rating(engine: Engine, ids: Ids) -> dict[str, Any]:
+    return dump(await engine.get_feedback(CTX, ids["story"], ids["reply"]))
+
+
 async def _regenerate(engine: Engine, story_id: str) -> dict[str, Any]:
     request = RegenerateRequest.model_validate({"prompt_params": {"length": "short"}})
     result = await engine.regenerate(CTX, story_id, request)
@@ -1791,8 +1842,8 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
     """The same calls give the same results over REST and in-process, for every operation.
 
     Complement asserted: the comparison sees real results (the turn's reply text came back on
-    both surfaces, the error steps answered errors, not successes, and each character and media
-    step its intended status)."""
+    both surfaces, the error steps answered errors, not successes, each character, media and
+    message-rating step its intended status, and the rating recorded its turn's operation)."""
     steps = _steps()
     app = create_app(auth_settings(dummy_dsn))
     assert parity_gaps(Engine, app, steps) == []
@@ -1857,6 +1908,22 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         if step.group == PROFILE_GROUP
     ]
     assert profiles == PROFILE_ANSWERS
+    ratings = [
+        (step.operation, status, body)
+        for step, (status, body) in zip(steps, rest, strict=True)
+        if step.group == RATING_GROUP
+    ]
+    assert [(operation, status) for operation, status, _ in ratings] == RATING_ANSWERS
+    first_turn = next(
+        body for step, (_, body) in zip(steps, rest, strict=True) if step.operation == "respond"
+    )
+    rated, read = ratings[0][2], ratings[1][2]
+    assert (rated["rating"], rated["tags"], rated["context"]["operation_id"]) == (
+        4,
+        ["too_long"],
+        first_turn["beats"][0]["operation_id"],
+    )
+    assert read == rated
 
 
 def test_c_03_bites_on_a_method_without_a_route_or_step(dummy_dsn: str) -> None:

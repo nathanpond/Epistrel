@@ -746,3 +746,34 @@ class ProfileDeleted(EpistrelError):
 
     code = "profile_deleted"
     http_status = 422
+
+
+# -- message feedback (#112) --------------------------------------------------------------------
+
+
+class MessageNotFound(EpistrelError):
+    """The message a rating names is not a generated message of the story: no ``message_rendered``
+    event of the story has that id, or it is the consumer's own narration, which no
+    configuration produced (FR-FB-1). ``details``: ``story_id`` and ``message_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class UnknownFeedbackTag(EpistrelError):
+    """A rating names a reason tag that is not one of the deployment's ``feedback_tags``
+    (FR-FB-1). Nothing is written. ``details``: ``field`` (``body.tags``), ``unknown_tags`` (as
+    compared: trimmed and lower-cased) and ``allowed_tags`` (the deployment's, in order)."""
+
+    code = "unknown_feedback_tag"
+    http_status = 422
+
+
+class FeedbackTagInUse(EpistrelError):
+    """A ``feedback_tags`` write that removes a tag a rating or a history entry still carries
+    (FR-FB-1; #112). Nothing is written. ``details``: ``field`` (``body.feedback_tags``) and
+    ``in_use``: one ``{tag, current, history}`` per such tag, in the old list's order, counting
+    the ratings and the history entries that carry it."""
+
+    code = "feedback_tag_in_use"
+    http_status = 409

@@ -58,7 +58,13 @@ async def read_settings(ctx: ContextDep, engine: EngineDep) -> SettingsBody:
         "`listing_status_in_use` (`details.value`, `details.count`). `validation_model_calls` "
         "(0 to 1000, default 0) is how many model calls one catalog validation (a publish, or a "
         "dry run) may spend on model-assisted input policies; those it does not reach are "
-        "listed `unavailable` in the report."
+        "listed `unavailable` in the report. `feedback_tags` lists the reason tags a message "
+        "rating may carry (FR-FB-1's nine to start; distinct, 1 to 40 of `a-z 0-9 _` each, up to "
+        "50; may be empty); removing a tag a rating or its history still carries is 409 "
+        "`feedback_tag_in_use` (`details.in_use`: each tag with its `current` and `history` "
+        "counts). `feedback_text_max_chars` (1 to 20000, default 2000) caps a rating's free "
+        "text, and `feedback_retention` keeps ratings for the story's life (`story_lifetime`, "
+        "the default) or a number of days (1 to 3650)."
     ),
 )
 async def update_settings(

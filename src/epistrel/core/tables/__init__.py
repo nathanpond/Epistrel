@@ -1,5 +1,12 @@
-"""Every table the engine owns, declared against one ``metadata`` (imported by ``core.schema``)."""
+"""Every table the engine owns, declared against one ``metadata`` (imported by ``core.schema``).
 
+The message-feedback tables (#112) are registered here by importing their module, but their
+names are not re-exported: a module that reads or writes feedback imports
+``epistrel.core.tables.feedback`` by name, so the guard over ``src/`` that lists every module
+naming them (``tests/integration/test_feedback.py``) sees each one (FR-FB-2).
+"""
+
+from epistrel.core.tables import feedback as _feedback  # noqa: F401 - registers the tables
 from epistrel.core.tables.audit_log import audit_log
 from epistrel.core.tables.base import NAMING_CONVENTION, metadata
 from epistrel.core.tables.catalog import (

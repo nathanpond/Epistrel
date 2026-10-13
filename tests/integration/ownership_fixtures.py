@@ -228,6 +228,33 @@ async def _played(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict
     return {}
 
 
+async def _reply(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A played turn: its reply's ``message_id`` for the message-rating routes (#112)."""
+    played = await _post(client, kind, entity, "/respond", respond_body(entity), 200)
+    return {"message_id": played["message"]["message_id"]}
+
+
+RATING = {"rating": 2, "tags": ["too_long"], "text": "It rambles about the weather."}
+
+
+async def _rated(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A played turn whose reply the owner rated."""
+    extra = await _reply(client, kind, entity)
+    path = f"/messages/{extra['message_id']}/feedback"
+    await _send(client, kind, entity, "PUT", path, RATING, 201)
+    return extra
+
+
+async def _rated_by_all(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A played turn whose reply each of the matrix's three requesters rated the same way: a
+    principal's rating is keyed by that principal (FR-AUTH-4), so each reads its own."""
+    extra = await _reply(client, kind, entity)
+    path = kind.path(entity.id, f"/messages/{extra['message_id']}/feedback")
+    for principal in (OWNER, STRANGER, RELATED):
+        await ok(await client.put(path, json=RATING, headers=headers(principal)), 201)
+    return extra
+
+
 async def _truncated(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     await _played(client, kind, entity)
     await _post(client, kind, entity, "/truncate", {"to_turn": 0}, 200)
@@ -305,15 +332,20 @@ async def _instructed(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> 
 @dataclass(frozen=True)
 class Call:
     """A request that succeeds (``expected``) when the entity's owner sends it. ``json`` is the
-    body, or a function of the entity; ``prepare`` runs first, as the owner, and ``cleanup``
-    after the case (a deployment setting ``prepare`` changed). The request is sent once per query
-    string in ``queries``, each its own matrix case."""
+    body, or a function of the entity; ``prepare`` runs first, as the owner (or, for a rating
+    each requester reads as its own, as each of them), and ``cleanup`` after the case (a
+    deployment setting ``prepare`` changed). The request is sent once per query string in
+    ``queries``, each its own matrix case."""
 
     expected: int
     json: Any = None
     queries: tuple[dict[str, str], ...] = ({},)
     prepare: Prepare = _nothing
     cleanup: Prepare = _nothing
+    own: tuple[str, ...] = ()
+    """Keys of a read's body that name the requesting principal, because the read answers that
+    principal's own record (a principal's rating of a message, FR-AUTH-4, #112): the matrix
+    compares the bodies with them set aside."""
 
     def body(self, entity: Entity) -> Any:
         return self.json(entity) if callable(self.json) else self.json
@@ -325,6 +357,7 @@ SC = "/catalog/scenarios/{scenario_id}"
 M = "/media/{media_id}"
 P = "/engine-profiles/{profile_id}"
 RELATION = "/relations/{relation}/{principal:path}"
+FEEDBACK = "/messages/{message_id}/feedback"
 OMNISCIENT = {"viewpoint": "omniscient"}
 ENTRY_READS: tuple[dict[str, str], ...] = (
     {},
@@ -370,6 +403,12 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/variants"): Call(200, prepare=_regenerated),
     ("GET", f"{S}/relations"): Call(200, prepare=_related),
     ("GET", f"{S}/effective-config"): Call(200, prepare=_played),
+    # -- stories: message ratings (#112). Each requester rates a fresh story's reply, retracts
+    # the owner's rating (none of its own: still 204), and reads its own rating of a reply all
+    # three rated alike.
+    ("PUT", f"{S}{FEEDBACK}"): Call(201, RATING, prepare=_reply),
+    ("DELETE", f"{S}{FEEDBACK}"): Call(204, prepare=_rated),
+    ("GET", f"{S}{FEEDBACK}"): Call(200, prepare=_rated_by_all, own=("principal",)),
     # -- catalog characters: writes
     ("PATCH", C): Call(200, {"draft_revision": 1, "public_description": "Keeps the logbook."}),
     ("POST", f"{C}/publish"): Call(201, {"draft_revision": 1}),

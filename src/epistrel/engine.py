@@ -26,6 +26,7 @@ from epistrel.config import ProcessMode, Settings
 from epistrel.core import config_changes as config_log
 from epistrel.core import (
     deployment,
+    feedback,
     fork,
     idempotency,
     ingest,
@@ -2601,6 +2602,48 @@ class Engine:
         setting at its effective value, the fingerprint, the capabilities and the quality
         status. 404 for an unknown story."""
         return await effective.read(self.db, story_id, await self._runtime_facts())
+
+    # -- message feedback (FR-FB-1,2; #112) --------------------------------------------------------
+    # A rating is a plain table write, not an operation: no ``Idempotency-Key`` (a repeated
+    # request converges on the same row; REST flags the routes ``mutating=False``), no expected
+    # revision, and nothing a story view, prompt or retrieval reads.
+
+    async def rate_message(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        message_id: str,
+        request: feedback.FeedbackRequest,
+    ) -> feedback.FeedbackWrite:
+        """Rate a generated message as the requesting principal (FR-FB-1): ``message_id`` is its
+        ``message_rendered`` event's id. The first rating is ``created`` (REST 201) with the
+        context the message was produced under; a different value replaces it and joins the
+        history (200); the same value again changes nothing (200). Allowed on an archived story
+        and during a turn. 404 for an unknown story or a message that is not a generated message
+        of it; 422 ``unknown_feedback_tag``; 422 ``validation_error`` at ``body.text`` over the
+        deployment's ``feedback_text_max_chars``."""
+        principal = self.require_principal(ctx)
+        return await feedback.rate(self.db, story_id, message_id, request, principal=principal)
+
+    async def retract_feedback(
+        self, ctx: RequestContext, story_id: str, message_id: str
+    ) -> feedback.FeedbackRetraction:
+        """Retract the requesting principal's rating of the message (FR-FB-1): its final value
+        stays in the history. Nothing to retract is not an error (REST 204 either way). 404 for
+        an unknown story or message."""
+        principal = self.require_principal(ctx)
+        return await feedback.retract(self.db, story_id, message_id, principal=principal)
+
+    async def get_feedback(
+        self, ctx: RequestContext, story_id: str, message_id: str
+    ) -> feedback.Feedback:
+        """The requesting principal's own rating of the message, with its history, newest first
+        (``rating`` null when it has none). It needs the principal, whose rating it is (400
+        ``principal_required``), and no viewpoint: a rating is never story content. 404 for an
+        unknown story or message."""
+        if ctx.principal is None or not ctx.principal.strip():
+            raise PrincipalRequired("reading a rating needs the requesting principal: it is theirs")
+        return await feedback.read(self.db, story_id, message_id, principal=ctx.principal)
 
 
 # One span, summary line and count per outermost call of every public coroutine method (#74).

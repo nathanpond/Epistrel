@@ -85,6 +85,11 @@ ORDER: dict[str, str] = {
     "subject_references": (
         f"{_STORY_RANK}, t.record_table, t.field NULLS FIRST, t.ref_kind, t.subject_kind"
     ),
+    # Message feedback (#112): a principal's rating of a message variant, and its history.
+    "message_feedback": f"{_STORY_RANK}, t.turn, t.variant, t.principal",
+    "feedback_history": (
+        f"{_STORY_RANK}, t.turn, t.variant, t.principal, t.replaced_at, t.rated_at, t.kind"
+    ),
 }
 """Each compared table's ``ORDER BY`` (``t`` is the table): natural keys, never an id."""
 

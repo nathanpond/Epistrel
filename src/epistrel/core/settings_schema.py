@@ -25,7 +25,16 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainValidator,
+    StrictInt,
+    WithJsonSchema,
+    field_validator,
+)
 from pydantic.fields import FieldInfo
 
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
@@ -539,6 +548,91 @@ class CatalogValidationSettings(BaseModel):
     )
 
 
+# -- message feedback (FR-FB-1,2; #112) -----------------------------------------------------------
+
+DEFAULT_FEEDBACK_TAGS = (
+    "out_of_character",
+    "repetitive",
+    "forgot_something",
+    "factual_error",
+    "ignored_my_action",
+    "too_long",
+    "too_short",
+    "should_have_been_blocked",
+    "other",
+)
+"""FR-FB-1's nine seeded reason tags: a deployment starts with them and may add its own
+(``feedback_tags``)."""
+FEEDBACK_TAG_MAX_CHARS = 40
+FEEDBACK_TAG_PATTERN = rf"^[a-z0-9_]{{1,{FEEDBACK_TAG_MAX_CHARS}}}$"
+"""A deployment's reason tag: 1 to 40 of ``a-z``, ``0-9`` and ``_``."""
+FEEDBACK_TAGS_MAX = 50
+DEFAULT_FEEDBACK_TEXT_MAX_CHARS = 2_000
+FEEDBACK_TEXT_MAX_CHARS_LIMIT = 20_000
+StoryLifetime = Literal["story_lifetime"]
+STORY_LIFETIME: StoryLifetime = "story_lifetime"
+"""``feedback_retention``'s default: a rating is kept until its story is deleted."""
+FEEDBACK_RETENTION_MAX_DAYS = AUDIT_RETENTION_MAX_DAYS
+
+FeedbackTag = Annotated[str, Field(pattern=FEEDBACK_TAG_PATTERN)]
+"""One reason tag of the deployment's set (``feedback_tags``)."""
+
+
+def feedback_retention_value(value: Any) -> int | str:
+    """``story_lifetime``, or a number of days from 1 to 3650: an integer, never a boolean or a
+    numeric string. ``ValueError`` (a 422 at the setting itself) for anything else."""
+    if value == STORY_LIFETIME and isinstance(value, str):
+        return STORY_LIFETIME
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and AUDIT_RETENTION_MIN_DAYS <= value <= FEEDBACK_RETENTION_MAX_DAYS
+    ):
+        return value
+    raise ValueError(
+        f"must be {STORY_LIFETIME!r} or a number of days from {AUDIT_RETENTION_MIN_DAYS} to "
+        f"{FEEDBACK_RETENTION_MAX_DAYS}"
+    )
+
+
+FeedbackRetention = Annotated[
+    int | str,
+    PlainValidator(feedback_retention_value),
+    WithJsonSchema(
+        {
+            "anyOf": [
+                {"type": "string", "enum": [STORY_LIFETIME]},
+                {
+                    "type": "integer",
+                    "minimum": AUDIT_RETENTION_MIN_DAYS,
+                    "maximum": FEEDBACK_RETENTION_MAX_DAYS,
+                },
+            ]
+        }
+    ),
+]
+"""How long feedback is kept: ``story_lifetime``, or a number of days (1 to 3650). One
+validator decides, so a refusal is reported at the setting itself."""
+
+
+class FeedbackSettings(BaseModel):
+    """Message feedback (FR-FB-1,2; #112), stored under ``deployment_state.settings``:
+    ``feedback_text_max_chars``, the most characters a rating's free text may hold once trimmed
+    (default 2000; a longer text is 422), and ``feedback_retention``, how long ratings and their
+    history are kept: ``story_lifetime`` (the default: until the story is deleted) or a number of
+    days, after which the ``retention_sweep`` deletes a rating by when it was first given and a
+    history entry by when it was replaced. Feedback has its own retention, never the audit
+    records' (FR-STORE-30). Both are prospective: a rating uses the cap in force when it is
+    written, and each sweep the retention in force when it runs."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    feedback_text_max_chars: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_FEEDBACK_TEXT_MAX_CHARS, ge=1, le=FEEDBACK_TEXT_MAX_CHARS_LIMIT
+    )
+    feedback_retention: Annotated[FeedbackRetention, PROSPECTIVE] = STORY_LIFETIME
+
+
 # -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
 
 DEFAULT_MINOR_AGE_THRESHOLD = 18
@@ -597,10 +691,11 @@ DEPLOYMENT_COLUMNS = (
     "max_characters_at_start_ceiling",
     "default_engine_profile_id",
     "listing_status_values",
+    "feedback_tags",
 )
 """Deployment settings kept in their own ``deployment_state`` columns (#48; the starting-cast
-limits, #108; the default engine profile, #106; the listing status values, #110) rather than in
-its ``settings`` document."""
+limits, #108; the default engine profile, #106; the listing status values, #110; the feedback
+reason tags, #112) rather than in its ``settings`` document."""
 
 
 class DeploymentSettings(
@@ -615,6 +710,7 @@ class DeploymentSettings(
     WorkerHealthSettings,
     MediaSettings,
     CatalogValidationSettings,
+    FeedbackSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's
@@ -669,11 +765,27 @@ class DeploymentSettings(
     ``listing_status_in_use``. Prospective: a change applies to the writes that start after
     it."""
 
+    feedback_tags: Annotated[list[FeedbackTag], PROSPECTIVE] = Field(
+        default_factory=lambda: list(DEFAULT_FEEDBACK_TAGS), max_length=FEEDBACK_TAGS_MAX
+    )
+    """The reason tags a message rating may carry (FR-FB-1; #112), seeded with FR-FB-1's nine.
+    Each is 1 to 40 of ``a-z``, ``0-9`` and ``_``; the list holds no tag twice and may be empty.
+    A write replaces the whole list; removing a tag that a rating or its history still carries is
+    409 ``feedback_tag_in_use``. Prospective: a rating checks its tags against the list in force
+    when it is written."""
+
     @field_validator("listing_status_values")
     @classmethod
     def _distinct_listing_status_values(cls, value: list[str]) -> list[str]:
         if len(set(value)) != len(value):
             raise ValueError("lists a listing status value more than once")
+        return value
+
+    @field_validator("feedback_tags")
+    @classmethod
+    def _distinct_feedback_tags(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("lists a feedback tag more than once")
         return value
 
     def document(self) -> dict[str, Any]:

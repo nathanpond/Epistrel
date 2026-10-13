@@ -3513,3 +3513,110 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** Filed #321 (`needs-triage`). The principal rule refuses only C0 and DEL: `PRINCIPAL_PATTERN`, `principal_problem`, and the principal part of `RELATION_FILTER_PATTERN`. But its messages and the `X-Epistrel-Principal` description say a principal "holding a control character" is refused, and C1 controls are accepted. This is M2's FR-AUTH-4 rule, outside #110's scope, so it was not fixed inline.
   **Why:** The verifier noted that the principal rule shares the convention gap 5 corrected. Cost if wrong: none.
   **Issue:** #110, #321
+- **Decision (drift):** #112's parts follow docs/04 §15 and the shared-file rule.
+  - `test_c_26__feedback`, `part("M3", "FR-FB-1,2; FR-AUTH-4")`, and `test_c_26__isolation`, `part("M3", "FR-FB-2")`, are in the new `tests/conformance/test_c_26.py`. #126's `test_c_26__review` must join this file.
+  - The test plan's `test_feedback` and `test_feedback_isolation` map to no docs/04 test ID (`FEEDBACK`, `FEEDBACK-ISOLATION`), so they were not used as names. The detailed tests are unmarked, in `tests/integration/test_feedback.py`, and their docstrings name no FR id.
+  - §15's C-26 (M3) also covers FR-AUTH-4 ("a rating records the principal"), so the feedback slice claims it.
+  - check-parts counts 173 parts; check-lexicon reports 0 violations; check-traceability passes.
+  **Why:** The drift note: traceability counts one file per test ID and milestone, and an unmapped name would be "missing from §15". Cost if wrong: renames only.
+  **Issue:** #112, #126
+- **Decision (drift):** The feedback writes use #103's `route_flags(mutating=False)` on `PUT` and `DELETE`.
+  - No `Idempotency-Key` is minted or echoed, no expected revision is checked, and no revision base is required; a sent key and a stale `X-Epistrel-Expected-Revision` are ignored. A rating writes no `operations`, `events`, `config_changes` or `idempotency_keys` row.
+  - The methods still require the principal (400 from the HTTP rule).
+  - `GET` checks the principal in `Engine.get_feedback` (400 `principal_required`, message "reading a rating needs the requesting principal"), and the OpenAPI document gains `PRINCIPAL_READS = {"get_feedback"}`: the header is documented as required on that read, and `OPERATION_ERRORS["get_feedback"]` lists its 400. Without both, C-01 would see an undocumented 400.
+  - `route_flags`' docstring now also names "a write that is idempotent by itself and records no operation".
+  **Why:** The pass-2 Discretion ("flagged `mutating=False` … no `Idempotency-Key` echo; `X-Epistrel-Expected-Revision` is ignored") and the drift note's GET correction. #103 built the flag after the drift note was written, so the note's alternative (a `MutationResponse` body) was not needed. Cost if wrong: #128's replay test treats these routes as non-mutating, as its own plan says.
+  **Issue:** #112, #103, #128
+- **Decision (drift):** Only a `message_rendered` event with `provenance = engine` can be rated: a reply, a safe fallback (#68), or a regenerated variant, in any membership (a truncated turn's reply too). The consumer's ingested narration (#58, provenance `consumer`) is 404 `not_found`, like the player's input, another story's message or an unknown id. The 404 names `story_id` and `message_id`; an unknown story is 404 naming `story_id`.
+  **Why:** FR-FB-1 says "rate a generated message", and narration was produced under no configuration (its operation records no stamp). This is the drift note's first option. Cost if wrong: narration becomes ratable with a null context, a one-line filter change.
+  **Issue:** #112
+- **Decision:** The tables (migration `0029_message_feedback`, `core/tables/feedback.py`):
+  - `message_feedback` follows the pass-1 and pass-2 Discretion, with `turn` and `variant` denormalised and `redacted_at` for #124. It has a CHECK on 1 to 5 and is unique on `(story_id, message_id, principal)`.
+  - `feedback_history` holds `(id, story_id, message_id, turn, variant, principal, rating, tags, text, kind, rated_at, replaced_at, redacted_at)`. `turn`, `variant` and `rated_at` (the replaced value's `updated_at`) go beyond pass 2's list, following the base line "history rows carry the full previous row plus `replaced_at`". The context is not copied: it is the message's, the same for every value.
+  - `story_id` references `stories` on both tables. `message_id` and `operation_id` are plain ids: M7's compaction may delete a message and its operation, and the rating stays, marked. The isolation-schema test allows only the `story_id` and `operation_id` foreign keys anyway.
+  - Indexes: `created_at` and `replaced_at` for the retention sweep, and `(story_id, message_id, principal)` on the history for the read. Hand-off to #126: the `created_at` index already exists; add only `config_fingerprint`, `profile_version` and the `tags` GIN.
+  - `core/tables/__init__.py` imports the module only to register the tables, without re-exporting their names, so every module that names them stays visible to the grep guard.
+  **Why:** The AC's columns, and a history entry that can say when its value was given. Cost if wrong: one migration changes columns before anything but #112 reads them.
+  **Issue:** #112, #124, #126
+- **Decision:** A rating's write holds three locks in one transaction, and a new pause point drives the race tests.
+  - The story row `FOR KEY SHARE`. A story deletion (`FOR UPDATE`) waits for the rating, then deletes it. Turns, archives and settings writes take only non-key locks, so a rating is allowed on an archived story and during a turn, and blocks neither.
+  - The deployment row `FOR SHARE`, while reading `feedback_tags` and `feedback_text_max_chars`. A tag removal waits for the rating and then counts it, and a rating waiting on a removal reads the tags it left.
+  - The principal's row `FOR UPDATE`, with the first rating inserted by `INSERT … ON CONFLICT DO NOTHING`. One that loses the race re-reads the winner's row and replaces it (200, with a history entry).
+  - The pause point is `feedback.rate.unrated` (`epistrel.testing.pauses`).
+  **Why:** The pass-1 Discretion's upsert, plus the two races the plan does not name: without the story lock, a deletion that commits first makes the insert fail its foreign key (500); without `FOR SHARE`, a rating could commit a tag that a concurrent write has just removed. Mutation-checked: dropping either lock fails its race test. Cost if wrong: none to stored data.
+  **Issue:** #112
+- **Decision (drift):** The feedback settings.
+  - **`feedback_tags`** is a `deployment_state` column (`text[]` NOT NULL), as #110 made `listing_status_values`, because the AC names `deployment_state.feedback_tags`. The column's server default seeds the nine tags into the existing row, in place of the pass-2 "UPDATE of the row in the migration"; the result is the same. The column is prospective and in `DEPLOYMENT_COLUMNS`, `DeploymentState`, `config_changes._COLUMNS`, `SettingsPatch` and U-18's `EXPECTED`.
+  - **Rules for the tags:** `[a-z0-9_]{1,40}` each, distinct, at most 50, and the list may be empty. A write replaces the list and records one `config_changes` row with the old and new lists. Removing a tag that a rating or a history entry carries is 409 `feedback_tag_in_use`, with `details {field: "body.feedback_tags", in_use: [{tag, current, history}]}` in the old list's order. The check runs in `apply_settings` under its `FOR UPDATE` lock (`core.feedback.refuse_tag_removal`), and nothing is written.
+  - **`feedback_text_max_chars`** (1 to 20000, default 2000) and **`feedback_retention`** (`story_lifetime`, the default, or 1 to 3650 days) are a new prospective `FeedbackSettings` section of the settings document. The section is in `config_changes.SECTIONS`, so the values read back and survive unrelated writes; a test pins that. #315's bug affects only the sections missing from `SECTIONS`, which is also why `feedback_retention` is not in `RetentionSettings`.
+  - **Stricter than the older integer settings:** `feedback_text_max_chars` is a `StrictInt` (a boolean or a numeric string is 422), and `feedback_retention` is decided by one plain validator, so every refusal is at `body.feedback_retention`, not at a union member's location.
+  **Why:** The AC's column name, the pass-1/pass-2 bounds, and the drift note's hooks. Cost if wrong: a column moves into the settings document, or the reverse.
+  **Issue:** #112, #315
+- **Decision (deviation):** `retention_sweep` enforces `feedback_retention` in the Orchestrator's handler, which reads the two tables through `core.tables.feedback` and never imports `core.feedback`.
+  - A rating is aged by `created_at` and a history entry by `replaced_at`, in chunks, with no marker. Under `story_lifetime`, nothing expires.
+  - The grep guard's allow-list therefore adds `orchestrator/jobs/handlers/retention.py`, beside the planner's modules and the drift note's `testing/determinism.py`. The planner's list omitted the sweep, although the plan says it is extended.
+  - Hand-off to #126: its planned `feedback-is-flag-only` contract (Orchestrator modules must not import `core.feedback`) holds, but its planned grep over Orchestrator modules for the table names must allow the retention sweep.
+  - Hand-off to #123: an expired rating's subject-index rows must go with it there; `drop_hook` is not called, because the Orchestrator does not import `core.feedback`.
+  **Why:** The pass-1 line "enforced by extending #71's `retention_sweep`". Reading the tables directly keeps #126's import contract possible. Cost if wrong: the sweep moves behind a core function bound at worker start.
+  **Issue:** #112, #71, #123, #126
+- **Decision:** A fork copies no feedback: `message_feedback` and `feedback_history` are in `STORY_TABLES_NOT_COPIED`, and in `STORY_TABLES` before `operations` for deletion. `testing/determinism.ORDER` orders both tables by story, turn, variant and principal (and the history entries by when they were replaced).
+  **Why:** The drift note asked for an explicit decision. A rating belongs to the message variant it rated (FR-FB-2). The fork's copy is a new message with a new id, and copying would count one rating twice in #126's aggregates. Cost if wrong: one set entry.
+  **Issue:** #112, #67
+- **Decision:** The surfaces and shapes.
+  - **Engine methods:** `rate_message(ctx, story_id, message_id, FeedbackRequest) -> FeedbackWrite {feedback, created, changed}`, `retract_feedback(...) -> FeedbackRetraction {story_id, message_id, retracted}` and `get_feedback(...) -> Feedback`. Routes are `api/routes/feedback.py` under a new `feedback` OpenAPI tag, which #126 reuses.
+  - **`PUT`** answers 201 for the principal's first rating and 200 otherwise, with the `Feedback` body (the pass-2 shape).
+  - **The context:** `context` is copied from the operation's `config_revisions`: `profile_version` as `profile_id@version`, `quality_status` as its status string, and `rating_version_id` from #64's `rating_version`. An operation without #109's stamp gives null fingerprint, profile version, models and quality status, while its `rating_version` is still copied. `context` is null when there is no current rating.
+  - **`GET`** with no rating answers `rating: null`, `tags: []` and the history, newest first. **`DELETE`** is 204 even with nothing to retract, and 404 for an unknown message.
+  - **Request rules:** `rating` is a `StrictInt` from 1 to 5. At most 10 tags as sent, each 1 to 64 characters once trimmed and lower-cased (a blank one is 422 at `body.tags[i]`); then they are de-duplicated, sorted and compared as a set. The text is at most 20000 characters as sent, and the deployment's cap applies once it is trimmed (422 `validation_error` at `body.text`, `details.max_chars`). A NUL is 422 at its field.
+  - **422 `unknown_feedback_tag`** has `details {field, unknown_tags, allowed_tags}`.
+  - **Library exports:** `epistrel` exports `FeedbackRequest`, `Feedback`, `FeedbackContext`, `FeedbackHistoryEntry`, `FeedbackWrite` and `FeedbackRetraction`, and the errors `MessageNotFound`, `UnknownFeedbackTag` and `FeedbackTagInUse`.
+  - **The seams:** `index_hook` and `drop_hook` are no-ops (AC5) until #123 rebinds them.
+  - **Logging and metrics:** writes log one INFO line (`feedback rated` or `feedback retracted`) with the story, the message and the outcome only. There are no metrics in M3.
+  **Why:** The pass-1 and pass-2 Discretion lines, filled in where they are silent. Cost if wrong: response fields are additive.
+  **Issue:** #112, #123, #126
+- **Decision:** Existing tests changed because the story adds routes, tables and settings they pin. No assertion was loosened.
+  - **C-01:** the fixture turn's reply is the `message_id` path id, so the feedback routes are generated against a real message.
+  - **C-03:** three steps (`rate_message`, `get_feedback`, `retract_feedback`), `RATING_ANSWERS`, and an assertion that the rating recorded the first turn's operation and reads back the same. The names say "rating", never "feedback", which is an M3 lexicon term in an M2 part; `MESSAGE_RATING` avoids the existing content-rating `RATING`.
+  - **S-DELETE:** `_populate` rates a reply twice, so the victim has rows in both tables.
+  - **U-18:** pins the three settings as prospective.
+  - **Ownership fixtures and I-21:**
+    - `ownership_fixtures.CALLS` gains the three routes.
+    - `Call.own` names the body keys that echo the requester, because the read is the requester's own rating (FR-AUTH-4).
+    - The nothing-gates matrix sets those keys aside and asserts that each one is the requester's. Each of the three requesters rated the reply alike.
+  **Why:** The route-table, delivered-type and parity guards require them. Cost if wrong: none.
+  **Issue:** #112
+- **Decision:** I mutation-checked the story. A script applied each mutation, ran the named tests and restored the source (SHA-1 checked). Each of these 23 mutations fails a test:
+  - consumer narration ratable;
+  - the tags read without `FOR SHARE`;
+  - the same value counted as a change;
+  - the fingerprint not copied;
+  - a retraction keeping no history;
+  - a lost insert race not re-reading the rating;
+  - a history entry not keeping a tag in use;
+  - retention by `updated_at`;
+  - forks copying feedback;
+  - deletion forgetting the tables;
+  - the read taking no principal check;
+  - tags kept as sent;
+  - compaction marking another story's ratings;
+  - the cap counting untrimmed text;
+  - unknown tags accepted;
+  - another story's message ratable;
+  - no story lock;
+  - `drop_hook` not called;
+  - `index_hook` called only on creation;
+  - history newest last;
+  - the context recomputed on a re-rating;
+  - retention ignoring the setting;
+  - `FeedbackSettings` missing from `SECTIONS`.
+
+  "Retention by `updated_at`" first survived, so the retention test now re-rates an old rating 10 days ago and expects it deleted by its `created_at`.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #112
+- **Decision:** These docs follow the build.
+  - docs/02 §4.14 describes the built tables, what a rating copies and writes, its retention, and the fork and compaction rules. §9 adds the `GET` and the status codes.
+  - README gains a "Message feedback" section, and its Configuration section names the three settings.
+  - `PUT /admin/settings`'s description names them and the 409.
+  - `docs/openapi.json` is regenerated.
+  **Why:** docs/02 is authoritative and should describe the routes as built, as #110 and #111 did. Cost if wrong: none.
+  **Issue:** #112

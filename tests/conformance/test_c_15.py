@@ -10,8 +10,9 @@ Every C-15 (M3) part lives in this file (traceability counts a test ID per miles
 - #108's parts: ``test_c_15__scenario_lifecycle``, a scenario's drafts, immutable published
   versions and its ``card``/``full`` projections (FR-SCN-1,2,10); and
   ``test_c_15__scenario_field_classes``, the build-time check that every scenario field carries
-  its class (FR-SCN-2). The details are in ``tests/integration/test_scenario_catalog.py``; the
-  roles and the starting-cast limit are U-26's (``tests/test_u_26.py``).
+  its class, and that each is at the class (and use) ``CLASSES`` decides for it (FR-SCN-2). The
+  details are in ``tests/integration/test_scenario_catalog.py``; the roles and the starting-cast
+  limit are U-26's (``tests/test_u_26.py``).
 """
 
 from __future__ import annotations
@@ -350,8 +351,10 @@ class _Untagged(BaseModel):
 @pytest.mark.part("M3", "FR-SCN-2")
 def test_c_15__scenario_field_classes() -> None:
     """Every field of the scenario document carries its class (and, for ``configuration``, its
-    use), checked by walking the model, groups and list items included; the map genesis and the
-    validation report read names every field, with all eight classes and all three uses in use.
+    use), checked by walking the model, groups and list items included. The map genesis and the
+    validation report read is exactly ``CLASSES``: every field, each at the class and use the
+    requirements give it, so no field changes class or use, and none is added or dropped,
+    without this test failing. All eight classes and all three uses are in use.
 
     Complement asserted: the same walk reports a fixture's untagged field, a field with two
     classes, a ``configuration`` field without a use and a use on another class, so an
@@ -361,8 +364,7 @@ def test_c_15__scenario_field_classes() -> None:
     assert {found for found, _ in classes.values()} == set(FieldClass)
     assert {use for _, use in classes.values() if use is not None} == set(Use)
     assert {use for found, use in classes.values() if found is FieldClass.configuration} == set(Use)
-    for path, expected in CLASSES.items():
-        assert classes[path] == expected, path
+    assert classes == CLASSES
 
     assert classification_problems(_Untagged) == [
         "missing: untagged",
@@ -373,34 +375,110 @@ def test_c_15__scenario_field_classes() -> None:
 
 
 CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
+    "schema_version": (FieldClass.configuration, Use.creation_only),
     "public_card.name": (FieldClass.public_card, None),
+    "public_card.public_description": (FieldClass.public_card, None),
+    "public_card.media.cover": (FieldClass.public_card, None),
+    "public_card.media.gallery": (FieldClass.public_card, None),
+    "public_card.media.videos[].media_id": (FieldClass.public_card, None),
     "public_card.media.videos[].caption": (FieldClass.public_card, None),
     "metadata.labels": (FieldClass.public_card, None),
+    "metadata.content_rating_id": (FieldClass.public_card, None),
     "world.description": (FieldClass.knowledge_seed, None),
+    "world.locations[].id": (FieldClass.knowledge_seed, None),
+    "world.locations[].name": (FieldClass.knowledge_seed, None),
+    "world.locations[].description": (FieldClass.knowledge_seed, None),
+    "world.entities[].id": (FieldClass.knowledge_seed, None),
+    "world.entities[].name": (FieldClass.knowledge_seed, None),
     "world.entities[].aliases": (FieldClass.knowledge_seed, None),
+    "world.entities[].description": (FieldClass.knowledge_seed, None),
+    "cast.roles[].id": (FieldClass.public_card, None),
     "cast.roles[].public_label": (FieldClass.public_card, None),
     "cast.roles[].setup_description": (FieldClass.public_card, None),
+    "cast.roles[].kind": (FieldClass.configuration, Use.creation_only),
+    "cast.roles[].required": (FieldClass.configuration, Use.creation_only),
     "cast.roles[].fill": (FieldClass.configuration, Use.creation_only),
+    "cast.roles[].character.catalog_id": (FieldClass.configuration, Use.creation_only),
+    "cast.roles[].character.version": (FieldClass.configuration, Use.creation_only),
+    "cast.roles[].eligibility.labels": (FieldClass.configuration, Use.creation_only),
+    "cast.roles[].eligibility.content_ratings": (FieldClass.configuration, Use.creation_only),
     "cast.roles[].eligibility.age_range": (FieldClass.configuration, Use.creation_only),
+    "cast.roles[].seeded_memories[].id": (FieldClass.knowledge_seed, None),
+    "cast.roles[].seeded_memories[].text": (FieldClass.knowledge_seed, None),
+    "cast.roles[].seeded_memories[].holder": (FieldClass.knowledge_seed, None),
     "cast.roles[].seeded_memories[].audience": (FieldClass.knowledge_seed, None),
+    "cast.roles[].seeded_memories[].disclosure": (FieldClass.knowledge_seed, None),
+    "cast.roles[].seeded_memories[].kind": (FieldClass.knowledge_seed, None),
+    "cast.roles[].seeded_memories[].valid_time": (FieldClass.knowledge_seed, None),
     "cast.roles[].relationships[].to_role": (FieldClass.knowledge_seed, None),
-    "cast.roles[].name_overrides.aliases": (FieldClass.knowledge_seed, None),
-    "cast.roles[].starting_location": (FieldClass.knowledge_seed, None),
+    "cast.roles[].relationships[].name": (FieldClass.knowledge_seed, None),
     "cast.roles[].state_initial_values": (FieldClass.starting_state, None),
+    "cast.roles[].starting_location": (FieldClass.knowledge_seed, None),
     "cast.roles[].participation": (FieldClass.configuration, Use.story_setting),
+    "cast.roles[].name_overrides.canonical": (FieldClass.knowledge_seed, None),
+    "cast.roles[].name_overrides.aliases": (FieldClass.knowledge_seed, None),
     "cast.max_characters_at_start": (FieldClass.configuration, Use.creation_only),
-    "starting_state.opening.narration": (FieldClass.starting_state, None),
-    "starting_state.opening.roles_present": (FieldClass.starting_state, None),
-    "starting_state.predicates": (FieldClass.story_rule, None),
+    "starting_state.seeded_memories[].id": (FieldClass.knowledge_seed, None),
+    "starting_state.seeded_memories[].text": (FieldClass.knowledge_seed, None),
+    "starting_state.seeded_memories[].holder": (FieldClass.knowledge_seed, None),
+    "starting_state.seeded_memories[].audience": (FieldClass.knowledge_seed, None),
+    "starting_state.seeded_memories[].disclosure": (FieldClass.knowledge_seed, None),
+    "starting_state.seeded_memories[].kind": (FieldClass.knowledge_seed, None),
+    "starting_state.seeded_memories[].valid_time": (FieldClass.knowledge_seed, None),
+    "starting_state.states": (FieldClass.starting_state, None),
+    "starting_state.clock": (FieldClass.starting_state, None),
     "starting_state.scheduled_events": (FieldClass.knowledge_seed, None),
+    "starting_state.predicates": (FieldClass.story_rule, None),
+    "starting_state.closed_sets": (FieldClass.story_rule, None),
+    "starting_state.rules": (FieldClass.story_rule, None),
+    "starting_state.opening.narration": (FieldClass.starting_state, None),
+    "starting_state.opening.starting_location": (FieldClass.knowledge_seed, None),
+    "starting_state.opening.roles_present": (FieldClass.starting_state, None),
+    "drivers.plot_hooks": (FieldClass.director, None),
+    "drivers.objectives": (FieldClass.director, None),
     "drivers.director_guidance": (FieldClass.director, None),
+    "drivers.planned_reveals[].truth.id": (FieldClass.knowledge_seed, None),
     "drivers.planned_reveals[].truth.text": (FieldClass.knowledge_seed, None),
+    "drivers.planned_reveals[].truth.holder": (FieldClass.knowledge_seed, None),
+    "drivers.planned_reveals[].truth.audience": (FieldClass.knowledge_seed, None),
+    "drivers.planned_reveals[].truth.disclosure": (FieldClass.knowledge_seed, None),
+    "drivers.planned_reveals[].truth.kind": (FieldClass.knowledge_seed, None),
+    "drivers.planned_reveals[].truth.valid_time": (FieldClass.knowledge_seed, None),
     "drivers.planned_reveals[].allowed_roles": (FieldClass.director, None),
+    "drivers.planned_reveals[].conditions": (FieldClass.director, None),
+    "drivers.milestones": (FieldClass.director, None),
+    "drivers.endings": (FieldClass.director, None),
+    "story_settings_defaults.interaction_mode": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.turn_concurrency": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.player_authority": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.default_output_viewpoint": (
+        FieldClass.configuration,
+        Use.story_setting,
+    ),
+    "story_settings_defaults.ambiguous_retcon_timing": (
+        FieldClass.configuration,
+        Use.story_setting,
+    ),
+    "story_settings_defaults.backfill_conflict_policy": (
+        FieldClass.configuration,
+        Use.story_setting,
+    ),
+    "story_settings_defaults.audit_retention_days": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.policies[].name": (FieldClass.configuration, Use.policy),
+    "story_settings_defaults.policies[].applies_to": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.policies[].rule": (FieldClass.configuration, Use.policy),
+    "story_settings_defaults.policies[].age_condition": (FieldClass.configuration, Use.policy),
+    "story_settings_defaults.policies[].message": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.required_providers": (FieldClass.configuration, Use.policy),
     "recommendation.engine_profile_id": (FieldClass.recommendation, None),
+    "recommendation.capabilities": (FieldClass.recommendation, None),
+    "visual_style.prompt": (FieldClass.style, None),
     "visual_style.negative_prompt": (FieldClass.style, None),
     "creation_rules.overridable": (FieldClass.configuration, Use.creation_only),
+    "creation_rules.bounds": (FieldClass.configuration, Use.creation_only),
 }
-"""Where FR-SCN-11 and docs/02 §4.10 put a field, for a sample of every class and use."""
+"""Where FR-SCN-11 and docs/02 §4.10 put each field of the scenario document: every leaf, by
+the dotted path ``scenario_schema_classes()`` names it with, at its class and, for
+``configuration``, its use. The part asserts that map equals this one, so a field retagged,
+given another use, added or removed fails the build until this map is changed with it: a
+class is decided here, never picked up from the model."""

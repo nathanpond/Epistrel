@@ -30,8 +30,13 @@ the routes ``mutating=False``), and no expected revision. The write holds the st
 ``FOR KEY SHARE``, so a story deletion waits for it (or it finds the story gone: 404) while turns,
 archives and settings writes go on: a rating is allowed on an archived story and during a turn.
 It reads the deployment row ``FOR SHARE``, so a ``feedback_tags`` write that removes a tag waits
-for it and then counts it. The principal's row is held ``FOR UPDATE`` and created by an upsert on
-the unique key, so concurrent writes of one rating serialise:
+for it and then counts it. The principal's row is held ``FOR UPDATE``. A rating that finds none
+writes by an upsert on the unique key whose update never applies (``ON CONFLICT ... DO UPDATE
+... WHERE false``): it inserts the row, or it locks the one a concurrent first rating committed
+meanwhile and replaces that. When that rating is retracted or changed before the lock is
+granted, PostgreSQL runs the upsert again from the start, so the write always either creates
+the rating or holds the one it replaces (a rating that lost to a rating since retracted creates
+its own). Concurrent writes of one rating serialise:
 
 - the first rating creates the row (``created``; REST 201);
 - a rating that changes the value appends the value it replaces to ``feedback_history`` (kind
@@ -64,7 +69,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import delete, false, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -508,6 +513,10 @@ async def rate(
         created = False
         if current is None:
             await pauses.pause(pauses.FEEDBACK_RATE_UNRATED)
+            # Insert the rating, or lock the one a concurrent first rating committed: the
+            # update never applies (WHERE false), but PostgreSQL locks the conflicting row
+            # before it tests that, and reruns the statement when the row is deleted or changed
+            # before the lock is granted (a retraction, a re-rating). It always does one.
             inserted = await conn.execute(
                 pg_insert(message_feedback)
                 .values(
@@ -524,12 +533,17 @@ async def rate(
                     updated_at=now,
                     **context_of(message.operation_id, message.revisions),
                 )
-                .on_conflict_do_nothing(index_elements=["story_id", "message_id", "principal"])
+                .on_conflict_do_update(
+                    index_elements=["story_id", "message_id", "principal"],
+                    set_={"updated_at": message_feedback.c.updated_at},
+                    where=false(),
+                )
                 .returning(message_feedback.c.id)
             )
             created = inserted.scalar() is not None
             if not created:  # a concurrent first rating committed first: this one replaces it
-                current = await _current(conn, message, principal, lock=True)
+                locked = select(message_feedback).where(_key(message, principal))
+                current = (await conn.execute(locked.with_for_update())).one()
         changed = created
         if current is not None and (current.rating, list(current.tags), current.text) != (
             rating,
@@ -561,6 +575,7 @@ async def retract(
         message = await _message(conn, story_id, message_id, lock=True)
         current = await _current(conn, message, principal, lock=True)
         if current is not None:
+            await pauses.pause(pauses.FEEDBACK_RETRACT_LOCKED)
             await _append_history(conn, current, HistoryKind.RETRACTED, clock.now())
             await conn.execute(delete(message_feedback).where(message_feedback.c.id == current.id))
             await drop_hook(conn, record_id(message_id, principal))

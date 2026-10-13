@@ -2,8 +2,8 @@
 rated, the context a rating copies (and never recomputes), re-rating, retraction and history in
 detail, ratings that write nothing else, the principal rule, archived stories and turns in
 flight, the deployment's tag set, text cap and retention, story deletion and forks, the
-subject-indexing seams, the M7 compaction hook, concurrent ratings and tag removals, and the
-guard over which modules may name the feedback tables.
+subject-indexing seams, the M7 compaction hook, concurrent ratings, retractions and tag removals,
+and the guard over which modules may name the feedback tables.
 
 The parts are in ``tests/conformance/test_c_26.py``. The tests that change the deployment's
 feedback settings or age ratings run on their own scratch database (``scratch_feedback``)."""
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
@@ -30,7 +30,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.tables import deployment_state
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
-from epistrel.core.tables.feedback import HistoryKind
+from epistrel.core.tables.feedback import HistoryKind, message_feedback
 from epistrel.orchestrator.jobs.handlers import retention
 from epistrel.testing import pauses
 from tests.auth_support import auth_settings
@@ -831,6 +831,68 @@ async def test_concurrent_first_ratings_serialise(
         (entry,) = await history_rows(engine, story)
         assert row.rating == replaced["rating"] != created["rating"]
         assert (entry.rating, entry.kind) == (created["rating"], "replaced")
+
+
+async def _commit_first_rating(
+    db: AsyncEngine, story_id: str, message_id: str, principal: str, rating: int
+) -> None:
+    """Commit ``principal``'s first rating of the message straight to its table, as a concurrent
+    request would: that request's own path stops at a held ``feedback.rate.unrated``."""
+    (event,) = await rows(
+        db,
+        "SELECT narrative_turn, turn_variant, operation_id FROM events WHERE id = :m",
+        m=message_id,
+    )
+    now = clock.now()
+    async with db.begin() as conn:
+        await conn.execute(
+            insert(message_feedback).values(
+                id=new_ulid(),
+                story_id=story_id,
+                message_id=message_id,
+                turn=event.narrative_turn,
+                variant=event.turn_variant,
+                principal=principal,
+                rating=rating,
+                operation_id=event.operation_id,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+
+async def test_a_first_rating_outlasts_the_retraction_of_the_one_it_lost_to(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """A first rating past its check that the principal has none loses its insert to the
+    principal's concurrent first rating, which the principal's retraction holds and then
+    removes (a double submit, then a retract). It waits for the retraction and then creates its
+    rating (201), as if it ran after both, with the retracted value in its history: never 200
+    with ``rating`` null and nothing written."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        played = await played_story(client)
+        story, message = played.story_id, played.message_id
+        with (
+            pauses.held(pauses.FEEDBACK_RATE_UNRATED) as rating_hold,
+            pauses.held(pauses.FEEDBACK_RETRACT_LOCKED) as retraction_hold,
+        ):
+            late = asyncio.ensure_future(rate(client, story, message, {"rating": 5}))
+            await rating_hold.arrived(1)
+            await _commit_first_rating(engine, story, message, RATER, 1)
+            retraction = asyncio.ensure_future(retract(client, story, message))
+            await retraction_hold.arrived(1)
+            rating_hold.release()
+            await _lock_waiters(engine, 1)
+            retraction_hold.release()
+            rated, retracted = await asyncio.gather(late, retraction)
+        assert retracted.status_code == 204, retracted.text
+        created = answered(rated, 201)
+        assert created["rating"] == 5
+        assert [(h["rating"], h["kind"]) for h in created["history"]] == [(1, "retracted")]
+        (row,) = await feedback_rows(engine, story)
+        (entry,) = await history_rows(engine, story)
+        assert (row.principal, row.rating) == (RATER, 5)
+        assert (entry.principal, entry.rating, entry.kind) == (RATER, 1, "retracted")
 
 
 async def test_a_story_deletion_waits_for_a_rating(

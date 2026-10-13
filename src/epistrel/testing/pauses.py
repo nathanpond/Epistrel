@@ -28,6 +28,8 @@ The points:
   SHARE`` and found its value among the configured ones; it has not locked the entry yet (#110).
 - ``feedback.rate.unrated``: a message rating holds the deployment row ``FOR SHARE``, has checked
   its tags and text, and found no rating of the principal's yet; it has not inserted one (#112).
+- ``feedback.retract.locked``: a rating's retraction holds the principal's rating ``FOR UPDATE``;
+  it has not recorded the rating's final value or deleted it yet (#112).
 
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 """
@@ -47,6 +49,7 @@ MEDIA_COMPLETE_LOCKED = "media.complete.locked"
 PROFILE_PURGE_BEFORE_LOCK = "profiles.purge.before_lock"
 CATALOG_LISTING_STATUS_LOCKED = "catalog.listing_status.locked"
 FEEDBACK_RATE_UNRATED = "feedback.rate.unrated"
+FEEDBACK_RETRACT_LOCKED = "feedback.retract.locked"
 POINTS = (
     CATALOG_SAVE_BEFORE_CAS,
     CATALOG_PUBLISH_LOCKED,
@@ -57,6 +60,7 @@ POINTS = (
     PROFILE_PURGE_BEFORE_LOCK,
     CATALOG_LISTING_STATUS_LOCKED,
     FEEDBACK_RATE_UNRATED,
+    FEEDBACK_RETRACT_LOCKED,
 )
 
 ARRIVAL_TIMEOUT_S = 10.0
@@ -120,6 +124,7 @@ __all__ = [
     "CATALOG_PUBLISH_LOCKED",
     "CATALOG_SAVE_BEFORE_CAS",
     "FEEDBACK_RATE_UNRATED",
+    "FEEDBACK_RETRACT_LOCKED",
     "MEDIA_COMPLETE_LOCKED",
     "MEDIA_SWEEP_BEFORE_PURGE",
     "MEDIA_UPLOAD_BEFORE_COMMIT",

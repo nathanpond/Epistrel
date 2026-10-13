@@ -16,6 +16,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.context import RequestContext
+from epistrel.core.profiles.story import ProfileOverridesPatch
 from epistrel.engine import Engine
 from epistrel.orchestrator.models.stub import FaultKind, StubAdapter
 from epistrel.tools import model_matrix as mm
@@ -23,7 +24,8 @@ from tests.auth_support import auth_settings
 from tests.model_support import config_key, mock_openai, restored_model_config
 
 DEADLINE_S = 2.0
-"""The minors story's ``turn_deadline`` in the deadline run: short, so a hung call ends soon."""
+"""The minors story's turn deadline in the deadline run (its override of ``budgets.deadline_ms``,
+#113): short, so a hung call ends soon."""
 PASSED = '{"violation": false, "confidence": 1.0}'
 FLAGGED = '{"violation": true, "confidence": 0.9}'
 MEASURED = 5
@@ -64,10 +66,13 @@ class DeadlineDriver:
         await self.inner.prepare(engine, policies)
         self.faulty = policies == "minors"
         if self.faulty:
-            await engine.update_story_settings(
+            await engine.set_profile_overrides(
                 RequestContext(principal=mm.PRINCIPAL),
                 self.inner.story_id,
-                {"turn_deadline": DEADLINE_S},
+                ProfileOverridesPatch(
+                    settings={"budgets": {"deadline_ms": int(DEADLINE_S * 1000)}},
+                    ignore_warnings=True,
+                ),
             )
 
     async def turn(self, said: str) -> mm.TurnCalls:
@@ -159,7 +164,7 @@ async def test_matrix_breakdown_of_scripted_deadline_turns(
     pg_url: str, engine: AsyncEngine, tmp_path: Path
 ) -> None:
     """#303: the issue's live run, scripted with stub fault injection. In the minors row
-    (``turn_deadline`` 2 s), measured turn 2's output check flags the draft and the
+    (a 2 s turn deadline), measured turn 2's output check flags the draft and the
     regeneration hangs until the deadline, and turn 4's regeneration answers but its re-check
     hangs. Both turns release the safe fallback with cause ``deadline``. The mean folds all of
     this into ``generation 1.4, guardrail_check 2.2``. The breakdown reports instead: designed

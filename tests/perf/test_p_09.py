@@ -23,7 +23,7 @@ from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.policy_support import AUTHOR, story_item, words
 from tests.respond_support import FIRST, PLAYER, body, new_story, respond, respond_client
-from tests.story_support import WRITE, count
+from tests.story_support import WRITE, count, override
 
 TOLERANCE_S = 5.0
 DEADLINE_S = 2.0
@@ -37,8 +37,28 @@ def stub_settings(pg_url: str) -> Settings:
     return auth_settings(pg_url, model_adapter="stub")
 
 
+BUDGET_DIALS = {
+    "max_model_calls_per_turn": ("budgets", "model_calls"),
+    "turn_deadline": ("budgets", "deadline_ms"),
+    "guardrail_retry_budget": ("repair", "polish", "max_regenerations"),
+}
+"""M2's story budget settings and the profile dials a story overrides for them since #113."""
+
+
 async def _settings(client: httpx.AsyncClient, story: str, **values: Any) -> dict[str, Any]:
-    answer = await client.patch(f"/stories/{story}/settings", json=values, headers=WRITE)
+    """Set the story's budget dials (its overrides of its profile, #113; ``None`` removes one, so
+    the profile's value stands) and answer its settings with the budget its next turn plans
+    with."""
+    overrides: dict[str, Any] = {}
+    for name, value in values.items():
+        *groups, leaf = BUDGET_DIALS[name]
+        node = overrides
+        for group in groups:
+            node = node.setdefault(group, {})
+        node[leaf] = int(value * 1000) if name == "turn_deadline" else value
+    if overrides:
+        await override(client, story, overrides)
+    answer = await client.get(f"/stories/{story}/settings", headers=WRITE)
     assert answer.status_code == 200, answer.text
     result: dict[str, Any] = answer.json()
     return result

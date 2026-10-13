@@ -8,6 +8,16 @@
 interpretive or prospective, and #69 adds ``max_model_calls_per_turn``. Settings are read
 when an operation starts (prospective settings never affect work already in flight).
 
+**Engine dials live in the engine profile (FR-PROF-5; #113).** A story's settings describe the
+story (FR-SCN-2's story settings defaults): its concurrency, its default output viewpoint, its
+revalidation budget, its summary chunking and its audit retention. How hard the engine works is
+the story's engine profile, with the deployment's ``profile_defaults`` under it and the story's
+own overrides (``story_profile_overrides``) over it (``core.profiles.effective``). #113 moved
+M2's engine dials there: the generation settings, the verbatim window, the summary's token cap,
+the per-turn call cap and deadline, and the polish budget (``SUPERSEDED_STORY_SETTINGS``,
+``SUPERSEDED_DEPLOYMENT_SETTINGS``). A write naming one of them is 422, and the error names the
+profile setting that replaced it.
+
 **Classification (FR-CONC-15, #64).** Every leaf setting of ``StorySettings`` and
 ``DeploymentSettings`` carries ``Annotated[..., ConfigClass.interpretive]`` or
 ``Annotated[..., ConfigClass.prospective]``: an *interpretive* change applies to every operation
@@ -18,6 +28,7 @@ untagged setting is interpretive (``test_u_18`` fails the build when one is miss
 
 from __future__ import annotations
 
+import copy
 import types
 import typing
 from collections.abc import Iterator, Mapping
@@ -37,7 +48,8 @@ from pydantic import (
 )
 from pydantic.fields import FieldInfo
 
-from epistrel.core.seeds.profiles import LITE_PRESET_ID
+from epistrel.core.errors import InvalidRequest
+from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
 
 
 class ConfigClass(StrEnum):
@@ -75,8 +87,9 @@ DEFAULT_LITE_SUMMARY_CHUNK = 10
 so 5 turns."""
 MAX_LITE_SUMMARY_CHUNK = 200
 DEFAULT_LITE_SUMMARY_MAX_TOKENS = 2_000
-"""The rolling summary's token cap (``len(text) // 4``), about a quarter of the 8k context floor;
-above it adjacent segments merge into a coarser level (FR-LITE-2; #72)."""
+"""M2's default token cap of the rolling summary (``lite_summary_max_tokens``, #72: above it
+adjacent segments merge into a coarser level, FR-LITE-2). #113 moved the cap to the profile's
+``memory.rolling_summary.compress_threshold_tokens``, whose Lite value is 6,000."""
 MIN_LITE_SUMMARY_MAX_TOKENS = 100
 MAX_LITE_SUMMARY_MAX_TOKENS = 100_000
 
@@ -93,7 +106,8 @@ class GenerationSettings(BaseModel):
 
 
 DEFAULT_LITE_GENERATION = GenerationSettings(temperature=0.8, top_p=0.95, length="medium")
-"""The deployment's Lite defaults until an operator changes them (``lite_generation_defaults``)."""
+"""M2's Lite generation defaults, which the Lite preset's ``models.generation`` carries (#106);
+``resolve_generation`` falls back to its length when no layer names one."""
 
 
 class ResolvedGeneration(BaseModel):
@@ -113,7 +127,8 @@ def max_tokens_for(length: Length) -> int:
 
 
 def resolve_generation(*layers: GenerationSettings | None) -> ResolvedGeneration:
-    """Apply ``layers`` lowest first (deployment → story → request): each set key wins."""
+    """Apply ``layers`` lowest first (the story's effective configuration, then the request,
+    FR-LITE-4): each set key wins."""
     values: dict[str, Any] = {}
     for layer in layers:
         if layer is not None:
@@ -128,25 +143,17 @@ def resolve_generation(*layers: GenerationSettings | None) -> ResolvedGeneration
 
 
 class LiteDefaults(BaseModel):
-    """The deployment's Lite defaults, stored under ``deployment_state.settings`` (#57)."""
+    """The deployment's Lite summary chunking, stored under ``deployment_state.settings`` (#57,
+    #72). The generation defaults, the verbatim window and the summary's token cap moved to the
+    deployment's ``profile_defaults`` (#113)."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    lite_generation_defaults: GenerationSettings = DEFAULT_LITE_GENERATION
-    lite_window_messages: Annotated[int, PROSPECTIVE] = Field(
-        default=DEFAULT_LITE_WINDOW_MESSAGES, ge=1, le=MAX_LITE_WINDOW_MESSAGES
-    )
     lite_summary_chunk: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_LITE_SUMMARY_CHUNK, ge=2, le=MAX_LITE_SUMMARY_CHUNK
     )
     """Transcript rows per level-0 summary segment (#72); chunks are whole turns, two rows
     each. Prospective: the next summary job uses the value in force when it starts."""
-    lite_summary_max_tokens: Annotated[int, PROSPECTIVE] = Field(
-        default=DEFAULT_LITE_SUMMARY_MAX_TOKENS,
-        ge=MIN_LITE_SUMMARY_MAX_TOKENS,
-        le=MAX_LITE_SUMMARY_MAX_TOKENS,
-    )
-    """The rolling summary's token cap (#72); above it segments merge. Prospective."""
 
 
 # -- story-level text caps (FR-LITE-3; #60) ------------------------------------------------------
@@ -161,8 +168,10 @@ PINNED_ITEM_MAX_CHARS = 2_000
 
 class StoryTextCaps(BaseModel):
     """The deployment's caps on pinned memories and custom instructions, stored under
-    ``deployment_state.settings`` (#60). Prospective: an edit is checked against the caps in
-    force when it starts, and a lowered cap never touches what is already stored."""
+    ``deployment_state.settings`` (#60). ``max_pinned_memories`` is a ceiling: a story may hold
+    no more pinned memories than it, nor than its effective configuration's ``pins.max_pinned``
+    (#113). Prospective: an edit is checked against the caps in force when it starts, and a
+    lowered cap never touches what is already stored."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -200,7 +209,8 @@ TURN_QUEUE_MAX_LIMIT = 50
 DEFAULT_TURN_QUEUE_MAX = 5
 """The deployment's default bound on a ``queue`` story's waiting turns (FR-CONC-5; #63)."""
 DEFAULT_TURN_DEADLINE_S = 45.0
-"""``turn_deadline``'s default in seconds (NFR-PERF-6)."""
+"""A turn's default deadline in seconds (NFR-PERF-6): the Lite preset's ``budgets.deadline_ms``
+(45,000) and the deadline of work outside a turn's budget."""
 MAX_TURN_DEADLINE_S = 600.0
 MIN_CALLS_PER_TURN = 1
 MIN_DEADLINE_S = 0.5
@@ -211,17 +221,43 @@ LITE_BASE_CALLS = 9
 COLUMN_SETTINGS = ("turn_concurrency", "turn_queue_max")
 """Settings that live in their own ``stories`` columns (#63) rather than in ``settings``."""
 
+SUPERSEDED_STORY_SETTINGS: Mapping[str, str] = types.MappingProxyType(
+    {
+        "generation_settings": "models.generation",
+        "lite_window_messages": "memory.rolling_summary.window_messages",
+        "lite_summary_max_tokens": "memory.rolling_summary.compress_threshold_tokens",
+        "max_model_calls_per_turn": "budgets.model_calls",
+        "turn_deadline": "budgets.deadline_ms",
+        "guardrail_retry_budget": "repair.polish.max_regenerations",
+    }
+)
+"""M2's story settings that were engine dials, with the profile setting that replaced each
+(FR-PROF-5; #113): a story overrides it through ``PATCH /stories/{id}/profile-overrides``. A
+story settings write naming one is 422. ``turn_deadline`` was seconds; ``budgets.deadline_ms``
+is milliseconds."""
 
-class TurnBudgetDefaults(BaseModel):
-    """The deployment's default ``max_model_calls_per_turn`` (NFR-PERF-6; #69), stored under
-    ``deployment_state.settings``; a story's own value overrides it. ``None``: the Lite formula,
-    ``4 + 5 + G`` (one primary plus the story's model-assisted guardrail calls). Prospective."""
 
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    max_model_calls_per_turn: Annotated[int | None, PROSPECTIVE] = Field(
-        default=None, ge=MIN_CALLS_PER_TURN, le=MAX_CALLS_PER_TURN
+def superseded(key: str, field: str) -> InvalidRequest:
+    """The 422 for one of M2's story engine dials (``SUPERSEDED_STORY_SETTINGS``), naming the
+    profile setting that replaced it (``details.replacement``, ``reason: superseded``)."""
+    replacement = SUPERSEDED_STORY_SETTINGS[key]
+    return InvalidRequest(
+        f"{key!r} is an engine dial of the story's profile now: override "
+        f"{replacement} with PATCH /stories/{{id}}/profile-overrides",
+        {"field": field, "reason": "superseded", "replacement": replacement},
     )
+
+
+SUPERSEDED_DEPLOYMENT_SETTINGS: Mapping[str, str] = types.MappingProxyType(
+    {
+        "lite_generation_defaults": "models.generation",
+        "lite_window_messages": "memory.rolling_summary.window_messages",
+        "lite_summary_max_tokens": "memory.rolling_summary.compress_threshold_tokens",
+        "max_model_calls_per_turn": "budgets.model_calls",
+    }
+)
+"""M2's deployment settings that were engine dials, with the ``profile_defaults`` setting that
+replaced each (FR-PROF-5; #113). ``PUT /admin/settings`` naming one is 422."""
 
 
 class TurnQueueDefaults(BaseModel):
@@ -240,7 +276,9 @@ OMNISCIENT = "omniscient"
 
 
 class StorySettings(BaseModel):
-    """A story's settings. Unknown keys are kept so later stories' settings survive a read."""
+    """A story's settings: what the story is, never how hard the engine works (FR-PROF-5; the
+    engine dials are its profile's, ``SUPERSEDED_STORY_SETTINGS``). Unknown keys are kept so
+    later stories' settings survive a read."""
 
     model_config = ConfigDict(extra="allow", frozen=True, use_attribute_docstrings=True)
 
@@ -262,51 +300,15 @@ class StorySettings(BaseModel):
     deployment's ``turn_queue_max``, default 5); one more is 423 ``story_busy``. Stored in its
     own ``stories`` column. Prospective."""
 
-    turn_deadline: Annotated[float, PROSPECTIVE] = Field(
-        default=DEFAULT_TURN_DEADLINE_S, gt=0, le=MAX_TURN_DEADLINE_S
-    )
-    """A turn's wall-clock deadline in seconds (NFR-PERF-6; #69 adds the call budget). The turn
-    slot's lease is ``turn_deadline`` + 10 s, and a queued request waits at most this long
-    before it is answered 202. Prospective."""
-
-    max_model_calls_per_turn: Annotated[int | None, PROSPECTIVE] = Field(
-        default=None, ge=MIN_CALLS_PER_TURN, le=MAX_CALLS_PER_TURN
-    )
-    """The most model calls one turn may make (NFR-PERF-6; #69), 1 to 50. ``None``: the
-    deployment's default, else the Lite formula ``4 + 5 + G``. A cap below one generation plus
-    the story's model-assisted guardrail calls refuses every turn with 422
-    ``budget_below_safety_minimum``. Prospective."""
-
     default_output_viewpoint: Annotated[str | None, INTERPRETIVE] = None
     """The viewpoint a read or respond falls back to when the request names none and has no
     actor (FR-RESP-12): ``character:<id>``, never ``omniscient`` (#59 resolves it).
     Interpretive: a Lite turn depends on it (#64)."""
 
-    generation_settings: GenerationSettings | None = None
-    """The story's override of the deployment's Lite generation defaults (FR-LITE-4)."""
-
-    lite_window_messages: Annotated[int | None, PROSPECTIVE] = Field(
-        default=None, ge=1, le=MAX_LITE_WINDOW_MESSAGES
-    )
-    """The story's override of how many transcript rows a Lite prompt keeps verbatim before
-    older ones are summarised (#72)."""
-
     lite_summary_chunk: Annotated[int | None, PROSPECTIVE] = Field(
         default=None, ge=2, le=MAX_LITE_SUMMARY_CHUNK
     )
     """The story's override of the transcript rows per level-0 summary segment (#72)."""
-
-    lite_summary_max_tokens: Annotated[int | None, PROSPECTIVE] = Field(
-        default=None, ge=MIN_LITE_SUMMARY_MAX_TOKENS, le=MAX_LITE_SUMMARY_MAX_TOKENS
-    )
-    """The story's override of the rolling summary's token cap (#72)."""
-
-    guardrail_retry_budget: Annotated[int, PROSPECTIVE] = Field(
-        default=DEFAULT_GUARDRAIL_RETRY_BUDGET, ge=0, le=MAX_GUARDRAIL_RETRY_BUDGET
-    )
-    """How many times a turn whose reply broke an output policy is generated again before the
-    safe fallback is used (FR-GUARD-6; #68), over the whole turn; ``0`` goes straight to the
-    fallback. Prospective."""
 
     audit_retention_days: Annotated[int | None, PROSPECTIVE] = Field(
         default=None, ge=AUDIT_RETENTION_MIN_DAYS, le=AUDIT_RETENTION_MAX_DAYS
@@ -692,10 +694,23 @@ DEPLOYMENT_COLUMNS = (
     "default_engine_profile_id",
     "listing_status_values",
     "feedback_tags",
+    "profile_defaults",
 )
 """Deployment settings kept in their own ``deployment_state`` columns (#48; the starting-cast
 limits, #108; the default engine profile, #106; the listing status values, #110; the feedback
-reason tags, #112) rather than in its ``settings`` document."""
+reason tags, #112; the engine profiles' defaults, #113) rather than in its ``settings``
+document."""
+
+PROFILE_DEFAULTS = "profile_defaults"
+
+
+def _profile_settings_schema(schema: dict[str, Any]) -> None:
+    """``profile_defaults``' JSON Schema: the delivered profile settings schema (read when the
+    schema is generated, as ``core.profiles.schema`` imports this module)."""
+    from epistrel.core.profiles.schema import SETTINGS_SCHEMA  # here: it imports this module
+
+    schema.clear()
+    schema.update(copy.deepcopy(SETTINGS_SCHEMA))
 
 
 class DeploymentSettings(
@@ -703,7 +718,6 @@ class DeploymentSettings(
     StoryTextCaps,
     IdempotencySettings,
     TurnQueueDefaults,
-    TurnBudgetDefaults,
     StructuredSettings,
     GuardrailSettings,
     RetentionSettings,
@@ -773,6 +787,19 @@ class DeploymentSettings(
     A write replaces the whole list; removing a tag that a rating or its history still carries is
     409 ``feedback_tag_in_use``. Prospective: a rating checks its tags against the list in force
     when it is written."""
+
+    profile_defaults: Annotated[dict[str, Any], PROSPECTIVE] = Field(
+        default_factory=lite_settings, json_schema_extra=_profile_settings_schema
+    )
+    """The deployment's defaults for every engine profile setting (FR-PROF-5; #113): the bottom
+    layer of each story's effective configuration, under its profile's version and its own
+    overrides. A complete settings document (every delivered setting named), seeded from the
+    Lite preset. A write is a partial merge (an object merges into an object; any other value,
+    ``null`` included, replaces) that must leave a complete document every profile and story can
+    still run under (422 ``validation_error`` or ``invalid_profile`` otherwise). Each changed
+    setting is recorded as ``profile_defaults.<path>`` with its own class. Prospective: a story's
+    next turn runs under the new defaults, wherever its profile and overrides leave a setting
+    out."""
 
     @field_validator("listing_status_values")
     @classmethod

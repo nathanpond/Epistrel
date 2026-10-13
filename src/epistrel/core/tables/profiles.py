@@ -14,6 +14,13 @@ cascades).
 
 ``stories.engine_profile_id`` and ``deployment_state.default_engine_profile_id`` reference
 ``engine_profiles``: a profile that a story uses, or that is the default, cannot be purged.
+
+``story_profile_overrides`` (#113) holds a story's own overrides of its profile's dials
+(FR-PROF-5): one row per story that has ever set one, its sparse settings document (validated
+like a profile's settings) and its ``revision``, 1 at the first write and one more at each write
+that changes it. A story without a row overrides nothing (revision 0). The overrides persist
+across its profile's versions and a reassignment. The table is story-scoped: story deletion
+empties it (``core.stories.STORY_TABLES``) and a fork copies it.
 """
 
 from __future__ import annotations
@@ -67,4 +74,13 @@ engine_profile_versions = Table(
     CheckConstraint("version >= 1", name="version"),
 )
 
-__all__ = ["engine_profile_versions", "engine_profiles"]
+story_profile_overrides = Table(
+    "story_profile_overrides",
+    metadata,
+    Column("story_id", ulid_type(), ForeignKey("stories.id"), primary_key=True),
+    Column("settings", JSONB, nullable=False),
+    Column("revision", Integer, nullable=False),
+    CheckConstraint("revision >= 1", name="revision"),
+)
+
+__all__ = ["engine_profile_versions", "engine_profiles", "story_profile_overrides"]

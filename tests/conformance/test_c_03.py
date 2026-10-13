@@ -91,6 +91,7 @@ from epistrel.api.routes.stories import (
     StorySettingsBody,
     StorySettingsWriteBody,
 )
+from epistrel.api.routes.story_profile import StoryProfileWriteBody
 from epistrel.api.routes.story_texts import (
     CustomInstructionsBody,
     CustomInstructionsWritten,
@@ -129,6 +130,7 @@ from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
 from epistrel.core.profiles.impact import ImpactPreviewRequest
 from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpdate, ProfileValidate
+from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.seeds.ratings import EVERYONE_ID
@@ -447,13 +449,21 @@ PROFILE_ANSWERS = [
     ("transfer_owner", 200),
     ("impact_preview", 200),
     ("get_effective_config", 200),
+    ("assign_engine_profile", 200),
+    ("set_profile_overrides", 200),
+    ("get_effective_config", 200),
 ]
 """What the engine-profile steps (#106) answer on both surfaces: a profile created, read, listed,
 edited into version 2 (two-stage, #109: no story follows it, so it applies at once), read at
 version 1, its versions listed, copied, validated (and refused for an undelivered level), the
 schema read, the default refused deletion, the copy deleted, and the profile transferred; then
 (#109) the impact of assigning it to the story previewed, and the story's effective
-configuration read."""
+configuration read; then (#113) the profile assigned to the story (no capability changes, so it
+applies at once), one of its dials overridden, and its configuration read again."""
+STORY_OVERRIDES = {"settings": {"memory": {"rolling_summary": {"window_messages": 12}}}}
+"""A story's override of its profile's verbatim window (#113)."""
+DEPLOYMENT_PATCH = {"profile_defaults": {"memory": {"rolling_summary": {"window_messages": 40}}}}
+"""A deployment settings write: the engine profiles' default verbatim window (#113)."""
 PROFILE_GROUP = "profiles"
 """The ``Step.group`` of the engine-profile steps (#106)."""
 MESSAGE_RATING = {"rating": 4, "tags": ["too_long"], "text": "Shorter, please."}
@@ -488,10 +498,12 @@ def _steps() -> list[Step]:
         Step(
             "update_story_settings",
             lambda ids: Rest(
-                "PATCH", f"{s}/settings", {"turn_deadline": 40, "policies": [STORY_POLICY]}
+                "PATCH",
+                f"{s}/settings",
+                {"regenerate_retry_budget": 4, "policies": [STORY_POLICY]},
             ),
             lambda e, ids: _settings_write(
-                e, ids["story"], {"turn_deadline": 40, "policies": [STORY_POLICY]}
+                e, ids["story"], {"regenerate_retry_budget": 4, "policies": [STORY_POLICY]}
             ),
         ),
         Step(
@@ -1201,6 +1213,33 @@ def _steps() -> list[Step]:
             lambda e, ids: _effective(e, ids["story"]),
             group=PROFILE_GROUP,
         ),
+        # -- the story's profile and overrides (#113), then its configuration read again
+        Step(
+            "assign_engine_profile",
+            lambda ids: Rest("PUT", f"{s}/engine-profile", {"profile_id": ids["profile"]}),
+            lambda e, ids: _story_profile_write(
+                e.assign_engine_profile(
+                    CTX, ids["story"], ProfileAssignment(profile_id=ids["profile"])
+                )
+            ),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "set_profile_overrides",
+            lambda ids: Rest("PATCH", f"{s}/profile-overrides", STORY_OVERRIDES),
+            lambda e, ids: _story_profile_write(
+                e.set_profile_overrides(
+                    CTX, ids["story"], ProfileOverridesPatch.model_validate(STORY_OVERRIDES)
+                )
+            ),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "get_effective_config",
+            lambda ids: Rest("GET", f"{s}/effective-config"),
+            lambda e, ids: _effective(e, ids["story"]),
+            group=PROFILE_GROUP,
+        ),
         # -- the operator surface
         Step(
             "list_content_ratings",
@@ -1244,8 +1283,8 @@ def _steps() -> list[Step]:
         ),
         Step(
             "update_deployment_settings",
-            lambda ids: Rest("PUT", "/admin/settings", {"lite_window_messages": 40}),
-            lambda e, ids: _deployment_write(e, {"lite_window_messages": 40}),
+            lambda ids: Rest("PUT", "/admin/settings", DEPLOYMENT_PATCH),
+            lambda e, ids: _deployment_write(e, DEPLOYMENT_PATCH),
         ),
         Step(
             "config_changes",
@@ -1555,6 +1594,10 @@ async def _profile_write(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _profile_edit(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(ProfileEditBody.of(await call))
+
+
+async def _story_profile_write(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StoryProfileWriteBody.of(await call))
 
 
 async def _impact(engine: Engine, story_id: str, body: dict[str, Any]) -> dict[str, Any]:

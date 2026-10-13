@@ -6,10 +6,12 @@
 default engine profile a story is created under (FR-PROF-1; #106: a foreign key, so the default
 is never purged), the listing status values a catalog entry may hold, in order (FR-CAT-11; #110:
 ``private``, ``in_review``, ``public`` until an operator changes them), the reason tags a message
-rating may carry (FR-FB-1; #112: FR-FB-1's nine until an operator changes them), a ``settings``
-document later stories extend (#64), and ``media_store``: the blob store kind (``local`` or
-``s3``) the deployment's media live in, recorded at the first start-up and compared at every
-later one, so switching stores with media in place is refused (#107).
+rating may carry (FR-FB-1; #112: FR-FB-1's nine until an operator changes them), the engine
+profiles' deployment defaults (FR-PROF-5; #113: ``profile_defaults``, a complete profile settings
+document, seeded from the Lite preset: the bottom layer of every story's effective
+configuration), a ``settings`` document later stories extend (#64), and ``media_store``: the blob
+store kind (``local`` or ``s3``) the deployment's media live in, recorded at the first start-up
+and compared at every later one, so switching stores with media in place is refused (#107).
 
 ``config_changes`` records every configuration write with its scope, the revision it produced,
 the setting, the old and new values, the change class (FR-CONC-15: ``interpretive`` or
@@ -72,6 +74,7 @@ deployment_state = Table(
         nullable=False,
         server_default=text(FEEDBACK_TAGS_DEFAULT),
     ),
+    Column("profile_defaults", JSONB, nullable=False),
     Column("settings", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("media_store", Text, nullable=True),
     CheckConstraint(f"id = {DEPLOYMENT_ROW_ID}", name="single_row"),

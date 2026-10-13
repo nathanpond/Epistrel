@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from epistrel.core.history import HistoryItem
 from epistrel.core.ids import Ulid
+from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.fingerprint import QualityStatus
 from epistrel.core.settings_schema import (
     MAX_CALLS_PER_TURN,
@@ -83,8 +84,9 @@ class SceneContext(BaseModel):
 
 class BudgetOverride(BaseModel):
     """A request's own turn budget (NFR-PERF-6; #69), within the story's: ``max_calls`` (1 to
-    50, at most the story's ``max_model_calls_per_turn``) and ``deadline_s`` (seconds, at least
-    0.5 and at most the story's ``turn_deadline``); above either is 422 ``validation_error``."""
+    50, at most the story's call cap, its effective ``budgets.model_calls``) and ``deadline_s``
+    (seconds, at least 0.5 and at most its turn deadline, ``budgets.deadline_ms``; #113); above
+    either is 422 ``validation_error``."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -215,7 +217,7 @@ class BudgetReport:
 @dataclass(frozen=True, slots=True)
 class DegradationStep:
     """A degradation step the turn took (NFR-PERF-7) and why: ``safe_fallback`` because the
-    ``guardrail_retry_budget`` was spent (``retry_budget``), the call budget could not afford
+    polish budget was spent (``retry_budget``), the call budget could not afford
     the regeneration (``call_budget``), or the deadline passed (``deadline``)."""
 
     step: str
@@ -259,6 +261,13 @@ class RespondResult:
     """The capabilities that configuration enables (#109)."""
     quality_status: QualityStatus | None = None
     """That configuration's quality status: ``uncertified`` in M3 (#109)."""
+    profile: ProfileVersionRef | None = None
+    """The engine profile and the version the turn ran under (C-16, FR-PROF-6; #113): the
+    configuration it captured at its start. ``None`` only in a result stored before #113."""
+    config_revision: int | None = None
+    """The story's configuration revision when the turn started (#113): it moves with every
+    change of the story's settings, profile or overrides. ``None`` only in a result stored
+    before #113."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 

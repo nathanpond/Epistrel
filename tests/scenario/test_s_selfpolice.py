@@ -33,7 +33,7 @@ from tests.respond_support import (
     respond_client,
     system_of,
 )
-from tests.story_support import WRITE, create, story_body
+from tests.story_support import create, override, story_body
 
 pytestmark = pytest.mark.integration
 
@@ -41,6 +41,8 @@ MESSAGE = "No alcohol talk in a Teen story."
 CONSTRAINT_LINE = CONSTRAINT.format(message=MESSAGE.rstrip("."))
 ASK = "Pour me a whisky, would you?"
 FALLBACK = "{name} grins and asks about the weather instead."
+NO_REGENERATION = {"repair": {"polish": {"max_regenerations": 0}}}
+"""A story's override of its profile's polish budget: no regeneration, the fallback at once."""
 
 
 @pytest.fixture
@@ -65,7 +67,9 @@ async def test_s_selfpolice(stub_settings: Settings, engine: AsyncEngine) -> Non
     fallback. Violates always → the budget (1 + 2 generations), then the character's safe
     fallback line, flagged ``fallback_used`` with ``degradation: ["safe_fallback"]``.
     Complements asserted: the policy rows are unchanged by all of it (the policy never
-    yields), and with ``guardrail_retry_budget`` 0 the fallback comes after one generation."""
+    yields), and with a polish budget of 0 (the story's override of its profile's
+    ``repair.polish.max_regenerations``, M2's ``guardrail_retry_budget``; #113) the fallback
+    comes after one generation."""
     async with respond_client(stub_settings, engine) as (client, lib):
         stub = lib.models.stub
         created_body = story_body(PLAYER, FIRST, content_rating_id=TEEN_ID)
@@ -134,11 +138,9 @@ async def test_s_selfpolice(stub_settings: Settings, engine: AsyncEngine) -> Non
         )
         assert (reply["model"], reply["prompt_hash"]) == (None, None)
 
-        # Complement: a budget of 0 goes straight to the fallback.
-        patched = await client.patch(
-            f"/stories/{story}/settings", json={"guardrail_retry_budget": 0}, headers=WRITE
-        )
-        assert patched.status_code == 200, patched.text
+        # Complement: a budget of 0 goes straight to the fallback (the story's override of its
+        # profile's polish budget, M2's ``guardrail_retry_budget``; #113).
+        await override(client, story, NO_REGENERATION)
         stub.reset()
         stub.script("generation", ["Whisky again."])
         turn = await played(client, story, body(ids[PLAYER], ASK))
@@ -162,10 +164,7 @@ async def test_s_selfpolice__deployment_fallback(
         stub = lib.models.stub
         story, ids = await new_story(client, PLAYER, FIRST)
         await lib.policies_set_story(AUTHOR, story, [story_item(words("whisky"))])
-        patched = await client.patch(
-            f"/stories/{story}/settings", json={"guardrail_retry_budget": 0}, headers=WRITE
-        )
-        assert patched.status_code == 200, patched.text
+        await override(client, story, NO_REGENERATION)
 
         async def fallback() -> str:
             stub.reset()

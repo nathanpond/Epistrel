@@ -28,6 +28,7 @@ from tests.auth_support import auth_settings
 from tests.event_support import execute_in_tx, new_story, play_turn, rows, scalar
 from tests.integration import test_jobs as jt
 from tests.integration.test_jobs import DERIVED_KIND, LEASE_S, MovableClock, Probe
+from tests.profile_support import WINDOW, nest, store_overrides
 from tests.projection_support import truncate
 from tests.summary_support import claim_summary, run_due_jobs, segment_rows, worker
 
@@ -37,9 +38,10 @@ _job = jt._job
 _now = jt._now
 _segments = jt._segments
 
-SETTINGS = {"lite_window_messages": 2, "lite_summary_chunk": 200}
-"""Two verbatim rows (the head turn) and 100 turns per segment: the grid is 1-100, 101-200,
-..., 701-800, 801-900."""
+SETTINGS = {"lite_summary_chunk": 200}
+OVERRIDES = nest(WINDOW, 2)
+"""Two verbatim rows (the head turn; the story's override of its profile's window, #113) and
+100 turns per segment: the grid is 1-100, 101-200, ..., 701-800, 801-900."""
 
 
 @pytest.fixture
@@ -130,6 +132,7 @@ async def test_s_consolidation_race(engine: AsyncEngine, models: ModelAccessLaye
             {"s": story, "patch": json.dumps(SETTINGS)},
         ),
     )
+    await store_overrides(engine, story, OVERRIDES)
     await _turns(engine, story, 1, 701)
     assert await lite_summary.schedule(engine, story)
     assert await run_due_jobs(engine, models, story) == [queue.CommitOutcome.COMMITTED]

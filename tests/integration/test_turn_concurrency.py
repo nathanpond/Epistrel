@@ -84,12 +84,13 @@ async def _held(stub: Any, client: httpx.AsyncClient, story: str, actor: str) ->
 
 
 async def test_settings_patch(stub_settings: Settings, engine: AsyncEngine) -> None:
-    """A JSON merge patch: set, nested merge, ``null`` resets, unknown keys and bad values are
-    422, the default viewpoint must be a cast member (never ``omniscient``: #59's rule on the
-    real route), every change is a prospective story-scoped ``config_changes`` row and one
-    ``config_revision``; a no-op writes nothing; an archived story's settings are read-only;
-    a relaxing ``policies`` item refuses the whole request. Complement: a valid default is
-    stored as ``character:<id>`` and the GET shows every change."""
+    """A JSON merge patch: set, ``null`` resets, unknown keys and bad values are 422, an engine
+    dial that moved to the story's profile (#113) is 422 naming its replacement, the default
+    viewpoint must be a cast member (never ``omniscient``: #59's rule on the real route), every
+    change is a prospective story-scoped ``config_changes`` row and one ``config_revision``; a
+    no-op writes nothing; an archived story's settings are read-only; a relaxing ``policies``
+    item refuses the whole request. Complement: a valid default is stored as
+    ``character:<id>`` and the GET shows every change."""
     async with respond_client(stub_settings, engine) as (client, _):
         story, ids = await new_story(client)
         before = await _story_row(engine, story)
@@ -100,8 +101,8 @@ async def test_settings_patch(stub_settings: Settings, engine: AsyncEngine) -> N
             {
                 "turn_concurrency": "queue",
                 "turn_queue_max": 3,
-                "turn_deadline": 20,
-                "generation_settings": {"temperature": 0.3},
+                "regenerate_retry_budget": 4,
+                "lite_summary_chunk": 6,
             },
         )
         assert changed.status_code == 200, changed.text
@@ -111,7 +112,7 @@ async def test_settings_patch(stub_settings: Settings, engine: AsyncEngine) -> N
         assert answer["timeline_revision"] == before.timeline_revision
         assert answer["settings"]["turn_concurrency"] == "queue"
         assert answer["settings"]["turn_queue_max"] == 3
-        assert answer["settings"]["turn_deadline"] == 20
+        assert answer["settings"]["regenerate_retry_budget"] == 4
         assert {"effective_policies", "inactive_policies", "guardrail_calls"} <= set(answer)
         row = await _story_row(engine, story)
         assert (row.turn_concurrency, row.turn_queue_max) == ("queue", 3)
@@ -123,21 +124,24 @@ async def test_settings_patch(stub_settings: Settings, engine: AsyncEngine) -> N
             s=story,
         )
         assert [r.setting for r in recorded] == [  # one row per changed leaf (#64)
-            "generation_settings.temperature",
+            "lite_summary_chunk",
+            "regenerate_retry_budget",
             "turn_concurrency",
-            "turn_deadline",
             "turn_queue_max",
         ]
         assert {(r._mapping["class"], r.actor, r.config_revision) for r in recorded} == {
             ("prospective", "p-author", answer["config_revision"])
         }
 
-        merged = await _patch(client, story, {"generation_settings": {"top_p": 0.5}})
-        assert merged.json()["settings"]["generation_settings"] == {
-            "temperature": 0.3,
-            "top_p": 0.5,
-            "length": None,
-        }
+        # #113: the engine dials are the story's profile's, overridden per story.
+        moved = await _patch(client, story, {"generation_settings": {"top_p": 0.5}})
+        assert _error(moved) == (422, "validation_error")
+        details = moved.json()["error"]["details"]
+        assert (details["field"], details["reason"], details["replacement"]) == (
+            "body.generation_settings",
+            "superseded",
+            "models.generation",
+        )
         reset = await _patch(client, story, {"turn_concurrency": None, "turn_queue_max": None})
         settings = reset.json()["settings"]
         assert (settings["turn_concurrency"], settings["turn_queue_max"]) == ("reject", None)
@@ -180,8 +184,8 @@ async def test_settings_patch(stub_settings: Settings, engine: AsyncEngine) -> N
         assert upsert.status_code == 200, upsert.text
         assert "Mine" in {p["name"] for p in upsert.json()["effective_policies"]}
 
-        replay = await _patch(client, story, {"lite_window_messages": 12}, **{KEY: f"set-1-{RUN}"})
-        again = await _patch(client, story, {"lite_window_messages": 12}, **{KEY: f"set-1-{RUN}"})
+        replay = await _patch(client, story, {"lite_summary_chunk": 12}, **{KEY: f"set-1-{RUN}"})
+        again = await _patch(client, story, {"lite_summary_chunk": 12}, **{KEY: f"set-1-{RUN}"})
         assert (again.headers.get(REPLAY), again.json()) == ("true", replay.json())
 
         await client.post(f"/stories/{story}/archive", headers=WRITE)
@@ -285,12 +289,15 @@ async def test_queued_ingest_is_one_turn(stub_settings: Settings, engine: AsyncE
 
 
 async def test_long_poll_then_202(stub_settings: Settings, engine: AsyncEngine) -> None:
-    """A queued request waits up to the story's ``turn_deadline`` and is then answered 202 with
-    the turn still queued; its key later replays the turn's result. Complement: on an idle
-    ``queue`` story, ``respond-async`` plays at once (200, no queue row)."""
+    """A queued request waits up to the story's turn deadline (its ``budgets.deadline_ms``,
+    #113) and is then answered 202 with the turn still queued; its key later replays the turn's
+    result. Complement: on an idle ``queue`` story, ``respond-async`` plays at once (200, no
+    queue row)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         story, ids = await new_story(
-            client, settings={"turn_concurrency": "queue", "turn_deadline": 0.5}
+            client,
+            settings={"turn_concurrency": "queue"},
+            overrides={"budgets": {"deadline_ms": 500}},
         )
         idle = await respond(client, story, body(ids[PLAYER], "Quick."), headers=ASYNC)
         assert idle.status_code == 200, idle.text

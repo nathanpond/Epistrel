@@ -520,8 +520,8 @@ MALFORMED: list[tuple[str, str, str, dict[str, Any], str]] = [
         "story settings",
         "PATCH",
         "/stories/{story}/settings",
-        {"json": {"turn_deadline": "soon"}},
-        "body.turn_deadline",
+        {"json": {"regenerate_retry_budget": "soon"}},
+        "body.regenerate_retry_budget",
     ),
     # The column is INTEGER: a value past int32 must stop at validation, not reach Postgres (#280).
     (
@@ -658,7 +658,9 @@ def _malformed(live: Live) -> list[str]:
         # The complement: a well-formed request of the same shape is accepted and writes.
         before = live.counts()
         ok = client.patch(
-            f"/stories/{live.story_id}/settings", json={"turn_deadline": 40}, headers=headers
+            f"/stories/{live.story_id}/settings",
+            json={"regenerate_retry_budget": 4},
+            headers=headers,
         )
         if ok.status_code != 200 or live.counts()["config_changes"] <= before["config_changes"]:
             problems.append(f"complement: {ok.status_code} {ok.text[:200]}")

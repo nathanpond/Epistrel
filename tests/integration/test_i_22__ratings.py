@@ -322,8 +322,9 @@ async def test_i_22__in_flight(pg_url: str, engine: AsyncEngine) -> None:
     Complements asserted: an edit whose new guardrails the reply passes re-checks once and
     commits that reply without a second generation (the output gate, #68, checks every reply
     under the guardrails in force when its generation started; the re-check covers the rest);
-    a prospective change mid-turn (a story's ``turn_deadline``) re-checks nothing and the turn
-    commits as generated; the committed history is not re-checked by a later edit."""
+    a prospective change mid-turn (the story's override of its turn deadline,
+    ``budgets.deadline_ms``, #113) re-checks nothing and the turn commits as generated; the
+    committed history is not re-checked by a later edit."""
     settings = auth_settings(pg_url, model_adapter="stub")
     name = f"I22F {new_ulid()}"
     rating = (await create_rating(engine, RatingFields(name=name), principal=OPERATOR)).rating
@@ -428,7 +429,9 @@ async def test_i_22__in_flight(pg_url: str, engine: AsyncEngine) -> None:
 
         async def deadline() -> Any:
             return await client.patch(
-                f"/stories/{story}/settings", json={"turn_deadline": 40}, headers=WRITE
+                f"/stories/{story}/profile-overrides",
+                json={"settings": {"budgets": {"deadline_ms": 40_000}}, "ignore_warnings": True},
+                headers=WRITE,
             )
 
         turn, patched = await held_turn("Rain on the window.", during=deadline)

@@ -55,8 +55,10 @@ PHRASE = "Quillon Marrowgate"
 """Planted in ratings; nothing a story reads may ever hold it."""
 REPLY = "The ferryman shrugs and points at the fog."
 SUMMARY = "Travellers wait for a ferry in the fog."
-SUMMARISED = {"lite_window_messages": 2, "lite_summary_chunk": 2}
-"""Story settings that make every turn after the second summarised (#72)."""
+SUMMARISED = {"lite_summary_chunk": 2}
+WINDOW_OF_TWO = {"memory": {"rolling_summary": {"window_messages": 2}}}
+"""Story settings and overrides (of its profile's window, #113) that make every turn after the
+second summarised (#72)."""
 FEEDBACK_TABLES = frozenset({"message_feedback", "feedback_history"})
 ULID_TEXT = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
 
@@ -298,7 +300,7 @@ async def test_c_26__isolation(stub_settings: Settings, engine: AsyncEngine) -> 
         stories: dict[str, tuple[str, str]] = {}
         calls: dict[str, list[StubCall]] = {"rated": [], "twin": []}
         for name in ("rated", "twin"):
-            story_id, cast = await new_story(client, settings=SUMMARISED)
+            story_id, cast = await new_story(client, settings=SUMMARISED, overrides=WINDOW_OF_TWO)
             stories[name] = (story_id, next(iter(cast.values())))
 
         async def turn(name: str, n: int) -> dict[str, Any]:

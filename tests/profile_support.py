@@ -11,6 +11,7 @@ produces are named here (``REDERIVATION``, ``QUALITY_STATUSES``).
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from itertools import combinations, product
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.schema import DependencyRule, Module, Requirement
 from tests.conftest import REPO_ROOT
-from tests.event_support import rows, scalar
+from tests.event_support import execute_in_tx, rows, scalar
 
 PROFILES = "/engine-profiles"
 SETTINGS: dict[str, Any] = {
@@ -228,3 +229,23 @@ async def configuration_rows(db: AsyncEngine) -> dict[str, Any]:
         "changes": await scalar(db, "SELECT count(*) FROM config_changes"),
         "revision": await scalar(db, "SELECT config_revision FROM deployment_state"),
     }
+
+
+# -- a story's overrides (#113) -------------------------------------------------------------------
+
+WINDOW = "memory.rolling_summary.window_messages"
+"""The verbatim window a Lite prompt keeps (M2's ``lite_window_messages``)."""
+
+
+async def store_overrides(engine: AsyncEngine, story_id: str, overrides: dict[str, Any]) -> None:
+    """Give a story made with the event helpers (no REST call) its overrides of its profile's
+    dials, straight into ``story_profile_overrides`` at revision 1."""
+    await execute_in_tx(
+        engine,
+        (
+            "INSERT INTO story_profile_overrides (story_id, settings, revision) "
+            "VALUES (:s, CAST(:o AS jsonb), 1) ON CONFLICT (story_id) DO UPDATE "
+            "SET settings = excluded.settings, revision = story_profile_overrides.revision + 1",
+            {"s": story_id, "o": json.dumps(overrides)},
+        ),
+    )

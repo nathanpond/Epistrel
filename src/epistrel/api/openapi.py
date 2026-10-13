@@ -90,7 +90,9 @@ TAGS: list[dict[str, str]] = [
         "name": "profiles",
         "description": "Engine profiles: named, versioned sets of capability modules and dials "
         "that set how hard the engine works for a story (FR-PROF-1..4). The schema exposes only "
-        "the modules and levels this deployment has delivered; presets are ordinary profiles.",
+        "the modules and levels this deployment has delivered; presets are ordinary profiles. A "
+        "story runs under its profile's latest version with its own overrides over it, on top "
+        "of the deployment's defaults (FR-PROF-5,6).",
     },
     {
         "name": OWNERSHIP_TAG,
@@ -330,6 +332,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         *_ADMIN_CONFIG,
         "rating_retired",
         "profile_deleted",
+        "invalid_profile",
         "listing_status_in_use",
         "feedback_tag_in_use",
     ),
@@ -395,8 +398,11 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "update_profile": ("invalid_profile", "profile_deleted"),
     "validate_profile": ("invalid_profile",),
     "delete_profile": _ADMIN_CONFIG,
-    # A story's configuration (#109): a preview refuses what the change itself would.
+    # A story's configuration (#109): a preview refuses what the change itself would; the
+    # assignment and the overrides (#113) are story configuration writes.
     "impact_preview": ("invalid_profile", "profile_deleted"),
+    "assign_engine_profile": ("invalid_profile", "profile_deleted", "story_archived"),
+    "set_profile_overrides": ("invalid_profile", "story_archived"),
     # Message feedback (#112): a tag outside the deployment's set; the read of one's own rating
     # needs the principal.
     "rate_message": ("unknown_feedback_tag",),

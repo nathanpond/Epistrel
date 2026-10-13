@@ -26,6 +26,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.ownership import REGISTRY
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.tables.ownership import EntityType
 from tests.auth_support import bearer
 from tests.catalog_support import character as catalog_character
@@ -283,7 +284,9 @@ async def _related(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dic
     return {"relation": "editor", "principal": quote(NEW_OWNER, safe="")}
 
 
-SETTINGS = {"turn_deadline": 30}
+SETTINGS = {"regenerate_retry_budget": 3}
+OVERRIDES = {"settings": {"pins": {"max_pinned": 10}}}
+"""A story's override of a dial no capability hangs on (#113): applied at once."""
 PINNED = {"items": [{"text": "Ada owes Wren."}]}
 INSTRUCTIONS = {"text": "Keep it brief."}
 
@@ -390,8 +393,12 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{S}/owner"): Call(200, {"principal": NEW_OWNER}),
     ("POST", f"{S}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
     ("DELETE", f"{S}{RELATION}"): Call(204, prepare=_related),
-    # -- stories: the configuration preview (#109), which writes nothing
+    # -- stories: the configuration preview (#109), which writes nothing, and the story's
+    # profile and overrides (#113): the story's own profile again (a no-op), and an override no
+    # capability hangs on (applied at once)
     ("POST", f"{S}/impact-preview"): Call(200, {"overrides": {"pins": {"max_pinned": 10}}}),
+    ("PUT", f"{S}/engine-profile"): Call(200, {"profile_id": LITE_PRESET_ID}),
+    ("PATCH", f"{S}/profile-overrides"): Call(200, OVERRIDES),
     # -- stories: reads, each finding content the owner put there (the story and its history
     # in the default viewpoint and the omniscient one too; its effective configuration, #109)
     ("GET", S): Call(200, queries=({}, OMNISCIENT)),

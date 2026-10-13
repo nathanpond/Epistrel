@@ -22,7 +22,8 @@ accumulate over the turn: ``Your previous reply violated: <message>. Reply again
 The policy's message is all the model is told, never a subject or an age. The turn generates
 again while all of these hold:
 
-- the story's ``guardrail_retry_budget`` (0 to 5, default 2) is not spent: it spans the turn;
+- the story's polish budget (its configuration's ``repair.polish.max_regenerations``, 0 to 5,
+  default 2; none with the polish pass off; #113) is not spent: it spans the turn;
 - the turn budget can afford one generation plus one re-check per model-assisted output policy
   and its deadline has not passed.
 
@@ -217,7 +218,7 @@ class Gated:
     rejected: tuple[Rejected, ...] = field(default_factory=tuple)
     attempts: int = 1
     fallback_cause: FallbackCause | None = None
-    """Why the fallback was released (#69): the ``guardrail_retry_budget`` was spent, the call
+    """Why the fallback was released (#69): the polish budget was spent, the call
     budget could not afford another attempt, or the deadline passed."""
 
 

@@ -3,10 +3,11 @@ NFR-DETERM-1; #75).
 
 ``script.json`` is a committed 60-step script: turns (some with an action), regenerations,
 truncations, a swap, two forks (one a fork of a fork), pinned memories and custom instructions,
-and drains of the Lite summary jobs. The first story's window is small, so the summary crosses
-it several times. Every step carries a fixed ``Idempotency-Key`` and the one principal. The
-script runs in-process through the REST app (the stub adapter, no background worker; ``drain``
-steps run the due summary jobs) on two fresh scratch databases. Then:
+and drains of the Lite summary jobs. The first story's window is small (its override of its
+profile's ``window_messages``, #113), so the summary crosses it several times. Every step
+carries a fixed ``Idempotency-Key`` and the one principal. The script runs in-process through
+the REST app (the stub adapter, no background worker; ``drain`` steps run the due summary jobs)
+on two fresh scratch databases. Then:
 
 - every step's response body is the same in both runs, once ids and timestamps are mapped and
   durations dropped (``epistrel.testing.determinism.Normalizer``);
@@ -73,6 +74,14 @@ class Run:
             self.players[step["alias"]] = next(
                 c["id"] for c in found["characters"] if c["name"] == PLAYER
             )
+        if "overrides" in step:  # the story's overrides of its profile's dials (#113)
+            overridden = await self.client.patch(
+                f"/stories/{found['story_id']}/profile-overrides",
+                json={"settings": step["overrides"], "ignore_warnings": True},
+                headers={**self.headers, KEY: f"{step['key']}-overrides"},
+            )
+            assert overridden.status_code == 200, f"{step}: {overridden.text}"
+            found = {**found, "overrides": overridden.json()}
         self.answers.append(self.normalize(found))
 
     def _request(self, step: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:

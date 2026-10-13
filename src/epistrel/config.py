@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     # A projection rebuild of a story with more events than this runs as a background job
     # (``rebuild_projections``, #70); smaller stories rebuild synchronously in the request.
     rebuild_async_threshold: int = Field(default=10_000, ge=1)
+    # Keep each story's resolved engine configuration in this process (FR-PROF-5; #113): it is
+    # used only while the story's profile version, its overrides' revision and the deployment's
+    # configuration revision are unchanged, so a turn resolves its configuration in one query.
+    # Tests turn it off.
+    effective_config_cache: bool = True
     # Background workers (NFR-REL-5, #70): poll for due jobs every ``worker_poll_interval``
     # seconds whether or not a notification arrived; a claim holds a ``job_lease_seconds`` lease
     # renewed every third of it; a job fails for good after ``job_max_attempts`` failed

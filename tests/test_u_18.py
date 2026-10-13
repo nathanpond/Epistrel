@@ -40,17 +40,15 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "epistrel"
 EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
     # The planner's class list (#64's Discretion): what a turn in flight depends on is
     # interpretive; budgets, caps, windows, routing and queueing are prospective.
+    # #113 moved the engine dials (the generation settings, the window, the summary's cap, the
+    # call cap, the deadline, the polish budget) to the engine profiles, whose settings carry
+    # their own tags (U-28): ``profile_defaults`` is one prospective deployment setting here.
     StorySettings: {
         "default_output_viewpoint": ConfigClass.interpretive,
         "regenerate_retry_budget": ConfigClass.prospective,
         "turn_concurrency": ConfigClass.prospective,
         "turn_queue_max": ConfigClass.prospective,
-        "turn_deadline": ConfigClass.prospective,
-        "generation_settings.temperature": ConfigClass.prospective,
-        "lite_window_messages": ConfigClass.prospective,
         "lite_summary_chunk": ConfigClass.prospective,
-        "lite_summary_max_tokens": ConfigClass.prospective,
-        "guardrail_retry_budget": ConfigClass.prospective,
     },
     DeploymentSettings: {
         "default_content_rating_id": ConfigClass.interpretive,
@@ -61,10 +59,8 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "idempotency_result_window": ConfigClass.prospective,
         "max_pinned_memories": ConfigClass.prospective,
         "max_custom_instructions_chars": ConfigClass.prospective,
-        "lite_generation_defaults.length": ConfigClass.prospective,
-        "lite_window_messages": ConfigClass.prospective,
         "lite_summary_chunk": ConfigClass.prospective,
-        "lite_summary_max_tokens": ConfigClass.prospective,
+        "profile_defaults": ConfigClass.prospective,
         "default_safe_fallback": ConfigClass.prospective,
         "max_characters_at_start_default": ConfigClass.prospective,
         "max_characters_at_start_ceiling": ConfigClass.prospective,
@@ -109,7 +105,7 @@ def test_u_18() -> None:
     assert setting_class(_Fixture, "inner.tagged") is ConfigClass.prospective
     assert setting_class(_Fixture, "fine") is ConfigClass.prospective
     assert setting_class(StorySettings, "no_such_setting") is ConfigClass.interpretive
-    assert setting_class(StorySettings, "generation_settings") is ConfigClass.interpretive
+    assert setting_class(_Fixture, "inner") is ConfigClass.interpretive  # a group, not a leaf
 
     # One row per leaf: an inner model that is unset contributes each leaf as null.
     assert flatten(_Fixture, {"fine": "y"}) == {
@@ -165,7 +161,7 @@ async def test_u_18__writes(engine: AsyncEngine, settings: Settings) -> None:
     await update_story_settings(
         engine,
         story,
-        {"turn_deadline": 30, "generation_settings": {"temperature": 0.2, "top_p": 0.9}},
+        {"regenerate_retry_budget": 3, "lite_summary_chunk": 4, "turn_queue_max": 2},
         principal="p-author",
     )
     assert await _story_revisions(engine, story) == (config + 1, timeline)
@@ -177,9 +173,9 @@ async def test_u_18__writes(engine: AsyncEngine, settings: Settings) -> None:
         r=config + 1,
     )
     assert [tuple(r) for r in recorded] == [
-        ("generation_settings.temperature", "prospective", "p-author"),
-        ("generation_settings.top_p", "prospective", "p-author"),
-        ("turn_deadline", "prospective", "p-author"),
+        ("lite_summary_chunk", "prospective", "p-author"),
+        ("regenerate_retry_budget", "prospective", "p-author"),
+        ("turn_queue_max", "prospective", "p-author"),
     ]
     # A story policy write (interpretive) is the next story revision.
     await lib.policies_set_story(AUTHOR, story, [story_item(words(unique("w")))])
@@ -207,9 +203,9 @@ async def test_u_18__writes(engine: AsyncEngine, settings: Settings) -> None:
         s=story,
     )
     assert [e.payload["setting"] for e in events][:3] == [
-        "generation_settings.temperature",
-        "generation_settings.top_p",
-        "turn_deadline",
+        "lite_summary_chunk",
+        "regenerate_retry_budget",
+        "turn_queue_max",
     ]
 
     # Deployment writes: a rating and a setting, each one revision with a story-less control.
@@ -249,7 +245,9 @@ async def test_u_18__writes(engine: AsyncEngine, settings: Settings) -> None:
             principal="p-operator",
         )
         assert (await read_settings(engine)).config_revision == start + 2
-        await update_story_settings(engine, story, {"turn_deadline": 30}, principal="p-author")
+        await update_story_settings(
+            engine, story, {"regenerate_retry_budget": 3}, principal="p-author"
+        )
         assert await _story_revisions(engine, story) == (config + 2, timeline)
     finally:
         restore = before.as_settings()

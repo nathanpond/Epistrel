@@ -20,9 +20,12 @@ from epistrel.orchestrator.jobs.types import ClaimedJob, JobOutput, PositionedOu
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from tests.auth_support import auth_settings
 from tests.event_support import execute_in_tx, new_story, play_turn, rows
+from tests.profile_support import WINDOW, nest, store_overrides
 from tests.summary_support import claim_summary, run_due_jobs, segment_rows, summary_jobs, worker
 
-SETTINGS = {"lite_window_messages": 2, "lite_summary_chunk": 2}
+SETTINGS = {"lite_summary_chunk": 2}
+OVERRIDES = nest(WINDOW, 2)
+"""Two verbatim rows: the story's override of its profile's window (#113)."""
 
 
 @pytest.fixture
@@ -41,6 +44,7 @@ async def _story(engine: AsyncEngine, turns: int, *, scheduled: bool = True) -> 
             {"s": story, "p": json.dumps(SETTINGS)},
         ),
     )
+    await store_overrides(engine, story, OVERRIDES)
     if not scheduled:
         summary_port.set_scheduler(None)
     try:

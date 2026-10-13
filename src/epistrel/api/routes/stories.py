@@ -27,7 +27,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Self
 
 from fastapi import APIRouter, Body, Query, Response
 from fastapi import status as http_status
@@ -39,6 +39,7 @@ from pydantic import (
     StringConstraints,
     WithJsonSchema,
     create_model,
+    model_validator,
 )
 
 from epistrel.api.config_changes import ConfigChangesBody, IsoDateTime, StorySettingFilter
@@ -55,6 +56,7 @@ from epistrel.core.enums import StoryStatus
 from epistrel.core.ingest import IngestRequest, IngestResult
 from epistrel.core.ownership import RELATION_FILTER_PATTERN, relation_filter_problem
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
+from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.stories import (
     CharacterView,
@@ -64,7 +66,7 @@ from epistrel.core.stories import (
     StorySpec,
     StoryView,
 )
-from epistrel.core.story_settings import StorySettingsWrite
+from epistrel.core.story_settings import StorySettingsWrite, check_keys
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import UndoState
 from epistrel.core.variants import Chain
@@ -168,10 +170,13 @@ class DormantChainBody(BaseModel):
 
 class StoryBody(StorySummaryBody):
     """One story: the summary, its cast (true ages only for an omniscient read), its settings,
-    whether a truncation can be undone, its dormant continuations and every variant chain."""
+    its engine profile and the version it runs on (#113; ``GET /stories/{id}/effective-config``
+    has the whole configuration), whether a truncation can be undone, its dormant continuations
+    and every variant chain."""
 
     characters: list[OmniscientCharacterBody | CharacterBody]
     settings: dict[str, Any]
+    engine_profile: ProfileVersionRef
     undo_available: bool
     """Whether ``POST /stories/{id}/untruncate`` has a truncation to revert (by reactivation,
     or by a swap when newer turns exist)."""
@@ -181,10 +186,12 @@ class StoryBody(StorySummaryBody):
 
     @classmethod
     def of(cls, story: StoryView, undo: UndoState, chains: list[Chain]) -> StoryBody:
+        assert story.engine_profile is not None  # noqa: S101 - get_story reads it
         return cls(
             **StorySummaryBody.fields_of(story),
             characters=[_character(c) for c in story.characters],
             settings=story.settings,
+            engine_profile=story.engine_profile,
             undo_available=undo.undo_available,
             dormant_chains=[
                 DormantChainBody(
@@ -256,9 +263,12 @@ class GuardrailCallsBody(BaseModel):
 
 
 class EffectiveBudgetBody(BaseModel):
-    """The budget the story's next turn plans with (#69): `max_model_calls_per_turn` and its
-    `source` (`story`, `deployment` or `formula`: `9 + G`), `turn_deadline`, the guardrail calls
-    G it reserves (`guardrail_input`, `guardrail_output`) and `minimum_required` (`1 + G`)."""
+    """The budget the story's next turn plans with (#69), from its effective configuration's
+    `budgets` (#113): `max_model_calls_per_turn` and its `source` (`story`: the story's
+    overrides, `profile`: its profile's version, `deployment`: the deployment's
+    `profile_defaults`, or `formula`: `9 + G` when the cap is `null`), `turn_deadline` (seconds:
+    `budgets.deadline_ms` / 1000), the guardrail calls G it reserves (`guardrail_input`,
+    `guardrail_output`) and `minimum_required` (`1 + G`)."""
 
     max_model_calls_per_turn: int
     source: str
@@ -330,6 +340,33 @@ def _guardrail_fields(guardrails: StoryGuardrails, budget: EffectiveBudget) -> d
     }
 
 
+class _SettingsPatchBase(BaseModel):
+    """What ``StorySettingsPatch`` adds to the story's settings: its schema's description and
+    example, and the refusal of a key that is no story setting."""
+
+    model_config = ConfigDict(
+        # Extra keys are refused by ``_known_keys`` (with the replacement of a moved one); the
+        # published schema allows none.
+        extra="allow",
+        title="StorySettingsPatch",
+        json_schema_extra={
+            "description": "A JSON merge patch (RFC 7396) over the story's settings.",
+            "examples": [{"turn_concurrency": "queue", "turn_queue_max": 3}],
+            "additionalProperties": False,
+        },
+    )
+
+    @model_validator(mode="after")
+    def _known_keys(self) -> Self:
+        """A key that is no story setting is 422; one of the engine dials that moved to the
+        story's profile (#113) is 422 naming its replacement. An after-validator over the extra
+        keys, so the strict JSON check of the fields' own types stays JSON's
+        (``api.validation``)."""
+        for key in self.model_extra or {}:
+            check_keys({key: None})
+        return self
+
+
 def _settings_patch_model() -> type[BaseModel]:
     """``PATCH /stories/{id}/settings``'s documented body: every story setting, optional and
     nullable (``null`` resets it), plus ``policies``. The handler validates the patch itself
@@ -347,20 +384,7 @@ def _settings_patch_model() -> type[BaseModel]:
         list[StoryPolicyItem] | None,
         Field(default=None, description="Upserts the story's own policies (never relaxing)."),
     )
-    return create_model(
-        "StorySettingsPatch",
-        __config__=ConfigDict(
-            extra="forbid",
-            title="StorySettingsPatch",
-            json_schema_extra={
-                "description": "A JSON merge patch (RFC 7396) over the story's settings.",
-                "examples": [
-                    {"turn_concurrency": "queue", "turn_deadline": 30, "guardrail_retry_budget": 1}
-                ],
-            },
-        ),
-        **fields,
-    )
+    return create_model("StorySettingsPatch", __base__=_SettingsPatchBase, **fields)
 
 
 StorySettingsPatch = _settings_patch_model()
@@ -369,21 +393,24 @@ register_body_model("update_story_settings", StorySettingsPatch)
 
 SETTINGS_PATCH_DESCRIPTION = (
     "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that "
-    "setting, `null` resets it to its default, and `generation_settings` merges the same way. "
+    "setting and `null` resets it to its default. A story's settings describe the story: "
     "`turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's "
-    "default, 5), `turn_deadline` (seconds), `max_model_calls_per_turn` (1-50; `null`: the "
-    "deployment's default, else `9 + G`), `default_output_viewpoint` (`character:<id>` of the "
-    "cast, never `omniscient`), `regenerate_retry_budget` (0-10), `guardrail_retry_budget` "
-    "(0-5: regenerations after a reply breaks an output policy, before the safe fallback), "
-    "`generation_settings`, `lite_window_messages`, `lite_summary_chunk` (2-200 rows per "
-    "summary segment), `lite_summary_max_tokens` (the rolling summary's token cap) and "
-    "`audit_retention_days` (1-3650; `null`: the deployment's). An unknown key is 422. "
-    "`policies` (optional) upserts the story's own policies; an item that would relax a "
-    "policy refuses the whole request with 422 `cannot_relax` before anything is written."
+    "default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never "
+    "`omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per "
+    "summary segment) and `audit_retention_days` (1-3650; `null`: the deployment's). An "
+    "unknown key is 422. The engine's dials are the story's engine profile's, overridden per "
+    "story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there "
+    "(`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, "
+    "`max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with "
+    "`details.reason: superseded` and the profile setting that replaced it in "
+    "`details.replacement`. `policies` (optional) upserts the story's own policies; an item "
+    "that would relax a policy refuses the whole request with 422 `cannot_relax` before "
+    "anything is written."
     "\n\nEvery setting but `default_output_viewpoint` is prospective: it applies to requests "
     "that arrive after the write, never to a turn already running; `default_output_viewpoint` "
     "is interpretive (a turn in flight is checked against it when it commits). A write that "
-    "changes something moves the story's `config_revision`."
+    "changes something moves the story's `config_revision`. The answer carries the budget the "
+    "story's next turn plans with (`effective_budget`)."
 )
 
 
@@ -401,7 +428,8 @@ INGEST_DESCRIPTION = (
     "`outcome` and `state_change` events arrive in M6 (422 `unsupported_event_kind`)."
     "\n\nThe batch is one turn for turn concurrency: while a generated turn runs, a story with "
     "`turn_concurrency: reject` answers 423 `story_busy`, and one with `queue` queues the batch "
-    "(waiting for it up to the story's `turn_deadline`, then 202 `{operation_id, position}`; "
+    "(waiting for it up to the story's turn deadline, its `budgets.deadline_ms`, then 202 "
+    "`{operation_id, position}`; "
     "`Prefer: respond-async` answers 202 at once).\n\nThe response reports what the input gate "
     "spent: `model_calls` (one `guardrail_check` per model-assisted input policy per text) and "
     "`elapsed_ms`."
@@ -537,8 +565,10 @@ async def list_stories(
     operation_id="get_story",
     summary="Read a story",
     description=(
-        "The story, its cast and settings, `undo_available`, its `dormant_chains` and its "
-        "`variant_chains`. A character's `true_age` is returned only under "
+        "The story, its cast and settings, its `engine_profile` (the profile and the version it "
+        "runs on; `GET /stories/{id}/effective-config` has the whole configuration), "
+        "`undo_available`, its `dormant_chains` and its `variant_chains`. A character's "
+        "`true_age` is returned only under "
         "`?viewpoint=omniscient` (FR-CAT-12); a viewpoint that is neither `omniscient` nor "
         "`character:<id>` of the cast is 422 `viewpoint_unresolved`."
     ),

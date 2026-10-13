@@ -7,7 +7,12 @@ FR-PROF-11); #60's slice edits pinned memories and custom instructions mid-turn 
 (FR-LITE-7, FR-GUARD-9). #72's slices cover the rolling summary: ``test_i_18__summary``
 (segments, merging, truncate/regenerate/fork, FR-LITE-2), ``test_i_18__summary_policy`` (the
 deterministic output check on segments) and ``test_i_18__summary_budget`` (off the turn,
-FR-LITE-7)."""
+FR-LITE-7).
+
+The M3 part #113 delivers, ``test_i_18__profile_resolution``, resolves the generation settings
+from the story's engine profile, then its overrides, then the request (FR-LITE-4, FR-PROF-5).
+#122's I-18 (M3) slice (the scenario text in the prompt) joins this file: traceability counts a
+test ID per milestone in one file."""
 
 from __future__ import annotations
 
@@ -28,7 +33,7 @@ from epistrel.core.errors import BudgetBelowSafetyMinimum, GuardrailViolation
 from epistrel.core.fork import ForkRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import story_guidance
-from epistrel.core.settings_schema import GenerationSettings, StorySettings
+from epistrel.core.settings_schema import StorySettings
 from epistrel.core.stories import StorySpec
 from epistrel.core.story_settings import update_story_settings
 from epistrel.core.summary import included_segments
@@ -52,7 +57,6 @@ from tests.respond_support import (
     SECOND,
     body,
     generation_calls,
-    lite_defaults,
     new_story,
     played,
     respond,
@@ -60,6 +64,7 @@ from tests.respond_support import (
     system_of,
 )
 from tests.story_support import READ, WRITE
+from tests.story_support import override as override_dials
 from tests.summary_support import run_due_jobs, segment_rows, summary_jobs
 
 DERIVED_KIND = OperationKind.CONSOLIDATION.value
@@ -83,7 +88,9 @@ async def test_i_18(stub_settings: Settings, engine: AsyncEngine) -> None:
     """The captured prompt is one ``system`` message in the planned order, the window as
     alternating ``user``/``assistant`` messages, and the input last; each turn makes exactly one
     ``generation`` call; the input and reply are stored as beats 1 and 2 of their turn; two
-    render characters share one reply; settings resolve deployment → story → request.
+    render characters share one reply; settings resolve deployment → story → request. Since
+    #113 the deployment's Lite defaults are the Lite preset's (the deployment's default
+    profile), and the story's layer is its overrides of them.
 
     Complement asserted: a character neither acting nor rendered has no author notes, and an
     omitted request parameter falls back to the layer below."""
@@ -153,38 +160,116 @@ async def test_i_18(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert events[3].payload["text"] == second["message"]["text"]
         assert len(events[3].payload["prompt_hash"]) == 64
 
-        # FR-LITE-4: deployment defaults → story override → request, per parameter.
-        deployment = GenerationSettings(temperature=0.3, top_p=0.5, length="short")
-        async with lite_defaults(engine, generation=deployment):
-            override = {"generation_settings": {"temperature": 0.6}}
-            tuned, tuned_ids = await new_story(client, PLAYER, FIRST, settings=override)
-            plain, plain_ids = await new_story(client, PLAYER, FIRST)
-            cases: list[tuple[str, dict[str, str], dict[str, Any], tuple[Any, ...]]] = [
-                (plain, plain_ids, {}, (0.3, 0.5, 150)),
-                (tuned, tuned_ids, {}, (0.6, 0.5, 150)),
-                (tuned, tuned_ids, {"top_p": 0.7}, (0.6, 0.7, 150)),
-                (tuned, tuned_ids, {"length": "long", "temperature": 1.1}, (1.1, 0.5, 800)),
-                (tuned, tuned_ids, {"length": 321}, (0.6, 0.5, 321)),
-            ]
-            for target, who, params, expected in cases:
-                stub.reset()
-                await played(client, target, body(who[PLAYER], prompt_params=params))
-                (sent,) = generation_calls(stub)
-                assert (sent.params.temperature, sent.params.top_p, sent.params.max_tokens) == (
-                    expected
-                )
-            recorded = await rows(
-                engine,
-                "SELECT config_revisions FROM operations WHERE story_id = :s AND kind = 'turn' "
-                "ORDER BY started_at DESC LIMIT 1",
-                s=tuned,
+        # FR-LITE-4: deployment defaults (Lite's: 0.8, 0.95, medium) → story → request.
+        override = {"models": {"generation": {"temperature": 0.6}}}
+        tuned, tuned_ids = await new_story(client, PLAYER, FIRST, overrides=override)
+        plain, plain_ids = await new_story(client, PLAYER, FIRST)
+        cases: list[tuple[str, dict[str, str], dict[str, Any], tuple[Any, ...]]] = [
+            (plain, plain_ids, {}, (0.8, 0.95, 400)),
+            (tuned, tuned_ids, {}, (0.6, 0.95, 400)),
+            (tuned, tuned_ids, {"top_p": 0.7}, (0.6, 0.7, 400)),
+            (tuned, tuned_ids, {"length": "long", "temperature": 1.1}, (1.1, 0.95, 800)),
+            (tuned, tuned_ids, {"length": 321}, (0.6, 0.95, 321)),
+        ]
+        for target, who, params, expected in cases:
+            stub.reset()
+            await played(client, target, body(who[PLAYER], prompt_params=params))
+            (sent,) = generation_calls(stub)
+            assert (sent.params.temperature, sent.params.top_p, sent.params.max_tokens) == (
+                expected
             )
-            assert recorded[0].config_revisions["generation_settings"] == {
-                "temperature": 0.6,
-                "top_p": 0.5,
-                "length": 321,
-                "max_tokens": 321,
-            }
+        recorded = await rows(
+            engine,
+            "SELECT config_revisions FROM operations WHERE story_id = :s AND kind = 'turn' "
+            "ORDER BY started_at DESC LIMIT 1",
+            s=tuned,
+        )
+        assert recorded[0].config_revisions["generation_settings"] == {
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "length": 321,
+            "max_tokens": 321,
+        }
+
+
+@pytest.mark.part("M3", "FR-LITE-4; FR-PROF-5")
+async def test_i_18__profile_resolution(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """Generation settings come from the story's engine profile, then the story's overrides,
+    then the request, per parameter (#113). Two stories run under a profile whose generation
+    defaults are 0.3, 0.5 and ``short``; one overrides the temperature (0.6). Each turn's
+    generation request carries the settings so resolved, the turn records them with the profile,
+    its version and the overrides' revision, and the effective configuration states the same
+    profile and overrides.
+
+    Complement asserted: a parameter neither the overrides nor the request name falls back to the
+    profile's, and removing the override (``null``) brings the profile's temperature back."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        generation = {"temperature": 0.3, "top_p": 0.5, "response_length": "short"}
+        created = await client.post(
+            "/engine-profiles",
+            json={"name": "Quiet", "settings": {"models": {"generation": generation}}},
+            headers=WRITE,
+        )
+        assert created.status_code == 201, created.text
+        profile = created.json()["id"]
+        override = {"models": {"generation": {"temperature": 0.6}}}
+        plain, plain_ids = await new_story(client, PLAYER, FIRST)
+        tuned, tuned_ids = await new_story(client, PLAYER, FIRST)
+        for story in (plain, tuned):
+            assigned = await client.put(
+                f"/stories/{story}/engine-profile",
+                json={"profile_id": profile, "ignore_warnings": True},
+                headers=WRITE,
+            )
+            assert assigned.status_code == 200, assigned.text
+        await override_dials(client, tuned, override)
+        cases: list[tuple[str, dict[str, str], dict[str, Any], tuple[Any, ...]]] = [
+            (plain, plain_ids, {}, (0.3, 0.5, 150)),
+            (tuned, tuned_ids, {}, (0.6, 0.5, 150)),
+            (tuned, tuned_ids, {"top_p": 0.7}, (0.6, 0.7, 150)),
+            (tuned, tuned_ids, {"length": "long", "temperature": 1.1}, (1.1, 0.5, 800)),
+            (tuned, tuned_ids, {"length": 321}, (0.6, 0.5, 321)),
+        ]
+        for target, who, params, expected in cases:
+            stub.reset()
+            turn = await played(client, target, body(who[PLAYER], prompt_params=params))
+            (sent,) = generation_calls(stub)
+            assert (sent.params.temperature, sent.params.top_p, sent.params.max_tokens) == (
+                expected
+            )
+            assert turn["profile"] == {"id": profile, "version": 1}
+        recorded = await rows(
+            engine,
+            "SELECT config_revisions FROM operations WHERE story_id = :s AND kind = 'turn' "
+            "ORDER BY started_at DESC LIMIT 1",
+            s=tuned,
+        )
+        configuration = recorded[0].config_revisions
+        assert configuration["generation_settings"] == {
+            "temperature": 0.6,
+            "top_p": 0.5,
+            "length": 321,
+            "max_tokens": 321,
+        }
+        assert (
+            configuration["profile"],
+            configuration["profile_version"],
+            configuration["overrides_revision"],
+        ) == (profile, 1, 1)
+        read = await client.get(f"/stories/{tuned}/effective-config", headers=READ)
+        assert read.json()["profile"]["id"] == profile
+        assert read.json()["overrides"] == {"settings": override, "revision": 1}
+
+        await override_dials(client, tuned, {"models": {"generation": {"temperature": None}}})
+        stub.reset()
+        await played(client, tuned, body(tuned_ids[PLAYER]))
+        (sent,) = generation_calls(stub)
+        assert (sent.params.temperature, sent.params.top_p, sent.params.max_tokens) == (
+            0.3,
+            0.5,
+            150,
+        )
 
 
 async def _revision(engine: AsyncEngine, story: str) -> int:
@@ -293,13 +378,6 @@ async def test_i_18__pins(stub_settings: Settings, engine: AsyncEngine) -> None:
 
 # -- FR-PROF-14: no story setting turns guardrails off (#64) ----------------------------------
 
-GENERATION_LAYERS = st.builds(
-    lambda t, p, n: {"temperature": t, "top_p": p, "length": n},
-    st.none() | st.floats(0.0, 2.0),
-    st.none() | st.floats(0.0, 1.0),
-    st.none() | st.sampled_from(["short", "medium", "long"]) | st.integers(1, 4_000),
-)
-
 
 def _bound(info: FieldInfo, kind: type, attr: str) -> float | None:
     found = next((m for m in info.metadata if isinstance(m, kind)), None)
@@ -333,7 +411,6 @@ def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
     explicit: dict[str, st.SearchStrategy[Any]] = {
         "turn_concurrency": st.sampled_from(["reject", "queue"]),
         "default_output_viewpoint": st.none() | st.sampled_from([f"character:{c}" for c in cast]),
-        "generation_settings": st.none() | GENERATION_LAYERS,
     }
     return st.fixed_dictionaries(
         {
@@ -515,12 +592,12 @@ async def test_i_18__call_count(stub_settings: Settings, engine: AsyncEngine) ->
         assert await reserves(2) == 3
 
 
-SUMMARY_SETTINGS = {
-    "lite_window_messages": 4,
-    "lite_summary_chunk": 2,
-    "lite_summary_max_tokens": 100,
+SUMMARY_SETTINGS = {"lite_summary_chunk": 2}
+SUMMARY_OVERRIDES = {
+    "memory": {"rolling_summary": {"window_messages": 4, "compress_threshold_tokens": 100}}
 }
-"""Four verbatim rows (two turns), one turn per level-0 segment, a 100-token cap."""
+"""Four verbatim rows (two turns), one turn per level-0 segment, a 100-token cap (the window
+and the cap are the story's overrides of its profile since #113)."""
 LONG_ONE = "Wren met Ada by the old well and promised to return the brass key. " * 4
 LONG_TWO = "Ada showed Wren the hidden door behind the mill and asked for silence. " * 4
 MERGED = "Wren met Ada at the well, promised the brass key, and learned of the mill door."
@@ -547,7 +624,9 @@ async def test_i_18__summary(stub_settings: Settings, engine: AsyncEngine) -> No
     prompt."""
     async with respond_client(stub_settings, engine) as (client, lib):
         stub = lib.models.stub
-        story, ids = await new_story(client, PLAYER, FIRST, settings=SUMMARY_SETTINGS)
+        story, ids = await new_story(
+            client, PLAYER, FIRST, settings=SUMMARY_SETTINGS, overrides=SUMMARY_OVERRIDES
+        )
         actor = ids[PLAYER]
 
         async def turn(say: str) -> dict[str, Any]:
@@ -696,7 +775,9 @@ async def test_i_18__summary_policy(stub_settings: Settings, engine: AsyncEngine
     rejection kept), and the held-back chunk follows."""
     async with respond_client(stub_settings, engine) as (client, lib):
         stub = lib.models.stub
-        story, ids = await new_story(client, PLAYER, FIRST, settings=SUMMARY_SETTINGS)
+        story, ids = await new_story(
+            client, PLAYER, FIRST, settings=SUMMARY_SETTINGS, overrides=SUMMARY_OVERRIDES
+        )
         await lib.policies_set_story(AUTHOR, story, [story_item(words("zzbanned"))])
         for n in range(1, 5):
             await played(client, story, body(ids[PLAYER], f"line {n}"))
@@ -742,7 +823,9 @@ async def test_i_18__summary_budget(stub_settings: Settings, engine: AsyncEngine
     Complement asserted: the job's own calls happen (the stub saw them) under its own budget."""
     async with respond_client(stub_settings, engine) as (client, lib):
         stub = lib.models.stub
-        story, ids = await new_story(client, PLAYER, FIRST, settings=SUMMARY_SETTINGS)
+        story, ids = await new_story(
+            client, PLAYER, FIRST, settings=SUMMARY_SETTINGS, overrides=SUMMARY_OVERRIDES
+        )
         for n in range(1, 5):
             await played(client, story, body(ids[PLAYER], f"line {n}"))
         stub.reset()

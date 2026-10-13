@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel import Engine, RelationRequest
+from epistrel import Engine, ProfileOverridesPatch, RelationRequest
 from epistrel.config import Settings
 from epistrel.core import clock, turn_gate
 from epistrel.core.context import RequestContext
@@ -36,8 +36,9 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
     ingested narration (a ``client_events`` row, #58), a rejected input (an ``audit_log``
     row naming the story), a relation (``entity_relations``, #104), a story-scoped subject
     reference (``subject_references``: #105 creates the index, #123 writes its story rows, so
-    the row is planted) and a reply rated and rated again (a rating and its history, #112). The
-    victim also gets a queued turn (``turn_queue``, #63)."""
+    the row is planted), a reply rated and rated again (a rating and its history, #112) and an
+    override of its profile's dials (``story_profile_overrides``, #113). The victim also gets a
+    queued turn (``turn_queue``, #63)."""
     for n in range(1, 3):
         await play_turn(engine, story_id, f"turn {n} of {story_id}")
         await interleave(engine, story_id, after_turn=n)
@@ -76,6 +77,9 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
         ],
     )
     await lib.rebuild_projections(AUTHOR, story_id)
+    await lib.set_profile_overrides(
+        AUTHOR, story_id, ProfileOverridesPatch(settings={"pins": {"max_pinned": 9}})
+    )
     reader = RelationRequest(principal=f"p-reader-{story_id}", relation="player")
     await lib.add_relation(AUTHOR, EntityType.STORY, story_id, reader)
     narration = {"client_event_id": "narration-1", "kind": "narration", "text": f"of {story_id}"}

@@ -72,7 +72,8 @@ LEASE_S = 1.0
 QUEUE_STORIES = 4
 QUEUE_KEYS = 3
 QUEUE_DEADLINE_S = 5
-"""The queue stories' ``turn_deadline``: a waiting request is answered 202 after it."""
+"""The queue stories' turn deadline (their override of ``budgets.deadline_ms``, #113): a waiting
+request is answered 202 after it."""
 FINAL_ATTEMPTS = 120
 REFUSED_S = 60.0
 """A client refused this long without a break fails: the engine never came back (#305)."""
@@ -289,7 +290,8 @@ async def _storm(pg_url: str, engine: AsyncEngine, storm: Storm) -> None:
         queues = [
             await new_story(
                 client,
-                settings={"turn_concurrency": "queue", "turn_deadline": QUEUE_DEADLINE_S},
+                settings={"turn_concurrency": "queue"},
+                overrides={"budgets": {"deadline_ms": QUEUE_DEADLINE_S * 1000}},
             )
             for _ in range(storm.queue_stories)
         ]

@@ -31,13 +31,22 @@ so the default cannot change underneath the insert, and a fork keeps its source'
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StringConstraints,
+    model_validator,
+)
 from sqlalchemy import Table, and_, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -62,11 +71,14 @@ from epistrel.core.idempotency import Scope
 from epistrel.core.ids import new_ulid
 from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.profiles import store as profiles
+from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.ratings import require_assignable
 from epistrel.core.settings_schema import (
     CHARACTER_VIEWPOINT_PREFIX,
     COLUMN_SETTINGS,
+    SUPERSEDED_STORY_SETTINGS,
     StorySettings,
+    superseded,
 )
 from epistrel.core.tables import (
     audit_log,
@@ -75,6 +87,7 @@ from epistrel.core.tables import (
     config_changes,
     content_ratings,
     deployment_state,
+    engine_profiles,
     events,
     idempotency_keys,
     jobs,
@@ -83,6 +96,7 @@ from epistrel.core.tables import (
     policies,
     stories,
     story_heads,
+    story_profile_overrides,
     story_texts,
     subject_references,
     timers,
@@ -114,6 +128,7 @@ STORY_TABLES: tuple[Table, ...] = (
     lite_summary_segments,
     story_heads,
     story_texts,
+    story_profile_overrides,
     policies,
     characters,
     turn_queue,
@@ -183,10 +198,20 @@ class CharacterSpec(BaseModel):
 
 class CreationSettings(StorySettings):
     """The settings a story is created with: the full ``StorySettings`` schema, unknown keys
-    refused. ``default_output_viewpoint`` names a character of the cast **by name** here; it is
-    stored as ``character:<id>``."""
+    refused (M2's engine dials with the profile setting that replaced each, #113: a story
+    created under its profile overrides them afterwards). ``default_output_viewpoint`` names a
+    character of the cast **by name** here; it is stored as ``character:<id>``."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _superseded(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for key in data:
+                if key in SUPERSEDED_STORY_SETTINGS:
+                    raise superseded(key, f"body.settings.{key}")
+        return data
 
 
 class StorySpec(BaseModel):
@@ -282,6 +307,9 @@ class StoryView:
     archived_at: datetime | None
     owner_principal: str
     characters: tuple[CharacterView, ...] = ()
+    engine_profile: ProfileVersionRef | None = None
+    """The engine profile the story runs under and the version it runs on (#113): its pin, else
+    the profile's latest. Read by ``get_story`` only (a list leaves it ``None``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -761,12 +789,17 @@ def _view(row: Any, cast: tuple[CharacterView, ...] = ()) -> StoryView:
 
 
 async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False) -> StoryView:
-    """The story with its cast in order. True ages only when ``omniscient`` (FR-CAT-12)."""
+    """The story with its cast in order and its engine profile at the version it runs on. True
+    ages only when ``omniscient`` (FR-CAT-12)."""
+    runs_on = func.coalesce(
+        stories.c.engine_profile_version_pin, engine_profiles.c.current_version
+    ).label("profile_version")
     async with db.connect() as conn, conn.begin():
         row = (
             await conn.execute(
-                select(*_story_columns())
+                select(*_story_columns(), stories.c.engine_profile_id, runs_on)
                 .join(content_ratings, content_ratings.c.id == stories.c.content_rating_id)
+                .join(engine_profiles, engine_profiles.c.id == stories.c.engine_profile_id)
                 .where(stories.c.id == story_id)
             )
         ).one_or_none()
@@ -784,7 +817,7 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
                 .order_by(characters.c.ordinal)
             )
         ).all()
-    return _view(
+    view = _view(
         row,
         tuple(
             CharacterView(
@@ -796,6 +829,8 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
             for c in cast
         ),
     )
+    profile = ProfileVersionRef(id=str(row.engine_profile_id), version=int(row.profile_version))
+    return dataclasses.replace(view, engine_profile=profile)
 
 
 async def list_stories(

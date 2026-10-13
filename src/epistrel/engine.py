@@ -73,6 +73,7 @@ from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.ports import Ports
 from epistrel.core.profiles import effective, impact
 from epistrel.core.profiles import store as profiles
+from epistrel.core.profiles import story as story_profile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
 from epistrel.core.profiles.schema import Purposes
@@ -236,6 +237,13 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "update_profile": ResultCodec.of(TwoStageResult[profiles.ProfileWrite], revision_field=_CONFIG),
     "copy_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
     "delete_profile": ResultCodec.of(profiles.DeletedProfile, revision_field=_CONFIG),
+    # A story's profile and overrides (#113): story-scoped configuration writes, two-stage.
+    "assign_engine_profile": ResultCodec.of(
+        TwoStageResult[effective.EffectiveConfig], revision_field=_CONFIG
+    ),
+    "set_profile_overrides": ResultCodec.of(
+        TwoStageResult[effective.EffectiveConfig], revision_field=_CONFIG
+    ),
 }
 """How each mutating method's result is stored under its ``Idempotency-Key`` and replayed: the
 result type, the REST status it answers with, and the revision a reference carries."""
@@ -421,6 +429,8 @@ class Engine:
         self.media: BlobStore = make_store(settings)
         self.signer = Signer(settings.config_key)
         self.posters: PosterExtractor = FfmpegTools(settings.ffmpeg_path)
+        # Each story's resolved engine configuration, kept while it holds (#113).
+        effective.configure_cache(settings.effective_config_cache)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Engine:
@@ -896,7 +906,8 @@ class Engine:
             reserved += output_gate.output_reservation(context, reserve_output_for)
         deadline_s = DEFAULT_TURN_DEADLINE_S
         if budget is None:
-            # A gate outside a turn runs under the story's ``turn_deadline`` (#69).
+            # A gate outside a turn runs under the story's turn deadline (#69; its
+            # ``budgets.deadline_ms``, #113).
             deadline_s = (await turn_gate.read_concurrency(self.db, story_id)).turn_deadline
         return await input_gate.enforce_input(
             self.db,
@@ -1153,8 +1164,10 @@ class Engine:
 
     @library_only("served as `effective_budget` in `GET`/`PATCH /stories/{id}/settings`")
     async def effective_budget(self, ctx: RequestContext, story_id: str) -> EffectiveBudget:
-        """The turn budget the story's next turn would plan with (#69): the call cap and where
-        it comes from (``story``, ``deployment`` or ``formula``), ``turn_deadline``, the
+        """The turn budget the story's next turn would plan with (#69), from its effective
+        configuration's ``budgets`` (#113): the call cap and where it comes from (``story``: its
+        overrides, ``profile``: its profile's version, ``deployment``: the deployment's
+        ``profile_defaults``, or ``formula`` when the cap is ``null``), the turn deadline, the
         guardrail calls G it reserves (the input check of a turn whose actor has no
         character-scoped input policy) and the safety minimum ``1 + G``."""
         concurrency = await turn_gate.read_concurrency(self.db, story_id)
@@ -1164,10 +1177,10 @@ class Engine:
             GUARDRAIL_OUTPUT: guardrails.calls_output,
         }
         cap, source = effective_max_calls(
-            concurrency.max_model_calls_per_turn,
-            concurrency.deployment_max_calls,
-            sum(reserved.values()),
+            concurrency.max_model_calls_per_turn, None, sum(reserved.values())
         )
+        if concurrency.max_model_calls_per_turn is not None:
+            source = concurrency.calls_source
         return EffectiveBudget(
             max_model_calls_per_turn=cap,
             source=source,
@@ -1510,7 +1523,9 @@ class Engine:
         return await self._keyed(
             ctx,
             "update_deployment_settings",
-            lambda _: deployment.update_settings(self.db, patch, principal=principal),
+            lambda _: deployment.update_settings(
+                self.db, patch, principal=principal, purposes=self.purposes
+            ),
             material={"body": patch.model_dump(mode="json", exclude_unset=True)},
         )
 
@@ -2425,7 +2440,8 @@ class Engine:
 
     # -- engine profiles (FR-PROF-1..4; FR-API-6; #106) -------------------------------------------
     # Deployment-scoped like the catalog: each write is one transaction recording a story-less
-    # ``control`` operation, keyed per deployment. Until #113 no turn reads a profile.
+    # ``control`` operation, keyed per deployment. A new version is a configuration change, and
+    # every story that follows the profile runs under it from its next turn (#113).
 
     @property
     def purposes(self) -> Purposes:
@@ -2599,11 +2615,78 @@ class Engine:
     async def get_effective_config(
         self, ctx: RequestContext, story_id: str
     ) -> effective.EffectiveConfig:
-        """The story's effective configuration (FR-PROF-5,16): the profile and the version it
-        runs on (``pinned`` when an unavailable upgrade kept an earlier one), every delivered
-        setting at its effective value, the fingerprint, the capabilities and the quality
-        status. 404 for an unknown story."""
+        """The story's effective configuration (FR-PROF-5,16): the deployment's defaults, the
+        profile and the version it runs on (``pinned`` when an unavailable upgrade kept an
+        earlier one), its overrides with their revision, every delivered setting at its
+        effective value (defaults, then the profile's version, then the overrides), the
+        fingerprint, the capabilities and the quality status. 404 for an unknown story."""
         return await effective.read(self.db, story_id, await self._runtime_facts())
+
+    async def assign_engine_profile(
+        self, ctx: RequestContext, story_id: str, request: story_profile.ProfileAssignment
+    ) -> TwoStageResult[effective.EffectiveConfig]:
+        """Run the story under another engine profile, at its latest version, from its next turn
+        (FR-PROF-1,7). The story keeps its overrides, and the new combination must run (422
+        ``invalid_profile``, naming them). Two-stage (#109): a change its impact report warns
+        of applies only with ``request.ignore_warnings``; otherwise the result is the report,
+        nothing is written and the ``Idempotency-Key`` is released. The story's own profile
+        changes nothing. A story-scoped configuration change: the story's ``config_revision``
+        moves. 404 for an unknown story, 422 ``profile_deleted`` for a profile that cannot be
+        assigned, 409 ``story_archived`` for an archived story."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> TwoStageResult[effective.EffectiveConfig]:
+            await self.check_expected_revision(ctx, story_id)
+            return await story_profile.assign_profile(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                facts=await self._runtime_facts(),
+                purposes=self.purposes,
+            )
+
+        return await self._keyed(
+            ctx,
+            "assign_engine_profile",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+            keep=TwoStageResult.kept,
+        )
+
+    async def set_profile_overrides(
+        self, ctx: RequestContext, story_id: str, request: story_profile.ProfileOverridesPatch
+    ) -> TwoStageResult[effective.EffectiveConfig]:
+        """Change the story's overrides of its profile's dials (FR-PROF-5) with a JSON merge
+        patch (``null`` removes an override). The overrides must be a settings document of
+        delivered settings and the whole configuration must run (422 ``validation_error`` or
+        ``invalid_profile``); ``request.expected_revision``, when given, must be the overrides'
+        revision (409 ``revision_conflict``). Two-stage (#109), like an assignment. A
+        story-scoped configuration change: the story's ``config_revision`` and the overrides'
+        revision move. 404 for an unknown story, 409 ``story_archived`` for an archived
+        story."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> TwoStageResult[effective.EffectiveConfig]:
+            await self.check_expected_revision(ctx, story_id)
+            return await story_profile.set_overrides(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                facts=await self._runtime_facts(),
+                purposes=self.purposes,
+            )
+
+        return await self._keyed(
+            ctx,
+            "set_profile_overrides",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+            keep=TwoStageResult.kept,
+        )
 
     # -- message feedback (FR-FB-1,2; #112) --------------------------------------------------------
     # A rating is a plain table write, not an operation: no ``Idempotency-Key`` (a repeated

@@ -3730,3 +3730,195 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - #324 is cross-referenced on #110.
   **Why:** These methods belong to M2 and to earlier M3 stories, outside #110's scope. Cost if wrong: none.
   **Issue:** #110, #324
+- **Decision (drift):** I followed #106's amended body (the owner's decision of 2026-10-12) for the Lite budgets: `{model_calls: null, deadline_ms: 45000}`. `null` means NFR-PERF-6's formula (9 + G), and `deadline_ms` is M2's `turn_deadline`. I did not use #113's stale "{model_calls: 2, deadline_ms: 30000}" premise.
+  - The turn now reads both budgets from the story's effective configuration, and the default behaviour is unchanged.
+  - P-09 (9 + 2, source `formula`, 45.0) and S-SELFPOLICE keep every assertion. Their setup changed in one place only: they set the story's dials through `PATCH /stories/{id}/profile-overrides` instead of story settings (entry below).
+  **Why:** The orchestrator's group-A hand-off and the owner's decision. Cost if wrong: none; the values are the amended AC's.
+  **Issue:** #113, #106
+- **Decision:** Which M2 engine dials moved out of `stories.settings` and `deployment_state.settings` (AC5, FR-PROF-5).
+  - **Story dials moved into the story's overrides** (`SUPERSEDED_STORY_SETTINGS`):
+    - `generation_settings` → `models.generation`
+    - `lite_window_messages` → `memory.rolling_summary.window_messages`
+    - `lite_summary_max_tokens` → `.compress_threshold_tokens`
+    - `max_model_calls_per_turn` → `budgets.model_calls`
+    - `turn_deadline` → `budgets.deadline_ms`, converted from seconds to milliseconds
+    - `guardrail_retry_budget` → `repair.polish.max_regenerations`. The planner's list missed it; #106 mapped the polish pass onto it.
+  - **Deployment dials moved into `profile_defaults`** (`SUPERSEDED_DEPLOYMENT_SETTINGS`): `lite_generation_defaults`, `lite_window_messages`, `lite_summary_max_tokens` and `max_model_calls_per_turn`.
+  - **Still story settings:**
+    - `regenerate_retry_budget`. The planner listed it, but no profile setting holds it: it is FR-CONC-4c's revalidation budget, a concurrency setting like `turn_queue_max`, distinct from the polish budget (drift note).
+    - `turn_concurrency`, `turn_queue_max`, `default_output_viewpoint` and `audit_retention_days`.
+    - `lite_summary_chunk`, at story and deployment level, as the plan says.
+  - **The deployment's `max_pinned_memories` stays, as a ceiling.** A pinned-memory edit is refused above the smaller of it and the story's effective `pins.max_pinned`; `details.cap` names whichever binds. Without this, #106's `pins.max_pinned` was a dial nothing read. With Lite's 50, the default is unchanged.
+  - **A write naming a moved key is 422 `validation_error`**, with `reason: superseded` and the profile setting that replaced it in `details.replacement`. This holds for `PATCH /stories/{id}/settings` (REST and library), for a story's creation `settings`, and for `PUT /admin/settings`.
+  **Why:** AC5 ("engine dials never live there") and the pass-1 Discretion's removal list. Leaving the polish budget or the pin cap where they were would keep two sources for one dial (drift note). Cost if wrong: one dial moves back into `StorySettings`, plus its migration.
+  **Issue:** #113
+- **Decision:** `deployment_state.profile_defaults` is a JSONB column, listed in `DEPLOYMENT_COLUMNS`. In `DeploymentSettings` it is one prospective dict setting, whose published schema is the delivered settings schema, attached when the schema is generated (`settings_schema` cannot import `profiles.schema`, which imports it).
+  - **A write is laid over the stored defaults** (`effective.layered`), not merge-patched, so `null` is a value: `budgets.model_calls: null` is the formula.
+  - **The result must stay valid.** It must name every delivered setting, validate strictly, and leave every live profile's latest version, every version a story runs on, and every story's overrides able to run (`effective.runnable_under`). Otherwise the write is 422 `invalid_profile` with `details.profiles` (`<id>@<version>`) or `details.stories`.
+  - **Each changed setting is one row**, `profile_defaults.<path>`, carrying that setting's class.
+  - **The cross-check goes beyond the Discretion,** which asks only that the defaults stay valid. It is cheap (one resolution per distinct version, plus one per overridden story), and without it a defaults write could leave a story unable to start a turn.
+  **Why:** The Discretion ("partial merge that must remain a complete valid document (run through #106's validator)"), and AC2's "validated as a whole". #109's preview found that RFC 7396's null removal conflicts with settings that take `null`. Cost if wrong: the cross-check becomes a warning.
+  **Issue:** #113, #129
+- **Decision (drift):** A new profile version is a configuration change at deployment scope, under one `bump_config_revision`.
+  - **Rows:** one `engine_profile:<id>` row (old and new version numbers, carrying the strongest class among the changed settings), then one `engine_profile:<id>.<dotted path>` row per setting whose value over the defaults changed, each with its own class. Rows go through `record_config_change`. A rename, create, copy or delete changes no configuration.
+  - **Locking:** to take the revision, an edit now locks the deployment row `FOR UPDATE` from the start, as every deployment configuration write does. Before, it took `FOR SHARE` first. Upgrading a share lock to an update lock deadlocks two concurrent edits.
+  - **Settings layers:** a version's settings are now validated over `profile_defaults`, as the layer they are. The document is checked alone for its shape and delivered names, then the whole configuration for dependencies.
+  - **`test_edits_record_their_requester_and_replay` changed.** It asserted that no profile write moves the revision. It now asserts that the one edit that made a version moved it by exactly one, and that the other writes did not.
+  **Why:** AC3 ("#64 record_config_change, deployment scope, class per setting"), the drift note's per-leaf rows, and the version row, which the drift note left optional. Cost if wrong: dropping the version row.
+  **Issue:** #113, #106
+- **Decision:** A profile edit's impact report gives each following story the change it sees through its own overrides. `impact.following_report` takes `overridden`, mapping each such story to its own delta. The warnings, the guarantees lost and the stories kept on their version (`upgrade_unavailable`) are computed over every delta. An edit under which a follower's overrides could not run is 422 `invalid_profile` with `details.stories` and `count`, whether confirmed or not, and nothing is written.
+  **Why:** The Discretion ("a profile edit that would make an existing story's combination invalid is refused 422 invalid_profile with details.stories"). With overrides, one shared delta would misreport a story that overrides the setting the edit changes. Cost if wrong: none, since the shapes are #109's.
+  **Issue:** #113, #109
+- **Decision (deviation):** The answers of `PUT /stories/{id}/engine-profile` and `PATCH /stories/{id}/profile-overrides` are `{applied, impact, result, config_revision, timeline_revision, idempotency_key}`, where `result` is the story's full effective configuration after the write (`null` when held). The Discretion put `effective`, `profile` and `overrides` at the top level.
+  - Both bodies extend `MutationResponse`.
+  - `config_revision` is the story's own revision, moved by one per write; the timeline revision does not move.
+  - The library returns `TwoStageResult[EffectiveConfig]`.
+  **Why:** This mirrors #109's shipped envelope for profile edits (`{applied, impact, result}`), so every two-stage answer has one shape, and it reuses the read's model. The drift note required `MutationResponse`. Cost if wrong: the body is flattened.
+  **Issue:** #113, #109
+- **Decision (deviation):** Assigning a profile that is unknown is 422 `profile_deleted` with `reason: unknown` at `body.profile_id`, not the Discretion's 404, so it refuses exactly as the impact preview (#109) and `default_engine_profile_id` (#106) do. Other refusals:
+  - a deleted profile: the same code with `reason: deleted`;
+  - `profile_id: null`: 422 `validation_error`;
+  - the story's own profile: 200, a no-op that writes nothing, and the story keeps the version it runs on (#109's preview rule);
+  - an assignment whose upgrade is unavailable (M3's interim rule): confirmed, it writes nothing for that story.
+  An assignment clears the story's version pin (#109's hand-off). The overrides are kept and revalidated against the new profile: when they cannot run, the call is 422 `invalid_profile` naming them in `details.overrides`.
+  **Why:** A 404 would read as "no such story". One rule for one field across the three places that name a profile to assign. Cost if wrong: one status code.
+  **Issue:** #113
+- **Decision (deviation):** On an archived story, both writes are 409 `story_archived` when they would change something. A no-op is still answered 200. The Discretion allowed these mutations on archived stories.
+  **Why:** M2's rule is that an archived story is read-only for every story-scoped configuration write (settings #63, policies #50). An exception for profiles would surprise clients; unarchive first. The drift note offered either option. Cost if wrong: one condition.
+  **Issue:** #113
+- **Decision:** The overrides are a JSON merge patch, per the Discretion: `null` removes an override. So a story cannot override a dial to `null` (for example `budgets.model_calls: null`, the formula, under a profile that sets a cap); the profile or the defaults can.
+  - The published body schema is the delivered settings schema with `null` allowed at every key (`story.PATCH_SCHEMA`), the C-01 point from #109's hand-off.
+  - `expected_revision` compares against the overrides' revision (0 before the first write). A mismatch is 409 `revision_conflict` with `reason: overrides_revision`.
+  - **Rows:** each set, changed or removed dial is one story-scoped row, `profile_overrides.<path>`, with its class, written through `record_config_change` (the control operation and one `config_changed` event per row). An assignment writes one `engine_profile_id` row.
+  - **Filters:** the config-change `setting` filters gain `engine_profile:` (deployment), `engine_profile_id` and `profile_overrides.<path>` (story), and `profile_defaults.<path>`. M2's names of the moved dials stay filterable, because older rows keep them.
+  **Why:** The Discretion and the drift note's closed vocabulary (#279). Cost if wrong: a later story adds an explicit "override to null" form.
+  **Issue:** #113
+- **Decision:** The impact preview's `overrides` are now laid over the story's stored overrides: each setting they name replaces the story's override of it, and the rest are kept. A previewed assignment keeps the stored overrides too, as the assignment itself does.
+  **Why:** Before #113 a story had no stored overrides. This makes the preview answer what the write would do. Cost if wrong: one argument of `effective.resolve`.
+  **Issue:** #113, #109
+- **Decision:** A turn captures its configuration once, when it starts (`turn_gate.read_concurrency` resolves it), and runs under it to the end. The read phase uses the captured configuration and no longer re-reads the profile, so a regeneration under #47 cannot switch versions mid-turn.
+  - **What it governs:** the call cap and deadline, the generation settings (the effective `models.generation` as the bottom layer, then the request's `prompt_params`), the window, the rolling summary and pins switches, the polish budget (none with the polish pass off), and the stamp.
+  - **What it records:** `operations.config_revisions` gains `overrides_revision` beside #109's `profile` and `profile_version`. None of them joins `LITE_DEPENDENCIES`.
+  - **Queued turns:** a queued turn captures its configuration when it is played; its budget is still the one planned at enqueue (M2).
+  - **Responses:** respond responses gain `profile {id, version}` and `config_revision`, the story's configuration revision at turn start. I-07's `RESPONSE_FIELDS` gains both.
+  - **Deadlines:** the slot's lease, the queue's long poll and the deadline of gates outside a turn all follow `budgets.deadline_ms`. The milliseconds-to-seconds conversion lives in `read_concurrency`, not in `effective.py` as the Discretion put it.
+  **Why:** AC4 and the key link ("resolved at turn start and recorded in operations.config_revisions"). The test plan's "a turn already in flight finishes under its captured configuration". Cost if wrong: none observable; a profile edit cannot otherwise reach a turn already under way.
+  **Issue:** #113
+- **Decision:** The read set drops M2's `generation_settings` member (the Discretion). `test_read_set_members_are_fixed` and `test_base_and_read_set_are_captured` changed accordingly.
+  - With the rolling summary off, a prompt carries no summary and only the latest `window_messages` rows; no summary job is queued, and one already queued finds nothing to do.
+  - With pins off, the prompt carries no pinned memories.
+  - The summary job reads the window, the threshold and the switch from the effective configuration.
+  - Lite's `compress_threshold_tokens: 6000` is now the merge cap of every Lite story. M2's default was 2,000; #106 left this decision to #113. It is #106's AC1 value, and nothing in the suite depended on 2,000.
+  **Why:** Prospective changes never invalidate in-flight work, and these are the Discretion's switch semantics. The window without a summary keeps the prompt bounded. Cost if wrong: one condition in `core.turns`.
+  **Issue:** #113, #106
+- **Decision:** A write reads the story's current configuration without validating it (`effective_configuration(validate=False)`), and so does the "before" side of an impact report (`effective.merged_settings`). Only the configuration the write would produce must run.
+  **Why:** Found by #106's `test_validate_without_a_body_checks_the_latest_version`. When a validation rule is added after a configuration was stored, validating the current one would keep a story or profile from ever being fixed. Cost if wrong: none; a turn and the read still validate.
+  **Issue:** #113
+- **Decision:** The resolution cache is per process, keyed by story and checked against `(profile_id, version, overrides_revision, deployment config_revision)` from the same one query. It is bounded at 10,000 stories, evicting least recently used.
+  - It is on through a real setting, `Settings.effective_config_cache` (default true, documented in `.env.example`). The Engine applies it at construction; in Core it is off until then.
+  - Tests turn it off in `auth_settings`, because test-only rules change validation behind the revisions. `test_the_cache_follows_every_layer` turns it on and checks every layer.
+  **Why:** The Discretion, and the drift note on `EPISTREL_*` names. Cost if wrong: none; every key part moves with its layer.
+  **Issue:** #113
+- **Decision:** Migration `0030` carries M2's stored dials over to the new layers.
+  - **Stories:** a story's moved values become its overrides at revision 1. The deadline is converted from seconds to milliseconds, and a generation `null` (which meant "inherit") is dropped.
+  - **Deployment:** the deployment's changed Lite defaults and call cap are laid over the Lite seed as `profile_defaults`.
+  - **M2 defaults are skipped.** A stored value equal to M2's default is not carried over. M2 stored every setting at its default on every write, so such a value cannot be told from one never set, and the profile (Lite, M2's values) gives the same. The moved keys leave the documents either way.
+  - **No row, no revision.** It writes no `config_changes` row and moves no revision.
+  - **Downgrade** puts each carried value back under its M2 name.
+  - **Known limit:** a deployment-level M2 customisation that Lite names explicitly does not reach Lite stories, because the profile wins over the defaults. Lite names every setting, so only profiles that leave a setting out see `profile_defaults`.
+  **Why:** The Discretion ("removed with a data migration into profile_defaults/story_profile_overrides"). Cost if wrong: an operator who changed M2's deployment generation defaults must edit Lite, or override per story.
+  **Issue:** #113
+- **Decision (Rule 1):** The rows of one configuration write now list in the order they were written. `record_config_change` mints each change id after the write's previous one (`ids.ulid_after`). Before, ids minted in one millisecond sorted at random, so a revision with several rows listed them in any order.
+  - C-03 found it: the parity profile edit's `engine_profile:` rows came back in different orders over REST and the library.
+  - Regression test: `test_rows_of_one_write_list_in_the_order_written` (`tests/integration/test_config_changes.py`). With the old ids it fails.
+  **Why:** #113's version rows are the first multi-row deployment writes that C-03 compares. The bug is in the listing those rows go through. Cost if wrong: none; the cursor (revision, id) is unchanged.
+  **Issue:** #113
+- **Decision (drift):** The parts follow docs/04 §15 and the traceability rule of one file per test ID and milestone.
+  - In `tests/integration/test_engine_profiles.py`, beside #106's and #109's parts:
+    - `test_u_28__effective`, `part("M3", "FR-PROF-5,6")`;
+    - `test_c_16__follow_latest`, `part("M3", "FR-PROF-1,6; FR-API-6")`.
+  - `test_i_18__profile_resolution`, `part("M3", "FR-LITE-4; FR-PROF-5")`, in `tests/integration/test_i_18.py`, not the plan's `FR-PROF-5,7`. #122's I-18 (M3) slice must join that file.
+  - The must-have file `tests/integration/test_effective_config.py` holds the detailed tests (11), not the parts.
+  - The in-flight assertion holds the turn at its model-assisted input check, with the stub latch on `guardrail_check`. That is before the turn's read phase, so the test also distinguishes "captured at start" from "re-read in the read phase". #64 shipped no hooks.
+  **Why:** The drift note. check-parts (186 parts), check-lexicon (0 violations) and check-traceability pass. Cost if wrong: renames only.
+  **Issue:** #113, #122
+- **Decision:** Existing tests changed because the story moves the dials they set. Each keeps its assertions; only the mechanism changed, from story or deployment settings to overrides or `profile_defaults`.
+  - P-09: its `_settings` helper.
+  - S-SELFPOLICE: the polish budget override.
+  - I-18 (M2): the FR-LITE-4 slice's bottom layer is now the deployment's default profile, Lite (0.8, 0.95, medium). Lite holds the values M2's deployment defaults held, so the old global `lite_defaults` mutation is not needed. The summary slices now use overrides, and their fork checks that a fork copies them.
+  - The summary-window setups of I-22, C-26, X-04, the determinism script (one create step now carries `overrides`, still 60 answers), `test_time`, `test_lite_summary_job` and `test_s_consolidation_race`.
+  - `test_config_revalidation` (its prospective rule is now the deadline override), `test_model_matrix_run`, `test_turn_concurrency` and `test_config_changes`.
+  - U-18: EXPECTED drops the moved leaves and adds `profile_defaults`; `test_u_18__writes` writes the remaining story settings.
+  - C-01 and C-03: other story settings; C-03 also gains the assignment and overrides parity steps.
+  - The ownership matrix: the two new routes; its story settings call now uses `regenerate_retry_budget`.
+  - S-DELETE: its populate now writes an override.
+  - **One clause was replaced.** `test_settings_patch`'s "nested merge" check had only `generation_settings` to merge, and no story setting is nested now. It became the superseded-key check. The nested merge of overrides is covered by `test_overrides_are_a_merge_patch`.
+  **Why:** The story requires the behaviour change (the Discretion's "writes to the old keys → 422"). Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** I mutation-checked the story. A script applied each mutation, ran the named tests and restored the sources, with SHA-1 checked.
+  - **Killed (20 of 22):** overrides ignored; defaults ignored; generation not from the configuration; no version config change; the summary switch ignored; the pins switch ignored; the story pin cap ignored; overrides replaced instead of merged; the pin not cleared; followers' overrides ignored in an edit; defaults not cross-checked; the cache ignoring its key; the migration skipping the deadline; change ids unordered; the deadline not from the configuration; no profile in respond; the call cap not from the configuration; the budget source always `story`; the in-flight turn re-reading its configuration; an assignment never held.
+  - **Two survivors were equivalent:**
+    - Removing `_known_keys`' explicit superseded branch: `check_keys` raises the same error. I removed the branch as redundant.
+    - Skipping the whole-configuration check in `set_overrides`: the write's final read validates and rolls back with the same 422.
+  - **Two kills needed stronger tests:** the summary switch (segments now exist before the summary is turned off) and the in-flight turn (now held before its read phase).
+  **Why:** Under the batched gate, the story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Filed #325 (`needs-triage`) and did not fix it. A profile's per-purpose model routing (`models.purposes`) is stored, validated and shown in the effective configuration, but neither the turn nor the fingerprint uses it; both still resolve models from `/admin/model-config`. #325 is cross-referenced on #113.
+  **Why:** AC4 names the generation settings, budgets and window only; routing touches the Model Access Layer, outside this story. Cost if wrong: none.
+  **Issue:** #113, #325
+- **Decision:** I ran a wider test gate than the per-story rule's minimum.
+  - `tests/integration`: 531 passed.
+  - The other directories under CI's marker expression, plus every unit module: 920 passed, 3 deselected.
+  - `tests/conformance`: green after the Rule 1 fix above. C-03 and C-08 were rerun.
+  **Why:** The change runs through the turn path, the settings and the summary job, so "the tests of every area touched" is most of the suite. Cost: about 20 minutes of test time.
+  **Issue:** #113
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #113 moved M2's engine dials out of a story's settings and the deployment's settings into the engine-profile layers (FR-PROF-5). The moved dials and their new places:
+
+  | M2 dial | Profile setting |
+  |---|---|
+  | `generation_settings` / `lite_generation_defaults` | `models.generation` |
+  | `lite_window_messages` | `memory.rolling_summary.window_messages` |
+  | `lite_summary_max_tokens` | `memory.rolling_summary.compress_threshold_tokens` |
+  | `max_model_calls_per_turn` | `budgets.model_calls` |
+  | `turn_deadline` (seconds) | `budgets.deadline_ms` |
+  | `guardrail_retry_budget` | `repair.polish.max_regenerations` |
+
+  - **Where they are written now:** a story overrides them with `PATCH /stories/{id}/profile-overrides`. The deployment's defaults are `profile_defaults` in `/admin/settings`, a new column seeded from Lite.
+  - **Where they are read:** a turn reads them from the effective configuration it captures at its start.
+  - **The old keys:** `PATCH /stories/{id}/settings`, a story's creation `settings` and `PUT /admin/settings` refuse them with 422, `reason: superseded`, and the replacement named. Migration 0030 moved the stored values.
+  - **What stays:** `regenerate_retry_budget`, `turn_concurrency`, `turn_queue_max`, `default_output_viewpoint`, `lite_summary_chunk` and `audit_retention_days` stay story settings. `max_pinned_memories` stays a deployment ceiling over the story's `pins.max_pinned`.
+  - **Also changed:**
+    - A new profile version is now a deployment-scope configuration change (`engine_profile:<id>[.<path>]` rows).
+    - Profile edits take the deployment row `FOR UPDATE`.
+    - #47's read set drops `generation_settings`.
+    - Respond responses gain `profile {id, version}` and `config_revision`.
+    - `GET /stories/{id}` gains `engine_profile`.
+  **Why:** #113's AC5 ("engine dials never live there") and its pass-1 Discretion, with the drift note's additions (the polish budget, the pin cap). The decision entries above give the details.
+  **Affects:**
+  - **M4 #156.**
+    - Its plan names `max_model_calls_per_turn` ("profile budget, #106's semantics"), `turn_deadline` ("#69's unchanged") and #68's `guardrail_retry_budget`. These are now `budgets.model_calls` (the turn's total cap, G included), `budgets.deadline_ms` and `repair.polish.max_regenerations`.
+    - All three are read from the configuration the turn captured at its start: `turn_gate.read_concurrency` gives `Concurrency.configuration`, and `pipeline.polish_budget` gives the polish budget.
+    - The earlier Ad-hoc entry already flagged #156's "G added on top" wording.
+  - **M4 #145.** Its "within `guardrail_retry_budget` + 1 renders" is now the story's polish budget, `repair.polish.max_regenerations`.
+  - **M4 #129.** `deployment_state.profile_defaults` exists as #129 assumes. Its migration adds the new modules' off defaults, and it must:
+    - write only delivered names;
+    - keep the document complete, since a write through `/admin/settings` is checked for completeness and validated whole;
+    - leave every profile and overridden story runnable (`effective.runnable_under`).
+  - **M3 #122.** Its I-18 (M3) slice must join `tests/integration/test_i_18.py`, beside `test_i_18__profile_resolution`, because traceability counts one file per test ID and milestone.
+  - **M3 #119.** A story's creation `settings` refuse the moved dials, and the scenario's `story_settings_defaults` hold none of them already. No plan change.
+  - **#322 (triage).** Its body counts `max_model_calls_per_turn` among the lax integer deployment settings; that setting is gone.
+  - **The Console (nathanpond/Epistrel-Console).** Its settings screens that write the moved keys now get 422. The matching surfaces are:
+    - `PUT /stories/{id}/engine-profile`
+    - `PATCH /stories/{id}/profile-overrides`
+    - `GET /stories/{id}/effective-config`
+    - `profile_defaults` in `/admin/settings`
+  - **Next step:** suggest `/n8-replan M4` after M3. It was already suggested for #156.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after #113's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111 did. Cost if wrong: one heading.
+  **Issue:** #113

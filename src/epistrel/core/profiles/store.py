@@ -3,9 +3,18 @@ purge (FR-PROF-1,3; FR-API-6; FR-AUTH-5; #106).
 
 **Writes.** Each write is one transaction of row writes that also records one committed,
 story-less ``control`` operation by the requesting principal (``core.control``), which binds the
-call's ``Idempotency-Key``; a write that changes nothing records none. Profile writes leave the
-deployment's ``config_revision`` as it is (#113 makes a new version a configuration change once
-stories follow their profile).
+call's ``Idempotency-Key``; a write that changes nothing records none. A profile's settings are
+validated as a layer of a story's configuration (#113): the document on its own (strictly, every
+name delivered) and over the deployment's ``profile_defaults`` as a whole (FR-PROF-4).
+
+**A new version is a configuration change** (FR-PROF-6, FR-CONC-14; #113): every story that
+follows the profile runs under it from its next turn. The edit takes one deployment
+``config_revision`` and records, through ``record_config_change`` (deployment scope), one row
+``engine_profile:<id>`` (the old and new version numbers) and one row
+``engine_profile:<id>.<dotted path>`` per setting whose value over the defaults changed, each
+with that setting's class (``ConfigClass``; the version row has the strongest of them). Other
+profile writes (create, copy, delete, a rename) change no configuration a story runs under and
+leave ``config_revision`` as it is.
 
 - **Create** stores version 1 of the validated settings, owned by the request's ``owner`` or
   else the requester (never ``system``).
@@ -15,10 +24,12 @@ stories follow their profile).
   ``core.profiles.impact``): its impact report lists every story that follows the profile's
   latest version, and a change the report warns of (a capability gained or lost by those
   stories, an upgrade unavailable) applies only with ``ignore_warnings``; otherwise the answer is
-  the report and nothing is written. A data-producing increase cannot apply to a following story
-  with history (M3's interim rule until M7): a confirmed edit pins that story to the version it
-  ran on (``stories.engine_profile_version_pin``), and every other following story moves to the
-  new version.
+  the report and nothing is written. Each following story's entry is the change it sees through
+  its own overrides (#113), and an edit that would leave a following story's configuration
+  unable to run is 422 ``invalid_profile`` (``details.stories``). A data-producing increase
+  cannot apply to a following story with history (M3's interim rule until M7): a confirmed edit
+  pins that story to the version it ran on (``stories.engine_profile_version_pin``), and every
+  other following story moves to the new version.
 - **Copy** makes a new profile, owned by the requester (or the named ``owner``), at version 1
   with the settings of the source's latest version (or of ``version``). A deleted profile may be
   copied; the copy is an ordinary, live profile (``preset`` is false).
@@ -39,10 +50,13 @@ other; ``preset`` records provenance only.
 **Locks.** Edits and deletes hold the profile row ``FOR NO KEY UPDATE``, which leaves free the
 ``FOR KEY SHARE`` a story insert's foreign key check takes. An edit that adds data-producing
 capability also holds its following stories ``FOR NO KEY UPDATE``, in id order, from its report
-to its commit (``impact.following_report``). An edit and a delete first read the deployment
-row ``FOR SHARE`` and assigning a default takes it ``FOR UPDATE`` (``core.deployment``), so the
-default never changes under either. The purge holds a profile ``FOR UPDATE``, so a story insert
-naming it waits and then fails its foreign key, instead of naming a profile that is gone. Under
+to its commit (``impact.following_report``). An edit first takes the deployment row ``FOR
+UPDATE``, as every deployment configuration write does (``config_changes.lock_deployment``): a
+new version takes a configuration revision, and the defaults it was validated over cannot
+change under it. A create and a delete read it ``FOR SHARE``, and a story's assignment or
+overrides write too (``core.profiles.story``), so an edit waits for those and they for it. The
+purge holds a profile ``FOR UPDATE``, so a story insert naming it waits and then fails its
+foreign key, instead of naming a profile that is gone. Under
 that lock the purge checks the profile's stories again: a fork reads its source in one snapshot
 without locking it, so a fork that began before its source was deleted can still commit a story
 on the profile after the purge found the profile unused. The re-check keeps that profile, where
@@ -66,23 +80,28 @@ from sqlalchemy import and_, delete, exists, func, insert, or_, select, tuple_, 
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock, control, ownership
+from epistrel.core.config_changes import bump_config_revision, lock_deployment, record_config_change
 from epistrel.core.context import SYSTEM_PRINCIPAL
 from epistrel.core.errors import ConfigConflict, InvalidRequest, ProfileDeleted, ProfileNotFound
 from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.ownership import Owner, RelationFilter
-from epistrel.core.profiles import impact, schema
+from epistrel.core.profiles import effective, impact, schema
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import RuntimeFacts
-from epistrel.core.profiles.impact import ImpactReport, TwoStageRequest, TwoStageResult
-from epistrel.core.profiles.schema import SETTINGS_SCHEMA, Purposes, SettingsDocument
+from epistrel.core.profiles.impact import Delta, ImpactReport, TwoStageRequest, TwoStageResult
+from epistrel.core.profiles.schema import (
+    SETTINGS_SCHEMA,
+    ProfileSettings,
+    Purposes,
+    SettingsDocument,
+)
 from epistrel.core.profiles.validate import (
     ProfileValidation,
     canonical,
-    parse_settings,
     refusal,
-    require_valid,
     validate_profile,
 )
+from epistrel.core.settings_schema import ConfigClass, flatten
 from epistrel.core.tables import (
     deployment_state,
     engine_profile_versions,
@@ -428,13 +447,30 @@ async def require_assignable(
 # -- writes ---------------------------------------------------------------------------------------
 
 
+async def validated(
+    conn: AsyncConnection,
+    document: Mapping[str, Any],
+    *,
+    purposes: Purposes | None = None,
+    field: tuple[str, ...] = ("body", "settings"),
+) -> tuple[dict[str, Any], ProfileSettings]:
+    """A profile version's settings, normalised (what it stores), and what they resolve to over
+    the deployment's ``profile_defaults`` (see the module docstring): 422 ``validation_error``
+    for their shape, 422 ``invalid_profile`` for an undelivered name or a missing dependency."""
+    settings = effective.check_document(document, purposes=purposes, field=field)
+    defaults = await effective.profile_defaults(conn)
+    whole = effective.resolve_layers(defaults, settings, purposes=purposes, field=field)
+    return settings, whole
+
+
 async def create(
     db: AsyncEngine, request: ProfileCreate, *, principal: str, purposes: Purposes | None = None
 ) -> ProfileWrite:
     """A new profile at version 1 (see the module docstring); 422 ``validation_error`` or
     ``invalid_profile`` for settings that cannot run, and nothing is written."""
-    settings = require_valid(request.settings, purposes=purposes)
     async with db.begin() as conn:
+        await default_profile(conn)  # the deployment row FOR SHARE: the defaults hold
+        settings, _ = await validated(conn, request.settings, purposes=purposes)
         profile_id = await _insert_profile(
             conn,
             name=request.name,
@@ -460,25 +496,35 @@ async def update_profile(
     profile's latest version; ``facts`` are the model ids and template hashes their fingerprints
     need. 404 for an unknown profile, 422 ``profile_deleted`` for a deleted one, and 422
     ``invalid_profile`` for settings that cannot run, whatever ``ignore_warnings`` says."""
-    settings = require_valid(request.settings, purposes=purposes)
     async with db.begin() as conn:
-        await default_profile(conn)  # the deployment row first, as every configuration write
+        deployment = await lock_deployment(conn)  # first, as every configuration write
         head = await _head(conn, profile_id, lock="no_key_update")
         if head.deleted_at is not None:
             raise ProfileDeleted(
                 f"engine profile {profile_id} is deleted and cannot be edited (copy it instead)",
                 {"profile_id": profile_id, "field": "path.profile_id", "reason": "deleted"},
             )
+        settings, after = await validated(conn, request.settings, purposes=purposes)
+        defaults = deployment.profile_defaults
         current = int(head.current_version)
         latest = await _version(conn, profile_id, current)
         new_version = canonical(settings) != canonical(latest.settings)
         version = current + 1 if new_version else current
+        before = effective.merged_settings(defaults, latest.settings)
         change = impact.delta(
-            Configuration(profile_id, current, parse_settings(latest.settings)),
-            Configuration(profile_id, version, parse_settings(settings)),
+            Configuration(profile_id, current, before),
+            Configuration(profile_id, version, after),
             facts,
         )
-        following = await impact.following_report(conn, profile_id, change)
+        overridden = await _overridden_changes(
+            conn,
+            profile_id,
+            defaults=defaults,
+            versions=((current, latest.settings), (version, settings)),
+            facts=facts,
+            purposes=purposes,
+        )
+        following = await impact.following_report(conn, profile_id, change, overridden)
 
         async def report() -> ImpactReport:
             return following.report
@@ -497,11 +543,114 @@ async def update_profile(
             await conn.execute(
                 update(engine_profiles).where(engine_profiles.c.id == profile_id).values(**values)
             )
-            await control.record_control_operation(conn, actor=principal)
+            if new_version:
+                await _record_version(
+                    conn,
+                    deployment,
+                    profile_id,
+                    (current, before),
+                    (version, after),
+                    principal=principal,
+                )
+            else:
+                await control.record_control_operation(conn, actor=principal)
             return ProfileWrite(await _read(conn, profile_id), await config_revision(conn))
 
         outcome = await impact.two_stage(report, apply, ignore_warnings=request.ignore_warnings)
         return dataclasses.replace(outcome, config_revision=await config_revision(conn))
+
+
+async def _overridden_changes(
+    conn: AsyncConnection,
+    profile_id: str,
+    *,
+    defaults: Mapping[str, Any],
+    versions: tuple[tuple[int, Mapping[str, Any]], tuple[int, Mapping[str, Any]]],
+    facts: RuntimeFacts,
+    purposes: Purposes | None,
+) -> dict[str, Delta]:
+    """The change each following story with overrides sees (its overrides over the profile's
+    latest version, then over the new one); 422 ``invalid_profile`` (``details.stories``) when
+    the new version would leave any of them unable to run."""
+    (old_version, old_document), (new_version, new_document) = versions
+    found = await effective.following_overrides(conn, profile_id)
+    refused = effective.refusals(
+        defaults,
+        [(story, new_document, overrides) for story, overrides in found.items()],
+        purposes=purposes,
+        field=("body", "settings"),
+    )
+    if refused:
+        raise effective.first_refusal(
+            refused,
+            kind="stories",
+            message="the edit would leave stories that follow the profile unable to run with "
+            "their overrides",
+        )
+    changes: dict[str, Delta] = {}
+    for story, overrides in found.items():
+        before = effective.merged_settings(defaults, old_document, overrides)
+        after = effective.resolve_layers(defaults, new_document, overrides)
+        changes[story] = impact.delta(
+            Configuration(profile_id, old_version, before),
+            Configuration(profile_id, new_version, after),
+            facts,
+        )
+    return changes
+
+
+def profile_setting(profile_id: str, path: str | None = None) -> str:
+    """The ``config_changes`` setting of a profile's version (``engine_profile:<id>``) or of one
+    of its settings (``engine_profile:<id>.<dotted path>``)."""
+    return f"{PROFILE_FAMILY}:{profile_id}" + (f".{path}" if path else "")
+
+
+PROFILE_FAMILY = "engine_profile"
+"""The ``config_changes`` row family of profile versions (a deployment-scope filter prefix)."""
+
+
+async def _record_version(
+    conn: AsyncConnection,
+    deployment: Any,
+    profile_id: str,
+    old: tuple[int, ProfileSettings],
+    new: tuple[int, ProfileSettings],
+    *,
+    principal: str,
+) -> None:
+    """A new version as a configuration change (see the module docstring): one revision, the
+    version row and one row per setting whose value over the defaults changed."""
+    (old_version, before), (new_version, after) = old, new
+    old_values = flatten(ProfileSettings, before.model_dump(mode="json"))
+    new_values = flatten(ProfileSettings, after.model_dump(mode="json"))
+    tags = schema.setting_tags()
+    changed = sorted(path for path in new_values if new_values[path] != old_values.get(path))
+    classes = {tags[path].change_class for path in changed}
+    strongest = (
+        ConfigClass.interpretive
+        if ConfigClass.interpretive in classes
+        else (ConfigClass.prospective)
+    )
+    revision = await bump_config_revision(conn, deployment)
+    await record_config_change(
+        conn,
+        config_revision=revision,
+        setting=profile_setting(profile_id),
+        old=old_version,
+        new=new_version,
+        actor=principal,
+        change_class=strongest,
+    )
+    for path in changed:
+        await record_config_change(
+            conn,
+            config_revision=revision,
+            setting=profile_setting(profile_id, path),
+            old=old_values.get(path),
+            new=new_values[path],
+            actor=principal,
+            change_class=tags[path].change_class,
+        )
 
 
 async def _pin(
@@ -785,7 +934,9 @@ async def validate_stored(
         else:
             document = (await _version(conn, profile_id, int(head.current_version))).settings
             field = ("settings",)
-    result = validate_profile(document, purposes=purposes, field=field)
+        defaults = await effective.profile_defaults(conn)
+    effective.check_document(document, purposes=purposes, field=field)
+    result = validate_profile(effective.layered(defaults, document), purposes=purposes, field=field)
     if not result.valid:
         raise refusal(result)
     return result
@@ -805,6 +956,7 @@ __all__ = [
     "DEFAULT_PAGE",
     "MAX_PAGE",
     "NAME_MAX",
+    "PROFILE_FAMILY",
     "SETTINGS_SCHEMA",
     "VERSION_MAX",
     "WARNINGS_MAX",
@@ -828,8 +980,10 @@ __all__ = [
     "list_profiles",
     "list_versions",
     "profile_schema",
+    "profile_setting",
     "purge_deleted",
     "require_assignable",
     "update_profile",
     "validate_stored",
+    "validated",
 ]

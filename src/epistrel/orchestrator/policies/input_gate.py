@@ -141,7 +141,7 @@ def input_budget(
     deadline_s: float = DEFAULT_TURN_DEADLINE_S,
 ) -> TurnBudget:
     """The budget of a gate outside a turn (ingest, pins, instructions, story creation):
-    exactly G calls, under the story's ``turn_deadline`` (#69; the default for a story not
+    exactly G calls, under the story's turn deadline (#69; the default for a story not
     created yet). It makes no generation call, so it is never below its safety minimum."""
     return TurnBudget(max_calls=calls_needed(policies, texts), deadline_s=deadline_s)
 

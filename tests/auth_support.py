@@ -30,6 +30,9 @@ def auth_settings(dsn: str, **overrides: object) -> Settings:
         "service_credentials": [CREDENTIAL_A, CREDENTIAL_B],
         "mode": "api",
         "media_root": MEDIA_ROOT,
+        # Tests change configuration behind the revisions (test-only rules, raw SQL): resolve it
+        # every time (#113; ``test_the_cache_follows_every_layer`` turns it on).
+        "effective_config_cache": False,
     }
     values.update(overrides)
     return Settings.model_validate(values)

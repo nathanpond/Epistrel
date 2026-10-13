@@ -177,7 +177,7 @@ if TYPE_CHECKING:
         Relations,
         RelationWrite,
     )
-    from epistrel.core.profiles.effective import EffectiveConfig
+    from epistrel.core.profiles.effective import EffectiveConfig, OverridesRef, ProfileVersionRef
     from epistrel.core.profiles.fingerprint import QualityStatus
     from epistrel.core.profiles.impact import (
         AffectedStory,
@@ -200,6 +200,7 @@ if TYPE_CHECKING:
         ProfileWarning,
         ProfileWrite,
     )
+    from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
     from epistrel.core.profiles.validate import ProfileValidation
     from epistrel.core.ratings import RatingFields, RatingReplacement
     from epistrel.core.stories import CharacterSpec, CreatedStory, StorySpec, StoryView
@@ -293,6 +294,8 @@ _EXPORTS: dict[str, str] = {
     "ProfileValidate": "epistrel.core.profiles.store",
     "ProfileSettings": "epistrel.core.profiles.schema",
     "ImpactPreviewRequest": "epistrel.core.profiles.impact",
+    "ProfileAssignment": "epistrel.core.profiles.story",
+    "ProfileOverridesPatch": "epistrel.core.profiles.story",
     "FeedbackRequest": "epistrel.core.feedback",
     # results
     "RespondResult": "epistrel.orchestrator.lite.schemas",
@@ -356,6 +359,8 @@ _EXPORTS: dict[str, str] = {
     "BackfillEstimate": "epistrel.core.profiles.impact",
     "QualityStatus": "epistrel.core.profiles.fingerprint",
     "EffectiveConfig": "epistrel.core.profiles.effective",
+    "OverridesRef": "epistrel.core.profiles.effective",
+    "ProfileVersionRef": "epistrel.core.profiles.effective",
     "Feedback": "epistrel.core.feedback",
     "FeedbackContext": "epistrel.core.feedback",
     "FeedbackHistoryEntry": "epistrel.core.feedback",
@@ -535,6 +540,7 @@ __all__ = [
     "OmniscientRequired",
     "OriginalInFlightTimeout",
     "Outcome",
+    "OverridesRef",
     "OwnerTransfer",
     "OwnerTransferRequest",
     "PartInvalid",
@@ -548,10 +554,12 @@ __all__ = [
     "PosterInvalid",
     "PosterRequired",
     "PrincipalRequired",
+    "ProfileAssignment",
     "ProfileCopy",
     "ProfileCreate",
     "ProfileDeleted",
     "ProfileNotFound",
+    "ProfileOverridesPatch",
     "ProfilePage",
     "ProfileSchema",
     "ProfileSettings",
@@ -559,6 +567,7 @@ __all__ = [
     "ProfileValidate",
     "ProfileValidation",
     "ProfileVersion",
+    "ProfileVersionRef",
     "ProfileWarning",
     "ProfileWrite",
     "Projection",

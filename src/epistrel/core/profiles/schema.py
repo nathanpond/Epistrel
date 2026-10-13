@@ -6,8 +6,9 @@ or not: the pipeline, memory (the rolling summary, episodic retrieval, consolida
 budgets), pinned memories, character knowledge, perception, verification, commitment, the world
 clock, States, multi-character rendering, repair and polish, budgets, and models (per-purpose
 routing and the generation defaults). Every module defaults to off, so a profile names only
-what it changes. A stored profile version may be sparse: it is validated over the model's
-defaults (#113 replaces them with the deployment's ``profile_defaults``).
+what it changes. A stored profile version may be sparse: it is validated over the deployment's
+``profile_defaults``, and a story's effective configuration is those defaults, then the version,
+then the story's overrides (#113, ``core.profiles.effective``).
 
 **Three tags on every setting.** Each leaf is declared
 ``Annotated[<type>, Tag.<behavioral|data_producing>, ConfigClass.<interpretive|prospective>,
@@ -131,8 +132,8 @@ ON = "on"
 """The level of a module that is simply on (a boolean switch, or budgets and models)."""
 
 DEFAULT_COMPRESS_THRESHOLD_TOKENS = 6_000
-"""The Lite preset's rolling-summary threshold (#106's AC1). #113 maps it onto M2's
-``lite_summary_max_tokens`` (the merge cap, whose M2 default is 2,000)."""
+"""The Lite preset's rolling-summary threshold (#106's AC1): the summary's merge cap (#113: M2's
+``lite_summary_max_tokens``, whose M2 default was 2,000)."""
 DEFAULT_DEADLINE_MS = int(DEFAULT_TURN_DEADLINE_S * 1000)
 MAX_DEADLINE_MS = int(MAX_TURN_DEADLINE_S * 1000)
 MODEL_NAME_MAX = 200
@@ -315,8 +316,9 @@ class MultiCharacter(ProfileModel):
 
 class Polish(ProfileModel):
     """The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an
-    output policy, before the safe fallback is used (FR-GUARD-6; the story setting
-    ``guardrail_retry_budget`` until profiles drive the Lite turn)."""
+    output policy, before the safe fallback is used (FR-GUARD-6; M2's story setting
+    ``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is
+    replaced by the fallback at once."""
 
     enabled: Annotated[bool, BEHAVIORAL, PROSPECTIVE, RELEVANT] = True
     max_regenerations: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
@@ -339,13 +341,14 @@ class Budgets(ProfileModel):
     model_calls: Annotated[int | None, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
         default=None, ge=MIN_CALLS_PER_TURN, le=MAX_CALLS_PER_TURN
     )
-    """The most model calls one turn may make, the reserved guardrail calls included, as M2's
-    ``max_model_calls_per_turn``: a cap below one generation plus those calls refuses every
-    turn. ``null``: NFR-PERF-6's formula (9 + the guardrail calls in M3)."""
+    """The most model calls one turn may make, the reserved guardrail calls included (M2's
+    ``max_model_calls_per_turn``, which #113 moved here): a cap below one generation plus those
+    calls refuses every turn. ``null``: NFR-PERF-6's formula (9 + the guardrail calls in M3)."""
     deadline_ms: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
         default=DEFAULT_DEADLINE_MS, ge=1, le=MAX_DEADLINE_MS
     )
-    """A turn's wall-clock deadline, in milliseconds (M2's ``turn_deadline``)."""
+    """A turn's wall-clock deadline, in milliseconds (M2's ``turn_deadline``, in seconds, which
+    #113 moved here); the turn slot's lease and a queued request's wait follow it."""
 
 
 class RouteParams(ProfileModel):

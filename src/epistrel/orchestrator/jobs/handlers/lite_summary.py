@@ -4,7 +4,9 @@ FR-CONC-8, FR-LITE-7; #72).
 **When it runs.** One coalesced job per story (``coalesce_key`` ``lite_summary:<story>``),
 enqueued after a turn commits and after truncate, untruncate, swap and fork (``timeline``'s
 post-commit membership hook), whenever ``core.summary`` finds work: a whole chunk older than the
-trailing ``lite_window_messages`` verbatim rows, or a summary over ``lite_summary_max_tokens``.
+trailing ``window_messages`` verbatim rows, or a summary over ``compress_threshold_tokens``
+(the story's effective configuration's ``memory.rolling_summary``, #113; nothing with the
+rolling summary off).
 The recurring task of the same name (every 10 minutes) is the safety net: its run has no story
 and enqueues the job of every story with work. Every ``lite_summary`` job runs once
 (``max_attempts`` 1); a failed run is retried by the next trigger.
@@ -172,7 +174,7 @@ class _Run:
     names: list[str]
     budget: TurnBudget
     cap: int
-    """The summary's token cap (``lite_summary_max_tokens``) the run merges down to."""
+    """The summary's token cap (``compress_threshold_tokens``) the run merges down to."""
     pending: list[_Pending] = field(default_factory=list)
     rejected: list[GuardrailOutputRejected] = field(default_factory=list)
     calls_failed: bool = False

@@ -77,6 +77,8 @@ ORDER: dict[str, str] = {
     ),
     "story_heads": _STORY_RANK,
     "story_texts": _STORY_RANK,
+    # A story's overrides of its engine profile (#113): one row per story.
+    "story_profile_overrides": _STORY_RANK,
     "policies": f"{_STORY_RANK}, t.created_at, t.name",
     "client_events": f"{_STORY_RANK}, t.client_event_id",
     "audit_log": f"{_STORY_RANK} NULLS FIRST, t.at, t.kind",

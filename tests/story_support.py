@@ -51,6 +51,22 @@ async def create(client: httpx.AsyncClient, body: dict[str, Any]) -> dict[str, A
     return created
 
 
+async def override(
+    client: httpx.AsyncClient, story_id: str, settings: dict[str, Any]
+) -> dict[str, Any]:
+    """Set the story's overrides of its engine profile's dials (#113: the engine dials M2 kept in
+    a story's settings), confirmed; returns the answer."""
+    response = await client.patch(
+        f"/stories/{story_id}/profile-overrides",
+        json={"settings": settings, "ignore_warnings": True},
+        headers=WRITE,
+    )
+    assert response.status_code == 200, response.text
+    found: dict[str, Any] = response.json()
+    assert found["applied"] is True, found
+    return found
+
+
 async def public_tables(engine: AsyncEngine) -> list[str]:
     async with engine.connect() as conn:
         found = await conn.scalars(

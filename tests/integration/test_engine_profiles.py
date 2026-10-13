@@ -21,6 +21,14 @@ are here too. The I-21 part (profiles' owners) is ``test_i_21__profiles`` in
 - ``test_c_16__upgrade_unavailable`` (#109; M4's slot, interim until M7): a data-producing
   edit cannot reach a story with history, which keeps its version, while one without turns
   upgrades.
+- ``test_u_28__effective`` (#113): the effective configuration, deployment defaults → profile
+  version → story overrides, validated as a whole; an invalid override refused and not stored;
+  the overrides kept across versions; a behavioral edit followed at the next turn with no job;
+  a turn in flight finishing under the configuration it captured.
+- ``test_c_16__follow_latest`` (#113): stories assigned a profile through the API follow its
+  latest version; a behavioral edit is a configuration change that applies at each follower's
+  next turn boundary without a warning or a job; every respond response names the profile and
+  version.
 - ``test_c_17__profiles``: a pairwise covering array over the delivered modules' settings; each
   configuration is accepted and a story runs a turn under it, or it is refused by validation.
 - ``test_c_17__dependencies``: ``missing_dependencies`` end to end: the undelivered path for
@@ -59,7 +67,7 @@ from epistrel.config import Settings
 from epistrel.core import fork as forking
 from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.core.errors import InvalidRequest
-from epistrel.core.profiles.effective import Configuration
+from epistrel.core.profiles.effective import Configuration, effective_configuration
 from epistrel.core.profiles.estimates import CALL_LATENCY_MS
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import (
@@ -111,6 +119,7 @@ from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
 from tests.conftest import alembic_config
 from tests.event_support import rows, scalar
+from tests.policy_support import AUTHOR, story_item
 from tests.profile_support import (
     EDITED,
     LITE_CAPABILITIES,
@@ -135,9 +144,10 @@ from tests.profile_support import (
     violating,
 )
 from tests.respond_support import body as respond_body
-from tests.respond_support import respond_client
+from tests.respond_support import generation_calls, respond_client
 from tests.scenario_support import scenario as catalog_scenario
 from tests.story_support import story_body
+from tests.summary_support import summary_jobs
 
 READ = bearer()
 A = "p-profiles-a"
@@ -934,6 +944,318 @@ FACTORS: dict[str, list[Any]] = {
 """The delivered modules' settings C-17 combines, each with two levels."""
 
 
+# -- #113: the effective configuration and following the latest version ------------------------
+
+
+async def _assign(client: httpx.AsyncClient, story: str, profile: str) -> dict[str, Any]:
+    """Assign ``profile`` to ``story`` (confirmed); the answer."""
+    answer = await client.put(
+        f"/stories/{story}/engine-profile",
+        json={"profile_id": profile, "ignore_warnings": True},
+        headers=headers(A),
+    )
+    found = await ok(answer)
+    assert found["applied"] is True, found
+    return found
+
+
+async def _overrides(
+    client: httpx.AsyncClient, story: str, settings: dict[str, Any], **fields: Any
+) -> httpx.Response:
+    return await client.patch(
+        f"/stories/{story}/profile-overrides",
+        json={"settings": settings, **fields},
+        headers=headers(A),
+    )
+
+
+async def _edit(client: httpx.AsyncClient, profile: str, settings: dict[str, Any]) -> Any:
+    """A confirmed edit of ``profile``'s settings; the answer."""
+    return await ok(
+        await client.put(
+            f"{PROFILES}/{profile}",
+            json={"name": "Brisk Lite", "settings": settings, "ignore_warnings": True},
+            headers=headers(A),
+        )
+    )
+
+
+def _sent(stub: Any) -> tuple[Any, ...]:
+    """The temperature, top_p and token cap of the stub's one generation call."""
+    (call,) = generation_calls(stub)
+    return (call.params.temperature, call.params.top_p, call.params.max_tokens)
+
+
+async def _turn_configuration(db: AsyncEngine, story: str) -> dict[str, Any]:
+    """The configuration the story's latest turn recorded (``operations.config_revisions``)."""
+    (row,) = await rows(
+        db,
+        "SELECT config_revisions FROM operations WHERE story_id = :s AND kind = 'turn' "
+        "AND status = 'committed' ORDER BY committed_at DESC LIMIT 1",
+        s=story,
+    )
+    found: dict[str, Any] = row.config_revisions
+    return found
+
+
+JOBS = "SELECT count(*) FROM jobs"
+ASSISTED_INPUT = {"type": "model_assisted", "prompt": "Is this text rude?", "on_uncertain": "pass"}
+"""A model-assisted input policy: the turn's input check is one model call a test can hold."""
+
+
+@pytest.mark.part("M3", "FR-PROF-5,6")
+async def test_u_28__effective(scratch: Space) -> None:
+    """The effective configuration is the deployment's defaults, then the profile's version,
+    then the story's overrides, validated as a whole (FR-PROF-5). The defaults set ``top_p``
+    and the response length, a profile leaves them out and sets the temperature and the window,
+    and the story overrides the window: the read and the library name each setting's layer, and
+    the turn's generation request carries the temperature, ``top_p`` and length so resolved.
+
+    An override that makes the configuration invalid is refused 422 ``invalid_profile`` and
+    nothing is stored: one naming an undelivered module, and (under a test-only rule that makes
+    pinned memories need the rolling summary) one turning the summary off. Complement: a valid
+    override is stored, at the next revision.
+
+    The overrides persist across the profile's versions. A behavioral edit (FR-PROF-6, the
+    temperature) is followed at once: the read states version 2, the edit enqueues no job, and
+    the story's next turn sends the new temperature. A turn already under way when the profile
+    changes (its input being checked, before its read phase) finishes under the configuration
+    it captured at its start (prospective): its generation request and its recorded version
+    are the old ones, and the turn after it runs under the new version."""
+    async with respond_client(scratch.settings, scratch.db) as (client, lib):
+        stub = lib.models.stub
+        defaults = {"models": {"generation": {"top_p": 0.7, "response_length": "short"}}}
+        await ok(
+            await client.put(
+                "/admin/settings", json={"profile_defaults": defaults}, headers=headers(A)
+            )
+        )
+        sparse = merged(
+            nest("models.generation.temperature", 0.4),
+            nest("memory.rolling_summary.window_messages", 10),
+        )
+        profile = (
+            await ok(
+                await client.post(PROFILES, json=profile_body(settings=sparse), headers=headers(A)),
+                201,
+            )
+        )["id"]
+        story, actor = await _story(client)
+        await _assign(client, story, profile)
+        window = nest("memory.rolling_summary.window_messages", 6)
+        stored = await ok(await _overrides(client, story, window))
+        assert stored["result"]["overrides"] == {"settings": window, "revision": 1}
+
+        # -- precedence: defaults → the profile's version → the story's overrides
+        read = await _effective(client, story)
+        assert read["deployment_defaults"]["models"]["generation"]["top_p"] == 0.7
+        assert read["profile"] == {"id": profile, "version": 1, "pinned": False, "deleted": False}
+        assert read["overrides"] == {"settings": window, "revision": 1}
+        generation = read["effective"]["models"]["generation"]
+        assert (generation["temperature"], generation["top_p"], generation["response_length"]) == (
+            0.4,
+            0.7,
+            "short",
+        )
+        assert read["effective"]["memory"]["rolling_summary"]["window_messages"] == 6
+        async with scratch.db.connect() as conn:
+            found = await effective_configuration(conn, story)
+        layers = {
+            path: found.source_of(path)
+            for path in (
+                "models.generation.top_p",
+                "models.generation.temperature",
+                "memory.rolling_summary.window_messages",
+            )
+        }
+        assert layers == {
+            "models.generation.top_p": "deployment",
+            "models.generation.temperature": "profile",
+            "memory.rolling_summary.window_messages": "story",
+        }
+        stub.reset()
+        await _play(client, story, actor)
+        assert _sent(stub) == (0.4, 0.7, 150)
+
+        # -- what cannot run is refused and nothing is stored; what can is stored
+        unchanged = await configuration_rows(scratch.db)
+        refused(
+            await _overrides(client, story, naming(undelivered_modules()[0])),
+            422,
+            "invalid_profile",
+        )
+        rule = DependencyRule(TEST_CLAUSE, "pins", (Requirement("rolling_summary"),))
+        with extra_rule(rule):
+            quiet = nest("memory.rolling_summary.enabled", False)
+            error = refused(
+                await _overrides(client, story, quiet, ignore_warnings=True),
+                422,
+                "invalid_profile",
+            )
+            assert [m["module"] for m in error["details"]["missing_dependencies"]] == ["pins"]
+        assert await configuration_rows(scratch.db) == unchanged
+        assert (await _effective(client, story))["overrides"]["revision"] == 1
+        pins = nest("pins.max_pinned", 7)
+        kept = await ok(await _overrides(client, story, pins))
+        assert kept["result"]["overrides"] == {"settings": merged(window, pins), "revision": 2}
+
+        # -- the overrides persist across a new version, which is followed at once
+        jobs = await scalar(scratch.db, JOBS)
+        edited = await _edit(
+            client, profile, merged(sparse, nest("models.generation.temperature", 0.5))
+        )
+        assert edited["result"]["version"] == 2
+        assert await scalar(scratch.db, JOBS) == jobs  # no job: nothing to re-derive
+        read = await _effective(client, story)
+        assert read["profile"]["version"] == 2
+        assert read["overrides"] == {"settings": merged(window, pins), "revision": 2}
+        assert read["effective"]["models"]["generation"]["temperature"] == 0.5
+        assert read["effective"]["memory"]["rolling_summary"]["window_messages"] == 6
+        stub.reset()
+        await _play(client, story, actor)
+        assert _sent(stub) == (0.5, 0.7, 150)
+        assert (await _turn_configuration(scratch.db, story))["profile_version"] == 2
+
+        # -- a turn in flight keeps the configuration it captured at its start: the edit lands
+        # while the turn's input is checked (a model-assisted input policy), before its read
+        # phase and its generation
+        await lib.policies_set_story(
+            AUTHOR,
+            story,
+            [story_item(ASSISTED_INPUT, name="effective-in", applies_to=["text_input"])],
+        )
+        stub.reset()
+        latch = stub.hold("guardrail_check")
+        turn = asyncio.ensure_future(_play(client, story, actor))
+        await asyncio.wait_for(latch.entered.wait(), 10)
+        warmer = await _edit(
+            client, profile, merged(sparse, nest("models.generation.temperature", 0.9))
+        )
+        assert warmer["result"]["version"] == 3
+        latch.release()
+        held = await turn
+        assert _sent(stub) == (0.5, 0.7, 150)
+        assert held["profile"] == {"id": profile, "version": 2}
+        recorded = await _turn_configuration(scratch.db, story)
+        assert (recorded["profile_version"], recorded["overrides_revision"]) == (2, 2)
+        assert recorded["generation_settings"]["temperature"] == 0.5
+        stub.reset()
+        after = await _play(client, story, actor)
+        assert _sent(stub) == (0.9, 0.7, 150)
+        assert after["profile"] == {"id": profile, "version": 3}
+
+
+@pytest.mark.part("M3", "FR-PROF-1,6; FR-API-6")
+async def test_c_16__follow_latest(scratch: Space) -> None:
+    """A story follows its profile's latest version (FR-PROF-6). Two stories are assigned a
+    profile through the API (FR-PROF-1, FR-API-6) and a third stays on Lite; each plays, and
+    every respond response reports the profile and the version the turn ran under. A
+    behavioral edit of the profile (the temperature and the summary window) applies at once:
+    its impact report lists both followers with no capability gained or lost and no backfill,
+    and warns of nothing. It is a configuration change: one deployment revision, a row for the
+    version and one per changed setting, each prospective. It enqueues no job. At each
+    follower's next turn boundary the edit takes effect: the generation request carries the new
+    temperature, the response and the turn's recorded configuration name version 2, and the
+    smaller window makes the summary job due (it was not under the old one). The Lite story is
+    untouched: its turn still runs under Lite version 1 and Lite's temperature."""
+    async with respond_client(scratch.settings, scratch.db) as (client, lib):
+        stub = lib.models.stub
+        tuned = merged(
+            nest("models.generation.temperature", 0.6),
+            nest("memory.rolling_summary.window_messages", 12),
+        )
+        profile = (
+            await ok(
+                await client.post(PROFILES, json=profile_body(settings=tuned), headers=headers(A)),
+                201,
+            )
+        )["id"]
+        followers = sorted([(await _story(client)) for _ in range(2)])
+        bystander, bystander_actor = await _story(client)
+        for story, _ in followers:
+            assigned = await _assign(client, story, profile)
+            assert assigned["result"]["profile"]["id"] == profile
+            assert assigned["impact"]["warnings"] == []
+            chunked = await client.patch(
+                f"/stories/{story}/settings", json={"lite_summary_chunk": 2}, headers=headers(A)
+            )
+            await ok(chunked)
+        for story, actor in followers:
+            for _ in range(3):
+                stub.reset()
+                played = await _play(client, story, actor)
+                assert played["profile"] == {"id": profile, "version": 1}
+                assert _sent(stub)[0] == 0.6
+            assert await summary_jobs(scratch.db, story) == []  # 6 rows: within the window
+        stub.reset()
+        lite = await _play(client, bystander, bystander_actor)
+        assert lite["profile"] == {"id": LITE_PRESET_ID, "version": 1}
+        assert _sent(stub)[0] == 0.8
+
+        # -- the behavioral edit: applied at once, no warning, a configuration change
+        revision = int(await scalar(scratch.db, "SELECT config_revision FROM deployment_state"))
+        jobs = await scalar(scratch.db, JOBS)
+        quicker = merged(
+            nest("models.generation.temperature", 0.3),
+            nest("memory.rolling_summary.window_messages", 4),
+        )
+        edited = await ok(
+            await client.put(
+                f"{PROFILES}/{profile}",
+                json={"name": "Brisk Lite", "settings": quicker},
+                headers=headers(A),
+            )
+        )
+        assert (edited["applied"], edited["result"]["version"]) == (True, 2)
+        report = edited["impact"]
+        assert report["warnings"] == []
+        assert [e["story_id"] for e in report["affected_stories"]] == [s for s, _ in followers]
+        for entry in report["affected_stories"]:
+            assert (entry["capabilities_gained"], entry["capabilities_lost"]) == ([], [])
+            assert entry[REDERIVATION] == {"needed": False, "estimate": None}
+            assert entry["upgrade_unavailable"] is False
+        changes = await rows(
+            scratch.db,
+            'SELECT setting, old, new, "class" FROM config_changes WHERE scope = '
+            "'deployment' AND config_revision = :r ORDER BY setting",
+            r=revision + 1,
+        )
+        assert [tuple(c) for c in changes] == [
+            (f"engine_profile:{profile}", 1, 2, "prospective"),
+            (
+                f"engine_profile:{profile}.memory.rolling_summary.window_messages",
+                12,
+                4,
+                "prospective",
+            ),
+            (f"engine_profile:{profile}.models.generation.temperature", 0.6, 0.3, "prospective"),
+        ]
+        assert await scalar(scratch.db, JOBS) == jobs  # no backfill, nothing queued
+        listed = await ok(
+            await client.get(
+                "/admin/config-changes",
+                params={"setting": f"engine_profile:{profile}"},
+                headers=READ,
+            )
+        )
+        assert {i["config_revision"] for i in listed["items"]} == {revision + 1}
+
+        # -- the next turn boundary: the new temperature, version 2, the smaller window
+        for story, actor in followers:
+            assert (await _effective(client, story))["profile"]["version"] == 2
+            stub.reset()
+            played = await _play(client, story, actor)
+            assert played["profile"] == {"id": profile, "version": 2}
+            assert _sent(stub)[0] == 0.3
+            recorded = await _turn_configuration(scratch.db, story)
+            assert (recorded["profile"], recorded["profile_version"]) == (profile, 2)
+            assert len(await summary_jobs(scratch.db, story)) == 1  # 8 rows: over 4
+        stub.reset()
+        lite = await _play(client, bystander, bystander_actor)
+        assert lite["profile"] == {"id": LITE_PRESET_ID, "version": 1}
+        assert _sent(stub)[0] == 0.8
+
+
 @pytest.mark.part("M3", "FR-PROF-2,4")
 async def test_c_17__profiles(scratch: Space) -> None:
     """A pairwise covering array over the delivered modules' settings (the rolling summary,
@@ -1187,11 +1509,13 @@ async def test_validate_without_a_body_checks_the_latest_version(
 async def test_edits_record_their_requester_and_replay(
     stub_settings: Settings, engine: AsyncEngine
 ) -> None:
-    """Every profile write records one committed ``control`` operation by its requester and
-    moves no configuration revision; an edit that changes nothing records nothing and makes no
-    version. A retry under the same ``Idempotency-Key`` replays the answer
-    (``Idempotent-Replay: true``) and records nothing more; the key with another body is 409
-    ``idempotency_conflict``. Validation writes nothing and takes no key."""
+    """Every profile write records one committed ``control`` operation by its requester. Only a
+    new version is a configuration change (#113): the edit that makes one moves the
+    deployment's configuration revision by exactly one, and the create, the copy and the delete
+    move none; an edit that changes nothing records nothing and makes no version. A retry under
+    the same ``Idempotency-Key`` replays the answer (``Idempotent-Replay: true``) and records
+    nothing more; the key with another body is 409 ``idempotency_conflict``. Validation writes
+    nothing and takes no key."""
     async with respond_client(stub_settings, engine) as (client, _):
         revision = await scalar(engine, "SELECT config_revision FROM deployment_state")
         key = f"prof-{secrets.token_hex(6)}"
@@ -1237,7 +1561,8 @@ async def test_edits_record_their_requester_and_replay(
         assert recorded == 0
         checked = await client.post(f"{PROFILES}/{fresh}/validate", json={}, headers=headers(A))
         assert "Idempotency-Key" not in checked.headers
-        assert await scalar(engine, "SELECT config_revision FROM deployment_state") == revision
+        # One new version (the PUT of ``EDITED``) and nothing else moved it.
+        assert await scalar(engine, "SELECT config_revision FROM deployment_state") == revision + 1
 
 
 async def test_lists_page_and_filter(stub_settings: Settings, engine: AsyncEngine) -> None:

@@ -5,7 +5,8 @@ A Hypothesis rule-based machine interleaves Lite turns held inside their model c
 configuration writes against one story: interpretive changes on the turn's dependencies (a
 story policy's words, the story rating's guardrails switched on and off, a rating policy's
 words, ``minor_age_threshold``), an interpretive change elsewhere (another rating's guidance),
-and prospective changes (the story's ``turn_deadline``, the deployment's idempotency window).
+and prospective changes (the story's override of its turn deadline, ``budgets.deadline_ms``,
+#113; the deployment's idempotency window).
 The stand-in model writes each reply when its call starts, using a word the rules in force at
 that moment allow — so a reply goes stale only when a rule tightens while it is held.
 
@@ -49,9 +50,10 @@ from epistrel.core.enums import Provenance
 from epistrel.core.errors import RevisionConflict
 from epistrel.core.events import Operation
 from epistrel.core.ids import new_ulid
+from epistrel.core.profiles.fingerprint import RuntimeFacts
+from epistrel.core.profiles.story import ProfileOverridesPatch, set_overrides
 from epistrel.core.ratings import RatingFields, RatingReplacement, create_rating, update_rating
 from epistrel.core.settings_schema import DEFAULT_GUARDRAIL_RETRY_BUDGET
-from epistrel.core.story_settings import update_story_settings
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.policies.output_gate import (
@@ -67,6 +69,9 @@ from tests.auth_support import auth_settings
 from tests.concurrency_support import HeldModel, HeldTurn, start_turn
 from tests.event_support import execute_in_tx, new_story
 from tests.policy_support import story_item, words
+
+NO_FACTS = RuntimeFacts(models={}, templates={})
+"""What the impact report's fingerprints need (#113): no model, no template here."""
 
 MAX_IN_FLIGHT = 2
 VOCABULARY = ("amber", "cobalt", "ochre")
@@ -382,10 +387,11 @@ class ConfigRevalidation(RuleBasedStateMachine):
 
     @rule(deadline=st.sampled_from([30, 40]))
     def story_deadline(self, deadline: int) -> None:
+        overrides = ProfileOverridesPatch(
+            settings={"budgets": {"deadline_ms": deadline * 1000}}, ignore_warnings=True
+        )
         self.run(
-            update_story_settings(
-                self.engine, self.story, {"turn_deadline": deadline}, principal="p-author"
-            )
+            set_overrides(self.engine, self.story, overrides, principal="p-author", facts=NO_FACTS)
         )
         self.changed("prospective")
 

@@ -608,7 +608,7 @@ async def test_the_text_cap_setting(pg_url: str) -> None:
             await rate(client, story, message, {"rating": 2, "text": "  " + "x" * 10 + "  "}), 201
         )
         assert kept["text"] == "x" * 10
-        answered(await _settings(client, {"lite_window_messages": 31}), 200)
+        answered(await _settings(client, {"lite_summary_chunk": 12}), 200)
         shown = answered(await client.get("/admin/settings", headers=as_principal(OPERATOR)), 200)
         assert (shown["feedback_text_max_chars"], shown["feedback_retention"]) == (10, 30)
 

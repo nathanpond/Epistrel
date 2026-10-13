@@ -72,6 +72,7 @@ from epistrel.core.ids import Ulid
 from epistrel.core.profiles import effective, estimates, schema
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import (
+    GUARANTEES,
     QualityStatus,
     RuntimeFacts,
     Stamp,
@@ -371,21 +372,31 @@ class Following:
     keep: frozenset[str]
 
 
-async def following_report(conn: AsyncConnection, profile_id: str, change: Delta) -> Following:
+async def following_report(
+    conn: AsyncConnection,
+    profile_id: str,
+    change: Delta,
+    overridden: Mapping[str, Delta] | None = None,
+) -> Following:
     """The report of a change to every story that follows ``profile_id``'s latest version (a
-    story pinned to an earlier version does not follow it, and is not affected). When the
-    change adds data-producing capability, those stories are locked ``FOR NO KEY UPDATE``, in
-    id order, before their history is read: a turn cannot commit on one until the edit has, so
-    the stories kept are exactly the ones with history. Each entry states the stamp its story
-    would run under; when the report lists no story, its top states the profile's own, before
-    and after the change (FR-PROF-16: every impact report states one)."""
+    story pinned to an earlier version does not follow it, and is not affected). ``change`` is
+    what a story without overrides sees; ``overridden`` holds each following story with
+    overrides and the change it sees through them (#113: an override of a setting the edit
+    changes keeps the story's value). When a change adds data-producing capability, the
+    following stories are locked ``FOR NO KEY UPDATE``, in id order, before their history is
+    read: a turn cannot commit on one until the edit has, so the stories kept are exactly the
+    ones with history whose own change adds such capability. Each entry states the stamp its
+    story would run under; when the report lists no story, its top states the profile's own,
+    before and after the change (FR-PROF-16: every impact report states one)."""
+    overridden = overridden or {}
     following = (
         stories.c.engine_profile_id == profile_id,
         stories.c.engine_profile_version_pin.is_(None),
     )
     count = int(await conn.scalar(select(func.count()).select_from(stories).where(*following)) or 0)
     keep: set[str] = set()
-    if change.increases and count:
+    increases = bool(change.increases) or any(d.increases for d in overridden.values())
+    if increases and count:
         every = list(
             await conn.scalars(
                 select(stories.c.id)
@@ -394,7 +405,11 @@ async def following_report(conn: AsyncConnection, profile_id: str, change: Delta
                 .with_for_update(key_share=True)
             )
         )
-        keep = await with_history(conn, every)
+        keep = {
+            story
+            for story in await with_history(conn, every)
+            if overridden.get(story, change).increases
+        }
     listed = [
         str(story_id)
         for story_id in await conn.scalars(
@@ -403,21 +418,38 @@ async def following_report(conn: AsyncConnection, profile_id: str, change: Delta
     ]
     sizes = await transcripts(conn, [s for s in listed if s in keep])
     entries = [
-        affected(s, change, history=s in keep, transcript=sizes.get(s, (0, 0))) for s in listed
+        affected(s, overridden.get(s, change), history=s in keep, transcript=sizes.get(s, (0, 0)))
+        for s in listed
     ]
     unlisted = not entries  # no entry states a stamp, so the top states the profile's own
+    seen = [change] if count > len(overridden) else []
+    seen += [overridden[story] for story in sorted(overridden)]
     report = ImpactReport(
         affected_stories=entries,
         affected_count=count,
         recommendations_unmet=[],
-        guarantees_lost=list(change.guarantees_lost) if count else [],
+        guarantees_lost=_lost(seen) if count else [],
         fingerprint_before=change.before.fingerprint if unlisted else None,
         fingerprint_after=change.after.fingerprint if unlisted else None,
         capabilities_after=list(change.after.capabilities) if unlisted else None,
         quality_status_after=change.after.quality_status if unlisted else None,
-        warnings=_warnings(change, affects=count > 0, unavailable=bool(keep), recommendations=()),
+        warnings=_following_warnings(seen, unavailable=bool(keep)),
     )
     return Following(report, frozenset(keep))
+
+
+def _lost(changes: Sequence[Delta]) -> list[str]:
+    """The guarantees any of ``changes`` loses, in ``GUARANTEES`` order."""
+    lost = {name for found in changes for name in found.guarantees_lost}
+    return [g.name for g in GUARANTEES if g.name in lost]
+
+
+def _following_warnings(changes: Sequence[Delta], *, unavailable: bool) -> list[str]:
+    """The warning kinds of a report over stories that see ``changes``."""
+    found: set[str] = {"backfill_needed", "upgrade_unavailable"} if unavailable else set()
+    for one in changes:
+        found.update(_warnings(one, affects=True, unavailable=False, recommendations=()))
+    return [kind for kind in WARNING_KINDS if kind in found]
 
 
 # -- the two stages --------------------------------------------------------------------------------
@@ -550,17 +582,19 @@ async def preview(
     purposes: Purposes | None = None,
 ) -> ImpactReport:
     """What assigning ``request.profile_id`` and/or applying ``request.overrides`` would do to
-    ``story_id``. 404 for an unknown story; 422 ``profile_deleted`` for a profile that cannot be
+    ``story_id``. ``overrides`` are laid over the story's own (#113: each setting they name
+    replaces the story's override of it, and the rest are kept); a profile assigned keeps them
+    too. 404 for an unknown story; 422 ``profile_deleted`` for a profile that cannot be
     assigned; 422 ``validation_error`` or ``invalid_profile`` for a result that cannot run. The
     story's own profile is no reassignment: it keeps the version it runs on."""
     async with db.connect() as conn:
-        current = await effective.story_profile(conn, story_id)
+        current = await effective.effective_configuration(conn, story_id, validate=False)
         if request.profile_id is not None and request.profile_id != current.profile_id:
             target = await effective.assignable(conn, request.profile_id)
             profile_id, version, document = target.profile_id, target.version, target.document
         else:
             profile_id, version, document = current.profile_id, current.version, current.document
-        settings = effective.resolve(document, request.overrides, purposes=purposes)
+        settings = effective.resolve(current, document, request.overrides, purposes=purposes)
         change = delta(current.configuration(), Configuration(profile_id, version, settings), facts)
         history = await with_history(conn, [story_id]) if change.increases else set()
         sizes = await transcripts(conn, history)

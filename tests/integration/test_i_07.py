@@ -64,6 +64,8 @@ RESPONSE_FIELDS = {
     "fingerprint",
     "capabilities",
     "quality_status",
+    "profile",
+    "config_revision",
 }
 
 

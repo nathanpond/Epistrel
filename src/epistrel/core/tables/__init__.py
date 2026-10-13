@@ -26,7 +26,11 @@ from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.operations import operations
 from epistrel.core.tables.ownership import entity_relations, ownership_events
 from epistrel.core.tables.policies import policies
-from epistrel.core.tables.profiles import engine_profile_versions, engine_profiles
+from epistrel.core.tables.profiles import (
+    engine_profile_versions,
+    engine_profiles,
+    story_profile_overrides,
+)
 from epistrel.core.tables.projections import (
     lite_summary_segments,
     story_heads,
@@ -67,6 +71,7 @@ __all__ = [
     "scenario_versions",
     "stories",
     "story_heads",
+    "story_profile_overrides",
     "story_texts",
     "subject_references",
     "timers",

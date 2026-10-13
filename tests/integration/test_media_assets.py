@@ -5,9 +5,9 @@ sweep. The milestone parts are ``test_c_15__media_upload`` (C-15), ``test_i_17__
 ``tests/test_media_units.py``.
 
 The sweep's tests each run on a scratch database with its own media root, since a sweep purges
-deployment-wide. Until #115 gives catalog drafts and versions their image fields, a reference is
-planted the way #115 will store it (``public_card.images``), straight into the draft or a
-version row."""
+deployment-wide. Until #115 gives catalog drafts and versions their image fields and aliases, a
+reference or an alias is planted the way #115 will store it (``public_card.images``,
+``metadata.aliases``), straight into the draft or a version row."""
 
 from __future__ import annotations
 
@@ -810,6 +810,63 @@ async def test_uploads_index_their_subjects(settings: Settings, engine: AsyncEng
             )
             == 0
         )
+
+
+async def test_uploads_index_alias_mentions(space: Scratch) -> None:
+    """A catalog character's aliases are scan terms as well as its names: the strings of
+    ``metadata.aliases`` in its draft and in every version, planted the way #115 will store
+    them (on a scratch database, since today's draft model refuses the field). A caption that
+    names only the draft's alias, and an alt text that names only a version's, each get a
+    ``mentioned`` row, ignoring case. An alias inside another word indexes nothing. An entry
+    that is not a string, an ``aliases`` that is not a list (an object whose key the prompt
+    names) and a ``metadata`` that is not an object are skipped, and the upload still
+    succeeds."""
+    from epistrel import CharacterCreate
+
+    created = await space.lib.create_character_draft(
+        SWEEPER, CharacterCreate(**catalog_character("Mara Venn"))
+    )
+    character = created.character.id
+    await execute(
+        space,
+        "UPDATE catalog.character_catalog SET draft = draft || CAST(:doc AS jsonb) WHERE id = :c",
+        doc=json.dumps({"metadata": {"aliases": ["Lin", 5, None, ["nested"]]}}),
+        c=character,
+    )
+    await execute(
+        space,
+        "INSERT INTO catalog.character_versions (catalog_id, version, content, published_at, "
+        "published_by) VALUES (:c, 1, CAST(:doc AS jsonb), now(), 'p-author')",
+        doc=json.dumps({"name": "Mara Venn", "metadata": {"aliases": ["The Keeper"]}}),
+        c=character,
+    )
+    for odd in ({"aliases": {"Bree": True}}, "Bree"):
+        other = await space.lib.create_character_draft(
+            SWEEPER, CharacterCreate(**catalog_character("Ona Brisk"))
+        )
+        await execute(
+            space,
+            "UPDATE catalog.character_catalog SET draft = draft || CAST(:doc AS jsonb) "
+            "WHERE id = :c",
+            doc=json.dumps({"metadata": odd}),
+            c=other.character.id,
+        )
+    asset = await put(
+        space,
+        caption="LIN at the door.",
+        alt_text="Portrait of the keeper",
+        generation_metadata={"prompt": "Linen sails at dusk, Bree watching"},
+    )
+    found = await rows(
+        space.db,
+        "SELECT subject_kind, subject_id, field, ref_kind FROM subject_references "
+        "WHERE record_id = :r ORDER BY field",
+        r=asset,
+    )
+    assert [tuple(r) for r in found] == [
+        ("catalog_character", character, "alt_text", "mentioned"),
+        ("catalog_character", character, "caption", "mentioned"),
+    ]
 
 
 # -- settings --------------------------------------------------------------------------------------

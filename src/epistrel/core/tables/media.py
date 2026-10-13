@@ -18,8 +18,8 @@ whose ``story_id`` is null; ``scope = story`` rows name their story, are deleted
 (``core.stories.STORY_TABLES``) and are not copied by a fork (#123 re-indexes the fork).
 ``record_table`` names the table (``media_assets``), ``record_id`` the row, ``field`` the
 dotted path of the field that named the subject (null for a record that defines the subject
-itself), and ``ref_kind`` how: ``declared`` (a structured id), ``mentioned`` (a name found in
-prose) or ``authored``. Both tables use plain ids, without foreign keys.
+itself), and ``ref_kind`` how: ``declared`` (a structured id), ``mentioned`` (a name or alias
+found in prose) or ``authored``. Both tables use plain ids, without foreign keys.
 """
 
 from __future__ import annotations

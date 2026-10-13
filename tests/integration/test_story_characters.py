@@ -9,6 +9,7 @@ the images it leaves out, and the interim catalog draft fields a promotion fills
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -370,10 +371,13 @@ async def test_promotion_refusals_and_options(stub_settings: Settings, engine: A
     """A promotion is 404 for an unknown story and for a character of another story, 422 for a
     player character (``reason: player_character``) and for a rating that cannot be assigned
     (``rating_retired``), and 409 for a stale expected revision, each with nothing written. It
-    takes a name, an owner and a rating, records one story-less ``control`` operation by its
-    requester, writes no story event, moves no revision, runs on an archived story, and is
+    only reads the story, so it runs while a turn is in flight (the turn holds the story's turn
+    slot, its generation held; the promotion is 201 at the unchanged revision, and the turn then
+    commits), and on an archived story. Without an owner it is owned by its requester, not by
+    the story's owner; it takes a name, an owner and a rating, records one story-less
+    ``control`` operation by its requester, writes no story event, moves no revision, and is
     replayed under its key."""
-    async with respond_client(stub_settings, engine) as (client, _):
+    async with respond_client(stub_settings, engine) as (client, lib):
         story = await create(client, story_body("Wren", "Ada"))
         sid, wren, ada = story["story_id"], *(c["id"] for c in story["characters"])
         other = await create(client, story_body("Kit", "Lee"))
@@ -400,6 +404,38 @@ async def test_promotion_refusals_and_options(stub_settings: Settings, engine: A
         }
         assert await scalar(engine, "SELECT count(*) FROM catalog.character_catalog") == entries
         assert await scalar(engine, "SELECT promoted_to FROM characters WHERE id = :c", c=ada) == []
+
+        # -- while a turn is in flight: the promotion runs; no owner named, so its requester's
+        held = await revision(client, sid)
+        latch = lib.models.stub.hold("generation")
+        turn = asyncio.ensure_future(
+            client.post(f"/stories/{sid}/respond", json=respond_body(wren), headers=as_())
+        )
+        try:
+            await asyncio.wait_for(latch.entered.wait(), 10)
+            (in_flight,) = await rows(
+                engine,
+                "SELECT s.in_flight_turn, o.kind, o.status FROM stories s "
+                "JOIN operations o ON o.operation_id = s.in_flight_turn WHERE s.id = :s",
+                s=sid,
+            )
+            assert (in_flight.kind, in_flight.status) == ("turn", "in_flight")
+            during = await asyncio.wait_for(promote(client, sid, ada, principal="p-promoter"), 10)
+        finally:
+            latch.release()
+        assert during.status_code == 201, during.text
+        assert during.json()["timeline_revision"] == held
+        assert (await turn).status_code == 200  # the turn commits after it, undisturbed
+        assert await revision(client, sid) == held + 1  # the turn's bump; the promotion made none
+        owned = await client.get(
+            f"/catalog/characters/{during.json()['catalog_id']}",
+            params={"draft": "true", "projection": "full"},
+            headers=READ,
+        )
+        story_owner = await scalar(
+            engine, "SELECT owner_principal FROM stories WHERE id = :s", s=sid
+        )
+        assert (owned.json()["owner_principal"], story_owner) == ("p-promoter", AUTHOR)
 
         start = await revision(client, sid)
         events = await scalar(engine, "SELECT count(*) FROM events WHERE story_id = :s", s=sid)
@@ -434,7 +470,7 @@ async def test_promotion_refusals_and_options(stub_settings: Settings, engine: A
         )
         assert await revision(client, sid) == start
         promoted = await scalar(engine, "SELECT promoted_to FROM characters WHERE id = :c", c=ada)
-        assert promoted == [done.json()["catalog_id"]]
+        assert promoted == [during.json()["catalog_id"], done.json()["catalog_id"]]
 
 
 async def test_promotion_cuts_the_definition_and_leaves_out_retired_images(

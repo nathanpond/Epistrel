@@ -25,6 +25,7 @@ from typing import Any
 
 import httpx2 as httpx
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
@@ -42,7 +43,7 @@ from epistrel.core.ids import new_ulid
 from tests import scenario_support as scenarios
 from tests.auth_support import auth_settings, bearer
 from tests.catalog_support import ids
-from tests.event_support import rows, scalar
+from tests.event_support import execute_in_tx, rows, scalar
 from tests.media_support import png, uploaded
 from tests.persona_support import copy_into
 from tests.respond_support import respond_client
@@ -261,12 +262,12 @@ async def test_c_19(stub_settings: Settings, engine: AsyncEngine) -> None:
 async def test_s_promote(stub_settings: Settings, engine: AsyncEngine) -> None:
     """A delivery driver the author adds to a running story is story-scoped: a ``characters``
     row with his true age and no catalog source, which no catalog listing shows, whatever the
-    status it lists. The author promotes him: a new **draft** catalog entry, never published,
-    holds his name, his true age, his definition (appearance, personality and dispositions,
-    likes and dislikes, interaction style), his safe fallback line and his image, by reference,
-    rated as the story, and none of the story's facts: a phrase planted in the story's
-    narration, pinned memories and custom instructions appears nowhere in the entry. The answer
-    carries the new ``catalog_id``.
+    status it lists. The author promotes him: a new **draft** catalog entry, owned by the author
+    (the request names no owner), never published, holds his name, his true age, his definition
+    (appearance, personality and dispositions, likes and dislikes, interaction style), his safe
+    fallback line and his image, by reference, rated as the story, and none of the story's
+    facts: a phrase planted in the story's narration, pinned memories and custom instructions
+    appears nowhere in the entry. The answer carries the new ``catalog_id``.
 
     Complements asserted: promoting him again makes a second draft (no deduplication); his row
     is byte-identical through both promotions except ``promoted_to``, which names both entries,
@@ -336,6 +337,7 @@ async def test_s_promote(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert draft.status_code == 200, draft.text
         entry = draft.json()
         assert (entry["status"], entry["version"], entry["name"]) == ("draft", None, "Dale Pruitt")
+        assert entry["owner_principal"] == AUTHOR  # the requesting principal, by default
         assert entry["definition"] == {
             "true_age": 52,
             "appearance": None,
@@ -629,3 +631,36 @@ async def test_persona_writes_are_idempotent(stub_settings: Settings, engine: As
         )
         other = await client.post("/personas", json=body_of(), headers=as_(OWNER, key))
         assert error_of(other)[:2] == (409, "idempotency_conflict")
+
+
+async def test_only_a_player_character_holds_a_persona(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """A persona's id and snapshot are kept on player characters only
+    (``ck_characters_persona_player``): the database refuses either one on another character
+    (the snapshot alone too, as an ad-hoc persona's has no id), and refuses a player character
+    that holds a persona ceasing to be a player. Each refusal leaves both rows as they were.
+
+    Complement asserted: the story's player character takes the persona's id and snapshot."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        persona = await saved(client, OWNER)
+        story = await create(client, story_body("Wren", "Ada"))
+        wren, ada = (c["id"] for c in story["characters"])
+        await copy_into(engine, wren, {key: persona[key] for key in PERSONA_KEYS})
+        before = (await player_row(engine, wren), await player_row(engine, ada))
+        wren_row = json.loads(before[0])
+        assert (wren_row["is_player"], wren_row["persona_id"]) == (True, persona["id"])
+        assert wren_row["persona_snapshot"]["persona_id"] == persona["id"]
+        assert json.loads(before[1])["is_player"] is False
+        ad_hoc = json.dumps({**wren_row["persona_snapshot"], "persona_id": None})
+        for sql, params in (
+            ("UPDATE characters SET persona_id = :p WHERE id = :c", {"p": persona["id"], "c": ada}),
+            (
+                "UPDATE characters SET persona_snapshot = CAST(:s AS jsonb) WHERE id = :c",
+                {"s": ad_hoc, "c": ada},
+            ),
+            ("UPDATE characters SET is_player = false WHERE id = :c", {"c": wren}),
+        ):
+            with pytest.raises(IntegrityError, match="ck_characters_persona_player"):
+                await execute_in_tx(engine, (sql, params))
+        assert (await player_row(engine, wren), await player_row(engine, ada)) == before

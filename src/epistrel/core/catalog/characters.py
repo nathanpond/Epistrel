@@ -1,31 +1,31 @@
 """Catalog characters: one draft per entry and immutable, numbered published versions
-(FR-CAT-1,3,9; FR-SCN-10; docs/02 §4.10; #103).
+(FR-CAT-1..4,9, FR-CAT-12, FR-RATE-3; FR-SCN-10; docs/02 §4.10; #103, #115).
 
 An entry is a ``catalog.character_catalog`` row; its draft is a JSON document that
-``CharacterDraft`` validates, and its versions are ``catalog.character_versions`` rows. The
-lifecycle — create, save (a JSON merge patch compared on ``draft_revision``), publish, archive,
-unarchive, delete, and the reads in the ``card`` and ``full`` projections — is the generic
-catalog service's (``core.catalog.service``, #108), which scenarios share; this module supplies
-the character's document, its publish validation and its projections.
+``CharacterDraft`` validates (``core.catalog.models``: the public card, the private definition,
+the metadata and the visual identity), and its versions are ``catalog.character_versions``
+rows. The lifecycle — create, save (a JSON merge patch compared on ``draft_revision``), publish,
+archive, unarchive, delete, and the reads in the ``card`` and ``full`` projections — is the
+generic catalog service's (``core.catalog.service``, #108), which scenarios share; this module
+supplies the character's document checks and its projections.
 
-Publishing runs the catalog validation (``core.catalog.validation``, #111): the draft must be a
-valid ``CharacterDraft`` with a ``name`` (422 ``publish_invalid`` with ``details.report``); #115
-adds its rules there. A character carries no world truths of its own: those belong to a
-scenario, normally the character's companion scenario (FR-CAT-5).
+**Saving** stores what validates as a draft (a name alone is enough) and refuses an alias equal
+to the name or to another alias and a reference image without an audience (422 at the field). A
+save also checks what it adds, as a scenario's does: a rating must be assignable (422
+``rating_retired``) and each image and reference image live (422 ``media_retired``).
+**Publishing** runs the catalog validation (``core.catalog.validation``, #111): the draft must be
+a valid ``CharacterDraft`` holding everything ``models.PUBLISH_REQUIRED`` names, a true age, a
+content rating that can be assigned, an audience on every reference image, a primary image when
+the deployment's ``require_primary_image`` is on, and live images (422 ``publish_invalid`` with
+``details.report`` naming each missing field). A published version records its rating's
+version. A character carries no world truths of its own: those belong to a scenario, normally
+the character's companion scenario (FR-CAT-5).
 
-**The interim draft** (#103, until #115 gives it its full shape) holds the public card's
-``name`` and ``public_description`` at the top level and the private ``definition``. #114 added
-the fields a character promoted from a story brings (FR-CAT-8), at the paths #115 plans for
-them: the definition's ``true_age``, ``background_flavor`` and ``safe_fallback_text``, the
-public card's images (``public_card.images``: a ``primary`` image and a ``gallery``, media ids
-by reference) and the content rating (``metadata.content_rating_id``). A save checks what it
-adds, as a scenario's does: a rating must be assignable (422 ``rating_retired``) and each image
-live (422 ``media_retired``). A published version records its rating's version.
-
-A read returns one projection (FR-SCN-10): ``card`` (the default), only the public card, or
-``full``, which adds the entry's envelope and every definition field. Both show the images (the
-primary first, then the gallery, each with its asset's alt text) and the rating (the version a
-published version recorded, or for a draft the rating's current version). A listing
+A read returns one projection (FR-SCN-10): ``card`` (the default), only the public card (the
+images as ``{primary, gallery}`` of ``{media_id, alt_text}``, the labels and the rating), or
+``full``, which adds the entry's envelope, the aliases, every definition field and the visual
+identity, with each image's and reference image's live media row inlined. Both show the rating
+the version recorded, or for a draft the rating's current version. A listing
 (``core.catalog.search``, #110) shows each entry as a ``CharacterListItem``: its card, its owner
 and ``updated_at``. A character's companion scenarios (``scenario_catalog.companion_of``, #116)
 follow its listing status (FR-CAT-11).
@@ -33,24 +33,52 @@ follow its listing status (FR-CAT-11).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Any
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    StrictInt,
-    StringConstraints,
-    ValidationError,
-    field_validator,
-)
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.catalog.checks.character_documents import images_of, rating_id_of
+from epistrel.core.catalog.checks.character_documents import (
+    images_of,
+    rating_id_of,
+    reference_images_of,
+)
+from epistrel.core.catalog.models import (
+    BACKGROUND_FLAVOR_MAX,
+    GALLERY_MAX,
+    NAME_MAX,
+    PERSONALITY_MAX,
+    PUBLIC_DESCRIPTION_MAX,
+    SAFE_FALLBACK_MAX,
+    Audience,
+    CardImage,
+    CharacterCard,
+    CharacterCardImages,
+    CharacterCreate,
+    CharacterDefinition,
+    CharacterDefinitionPatch,
+    CharacterDraft,
+    CharacterFull,
+    CharacterImageDetail,
+    CharacterImages,
+    CharacterImagesDetail,
+    CharacterImagesPatch,
+    CharacterListItem,
+    CharacterMetadata,
+    CharacterMetadataPatch,
+    CharacterPatch,
+    CharacterPublicCard,
+    CharacterPublicCardPatch,
+    Name,
+    ReferenceImageDetail,
+    VisualIdentityDetail,
+    audience_errors,
+    character_rules,
+)
 from epistrel.core.catalog.report import ValidationReport
 from epistrel.core.catalog.service import (
     FIRST_DRAFT_REVISION,
@@ -61,7 +89,6 @@ from epistrel.core.catalog.service import (
     Projection,
     Published,
     PublishRequest,
-    Revision,
     Shown,
     VersionSummary,
     card_rating,
@@ -70,337 +97,148 @@ from epistrel.core.catalog.service import (
 from epistrel.core.catalog.validation import RUNNER
 from epistrel.core.enums import EntryStatus
 from epistrel.core.errors import CharacterNotFound, InvalidRequest
-from epistrel.core.ids import Ulid
 from epistrel.core.media.assets import assert_referenceable, rating_version
-from epistrel.core.ownership import Owner
 from epistrel.core.ports import Ports
 from epistrel.core.ratings import require_assignable
 from epistrel.core.tables import media_assets
 from epistrel.core.tables.catalog import character_catalog, character_versions, scenario_catalog
-from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.ownership import EntityType
 
 ENTITY_TYPE = EntityType.CHARACTER.value
 """The entry type an audit row and ``core.ownership`` (#104) name."""
-NAME_MAX = 120
-PUBLIC_DESCRIPTION_MAX = 4_000
-PERSONALITY_MAX = 4_000
-BACKGROUND_FLAVOR_MAX = 4_000
-SAFE_FALLBACK_MAX = 500
-GALLERY_MAX = 20
 DRAFT_MAX_BYTES = 256 * 1024
 """The largest draft, as canonical JSON (UTF-8 bytes)."""
 
-Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX)]
-
-
-# -- the draft document -----------------------------------------------------------------------
-
-
-class CharacterDefinition(BaseModel):
-    """The private character definition (FR-CAT-2): who the character is. It is seeded into
-    every story the character joins and is otherwise returned only by the ``full`` projection.
-    Until #115 adds the other fields it holds ``personality``, the character's ``true_age``
-    (FR-CAT-12), ``background_flavor`` (free text: a definition promoted from a story lands
-    here, FR-CAT-8) and ``safe_fallback_text`` (the line the character says when every
-    regenerated reply fails its guardrails, #68)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    personality: str | None = Field(
-        default=None,
-        max_length=PERSONALITY_MAX,
-        description="Personality and temperament (private).",
-    )
-    true_age: StrictInt | None = Field(
-        default=None,
-        ge=TRUE_AGE_MIN,
-        le=TRUE_AGE_MAX,
-        description="The character's true age (FR-CAT-12): 0 to 150. Never on the card.",
-    )
-    background_flavor: str | None = Field(
-        default=None,
-        max_length=BACKGROUND_FLAVOR_MAX,
-        description="Optional background, as free text (private).",
-    )
-    safe_fallback_text: str | None = Field(
-        default=None,
-        max_length=SAFE_FALLBACK_MAX,
-        description="What the character says when every regenerated reply fails its guardrails "
-        "(private).",
-    )
-
-
-def _distinct(values: list[str]) -> list[str]:
-    if len(set(values)) != len(values):
-        raise ValueError("lists a media asset more than once")
-    return values
-
-
-class CharacterImages(BaseModel):
-    """The public card's images (FR-CAT-4; #115's shape): a ``primary`` image and a ``gallery``
-    (up to 20, distinct), as media asset ids. The assets are referenced, never copied; each must
-    be ``live`` when a save adds it."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    primary: Ulid | None = Field(default=None, description="The primary image's media id.")
-    gallery: list[Ulid] = Field(
-        default_factory=list, max_length=GALLERY_MAX, description="More images, in order."
-    )
-
-    @field_validator("gallery")
-    @classmethod
-    def _distinct_gallery(cls, value: list[str]) -> list[str]:
-        return _distinct(value)
-
-
-class CharacterPublicCard(BaseModel):
-    """The public card's part of the interim draft that lives under ``public_card`` (#115 moves
-    ``name`` and ``public_description`` here too): its ``images``."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    images: CharacterImages = Field(default_factory=CharacterImages)
-
-
-class CharacterMetadata(BaseModel):
-    """The draft's metadata (#115's shape): its ``content_rating_id`` (FR-RATE-3), which must be
-    assignable when a save sets it."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    content_rating_id: Ulid | None = Field(default=None, description="The content rating's id.")
-
-
-class CharacterDraft(BaseModel):
-    """A catalog character's draft document (FR-CAT-2; interim until #115): the public card's
-    ``name`` and ``public_description``, its images (``public_card.images``), the private
-    ``definition`` and the content rating (``metadata.content_rating_id``). A draft may lack any
-    field; publishing needs a ``name``. A character carries no world truths of its own: those
-    belong to a scenario, normally the character's companion scenario (FR-CAT-5)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: Name | None = Field(default=None, description="The character's name (public).")
-    public_description: str | None = Field(
-        default=None,
-        max_length=PUBLIC_DESCRIPTION_MAX,
-        description="Free text for the public card; never seeded into a story.",
-    )
-    public_card: CharacterPublicCard | None = Field(
-        default=None, description="The card's images (public)."
-    )
-    definition: CharacterDefinition = Field(
-        default_factory=CharacterDefinition,
-        description="The private definition: returned only by the `full` projection.",
-    )
-    metadata: CharacterMetadata | None = Field(
-        default=None, description="The content rating (public, on the card)."
-    )
-
-    def document(self) -> dict[str, Any]:
-        """The stored form: JSON, with the fields that are not set left out."""
-        stored: dict[str, Any] = self.model_dump(
-            mode="json", exclude_none=True, include=set(CharacterDraft.model_fields)
-        )
-        return stored
-
-
-class CharacterCreate(CharacterDraft):
-    """``POST /catalog/characters``: the new entry's first draft — any of the draft's fields —
-    and, optionally, its ``owner``: an opaque principal, by default the requesting one, never
-    ``system`` (FR-AUTH-5). Ownership confers no permission (FR-AUTH-8)."""
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [
-                {
-                    "name": "Mara Venn",
-                    "public_description": "Keeps the light on Gull Rock.",
-                    "definition": {"personality": "Patient, private and slow to trust."},
-                }
-            ]
-        }
-    )
-
-    owner: Owner | None = Field(
-        default=None,
-        description="The entry's owner principal (default: the requesting principal; never "
-        "`system`). Recorded, never interpreted.",
-    )
-
-
-class CharacterDefinitionPatch(BaseModel):
-    """The ``definition`` part of a draft patch: a key sets that field, ``null`` removes it."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    personality: str | None = Field(default=None, max_length=PERSONALITY_MAX)
-    true_age: StrictInt | None = Field(default=None, ge=TRUE_AGE_MIN, le=TRUE_AGE_MAX)
-    background_flavor: str | None = Field(default=None, max_length=BACKGROUND_FLAVOR_MAX)
-    safe_fallback_text: str | None = Field(default=None, max_length=SAFE_FALLBACK_MAX)
-
-
-class CharacterImagesPatch(BaseModel):
-    """The images part of a draft patch: ``primary`` set or removed (``null``), and ``gallery``
-    replaced as a whole."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    primary: Ulid | None = None
-    gallery: list[Ulid] | None = Field(default=None, max_length=GALLERY_MAX)
-
-
-class CharacterPublicCardPatch(BaseModel):
-    """The ``public_card`` part of a draft patch."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    images: CharacterImagesPatch | None = None
-
-
-class CharacterMetadataPatch(BaseModel):
-    """The ``metadata`` part of a draft patch."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    content_rating_id: Ulid | None = None
-
-
-class CharacterPatch(BaseModel):
-    """``PATCH /catalog/characters/{id}``: a JSON merge patch (RFC 7386) over the draft — a key
-    sets that field, ``null`` removes it, and ``definition``, ``public_card`` and ``metadata``
-    merge the same way (an array, the gallery, replaces the stored one) — with the
-    ``draft_revision`` it is based on (FR-CAT-3)."""
-
-    model_config = ConfigDict(
-        extra="forbid",
-        json_schema_extra={
-            "examples": [
-                {
-                    "draft_revision": 1,
-                    "public_description": "Keeps the light on Gull Rock, and the logbook.",
-                    "definition": {"personality": "Patient and wry."},
-                }
-            ]
-        },
-    )
-
-    draft_revision: Revision = Field(
-        description="The draft revision this patch is based on; a stale one is 409 `draft_stale`."
-    )
-    name: Name | None = None
-    public_description: str | None = Field(default=None, max_length=PUBLIC_DESCRIPTION_MAX)
-    public_card: CharacterPublicCardPatch | None = None
-    definition: CharacterDefinitionPatch | None = None
-    metadata: CharacterMetadataPatch | None = None
-
-    def document(self) -> dict[str, Any]:
-        """The merge patch itself: the fields the request set (``null`` included), without
-        ``draft_revision``."""
-        patch: dict[str, Any] = self.model_dump(
-            mode="json", exclude_unset=True, exclude={"draft_revision"}
-        )
-        return patch
-
 
 def _validated(document: Any) -> dict[str, Any]:
-    """``document`` as a stored draft; 422 ``validation_error`` at ``body.<field>``."""
+    """``document`` as a stored draft: 422 ``validation_error`` at ``body.<field>`` for what the
+    model refuses, then for what the save rules refuse (an alias that is the name or another
+    alias; a reference image without an audience), every finding listed."""
     try:
         draft = CharacterDraft.model_validate(document)
     except ValidationError as exc:
         raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
+    refused = [*character_rules(draft), *audience_errors(draft)]
+    if refused:
+        raise InvalidRequest.from_errors(refused, prefix=("body",))
     return draft.document()
 
 
 # -- projections (FR-SCN-10) ------------------------------------------------------------------
 
 
-class CardImage(BaseModel):
-    """An image on a public card (FR-CAT-4; #105, #115): the media asset and its alt text."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    media_id: str
-    alt_text: str | None = None
+def _group(document: Mapping[str, Any], *path: str) -> Mapping[str, Any]:
+    found: Any = document
+    for key in path:
+        found = found.get(key) if isinstance(found, Mapping) else None
+    return found if isinstance(found, Mapping) else {}
 
 
-class CharacterCard(BaseModel):
-    """A catalog character's public card (``projection=card``, the default; FR-CAT-2,
-    FR-SCN-10): only what a player-facing client may show, never a definition field.
-    ``version`` is the version shown; a draft read shows the draft with the latest published
-    version (``null`` before the first publish). ``images`` are the primary image, then the
-    gallery, each with its asset's alt text; ``content_rating`` is the rating's version a
-    published version recorded (for a draft, the rating's current version). Until #115,
-    ``labels`` are empty."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    version: int | None
-    name: str | None
-    public_description: str | None
-    images: list[CardImage]
-    labels: list[str]
-    content_rating: CardRating | None
-    listing_status: str
-    status: EntryStatus
-
-
-class CharacterListItem(CharacterCard):
-    """A catalog character as a listing shows it (``GET /catalog/characters``; #110): exactly
-    its public card (what a single read answers with ``projection=card``), plus its
-    ``owner_principal`` (recorded for listing and attribution only, FR-AUTH-8) and when it last
-    changed (``updated_at``: a draft save, publish, archive, listing-status change or owner
-    transfer). ``rank`` is present on a search (``q``): its text-search rank, the order's first
-    key."""
-
-    owner_principal: str
-    updated_at: datetime
-    rank: float | None = Field(default=None, exclude_if=lambda rank: rank is None)
-
-
-class CharacterFull(BaseModel):
-    """A catalog character in full (``projection=full``; FR-SCN-10): the entry's envelope, the
-    public card's fields and the private ``definition``. ``draft_revision`` is present only on a
-    draft read (``?draft=true``): the revision the next save or publish must send.
-    ``published_at`` is when ``version`` was published; ``companion_id`` names the character's
-    companion scenario (#116; ``null`` until then). ``owner_principal`` is the entry's owner
-    (FR-AUTH-5), recorded for listing and attribution only."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    status: EntryStatus
-    listing_status: str
-    owner_principal: str
-    version: int | None
-    current_version: int | None
-    draft_revision: int | None = Field(default=None, exclude_if=lambda revision: revision is None)
-    created_at: datetime
-    updated_at: datetime
-    published_at: datetime | None
-    companion_id: str | None
-    name: str | None
-    public_description: str | None
-    images: list[CardImage]
-    labels: list[str]
-    content_rating: CardRating | None
-    definition: CharacterDefinition
-
-
-async def card_images(conn: AsyncConnection, document: Mapping[str, Any]) -> list[CardImage]:
-    """The images a character's card shows: the primary image, then the gallery, each with its
-    asset's alt text (``null`` for an asset that is gone)."""
-    wanted = [media_id for _, media_id in images_of(document)]
+async def _media_rows(conn: AsyncConnection, media_ids: Sequence[str]) -> dict[str, Any]:
+    """The live media rows of ``media_ids`` (one query), by id; an id no row holds is absent."""
+    wanted = sorted(set(media_ids))
     if not wanted:
-        return []
+        return {}
     rows = await conn.execute(
-        select(media_assets.c.id, media_assets.c.alt_text).where(media_assets.c.id.in_(wanted))
+        select(
+            media_assets.c.id,
+            media_assets.c.alt_text,
+            media_assets.c.caption,
+            media_assets.c.mime_type,
+            media_assets.c.width,
+            media_assets.c.height,
+            media_assets.c.generation_metadata,
+        ).where(media_assets.c.id.in_(wanted))
     )
-    alt = {str(row.id): row.alt_text for row in rows}
-    return [CardImage(media_id=media_id, alt_text=alt.get(media_id)) for media_id in wanted]
+    return {str(row.id): row for row in rows}
+
+
+def _card_image(media_id: str, rows: Mapping[str, Any]) -> CardImage:
+    row = rows.get(media_id)
+    return CardImage(media_id=media_id, alt_text=None if row is None else row.alt_text)
+
+
+def _detail(media_id: str, rows: Mapping[str, Any]) -> dict[str, Any]:
+    """An image's media row as ``full`` inlines it (every field ``null`` without a row)."""
+    row = rows.get(media_id)
+    if row is None:
+        return {"media_id": media_id}
+    return {
+        "media_id": media_id,
+        "alt_text": row.alt_text,
+        "caption": row.caption,
+        "mime_type": row.mime_type,
+        "width": row.width,
+        "height": row.height,
+        "generation_metadata": row.generation_metadata,
+    }
+
+
+def _ids(images: Mapping[str, Any]) -> tuple[str | None, list[str]]:
+    """The primary image's id and the gallery's, from a stored ``public_card.images``."""
+    primary = images.get("primary")
+    gallery = images.get("gallery")
+    return (
+        primary if isinstance(primary, str) else None,
+        [m for m in (gallery if isinstance(gallery, list) else []) if isinstance(m, str)],
+    )
+
+
+async def card_images(conn: AsyncConnection, document: Mapping[str, Any]) -> CharacterCardImages:
+    """The images a character's card shows: the primary image and the gallery, each with its
+    asset's alt text (``null`` for an asset that is gone)."""
+    primary, gallery = _ids(_group(document, "public_card", "images"))
+    rows = await _media_rows(conn, [m for m in (primary, *gallery) if m is not None])
+    return CharacterCardImages(
+        primary=None if primary is None else _card_image(primary, rows),
+        gallery=[_card_image(media_id, rows) for media_id in gallery],
+    )
+
+
+def _audience(value: Any) -> Audience | None:
+    return Audience(value) if value in {a.value for a in Audience} else None
+
+
+async def _full_media(
+    conn: AsyncConnection, document: Mapping[str, Any]
+) -> tuple[CharacterImagesDetail, VisualIdentityDetail | None]:
+    """``full``'s images and visual identity: each image and reference image with its live
+    media row (alt text, caption, MIME type, dimensions, generation metadata as stored)."""
+    primary, gallery = _ids(_group(document, "public_card", "images"))
+    identity = document.get("visual_identity")
+    references = [
+        item
+        for item in (identity.get("reference_images") if isinstance(identity, Mapping) else None)
+        or []
+        if isinstance(item, Mapping) and isinstance(item.get("media_id"), str)
+    ]
+    rows = await _media_rows(
+        conn,
+        [
+            *(m for m in (primary, *gallery) if m is not None),
+            *(str(item["media_id"]) for item in references),
+        ],
+    )
+    images = CharacterImagesDetail(
+        primary=None if primary is None else CharacterImageDetail(**_detail(primary, rows)),
+        gallery=[CharacterImageDetail(**_detail(media_id, rows)) for media_id in gallery],
+    )
+    if not isinstance(identity, Mapping):
+        return images, None
+    shown = {key: value for key, value in identity.items() if key != "reference_images"}
+    return images, VisualIdentityDetail(
+        **shown,
+        reference_images=[
+            ReferenceImageDetail(
+                **_detail(str(item["media_id"]), rows), audience=_audience(item.get("audience"))
+            )
+            for item in references
+        ],
+    )
+
+
+def _strings(values: Any) -> list[str]:
+    return [v for v in (values if isinstance(values, list) else []) if isinstance(v, str)]
 
 
 async def _project(
@@ -414,21 +252,25 @@ async def _project(
     projection: Projection,
     version_row: Any | None,
 ) -> CharacterCard | CharacterFull:
-    card: dict[str, Any] = {
+    public_card = _group(document, "public_card")
+    metadata = _group(document, "metadata")
+    shown: dict[str, Any] = {
         "id": entry.id,
         "version": version,
-        "name": document.get("name"),
-        "public_description": document.get("public_description"),
-        "images": await card_images(conn, document),
-        "labels": [],
+        "name": public_card.get("name"),
+        "public_description": public_card.get("public_description"),
+        "labels": _strings(metadata.get("labels")),
         "content_rating": await card_rating(conn, rating_id_of(document), version_row),
         "listing_status": entry.listing_status,
         "status": EntryStatus(entry.status),
     }
     if projection is Projection.CARD:
-        return CharacterCard(**card)
+        return CharacterCard(**shown, images=await card_images(conn, document))
+    images, identity = await _full_media(conn, document)
     return CharacterFull(
-        **card,
+        **shown,
+        images=images,
+        aliases=_strings(metadata.get("aliases")),
         owner_principal=entry.owner_principal,
         current_version=entry.current_version,
         draft_revision=draft_revision,
@@ -437,6 +279,7 @@ async def _project(
         published_at=published_at,
         companion_id=None,
         definition=CharacterDefinition.model_validate(document.get("definition") or {}),
+        visual_identity=identity,
     )
 
 
@@ -528,13 +371,17 @@ class CharacterCatalog(CatalogService):
         self, conn: AsyncConnection, document: Mapping[str, Any], previous: Any
     ) -> None:
         """What a create or save adds must be usable: a content rating it sets must be
-        assignable (422 ``rating_retired``) and each image it adds live (422 ``media_retired``,
-        held ``FOR SHARE`` until the write commits), as a scenario's save checks them."""
+        assignable (422 ``rating_retired``) and each image and reference image it adds live (422
+        ``media_retired``, held ``FOR SHARE`` until the write commits), as a scenario's save
+        checks them. An asset retired since it was added does not block unrelated edits; a
+        publish reports it (``media_retired``)."""
         rating = rating_id_of(document)
         if rating is not None and rating != rating_id_of(previous):
             await require_assignable(conn, rating, field="body.metadata.content_rating_id")
-        before = {media_id for _, media_id in images_of(previous)}
-        for field, media_id in images_of(document):
+        before = {
+            media_id for _, media_id in (*images_of(previous), *reference_images_of(previous))
+        }
+        for field, media_id in (*images_of(document), *reference_images_of(document)):
             if media_id not in before:
                 await assert_referenceable(conn, [media_id], field=f"body.{field}")
 
@@ -666,31 +513,51 @@ async def versions(db: AsyncEngine, character_id: str) -> list[VersionSummary]:
 
 
 __all__ = [
+    "BACKGROUND_FLAVOR_MAX",
     "DRAFT_MAX_BYTES",
     "ENTITY_TYPE",
     "FIRST_DRAFT_REVISION",
+    "GALLERY_MAX",
+    "NAME_MAX",
+    "PERSONALITY_MAX",
+    "PUBLIC_DESCRIPTION_MAX",
     "REVISION_MAX",
+    "SAFE_FALLBACK_MAX",
     "SERVICE",
+    "Audience",
     "CardImage",
     "CardRating",
     "CharacterCard",
+    "CharacterCardImages",
     "CharacterCatalog",
     "CharacterCreate",
     "CharacterDefinition",
     "CharacterDefinitionPatch",
     "CharacterDraft",
     "CharacterFull",
+    "CharacterImageDetail",
+    "CharacterImages",
+    "CharacterImagesDetail",
+    "CharacterImagesPatch",
     "CharacterListItem",
+    "CharacterMetadata",
+    "CharacterMetadataPatch",
     "CharacterPatch",
+    "CharacterPublicCard",
+    "CharacterPublicCardPatch",
     "DeletedCharacter",
     "DraftWrite",
     "Envelope",
+    "Name",
     "Projection",
     "PublishRequest",
     "Published",
+    "ReferenceImageDetail",
     "StatusChange",
     "VersionSummary",
+    "VisualIdentityDetail",
     "archive",
+    "card_images",
     "create",
     "delete",
     "get",

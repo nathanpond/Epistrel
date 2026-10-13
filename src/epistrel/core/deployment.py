@@ -11,7 +11,8 @@ entry still holds is 409 ``listing_status_in_use``; the message-feedback reason 
 sections of its ``settings`` document — the Lite summary chunking (#57, #72), the story-level
 text caps (#60), the idempotency result window (#61), the default ``turn_queue_max`` (#63), the
 structured-result settings (#53), the safe fallback (#68), the media settings (#105), the
-catalog validation's model-call budget ``validation_model_calls`` (#111) and message feedback's
+catalog validation's model-call budget ``validation_model_calls`` (#111) and its
+``require_primary_image`` (#115), and message feedback's
 text cap and retention (``feedback_text_max_chars``, ``feedback_retention``; #112).
 ``media_sweep_interval`` also moves its recurring task's ``recurring_tasks`` row
 (``RECURRING_INTERVAL_SETTINGS``).
@@ -40,7 +41,14 @@ from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, StrictInt, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictBool,
+    StrictInt,
+    ValidationError,
+    model_validator,
+)
 from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -161,6 +169,7 @@ class SettingsPatch(BaseModel):
     media_upload_ttl: int | None = None
     listing_status_values: list[str] | None = None
     validation_model_calls: int | None = None
+    require_primary_image: StrictBool | None = None
     feedback_tags: list[str] | None = None
     feedback_text_max_chars: StrictInt | None = None
     feedback_retention: FeedbackRetention | None = None

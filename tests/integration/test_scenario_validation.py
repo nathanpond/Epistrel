@@ -30,6 +30,7 @@ from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from epistrel.testing import pauses
 from tests import scenario_support as scenarios
 from tests.catalog_support import scratch_catalog
+from tests.character_support import complete
 from tests.event_support import rows, sqlstate
 from tests.media_support import media_client, png, scratch, set_media, uploaded
 from tests.policy_support import global_policy
@@ -422,7 +423,7 @@ async def test_role_characters_must_be_published_and_live(settings: Any, engine:
         )
         assert archived.status_code == 200, archived.text
         made = await client.post(
-            "/catalog/characters", json={"name": "Dora Draft"}, headers=scenarios.WRITE
+            "/catalog/characters", json=complete("Dora Draft"), headers=scenarios.WRITE
         )
         assert made.status_code == 201, made.text
         drafted = made.json()["id"]

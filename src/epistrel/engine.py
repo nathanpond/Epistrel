@@ -857,9 +857,9 @@ class Engine:
     ) -> stories.CreatedStory:
         """Create a blank story with its cast, rating and settings in one genesis operation.
 
-        Every character ``definition`` goes through the input gate first (FR-GUARD-10), against
-        the global policies and the chosen rating's, with the cast's true ages: a violation is
-        422 ``guardrail_violation`` and no story exists."""
+        Every character ``definition`` (and ``deflection_style``, #115) goes through the input
+        gate first (FR-GUARD-10), against the global policies and the chosen rating's, with the
+        cast's true ages: a violation is 422 ``guardrail_violation`` and no story exists."""
         principal = self.require_principal(ctx)
         stories.validate_spec(spec)
         return await self._keyed(
@@ -880,8 +880,13 @@ class Engine:
         ]
         context = await policy_store.creation_context(self.db, rating_id, cast)
         texts = [
-            GateText(f"characters[{index}].definition", c.definition)
+            GateText(f"characters[{index}].{field}", text)
             for index, c in enumerate(spec.characters)
+            for field, text in (
+                ("definition", c.definition),
+                ("deflection_style", c.deflection_style),
+            )
+            if text is not None
         ]
         await input_gate.enforce_input(
             self.db,

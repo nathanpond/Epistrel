@@ -356,9 +356,17 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "remove_model_override": _ADMIN_CONFIG,
     "set_model_api_key": (*_ADMIN_CONFIG, "config_key_missing"),
     "remove_model_api_key": _ADMIN_CONFIG,
-    "create_character_draft": ("draft_too_large",),
-    "save_character_draft": ("draft_stale", "draft_too_large", "entry_archived"),
-    "publish_character": ("draft_stale", "entry_archived", "publish_invalid"),
+    # A character's create or save checks what it adds: an assignable rating, live images and
+    # reference images (#114, #115); a publish holds the rating while it records its version.
+    "create_character_draft": ("draft_too_large", "rating_retired", "media_retired"),
+    "save_character_draft": (
+        "draft_stale",
+        "draft_too_large",
+        "entry_archived",
+        "rating_retired",
+        "media_retired",
+    ),
+    "publish_character": ("draft_stale", "entry_archived", "publish_invalid", "rating_retired"),
     "get_character": ("not_published",),
     "create_scenario_draft": _SCENARIO_SAVE,
     "save_scenario_draft": ("draft_stale", "entry_archived", *_SCENARIO_SAVE),

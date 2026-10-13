@@ -6,9 +6,9 @@ sweep. The milestone parts are ``test_c_15__media_upload`` (C-15), ``test_i_17__
 ``tests/test_media_units.py``.
 
 The sweep's tests each run on a scratch database with its own media root, since a sweep purges
-deployment-wide. Until #115 gives catalog drafts and versions their image fields and aliases, a
-reference or an alias is planted the way #115 will store it (``public_card.images``,
-``metadata.aliases``), straight into the draft or a version row."""
+deployment-wide. A reference or an alias a test needs without a publish (or in a shape a save
+refuses) is planted in #115's shape (``public_card.images``, ``metadata.aliases``), straight into
+the draft or a version row."""
 
 from __future__ import annotations
 
@@ -940,8 +940,9 @@ async def test_uploads_index_their_subjects(settings: Settings, engine: AsyncEng
 
 async def test_uploads_index_alias_mentions(space: Scratch) -> None:
     """A catalog character's aliases are scan terms as well as its names: the strings of
-    ``metadata.aliases`` in its draft and in every version, planted the way #115 will store
-    them (on a scratch database, since today's draft model refuses the field). A caption that
+    ``metadata.aliases`` in its draft and in every version, planted in #115's shape (on a
+    scratch database, since the draft model refuses the odd entries planted beside them). A
+    caption that
     names only the draft's alias, and an alt text that names only a version's, each get a
     ``mentioned`` row, ignoring case. An alias inside another word indexes nothing. An entry
     that is not a string, an ``aliases`` that is not a list (an object whose key the prompt
@@ -963,7 +964,9 @@ async def test_uploads_index_alias_mentions(space: Scratch) -> None:
         space,
         "INSERT INTO catalog.character_versions (catalog_id, version, content, published_at, "
         "published_by) VALUES (:c, 1, CAST(:doc AS jsonb), now(), 'p-author')",
-        doc=json.dumps({"name": "Mara Venn", "metadata": {"aliases": ["The Keeper"]}}),
+        doc=json.dumps(
+            {"public_card": {"name": "Mara Venn"}, "metadata": {"aliases": ["The Keeper"]}}
+        ),
         c=character,
     )
     for odd in ({"aliases": {"Bree": True}}, "Bree"):
@@ -1224,7 +1227,7 @@ async def execute(space: Scratch, sql: str, **params: Any) -> None:
 
 
 async def plant_in_draft(space: Scratch, media_id: str) -> str:
-    """A catalog character whose draft names ``media_id`` (as #115 will)."""
+    """A catalog character whose draft names ``media_id`` (in #115's shape)."""
     from epistrel import CharacterCreate
 
     created = await space.lib.create_character_draft(
@@ -1242,7 +1245,8 @@ async def plant_in_draft(space: Scratch, media_id: str) -> str:
 
 
 async def plant_in_version(space: Scratch, media_id: str) -> str:
-    """A catalog character with a published version that names ``media_id`` (as #115 will)."""
+    """A catalog character with a published version that names ``media_id`` (in #115's
+    shape)."""
     from epistrel import CharacterCreate
 
     created = await space.lib.create_character_draft(
@@ -1251,9 +1255,9 @@ async def plant_in_version(space: Scratch, media_id: str) -> str:
     await execute(
         space,
         "INSERT INTO catalog.character_versions (catalog_id, version, content, published_at, "
-        "published_by) VALUES (:c, 1, jsonb_build_object('name', 'Mara', 'public_card', "
-        "jsonb_build_object('images', jsonb_build_object('primary', CAST(:m AS text)))), "
-        "now(), 'p-author')",
+        "published_by) VALUES (:c, 1, jsonb_build_object('public_card', "
+        "jsonb_build_object('name', 'Mara', 'images', jsonb_build_object('primary', "
+        "CAST(:m AS text)))), now(), 'p-author')",
         m=media_id,
         c=created.character.id,
     )

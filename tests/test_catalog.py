@@ -56,25 +56,53 @@ def test_merge_patch_follows_rfc_7386(target: Any, patch: Any, result: Any) -> N
     assert repr(target) == before  # the target is not changed in place
 
 
+EMPTY_GROUPS = {
+    "public_card": {"images": {"gallery": []}},
+    "definition": {},
+    "metadata": {"aliases": [], "labels": []},
+}
+"""The stored form of an empty draft (#115): its groups, with their lists, and nothing else."""
+
+
 def test_draft_document_leaves_out_what_is_not_set() -> None:
     """The stored draft is JSON with unset fields left out; a creation's ``owner`` is not part
-    of it, and the owner follows the principal rule."""
-    assert CharacterDraft().document() == {"definition": {}}
-    create = CharacterCreate(name="  Mara  ", definition={"personality": "Wry."}, owner=" p-1 ")
-    assert create.document() == {"name": "Mara", "definition": {"personality": "Wry."}}
+    of it, and the owner follows the principal rule. #103's top-level name is refused: it lives
+    under ``public_card`` (#115)."""
+    assert CharacterDraft().document() == EMPTY_GROUPS
+    create = CharacterCreate.model_validate(
+        {
+            "public_card": {"name": "  Mara  "},
+            "definition": {"personality": "Wry."},
+            "owner": " p-1 ",
+        }
+    )
+    assert create.document() == {
+        **EMPTY_GROUPS,
+        "public_card": {"name": "Mara", "images": {"gallery": []}},
+        "definition": {"personality": "Wry."},
+    }
     assert create.owner == "p-1"
     for owner in ("system", "", "\t", "a\nb", "x" * 257):
         with pytest.raises(ValidationError):
             CharacterCreate(owner=owner)
     with pytest.raises(ValidationError):
-        CharacterDraft.model_validate({"name": "Mara", "secret_past": "x"})
+        CharacterDraft.model_validate({"public_card": {"name": "Mara"}, "secret_past": "x"})
+    with pytest.raises(ValidationError):
+        CharacterDraft.model_validate({"name": "Mara"})
 
 
 def test_patch_document_keeps_nulls_and_drops_the_revision() -> None:
     patch = CharacterPatch.model_validate(
-        {"draft_revision": 3, "public_description": None, "definition": {"personality": None}}
+        {
+            "draft_revision": 3,
+            "public_card": {"public_description": None},
+            "definition": {"personality": None},
+        }
     )
-    assert patch.document() == {"public_description": None, "definition": {"personality": None}}
+    assert patch.document() == {
+        "public_card": {"public_description": None},
+        "definition": {"personality": None},
+    }
     assert CharacterPatch(draft_revision=1).document() == {}
     for revision in (0, 2**31):
         with pytest.raises(ValidationError):

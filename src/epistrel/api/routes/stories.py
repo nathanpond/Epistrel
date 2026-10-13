@@ -547,8 +547,9 @@ def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterB
     description=(
         "Create a blank story with its cast (each character with a required `true_age`), its "
         "content rating (default: the deployment's) and its settings, in one operation. Every "
-        "character `definition` passes the input gate first: a violation is 422 "
-        "`guardrail_violation` and no story exists. Answers 201 with `Location`."
+        "character `definition` (and `deflection_style`, how it refuses or changes the subject: "
+        "FR-GUARD-7) passes the input gate first: a violation is 422 `guardrail_violation` and no "
+        "story exists. Answers 201 with `Location`."
     ),
 )
 async def create_story(
@@ -743,16 +744,17 @@ async def update_story_settings(
     description=(
         "Add an ad-hoc character to the story's cast (FR-CAT-7): its `name`, its free-text "
         "`definition`, its required `true_age` (FR-CAT-12) and optionally its "
-        "`safe_fallback_text` and `images` (media asset ids it shows, each a live image, by "
-        "reference). It is story-scoped and never a catalog entry or a player character; "
-        "`POST /stories/{id}/characters/{cid}/promote` makes a catalog draft from it. A full "
-        "cast (20 characters), a name the story has (ignoring case) or an image that is not a "
-        "live image asset is 422. The definition passes the input gate, with the new "
-        "character's age in the cast: a violation is 422 `guardrail_violation`. 409 "
-        "`story_archived` on an archived story, 423 `story_busy` while a turn is in flight. "
-        "The addition bumps the story's revision (the cast is part of every prompt), records a "
-        "`character_defined` event and is kept by a truncation and copied by every fork, as a "
-        "story-text edit is. Answers 201 with the new character's id and place in the cast."
+        "`safe_fallback_text`, its `deflection_style` (FR-GUARD-7) and `images` (media asset ids "
+        "it shows, each a live image, by reference). It is story-scoped and never a catalog entry "
+        "or a player character; `POST /stories/{id}/characters/{cid}/promote` makes a catalog "
+        "draft from it. A full cast (20 characters), a name the story has (ignoring case) or an "
+        "image that is not a live image asset is 422. The definition and the deflection style pass "
+        "the input gate, with the new character's age in the cast: a violation is 422 "
+        "`guardrail_violation`. 409 `story_archived` on an archived story, 423 `story_busy` while "
+        "a turn is in flight. The addition bumps the story's revision (the cast is part of every "
+        "prompt), records a `character_defined` event and is kept by a truncation and copied by "
+        "every fork, as a story-text edit is. Answers 201 with the new character's id and place in "
+        "the cast."
     ),
 )
 async def add_story_character(

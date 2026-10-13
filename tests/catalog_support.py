@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from epistrel.core.db import make_engine
 from tests.auth_support import auth_settings, bearer
+from tests.character_support import complete
 from tests.conformance.conftest import migrated_database
 
 BASE = "/catalog/characters"
@@ -41,14 +42,19 @@ VERSION_KEYS = frozenset({"version", "published_at", "published_by"})
 """The keys of each item a version listing returns (#103 AC3)."""
 
 
-def character(name: str = "Mara Venn", **fields: Any) -> dict[str, Any]:
-    """A ``POST /catalog/characters`` body."""
-    return {
-        "name": name,
-        "public_description": f"{name} keeps the light on Gull Rock.",
-        "definition": {"personality": f"{name} is patient, private and slow to trust."},
-        **fields,
-    }
+def character(
+    name: str = "Mara Venn",
+    *,
+    public_description: str | None = None,
+    definition: dict[str, Any] | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
+    """A ``POST /catalog/characters`` body that publishes as it is (#115's complete document,
+    ``tests.character_support.complete``): ``definition`` changes fields of the complete
+    definition, and ``fields`` are further top-level keys (``owner``, ``metadata``)."""
+    return complete(
+        name, public_description=public_description, definition_changes=definition, **fields
+    )
 
 
 def headers(key: str | None = None, principal: str = PRINCIPAL) -> dict[str, str]:
@@ -68,12 +74,20 @@ async def create(client: httpx.AsyncClient, body: dict[str, Any] | None = None) 
     return created
 
 
+CARD_FIELDS = ("name", "public_description")
+"""The public card's text fields, which a draft keeps under ``public_card`` (#115)."""
+
+
 async def save(
     client: httpx.AsyncClient, character_id: str, revision: int, **fields: Any
 ) -> httpx.Response:
-    return await client.patch(
-        f"{BASE}/{character_id}", json={"draft_revision": revision, **fields}, headers=WRITE
-    )
+    """``PATCH`` the draft at ``revision``: ``name`` and ``public_description`` go under
+    ``public_card``; every other field is a top-level key of the merge patch."""
+    card = {key: fields.pop(key) for key in CARD_FIELDS if key in fields}
+    body: dict[str, Any] = {"draft_revision": revision, **fields}
+    if card:
+        body["public_card"] = {**card, **body.get("public_card", {})}
+    return await client.patch(f"{BASE}/{character_id}", json=body, headers=WRITE)
 
 
 async def publish(

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from alembic import command
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -213,3 +216,92 @@ def test_ownership_backfill_and_downgrade(scratch_database: str) -> None:
             )
     finally:
         engine.dispose()
+
+
+INTERIM = {
+    "name": "Mara Venn",
+    "public_description": "Keeps the light.",
+    "public_card": {"images": {"primary": "0000000000000000000000IMG1", "gallery": []}},
+    "definition": {"personality": "Wry."},
+}
+"""A catalog character document as #103 and #114 stored it: the card's name and public
+description at the top level, its images under ``public_card``."""
+MOVED = {
+    "public_card": {
+        "name": "Mara Venn",
+        "public_description": "Keeps the light.",
+        "images": {"primary": "0000000000000000000000IMG1", "gallery": []},
+    },
+    "definition": {"personality": "Wry."},
+}
+"""The same document in #115's shape."""
+CAT1 = "CAT1".ljust(26, "0")
+CAT2 = "CAT2".ljust(26, "0")
+
+
+def _documents(url: str) -> tuple[Any, Any, Any, bool, bool]:
+    """The planted draft and version, the untouched draft, whether ``mara`` finds the version,
+    and whether ``characters.deflection_style`` exists."""
+    engine = make_sync_engine(url)
+    try:
+        with engine.connect() as conn:
+            draft = conn.scalar(
+                text("SELECT draft FROM catalog.character_catalog WHERE id = :c"), {"c": CAT1}
+            )
+            other = conn.scalar(
+                text("SELECT draft FROM catalog.character_catalog WHERE id = :c"), {"c": CAT2}
+            )
+            content, found = conn.execute(
+                text(
+                    "SELECT content, search @@ to_tsquery('simple', 'mara') "
+                    "FROM catalog.character_versions WHERE catalog_id = :c"
+                ),
+                {"c": CAT1},
+            ).one()
+            column = conn.scalar(
+                text(
+                    "SELECT count(*) FROM information_schema.columns "
+                    "WHERE table_name = 'characters' AND column_name = 'deflection_style'"
+                )
+            )
+        return draft, content, other, bool(found), column == 1
+    finally:
+        engine.dispose()
+
+
+def test_character_documents_move_under_the_public_card(scratch_database: str) -> None:
+    """0032 (#115) moves a catalog character's top-level ``name`` and ``public_description``
+    under ``public_card``, in drafts and published versions alike (past the versions'
+    immutability trigger), keeping what ``public_card`` already held; the version still searches
+    by its name. It adds ``characters.deflection_style``. Downgrading puts both keys back at the
+    top level and drops the column. A document without the keys is left as it is both ways."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0031")
+    engine = make_sync_engine(scratch_database)
+    try:
+        with engine.begin() as conn:
+            for entry, document in (("CAT1", INTERIM), ("CAT2", {"definition": {}})):
+                conn.execute(
+                    text(
+                        "INSERT INTO catalog.character_catalog (id, owner_principal, "
+                        "listing_status, status, draft, draft_revision, created_at, updated_at) "
+                        "VALUES (rpad(:c, 26, '0'), 'p-1', 'private', 'draft', "
+                        "CAST(:d AS jsonb), 1, now(), now())"
+                    ),
+                    {"c": entry, "d": json.dumps(document)},
+                )
+            conn.execute(
+                text(
+                    "INSERT INTO catalog.character_versions (catalog_id, version, content, "
+                    "published_at, published_by) VALUES (rpad('CAT1', 26, '0'), 1, "
+                    "CAST(:d AS jsonb), now(), 'p-1')"
+                ),
+                {"d": json.dumps(INTERIM)},
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(cfg, "0032")
+    assert _documents(scratch_database) == (MOVED, MOVED, {"definition": {}}, True, True)
+    command.downgrade(cfg, "0031")
+    assert _documents(scratch_database) == (INTERIM, INTERIM, {"definition": {}}, True, False)

@@ -27,6 +27,8 @@ Every C-15 (M3) part lives in this file (traceability counts a test ID per miles
 
 from __future__ import annotations
 
+import copy
+import json
 from typing import Annotated, Any
 
 import httpx2 as httpx
@@ -63,6 +65,16 @@ from tests.catalog_support import (
     set_listing_status,
     version_rows,
 )
+from tests.character_support import (
+    DISPOSITIONS,
+    HIDDEN,
+    PRIVATE_FIELDS,
+    SEEN,
+    complete,
+    require_primary_image,
+    visual_identity,
+)
+from tests.character_support import PLANTED as PRIVATE_PHRASES
 from tests.event_support import execute_in_tx, rows, sqlstate
 from tests.media_support import (
     READ as MEDIA_READ,
@@ -75,6 +87,7 @@ from tests.media_support import (
     set_media,
     sha256,
     upload,
+    uploaded,
 )
 from tests.story_support import rest
 from tests.validation_support import counts, validate
@@ -250,6 +263,179 @@ async def test_c_15__media_upload(settings: Settings, engine: AsyncEngine) -> No
             assert (await upload(client, big)).status_code == 201
         finally:
             await set_media(client, media_max_bytes=50 * 1024 * 1024)
+
+
+def _report(response: httpx.Response) -> list[tuple[str, str]]:
+    """``(code, field)`` of each error of a refused publish's report."""
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["code"] == "publish_invalid", response.text
+    return [(e["code"], e["location"]["field"]) for e in error["details"]["report"]["errors"]]
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-CAT-2,4")
+async def test_c_15__character_content(pg_url: str) -> None:
+    """A catalog character holds a public card, a private definition (its true age, the five
+    disposition axes and the rest), metadata and a visual identity whose reference images each
+    declare who may see them. A publish collects every error in its report and writes nothing:
+    without a true age it is 422 ``publish_invalid`` naming ``definition.true_age``, without a
+    rating it names ``metadata.content_rating_id``, and a stored reference image without its
+    audience is named by its index (a save of one is refused at that index). With the
+    deployment's ``require_primary_image`` on, a character without a primary image fails; with
+    the setting off (the default) the same character publishes. Each image's generation metadata
+    (adapter, model, prompts, seed, parameters, reference ids) reads back in ``full`` exactly as
+    the upload stored it; the card shows each image as its id and alt text only and never a
+    definition field, while ``full`` holds every one. The visual identity is versioned with the
+    character: after an edit the new version holds the new identity and the first keeps its
+    own. The labels and the public description are never seeded into a story (#122's prompt
+    test asserts it).
+
+    Complements asserted: each refused character publishes once the field is restored, and every
+    phrase missing from the card is present in ``full``."""
+    async with scratch_catalog(pg_url) as (settings, db), rest(settings, db) as client:
+        assets = [
+            await uploaded(
+                client,
+                png(nonce=new_ulid()),
+                alt_text=f"Mara, view {n}",
+                caption=f"Gull Rock, plate {n}",
+                generation_metadata=GENERATION,
+            )
+            for n in range(4)
+        ]
+        first, second, seen, hidden = (asset["id"] for asset in assets)
+        identity = visual_identity((seen, SEEN), (hidden, HIDDEN))
+        body = complete(
+            "Mara Venn",
+            images={"primary": first, "gallery": [second]},
+            definition_changes=PRIVATE_FIELDS,
+            metadata={"aliases": ["The Keeper"], "labels": ["Quiet", "stern"]},
+            visual_identity=identity,
+        )
+        created = await create(client, body)
+        cid, revision = created["id"], created["draft_revision"]
+
+        # No true age, then no rating: each refused with its field named, nothing written.
+        for patch, expected in (
+            ({"definition": {"true_age": None}}, ("true_age_missing", "definition.true_age")),
+            (
+                {"metadata": {"content_rating_id": None}},
+                ("content_rating_missing", "metadata.content_rating_id"),
+            ),
+        ):
+            removed = await save(client, cid, revision, **patch)
+            assert removed.status_code == 200, removed.text
+            revision = removed.json()["draft_revision"]
+            assert _report(await publish(client, cid, revision)) == [expected]
+            assert await version_rows(db, cid) == []
+            restored = body["definition"] if "definition" in patch else body["metadata"]
+            group = next(iter(patch))
+            back = await save(client, cid, revision, **{group: restored})
+            assert back.status_code == 200, back.text
+            revision = back.json()["draft_revision"]
+
+        # A reference image without an audience: a save is refused at its index; one stored
+        # some other way is refused at publish, at the same place.
+        missing = copy.deepcopy(identity)
+        del missing["reference_images"][1]["audience"]
+        refused = await save(client, cid, revision, visual_identity=missing)
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["details"]["field"] == (
+            "body.visual_identity.reference_images[1].audience"
+        )
+        await execute_in_tx(
+            db,
+            (
+                "UPDATE catalog.character_catalog SET draft = draft #- "
+                "'{visual_identity,reference_images,1,audience}' WHERE id = :c",
+                {"c": cid},
+            ),
+        )
+        assert _report(await publish(client, cid, revision)) == [
+            ("reference_image_missing_audience", "visual_identity.reference_images[1].audience")
+        ]
+        back = await save(client, cid, revision, visual_identity=identity)
+        assert back.status_code == 200, back.text
+        published = await publish(client, cid, back.json()["draft_revision"])
+        assert (published.status_code, published.json()["version"]) == (201, 1), published.text
+
+        # Every image's generation metadata, as the upload stored it, in ``full``.
+        card = await read(client, cid)
+        full = await read(client, cid, projection="full")
+        shown = full.json()
+        pictures = [
+            shown["images"]["primary"],
+            *shown["images"]["gallery"],
+            *shown["visual_identity"]["reference_images"],
+        ]
+        assert [p["media_id"] for p in pictures] == [first, second, seen, hidden]
+        for item in pictures:
+            stored = (await client.get(f"/media/{item['media_id']}", headers=MEDIA_READ)).json()
+            assert item["generation_metadata"] == stored["generation_metadata"] == GENERATION
+            assert _canonical(item["generation_metadata"]) == _canonical(GENERATION)
+            assert (item["alt_text"], item["caption"], item["mime_type"]) == (
+                stored["alt_text"],
+                stored["caption"],
+                "image/png",
+            )
+        assert [p["audience"] for p in shown["visual_identity"]["reference_images"]] == [
+            SEEN,
+            HIDDEN,
+        ]
+        kept = {k: v for k, v in identity.items() if k != "reference_images"}
+        assert {k: shown["visual_identity"][k] for k in kept} == kept
+
+        # The card: ids and alt text, labels and rating, never a definition field.
+        assert set(card.json()) == CARD_KEYS
+        assert card.json()["images"] == {
+            "primary": {"media_id": first, "alt_text": "Mara, view 0"},
+            "gallery": [{"media_id": second, "alt_text": "Mara, view 1"}],
+        }
+        assert card.json()["labels"] == ["quiet", "stern"]
+        assert "definition" not in card.json()
+        assert "visual_identity" not in card.json()
+        for phrase in PRIVATE_PHRASES:
+            assert phrase not in card.text, phrase
+            assert phrase in full.text, phrase
+        assert shown["aliases"] == ["The Keeper"]
+        assert shown["definition"]["true_age"] == PRIVATE_FIELDS["true_age"]
+        assert {
+            axis: value["setting"] for axis, value in shown["definition"]["dispositions"].items()
+        } == {axis: value["setting"] for axis, value in DISPOSITIONS.items()}
+
+        # Versioned with the character: version 1 keeps its identity after an edit.
+        edited = await save(
+            client,
+            cid,
+            published.json()["draft_revision"],
+            visual_identity={"seed": 7, "reference_images": [{"media_id": seen, "audience": SEEN}]},
+        )
+        assert edited.status_code == 200, edited.text
+        second_version = await publish(client, cid, edited.json()["draft_revision"])
+        assert second_version.json()["version"] == 2, second_version.text
+        old = (await read(client, cid, version=1, projection="full")).json()["visual_identity"]
+        new = (await read(client, cid, version=2, projection="full")).json()["visual_identity"]
+        assert (old["seed"], [p["media_id"] for p in old["reference_images"]]) == (
+            identity["seed"],
+            [seen, hidden],
+        )
+        assert (new["seed"], [p["media_id"] for p in new["reference_images"]]) == (7, [seen])
+
+        # The deployment's setting: on, a character without a primary image fails; off (the
+        # default), the same draft publishes.
+        plain = await create(client, complete("Ivo Brand"))
+        await require_primary_image(client, True)
+        assert _report(await publish(client, plain["id"], 1)) == [
+            ("primary_image_required", "public_card.images.primary")
+        ]
+        await require_primary_image(client, False)
+        done = await publish(client, plain["id"], 1)
+        assert (done.status_code, done.json()["version"]) == (201, 1), done.text
 
 
 @pytest.mark.integration

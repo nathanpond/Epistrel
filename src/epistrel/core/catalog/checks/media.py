@@ -1,6 +1,6 @@
-"""The media check (FR-SCN-5, FR-MEDIA-1,2; #111): every media asset a scenario shows exists, is
-live, and has a type and size the deployment allows now. Each finding is an error, naming the
-asset in ``source``:
+"""The media check (FR-SCN-5, FR-MEDIA-1,2, FR-CAT-4; #111, #115): every media asset a scenario
+or a catalog character shows exists, is live, and has a type and size the deployment allows now.
+Each finding is an error, naming the asset in ``source``:
 
 - ``media_missing``: no live or retired asset has the id (an unknown id, or a candidate that was
   never promoted);
@@ -10,29 +10,33 @@ asset in ``source``:
 - ``media_kind_mismatch``: a video where an image belongs (the cover, the gallery, a character's
   images) or an image where a video belongs (``videos``).
 
-The assets checked are the scenario's cover, gallery images and videos (at their field), and the
+The assets a scenario shows are its cover, gallery images and videos (at their field), and the
 images on the public card of each ``locked`` or ``default`` role's character version (at the
-role's ``cast.roles[i].character``; #115's ``public_card.images``).
+role's ``cast.roles[i].character``; ``public_card.images``). A catalog character's are its
+primary image and gallery (``public_card.images.primary``, ``….gallery[i]``) and its visual
+identity's reference images (``visual_identity.reference_images[i].media_id``), every one an
+image.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import select
 
 from epistrel.core.catalog.checks.base import Check, Findings, Subject, ValidationContext
 from epistrel.core.catalog.checks.cast_members import filled
-from epistrel.core.catalog.checks.character_documents import images_of
+from epistrel.core.catalog.checks.character_documents import images_of, reference_images_of
 from epistrel.core.catalog.checks.scenario import draft_of
 from epistrel.core.catalog.report import Entry, Outcome
 from epistrel.core.tables.media import MediaKind, MediaState, media_assets
+from epistrel.core.tables.ownership import EntityType
 
 MEMO = "media_assets"
 
-MISSING_RULE = "a media asset a scenario shows exists and is live"
-RETIRED_RULE = "a media asset a scenario shows is live, not retired"
+MISSING_RULE = "a media asset an entry shows exists and is live"
+RETIRED_RULE = "a media asset an entry shows is live, not retired"
 KIND_RULE = {
     MediaKind.IMAGE: "an image belongs here (the cover, the gallery, a character's images)",
     MediaKind.VIDEO: "a video belongs here (the scenario's videos)",
@@ -54,7 +58,15 @@ class MediaUse:
 
 
 async def media_uses(subject: Subject, ctx: ValidationContext) -> list[MediaUse]:
-    """Every place the scenario shows an asset (see the module docstring), in document order."""
+    """Every place the entry shows an asset (see the module docstring), in document order."""
+    if subject.entity_type is EntityType.CHARACTER:
+        return [
+            MediaUse(media_id, field, None, MediaKind.IMAGE)
+            for field, media_id in (
+                *images_of(subject.document),
+                *reference_images_of(subject.document),
+            )
+        ]
     media = draft_of(subject).public_card.media
     uses: list[MediaUse] = []
     if media.cover is not None:
@@ -133,6 +145,7 @@ class MediaCheck(Check):
     """See the module docstring."""
 
     name = "media"
+    kinds: ClassVar[frozenset[EntityType]] = frozenset({EntityType.SCENARIO, EntityType.CHARACTER})
 
     async def run(self, subject: Subject, ctx: ValidationContext) -> Findings:
         rows = await assets(subject, ctx)

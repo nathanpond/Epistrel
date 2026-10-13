@@ -11,7 +11,7 @@ draft: nothing is deduplicated.
 
 **Only definition fields are copied** (FR-CAT-8), into the paths #115 gives them:
 
-- the name: the request's ``name``, else the character's;
+- ``public_card.name``: the request's ``name``, else the character's;
 - ``definition.true_age``: the character's true age as of the story's time, which in M3 (no
   world clock) is the age it was given;
 - ``definition.background_flavor``: the character's free-text definition, which holds its
@@ -19,7 +19,8 @@ draft: nothing is deduplicated.
   (``personality`` and #115's others) are left empty for the author to fill before publishing.
   A definition longer than ``background_flavor`` holds (4,000 characters) is cut there, with the
   warning ``definition_truncated``;
-- ``definition.safe_fallback_text``, when the character has one;
+- ``definition.safe_fallback_text`` and ``definition.deflection_style`` (FR-GUARD-7), when the
+  character has them;
 - the images, by reference (no bytes are copied): the first is ``public_card.images.primary``,
   the rest the gallery. An asset that is no longer live is left out, with the warning
   ``media_retired`` naming it;
@@ -150,15 +151,19 @@ def draft_of(
     }
     if row.safe_fallback_text:
         definition["safe_fallback_text"] = row.safe_fallback_text
+    if row.deflection_style:
+        definition["deflection_style"] = row.deflection_style
+    public_card: dict[str, Any] = {"name": request.name or str(row.name)}
+    if images:
+        public_card["images"] = {
+            "primary": images[0],
+            "gallery": list(images[1 : 1 + GALLERY_MAX]),
+        }
     document: dict[str, Any] = {
-        "name": request.name or str(row.name),
+        "public_card": public_card,
         "definition": definition,
         "metadata": {"content_rating_id": rating_id},
     }
-    if images:
-        document["public_card"] = {
-            "images": {"primary": images[0], "gallery": list(images[1 : 1 + GALLERY_MAX])}
-        }
     return document, len(text) > BACKGROUND_FLAVOR_MAX
 
 

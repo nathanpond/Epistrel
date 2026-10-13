@@ -25,6 +25,7 @@ from epistrel.core.catalog.scenario_models import ScenarioDraft, ScenarioModel
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from tests.auth_support import bearer
+from tests.character_support import complete as complete_character
 
 BASE = "/catalog/scenarios"
 PRINCIPAL = "p-scenarios"
@@ -389,8 +390,9 @@ async def published_character(
     client: httpx.AsyncClient, name: str, *, versions: int = 1, **fields: Any
 ) -> str:
     """A catalog character created and published ``versions`` times (each an unchanged draft
-    publishing as the next version): its id."""
-    body = {"name": name, "public_description": f"{name}, a fixture.", **fields}
+    publishing as the next version): its id. Its body is a complete character (#115:
+    ``tests.character_support.complete``) with ``fields`` as further keys."""
+    body = complete_character(name, public_description=f"{name}, a fixture.", **fields)
     created = await client.post("/catalog/characters", json=body, headers=WRITE)
     assert created.status_code == 201, created.text
     character_id: str = created.json()["id"]

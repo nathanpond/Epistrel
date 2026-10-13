@@ -611,14 +611,14 @@ MALFORMED: list[tuple[str, str, str, dict[str, Any], str]] = [
         "catalog draft revision past int32",
         "PATCH",
         "/catalog/characters/{character}",
-        {"json": {"draft_revision": 2**31, "name": "Overflow"}},
+        {"json": {"draft_revision": 2**31, "public_card": {"name": "Overflow"}}},
         "body.draft_revision",
     ),
     (
         "catalog unknown draft field",
         "POST",
         "/catalog/characters",
-        {"json": {"name": "Mara", "secret_past": "x"}},
+        {"json": {"public_card": {"name": "Mara"}, "secret_past": "x"}},
         "body.secret_past",
     ),
     (

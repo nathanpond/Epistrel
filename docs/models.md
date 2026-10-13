@@ -39,6 +39,7 @@ Writes the reply of a Lite turn from the story's prompt sections.
 | `custom_instructions` | `custom_instructions` |
 | `character_definitions.name` | `character_definition` |
 | `character_definitions.definition` | `character_definition` |
+| `character_definitions.deflection_style` | `character_definition` |
 | `pinned_memories` | `pinned_memory` |
 | `summary_segments` | `rolling_summary` |
 | `recent_messages.name` | `recent_message` |

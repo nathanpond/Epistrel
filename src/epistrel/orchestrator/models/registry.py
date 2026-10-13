@@ -81,8 +81,12 @@ C = ContentCategory
 
 
 class CharacterDefinition(InputSchema):
+    """A character's author notes: its name, its definition and, when it has one, how it
+    refuses or changes the subject (``deflection_style``, FR-GUARD-7; #115)."""
+
     name: Annotated[str, C.CHARACTER_DEFINITION]
     definition: Annotated[str, C.CHARACTER_DEFINITION]
+    deflection_style: Annotated[str | None, C.CHARACTER_DEFINITION] = None
 
 
 class TranscriptLine(InputSchema):

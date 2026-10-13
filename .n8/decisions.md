@@ -4218,3 +4218,146 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - **Mutation re-checks:** 8 mutations, all killed; each file's SHA-1 matched after restore. The two the verifier named are among them: gap 3's `if True` and gap 4's `"config_revision": 0`.
   **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
   **Issue:** #113
+- **Decision (drift):** #115's parts follow docs/04 §15 and the one-file-per-test-ID rule.
+  - `test_c_15__character_content`, `part("M3", "FR-CAT-2,4")`, is in `tests/conformance/test_c_15.py`. The plan's `FR-CAT-12; FR-RATE-3` are not in the marker (§15 maps them to R-07, S-MINORS, S-AGE-ASSIGNMENT and I-22, not C-15), and the true-age and rating refusals are asserted in its body.
+  - `test_c_23__optional_images`, `part("M3", "FR-CAT-4")`, is in `tests/integration/test_media_delivery.py`, #107's hand-off.
+  - `test_r_05__deflection_style`, `part("M3", "FR-GUARD-6,7")`, is in a new `tests/redteam/test_r_05.py`, marked `integration` and `redteam`.
+  - `test_s_selfpolice__deflection`, `part("M3", "FR-GUARD-7")`, is in `tests/scenario/test_s_selfpolice.py`.
+  - The detailed tests are unmarked, in `tests/integration/test_character_content.py`, the must-have's file; their docstrings name no FR id.
+  - The parts take lexicon-sensitive values from the new `tests/character_support.py`. A reference image's `perceivable` trips M5's `perceiv*` even as a constant's name, so the parts say `SEEN` and `HIDDEN`.
+  - check-parts counts 197 parts; check-lexicon reports 0 violations; check-traceability passes.
+  **Why:** The drift notes. Cost if wrong: renames only.
+  **Issue:** #115, #107
+- **Decision (drift):** Where the code lives.
+  - The document and its projections are a new `core/catalog/models.py`, the must-have's artifact. `characters.py` re-exports every name it had and keeps the service, the projection queries and the save path.
+  - The publish rules are a new check module, `core/catalog/checks/character_content.py` (`kinds = {CHARACTER}`), placed in `validation.CHECKS` after `required`. This is #111's hand-off; the plan's `core/catalog/validate.py` is not created.
+  - `required.py` is scenario-only again. The character's name rule moved into the new check, at `public_card.name`. The rating lookup both use is `required.rating_unusable`.
+  - The document check also runs a character's save rules (`models.character_rules`), as it runs a scenario's.
+  **Why:** #111's hand-off and the plan's artifact list. Cost if wrong: modules move.
+  **Issue:** #115, #111
+- **Decision:** The draft's shape follows AC1.
+  - `name` and `public_description` move under `public_card`, beside #114's `images`, as #114's Ad-hoc entry expected. A request that names them at the top level is now 422 (`extra_forbidden`).
+  - The groups default to objects. A stored draft always holds `public_card.images.gallery`, `metadata.aliases` and `metadata.labels`, each possibly empty, and `definition`.
+  - `PATCH` keeps typed merge-patch models, one per group, as #103 and #114 started: every field optional, `null` removes it, objects merge, lists replace. Each disposition axis has its own patch model, because its setting's enum differs. #108's free-form groups for scenarios were the alternative; typed models keep the published PATCH schema documented field by field.
+  **Why:** AC1 names the shape. Cost if wrong: one more migration of stored drafts.
+  **Issue:** #115, #114
+- **Decision:** "A draft may be saved with name only; everything else is required at publish" (the pass-1 Discretion) is read as follows.
+  - **Required at publish:** every scalar AC1 does not mark optional, and each of the five disposition axes. A string must not be blank. These are `models.PUBLISH_REQUIRED`: the name, the public description, the appearance, the personality, the five axes, the values and motivations, the speech style and the vocabulary. Each missing one is `field_required` at its path.
+  - **With a visual identity,** also its preferred image model, base appearance prompt, negative prompt and seed (`IDENTITY_REQUIRED`).
+  - **Codes of their own:** `true_age_missing`, `content_rating_missing`, or `rating_retired` for an unknown or retired rating, `reference_image_missing_audience`, and `primary_image_required`.
+  - **Not required:** lists, which may be empty (likes and dislikes, mannerisms, sample dialogue, aliases, labels, the gallery, reference images), containers, the images, background flavor, the deflection style, the safe fallback line, the adapter parameters, the restricted-details prompt, and the visual identity itself. AC2 and C-23 make the images optional, so a container of optional items cannot be required.
+  - A publish reports every error at once, and C-15's complement shows the complete document publishing.
+  - A name alone stays a valid draft, and so does an empty one, as #103 built.
+  **Why:** The Discretion line, made testable. The test asserts the list literally rather than reading `PUBLISH_REQUIRED`. Cost if wrong: an entry added to or removed from the table.
+  **Issue:** #115
+- **Decision:** A reference image's audience: the published schema requires it, a non-null `perceivable`/`restricted`, and a save refuses it missing or `null`: 422 `validation_error` (type `missing`) at `body.visual_identity.reference_images[i].audience`. The Python model still reads a stored document without it, so that a publish of a document stored some other way can name it with the planner's code, `reference_image_missing_audience`, instead of the document check's generic `missing`. This is done by `ReferenceImage`'s `json_schema_extra`, as #105 documents `depicted_subjects`.
+  - Add-ons in `adapter_params` are not interpreted in M3: AC1 keeps the field opaque. FR-CAT-4's audience rule for add-ons is left to #259, which plans `adapter_params.addons[*].audience` and excludes an add-on whose audience is missing.
+  **Why:** The must-have truth ("cannot be saved") and the Discretion's code both hold. Cost if wrong: a stored add-on without an audience is accepted until M8 interprets it; #259 already fails closed on it.
+  **Issue:** #115, #259
+- **Decision:** Limits the plan does not give.
+  - `speech_style` and `vocabulary`: at most 2,000 characters each.
+  - Likes and dislikes: at most 30 items each, of at most 200 characters.
+  - Mannerisms and sample dialogue: at most 20 items each, of at most 500 and 1,000 characters. List items are trimmed and never blank.
+  - `deflection_style`: at most 2,000 characters, for a catalog definition and a story character alike (`DEFLECTION_STYLE_MAX` in `core/tables/characters.py`).
+  - `preferred_image_model`: at most 200 characters, #105's limit for a model name.
+  - Labels and aliases reuse the scenario's `Label` and `Alias` types: labels are 1 to 40 of `A-Z a-z 0-9 _ -` and spaces, stored lower-cased and distinct; aliases are trimmed. Beyond the plan, two aliases may not be equal, ignoring case (`alias_duplicate`), as well as an alias and the name (`alias_is_name`).
+  - Reference images: at most 10, distinct. `adapter_params` holds finite numbers only (#317's `require_finite`), at most 8 KiB as JSON.
+  **Why:** Each field needs a bound before it reaches storage. The plan's limits are kept where given. Cost if wrong: a bound widens later, which is additive.
+  **Issue:** #115
+- **Decision:** The projections.
+  - **`card.images`** becomes `{primary, gallery}`, each image `{media_id, alt_text}`. It was #114's flat list, primary first, which cannot say which image is the primary when there is none: #108 kept a scenario's cover apart for the same reason. #114's Ad-hoc entry left the card's images to #115.
+  - **`full`** shows each image and reference image with its live media row inlined: alt text, caption, MIME type, width, height and generation metadata, read from the row, not snapshotted. It adds `aliases` and the `visual_identity`. Its `definition` shows every field, `null` when unset.
+  - **`labels`** on the card now come from `metadata.labels`.
+  - A listing's items follow the card.
+  - Round-trip equality is structural JSON equality: jsonb normalises key order and number form (`1e300` comes back written out). C-15 also compares canonical JSON text.
+  **Why:** AC3 and the pass-1 Discretion. Cost if wrong: a reshaped card before a consumer depends on it.
+  **Issue:** #115, #114, #110
+- **Decision (drift):** `require_primary_image` is a prospective leaf of the deployment settings document, in `CatalogValidationSettings` beside #111's `validation_model_calls`, not the `deployment_state` column the Discretion names.
+  - It is in `SettingsPatch` as a `StrictBool`, so a JSON string is 422, as #112 did for its own settings (#322).
+  - It is pinned in U-18 and described in `PUT /admin/settings`, the README and docs/02.
+  - A publish reads it through its validation context's settings.
+  **Why:** The drift note: M2 keeps new deployment settings in the settings document. Cost if wrong: one migration moves it to a column.
+  **Issue:** #115, #322
+- **Decision:** Migration `0032_character_content` rewrites every stored character document to the new shape: drafts and published versions alike.
+  - It moves a top-level `name` and `public_description` under `public_card`. Versions are rewritten under the transaction-local `epistrel.erasure` setting, the versions trigger's one exemption, which it turns off again. The generated `search` column follows.
+  - The downgrade moves both keys back.
+  - `test_character_documents_move_under_the_public_card` covers both directions, an untouched document and the search.
+  - `core/erasure/index.py` now reads the name at `public_card.name` (`NAME_PATH`). The search functions of migration 0027 already read both places.
+  **Why:** One shape everywhere, rather than readers that accept two shapes for data only development databases hold (M3 is unreleased). The rewrite changes how a version is stored, not what was published. Cost if wrong: a version written before 0032 in some database keeps the moved keys; the readers would need their old fallback back.
+  **Issue:** #115, #105, #110
+- **Decision:** `catalog.character_versions.content_rating_version_id` stays nullable, though #103's entry expected #115 to add the NOT NULL.
+  **Why:** Publish validation now requires a rating, and every new version records its rating's version. A constraint would need a backfill that invents a rating for any version published before #115. Cost if wrong: one migration adds it later.
+  **Issue:** #115, #103
+- **Decision:** #111's media check now covers catalog characters: their images and reference images. It reports `media_missing`, `media_retired`, `media_kind_mismatch` (each must be an image) and `media_not_allowed`, each at its field and naming the asset. A save checks only what it adds: liveness of new images and reference images, at `body.public_card.images…` and `body.visual_identity.reference_images[i].media_id`. Kind is checked at publish, as for a scenario's media.
+  **Why:** The Discretion: "images and reference images must be `kind = image`", and media existence is checked at save and again at publish. The type and size rules come with the shared check, for consistency with scenarios. The Discretion's "existence and liveness only" excludes the owner (FR-AUTH-8), not these. Cost if wrong: one entry type removed from the check.
+  **Issue:** #115, #111
+- **Decision (Rule 2):** `OPERATION_ERRORS` now documents `rating_retired` and `media_retired` on `create_character_draft` and `save_character_draft`, and `rating_retired` on `publish_character`, so `docs/openapi.json` lists what those routes answer.
+  - #114 had added the save-time checks without documenting them, and #115 extends them to reference images.
+  - The publish holds the rating `FOR SHARE` while it records the version, so a rating retired between the check and that insert answers 422 `rating_retired`, as `publish_scenario` documents.
+  **Why:** A route documents every error it answers. Cost if wrong: none.
+  **Issue:** #115, #114
+- **Decision (drift):** The deflection style (FR-GUARD-7) reaches the Lite prompt through the story's `characters` row, as the drift note says.
+  - **Storage:** a new nullable column, `characters.deflection_style`. `CharacterSpec` (`POST /stories`) and `AdHocCharacter` (`POST /stories/{id}/characters`) gain an optional `deflection_style` of 1 to 2,000 characters.
+  - **Rendering:** `core/turns.py` reads the column. The orchestrator's `CharacterDefinition` gains `deflection_style` (category `character_definition`; `docs/models.md` regenerated), and `lite_generation.j2` renders it inside the character's author notes as "When <name> refuses or changes the subject: <style>". Nothing changes when a character has none.
+  - **Promotion** copies the style into the draft's `definition.deflection_style`, which #114 left for when story rows held one.
+  - **Not read elsewhere:** the read set's `definitions` member is unchanged, since a style never changes after its row is inserted and a new row already moves the member. Story reads do not show the style, as they do not show `safe_fallback_text`.
+  **Why:** The planner's line: the Lite prompt's character notes carry the style, so a guardrail regeneration renders in character. Story characters are the only path to a prompt before #119, so the parts go through the real API. Cost if wrong: one optional field and one column.
+  **Issue:** #115, #68, #114, #119
+- **Decision (Rule 2):** The input gate checks a story character's deflection style like its definition: locator `characters[i].deflection_style` at story creation, `deflection_style` for an addition. A violation is 422 `guardrail_violation` and creates nothing, which `test_story_characters_store_their_deflection_style` covers.
+  **Why:** The style is consumer text that reaches every Lite prompt, and FR-GUARD-10 checks such text before anything is recorded. Cost if wrong: none.
+  **Issue:** #115
+- **Decision:** Existing tests changed because the story changes the shape they send or read. No assertion was loosened.
+  - **The fixtures:** `catalog_support.character()` and `scenario_support.published_character()` now build a complete, publishable character (`character_support.complete`), and `catalog_support.save` puts `name`/`public_description` under `public_card`.
+  - **Request bodies moved to `public_card`:** C-03's `CHARACTER`, `CHARACTER_PATCH` and `GHOST`; C-01's two malformed character cases; the ownership fixture's `PATCH`; and the bodies in `test_catalog_search`, I-20, I-21, U-26, `test_scenario_validation`, `validation_support` and `test_story_characters`.
+  - **Planted documents moved to the new shape:** in `test_media_assets` and I-21.
+  - **`test_catalog_characters`:** the exact definition dicts compare against the create answer with the edited field. The nameless-draft refusal is a complete draft without its name, now at `public_card.name`. The cap test lowers `DRAFT_MAX_BYTES` to 1,200 instead of 600, because the complete fixture is about 840 bytes. A card's images are the new object. The card shows the rating the complete body names.
+  - **Promotion tests (`test_s_promote`, `test_story_characters`):** the promoted definition lists every key, and the promoted draft's `public_card` holds the name.
+  - **`test_catalog_search`:** the Everyone-rating filter now finds the other character, which the complete body rates Everyone; it is stricter, an exact list.
+  - **Unit tests:** `test_catalog` (the stored form of an empty draft), and `test_catalog_validation` (the check list gains `character_content`, and the character runner test asserts #115's rules).
+  - **U-18** pins the new setting as prospective.
+  **Why:** AC1 moves the card's fields and AC2 makes a publish need a complete character. These are the smallest changes that keep each test's intent. Cost if wrong: none.
+  **Issue:** #115
+- **Decision:** I mutation-checked the story. A script applied each mutation, ran the tests named for it and restored the sources; the SHA-1 of every touched file matched afterwards. All 24 mutations fail a test:
+  - **Publish rules:** the true age not required; a missing audience passing the publish; `require_primary_image` ignored; a disposition axis not required; blank text counting as present; the visual identity's fields not required; a retired rating passing; a reference image never checked at publish; the media check ignoring characters.
+  - **Save rules:** a save keeping a reference image without its audience; an alias equal to the name; reference images not checked at save.
+  - **Projections:** `full` dropping the generation metadata; the card showing the caption as alt text; the card's description leaking the personality; `full` without a reference image's asset; a version read showing the draft's visual identity.
+  - **Story characters:** a turn not reading the deflection style; the prompt not rendering it; the creation gate skipping it; the style not stored at creation, or on an addition; a promotion dropping it.
+  - **Migration:** versions left unmoved.
+  Two gaps showed up while writing the mutations, and the tests were tightened before running them. `test_a_draft_needs_only_a_name` read its expected paths from `PUBLISH_REQUIRED`, so it could not catch a change to that table; it now lists them literally. `test_images_are_checked_at_save_and_at_publish` did not cover a reference image at publish; it now names a video as one.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #115
+- **Decision:** #115's gate, per the M3 per-story rule (the full suite is the orchestrator's, at the end of group B).
+  - **Routes, Engine methods and OpenAPI:** `tests/conformance` (C-01's generated run included), the route guard, the response bases and `test_openapi_calls_the_message_finished_never_verified`: 168 passed in 610 s.
+  - **Migrations and tables:** `test_migrations` and `test_drift`, 9 passed; `test_migrations` again after the migration was rewritten with literal SQL, 5 passed.
+  - **Prompt, turn, story, media and settings code, under CI's marker expression:** 289 passed. The modules were the Lite prompt, the registry, the model guide, the Lite cast, U-18, U-13, the listing, the catalog and validation units, the media units, observability, the trust boundary, the event registry and the ownership rules; respond, the input gate, the minors policy, I-18, I-04, I-10, S-DELETE, media assets, I-17, config changes, I-08, the event store schema, story texts and I-22; and `tests/property`, `tests/determinism`, `tests/scenario` and `tests/redteam`.
+  - **Media delivery and the rest:** C-23 and the detailed tests, the new detailed module, I-21 and ownership, 146 passed. Then the catalog characters, scenario catalog and validation, search, I-20, U-26, personas, story characters, profiles and two-stage, effective config, feedback, config revalidation, idempotency, jobs, model config, operations, ratings, drift, P-03's quick subset and the unit modules that import the changed code: 347 passed, 1 deselected (`perf_long`).
+  - **Static checks:** ruff check and format, mypy (504 files), lint-imports (3 kept), check-assignment (438/438), check-parts (197 parts), check-lexicon (0 violations), check-traceability (171 code parts), check-deps (63 packages, 0 denied), `openapi --check` (regenerated) and `model_guide --check` (regenerated) all pass. No dependency changed, so check-licenses was not run.
+  **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #115
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #115 gave a catalog character its full document and changed shapes that later stories build on.
+  - **Request bodies.** `POST`/`PATCH /catalog/characters` take `public_card {name, public_description, images {primary, gallery}}`; a top-level `name` or `public_description` is now 422. The draft has typed groups: `definition` (true age, appearance, personality, likes and dislikes, five disposition axes each `{setting, nuance}`, values and motivations, interaction style, background flavor, `deflection_style`, `safe_fallback_text`), `metadata {aliases, labels, content_rating_id}` and an optional `visual_identity` whose reference images require an `audience`. Migration 0032 moved every stored draft and version to this shape.
+  - **Publishing needs a complete character:** every scalar of the definition but the optional ones, all five axes, a true age, an assignable rating, an audience on each reference image, live images, and a primary image when `require_primary_image` is on (a new prospective deployment setting, default off). A name alone is still a valid draft, so a promoted draft (#114) must be completed before it publishes.
+  - **Projections.** `card.images` is now `{primary, gallery}` of `{media_id, alt_text}`, where it was a flat list, and the card's `labels` come from `metadata.labels`. `full` inlines each image's and reference image's media row and adds `aliases` and `visual_identity`.
+  - **Story characters.** `characters.deflection_style` is a new column. `CharacterSpec` (`POST /stories`) and `AdHocCharacter` take an optional `deflection_style`, which the input gate checks. `core/turns.py` reads it, and the Lite template renders it in the character's author notes ("When <name> refuses or changes the subject: <style>"; the registry's `CharacterDefinition.deflection_style`). A promotion copies it into the draft.
+  **Why:** #115's AC1–AC5 and its pass-1 Discretion. The drift notes placed the setting and the deflection path. The decision entries above give the details.
+  **Affects:**
+  - **M3 #116 (companions).** A character publish now needs a complete character, so its companion tests and fixtures must publish complete bodies (`tests/character_support.complete`). The companion's own version is a scenario version and unaffected.
+  - **M3 #119 (genesis).** Read a catalog character's snapshot at #115's paths (`public_card.name`, `definition.*`, `metadata.*`). Copy `definition.deflection_style` onto `characters.deflection_style`, as `safe_fallback_text` is copied. Gate the style with the chosen characters' definitions (FR-GUARD-10), as story creation now gates a cast's style.
+  - **M3 #122 (Lite materialisation).** The planner renders `deflection_style` into the prose author notes. The template already renders the story column inside the notes, so #122 should leave it out of the prose, or genesis should leave the column empty, never both, or the line appears twice.
+  - **M3 #123 and #124 (index and erasure).**
+    - Index and erase the new text fields: every definition prose field and list; the visual identity's prompts (`base_appearance_prompt`, `negative_prompt`, `restricted_details_prompt`) and its opaque `adapter_params`; and the story column `characters.deflection_style`.
+    - A catalog character's name is now at `public_card.name` (`core/erasure/index.py`'s `NAME_PATH`).
+  - **M3 #128 (API surface).** The character routes' shapes and errors changed (`docs/openapi.json` regenerated).
+  - **M8 #259 and #260.** The visual identity's shape is the one #259 reads: `preferred_image_model`, `base_appearance_prompt`, `negative_prompt`, `seed` (0 to 2^32 - 1), `reference_images [{media_id, audience}]`, opaque `adapter_params` (at most 8 KiB) and `restricted_details_prompt`.
+    - FR-CAT-4's audience rule for add-ons is not enforced at save in M3, because `adapter_params` is opaque. #259 should add the refusal when it gives `adapter_params.addons` a shape. It already excludes an add-on without an audience.
+  - **The Console (nathanpond/Epistrel-Console).** The character editor sends `public_card {name, public_description, images}` and can now edit the definition's typed fields, the metadata and the visual identity; it reads the card's images as `{primary, gallery}`. The settings screen gains `require_primary_image`, and the story-creation and add-character forms gain `deflection_style`.
+  - **Next step:** #116, #119, #122, #123, #124 and #128 are later M3 stories in this run. Their drift check should apply this, or `/n8-replan M3` should run before them. `/n8-replan M8` should look at #259 for the add-on rule.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after #115's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111, #113 and #114 did. Cost if wrong: one heading.
+  **Issue:** #115

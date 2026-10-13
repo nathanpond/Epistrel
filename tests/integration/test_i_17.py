@@ -8,8 +8,8 @@ Every I-17 (M3) part lives in this file (traceability counts a test ID per miles
   provenance, the fixture creates a blank story and records the provenance on its character row.
 - #105's part, ``test_i_17__media_sweep``: the periodic media sweep purges an asset only when
   nothing references it, skips candidates, and deletes bytes only when no asset row of any state
-  has them (FR-MEDIA-2). It runs on a scratch database with its own media root, and until #115
-  gives catalog entries image fields the reference is planted where #115 will put it. #119 adds
+  has them (FR-MEDIA-2). It runs on a scratch database with its own media root, and the
+  reference is planted in #115's shape (``public_card.images``). #119 adds
   the story-snapshot half (an asset a story references survives its catalog entry's deletion;
   #316).
 """

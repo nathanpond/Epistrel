@@ -29,19 +29,25 @@ created under the deployment's default profile, read with the deployment row hel
 so the default cannot change underneath the insert, and a fork keeps its source's.
 
 **Ad-hoc characters** (FR-CAT-7, FR-CAT-12; #114): ``add_story_character`` adds a character to a
-running story, from #50's free-text shape (name, definition, a required true age, an optional
-safe fallback line) plus optional ``images`` (media asset ids, by reference), never as a player.
-It is story-scoped: a ``characters`` row with no ``source_catalog_id``, never a catalog entry
-(it becomes one only by promotion, ``core.catalog.promote``). The order of checks: the story
-(404) → the cast cap (``CAST_MAX``), a name the story already has (ignoring case) and the images
-(each a live image asset) → 409 ``story_archived`` → the expected revision → 423
-``story_busy`` while a turn is in flight → the input gate over the definition, with the new
-character's age in the cast → one ``control`` operation that bumps the revision, as #60's
-story-text edits do (the cast is a member of the Lite read set, so a turn that began before it
-regenerates). The operation records ``character_defined`` (id, name, ``is_player``; never the
-age) and inserts the row at the next ordinal, re-checking the cap, the name, the images and
-in-flight turns under the story lock. The operation has no position, like the edits: a
+running story, from #50's free-text shape (name, definition, a required true age, an optional safe
+fallback line and deflection style) plus optional ``images`` (media asset ids, by reference), never
+as a player. It is story-scoped: a ``characters`` row with no ``source_catalog_id``, never a
+catalog entry (it becomes one only by promotion, ``core.catalog.promote``). The order of checks:
+the story (404) → the cast cap (``CAST_MAX``), a name the story already has (ignoring case) and the
+images (each a live image asset) → 409 ``story_archived`` → the expected revision → 423
+``story_busy`` while a turn is in flight → the input gate over the definition (and the deflection
+style), with the new character's age in the cast → one ``control`` operation that bumps the
+revision, as #60's story-text edits do (the cast is a member of the Lite read set, so a turn that
+began before it regenerates). The operation records ``character_defined`` (id, name, ``is_player``;
+never the age) and inserts the row at the next ordinal, re-checking the cap, the name, the images
+and in-flight turns under the story lock. The operation has no position, like the edits: a
 truncation keeps the character, and every fork copies it.
+
+**Deflection styles** (FR-GUARD-7; #115): a character of a new story's cast, and one added later,
+may carry a ``deflection_style``: how it refuses or changes the subject, in its own voice. It is
+stored on the ``characters`` row, checked by the input gate like the definition (it reaches every
+Lite prompt), and rendered with the character's author notes, so a reply regenerated after a
+guardrail violation stays in character.
 """
 
 from __future__ import annotations
@@ -124,7 +130,7 @@ from epistrel.core.tables import (
     turn_queue,
     worker_heartbeats,
 )
-from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
+from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.core.tables.media import MediaKind
@@ -215,6 +221,14 @@ class CharacterSpec(BaseModel):
     is_player: StrictBool = False
     safe_fallback_text: str | None = Field(default=None, max_length=SAFE_FALLBACK_MAX)
     """What the character says when every regenerated reply fails its guardrails (#68)."""
+    deflection_style: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=DEFLECTION_STYLE_MAX,
+        description="How the character refuses or changes the subject, in its own voice "
+        "(FR-GUARD-7): rendered with its author notes, so a reply regenerated after a "
+        "guardrail violation stays in character. Checked by the input gate.",
+    )
 
 
 IMAGES_MAX = 20
@@ -225,9 +239,9 @@ gallery hold them all, #115's limits)."""
 class AdHocCharacter(BaseModel):
     """``POST /stories/{id}/characters``: a character the author adds to a running story
     (FR-CAT-7): #50's free-text shape — its name, its definition, its required true age
-    (FR-CAT-12) and optionally its safe fallback line (#68) — and optionally ``images``, media
-    asset ids it shows (each a live image), by reference. It is never a player character and
-    never a catalog entry."""
+    (FR-CAT-12) and optionally its safe fallback line (#68) and deflection style (FR-GUARD-7) —
+    and optionally ``images``, media asset ids it shows (each a live image), by reference. It is
+    never a player character and never a catalog entry."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -248,6 +262,13 @@ class AdHocCharacter(BaseModel):
     """Free text the Lite pipeline renders verbatim."""
     true_age: StrictInt = Field(ge=TRUE_AGE_MIN, le=TRUE_AGE_MAX)
     safe_fallback_text: str | None = Field(default=None, max_length=SAFE_FALLBACK_MAX)
+    deflection_style: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=DEFLECTION_STYLE_MAX,
+        description="How the character refuses or changes the subject, in its own voice "
+        "(FR-GUARD-7). Checked by the input gate.",
+    )
     images: list[Ulid] = Field(
         default_factory=list,
         max_length=IMAGES_MAX,
@@ -486,6 +507,7 @@ async def create_story_from(
                         "age_recorded_at": func.transaction_timestamp(),
                         "is_player": character.is_player,
                         "safe_fallback_text": character.safe_fallback_text,
+                        "deflection_style": character.deflection_style,
                     }
                     for ordinal, (character_id, character) in enumerate(cast)
                 ]
@@ -723,7 +745,10 @@ async def add_story_character(
     await check_expected_revision(db, story_id, expected_revision)
     async with db.connect() as conn:
         await _refuse_busy(conn, story_id, turns_only=True)
-    await gate([("definition", request.definition)])
+    texts = [("definition", request.definition)]
+    if request.deflection_style is not None:
+        texts.append(("deflection_style", request.deflection_style))
+    await gate(texts)
     character_id = new_ulid()
     op = Operation(
         db,
@@ -756,6 +781,7 @@ async def add_story_character(
                 age_recorded_at=func.transaction_timestamp(),
                 is_player=False,
                 safe_fallback_text=request.safe_fallback_text,
+                deflection_style=request.deflection_style,
                 images=list(request.images),
             )
         )

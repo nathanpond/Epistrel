@@ -79,7 +79,9 @@ async def create_story(client: httpx.AsyncClient, principal: str, owner: str | N
 
 
 async def create_character(client: httpx.AsyncClient, principal: str, owner: str | None) -> Entity:
-    body = catalog_character("Mara Venn", **({"owner": owner} if owner is not None else {}))
+    body = catalog_character("Mara Venn")
+    if owner is not None:
+        body["owner"] = owner
     response = await client.post("/catalog/characters", json=body, headers=headers(principal))
     created = await ok(response, 201)
     return Entity(created["id"])
@@ -458,7 +460,9 @@ CALLS: dict[tuple[str, str], Call] = {
     ("DELETE", f"{S}{FEEDBACK}"): Call(204, prepare=_rated),
     ("GET", f"{S}{FEEDBACK}"): Call(200, prepare=_rated_by_all, own=("principal",)),
     # -- catalog characters: writes
-    ("PATCH", C): Call(200, {"draft_revision": 1, "public_description": "Keeps the logbook."}),
+    ("PATCH", C): Call(
+        200, {"draft_revision": 1, "public_card": {"public_description": "Keeps the logbook."}}
+    ),
     ("POST", f"{C}/publish"): Call(201, {"draft_revision": 1}),
     ("POST", f"{C}/archive"): Call(200),
     ("POST", f"{C}/unarchive"): Call(200, prepare=_archived),

@@ -67,6 +67,7 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "default_engine_profile_id": ConfigClass.prospective,
         "listing_status_values": ConfigClass.prospective,
         "validation_model_calls": ConfigClass.prospective,
+        "require_primary_image": ConfigClass.prospective,
         "feedback_tags": ConfigClass.prospective,
         "feedback_text_max_chars": ConfigClass.prospective,
         "feedback_retention": ConfigClass.prospective,

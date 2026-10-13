@@ -152,6 +152,7 @@ from epistrel.orchestrator.policies.schemas import PolicyFields, PolicyReplaceme
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from epistrel.testing.normalize import Normalizer
 from tests.auth_support import auth_settings, bearer
+from tests.character_support import complete as complete_character
 from tests.conformance.conftest import migrated_database
 from tests.media_support import files, metadata, png
 from tests.model_support import config_key
@@ -326,13 +327,13 @@ GLOBAL_POLICY = {
     "message": "Never say zzqx.",
 }
 RATING = {"name": "Parity rating", "description": "Made by C-03.", "inherits_from": [EVERYONE_ID]}
-CHARACTER = {
-    "name": "Mara Venn",
-    "public_description": "Keeps the light on Gull Rock.",
-    "definition": {"personality": "Patient, private and slow to trust."},
+CHARACTER = complete_character("Mara Venn", public_description="Keeps the light on Gull Rock.")
+"""A complete character (#115): it publishes as it is."""
+CHARACTER_PATCH = {
+    "draft_revision": 1,
+    "public_card": {"public_description": "Keeps the Gull Rock light."},
 }
-CHARACTER_PATCH = {"draft_revision": 1, "public_description": "Keeps the Gull Rock light."}
-GHOST = {"name": "Ghost", "public_description": "Never published."}
+GHOST = {"public_card": {"name": "Ghost", "public_description": "Never published."}}
 
 
 def _scenario_body(ids: dict[str, Any]) -> dict[str, Any]:

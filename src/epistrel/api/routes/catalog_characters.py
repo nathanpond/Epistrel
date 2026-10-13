@@ -1,5 +1,5 @@
 """``/catalog/characters``: catalog characters, as drafts and immutable published versions
-(FR-CAT-1,3,9, FR-SCN-10, FR-API-6; #103).
+(FR-CAT-1..4,9, FR-SCN-10, FR-API-6; #103, #115).
 
 - ``POST /catalog/characters``: a new entry whose draft holds the request's fields (draft
   revision 1, status ``draft``, the deployment's first listing status, ``private`` by
@@ -225,10 +225,16 @@ async def search_catalog_character(
     operation_id="create_character_draft",
     summary="Create a catalog character (a draft)",
     description=(
-        "Create a catalog character whose draft holds the given fields: draft revision 1, "
-        "status `draft`, and the first of the deployment's `listing_status_values` (`private` "
-        "by default) as its listing status. `owner` names its owner principal (default: the "
-        "requesting principal; never `system`). Answers 201 with the draft in `full`. A draft "
+        "Create a catalog character whose draft holds the given fields (FR-CAT-2,4): its "
+        "`public_card` (name, public description, images), its private `definition`, its "
+        "`metadata` (aliases, labels, content rating) and optionally its `visual_identity`. Any "
+        "field may be missing from a draft; a publish needs the rest. Draft revision 1, status "
+        "`draft`, and the first of the deployment's `listing_status_values` (`private` by default) "
+        "as its listing status. `owner` names its owner principal (default: the requesting "
+        "principal; never `system`). A reference image without an `audience` (`perceivable` or "
+        "`restricted`; there is no default) and an alias that is the name or another alias are 422 "
+        "`validation_error`; a rating that cannot be assigned is 422 `rating_retired`, and an "
+        "image that is not live 422 `media_retired`. Answers 201 with the draft in `full`. A draft "
         "larger than 256 KiB is 413 `draft_too_large`."
     ),
 )
@@ -246,11 +252,12 @@ async def create_character_draft(
     summary="Save the draft (a JSON merge patch)",
     description=(
         "Change the draft with a JSON merge patch (RFC 7386): a key sets that field, `null` "
-        "removes it, and `definition` merges the same way; unknown keys are 422. "
-        "`draft_revision` is the revision the patch is based on: when another save or publish "
-        "came first it is 409 `draft_stale` (`details.current_draft_revision`) and nothing "
-        "changes (FR-CAT-3). Every save moves the draft to the next revision. An archived entry "
-        "is 422 `entry_archived`."
+        "removes it, every group merges the same way and a list replaces the stored one; unknown "
+        "keys are 422, and so is a draft the patch would leave invalid (at `body.<path>`), with "
+        "the create's checks of what it adds. `draft_revision` is the revision the patch is based "
+        "on: when another save or publish came first it is 409 `draft_stale` "
+        "(`details.current_draft_revision`) and nothing changes (FR-CAT-3). Every save moves the "
+        "draft to the next revision. An archived entry is 422 `entry_archived`."
     ),
 )
 async def save_character_draft(
@@ -271,11 +278,18 @@ async def save_character_draft(
     operation_id="publish_character",
     summary="Publish the draft as a new version",
     description=(
-        "Publish the draft as the next immutable version (FR-CAT-3): `draft_revision` is "
-        "compared like a save's (409 `draft_stale`). The draft must be publishable (422 "
-        "`publish_invalid` with `details.report`: it needs a `name`). The draft stays equal to "
-        "what was published, at the next revision. Publishing an unchanged draft still makes a "
-        "new version."
+        "Publish the draft as the next immutable version (FR-CAT-3): `draft_revision` is compared "
+        "like a save's (409 `draft_stale`). The draft must be publishable (422 `publish_invalid` "
+        "with `details.report`, every error at once): every field of the public card and the "
+        "definition but the optional ones (images, background flavor, deflection style, safe "
+        "fallback line; lists may be empty), each disposition axis, a true age "
+        "(`true_age_missing`), a content rating that can be assigned (`content_rating_missing`, "
+        "`rating_retired`), an `audience` on every reference image "
+        "(`reference_image_missing_audience`), live images (`media_retired`, …) and, when the "
+        "deployment's `require_primary_image` is on, a primary image (`primary_image_required`; "
+        "off by default, so a character publishes with no image). The draft stays equal to what "
+        "was published, at the next revision. Publishing an unchanged draft still makes a new "
+        "version, and the visual identity is versioned with the rest."
     ),
 )
 async def publish_character(
@@ -297,11 +311,14 @@ async def publish_character(
     operation_id="get_character",
     summary="Read a catalog character",
     description=(
-        "The latest published version; `version` reads another one (404 when it does not "
-        "exist) and `draft=true` the draft, with its `draft_revision` (not both: 422). Before "
-        "the first publish, a read without `draft=true` is 422 `not_published`. `projection` "
-        "is `card` (the default: only the public card, never a definition field) or `full` "
-        "(FR-SCN-10). Archived entries read as any other."
+        "The latest published version; `version` reads another one (404 when it does not exist) "
+        "and `draft=true` the draft, with its `draft_revision` (not both: 422). Before the first "
+        "publish, a read without `draft=true` is 422 `not_published`. `projection` is `card` (the "
+        "default: only the public card, its labels and rating, each image as its id and alt text, "
+        "never a definition field) or `full` (FR-SCN-10: adds the aliases, the definition and the "
+        "visual identity, each image and reference image with its media row: alt text, caption, "
+        "MIME type, dimensions and generation metadata as stored). Archived entries read as any "
+        "other."
     ),
 )
 async def get_character(

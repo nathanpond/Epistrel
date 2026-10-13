@@ -3,7 +3,7 @@
     "schemas": {
       "AdHocCharacter": {
         "additionalProperties": false,
-        "description": "``POST /stories/{id}/characters``: a character the author adds to a running story\n(FR-CAT-7): #50's free-text shape — its name, its definition, its required true age\n(FR-CAT-12) and optionally its safe fallback line (#68) — and optionally ``images``, media\nasset ids it shows (each a live image), by reference. It is never a player character and\nnever a catalog entry.",
+        "description": "``POST /stories/{id}/characters``: a character the author adds to a running story\n(FR-CAT-7): #50's free-text shape — its name, its definition, its required true age\n(FR-CAT-12) and optionally its safe fallback line (#68) and deflection style (FR-GUARD-7) —\nand optionally ``images``, media asset ids it shows (each a live image), by reference. It is\nnever a player character and never a catalog entry.",
         "examples": [
           {
             "definition": "A delivery driver in a hurry, polite and nosy.",
@@ -17,6 +17,20 @@
             "minLength": 1,
             "title": "Definition",
             "type": "string"
+          },
+          "deflection_style": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the character refuses or changes the subject, in its own voice (FR-GUARD-7). Checked by the input gate.",
+            "title": "Deflection Style"
           },
           "images": {
             "description": "Media asset ids the character shows (images, each live), in order.",
@@ -170,6 +184,15 @@
         "title": "ApiKeyBody",
         "type": "object"
       },
+      "Audience": {
+        "description": "Who may see a reference image's subject: ``perceivable`` (only what anyone who meets the\ncharacter can see) or ``restricted`` (hidden details, a true form, the real face behind a\ndisguise). There is no default.",
+        "enum": [
+          "perceivable",
+          "restricted"
+        ],
+        "title": "Audience",
+        "type": "string"
+      },
       "Backfill": {
         "description": "Whether the change needs a backfill for this story, and its estimate when it does. In M3\none is needed exactly when the upgrade is unavailable (no backfill exists until M7).",
         "properties": {
@@ -288,7 +311,7 @@
       },
       "CardImage": {
         "additionalProperties": false,
-        "description": "An image on a public card (FR-CAT-4; #105, #115): the media asset and its alt text.",
+        "description": "An image on a public card (FR-CAT-4): the media asset and its alt text, nothing else.",
         "properties": {
           "alt_text": {
             "anyOf": [
@@ -335,6 +358,75 @@
           "name"
         ],
         "title": "CardRating",
+        "type": "object"
+      },
+      "Caution": {
+        "description": "How cautious or reckless the character is.",
+        "enum": [
+          "reckless",
+          "bold",
+          "balanced",
+          "careful",
+          "very_cautious"
+        ],
+        "title": "Caution",
+        "type": "string"
+      },
+      "CautionDisposition": {
+        "additionalProperties": false,
+        "description": "How cautious or reckless the character is: a setting and its nuance.",
+        "properties": {
+          "nuance": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free text that qualifies the setting (private; at most 500 characters).",
+            "title": "Nuance"
+          },
+          "setting": {
+            "$ref": "#/components/schemas/Caution"
+          }
+        },
+        "required": [
+          "setting"
+        ],
+        "title": "CautionDisposition",
+        "type": "object"
+      },
+      "CautionDispositionPatch": {
+        "additionalProperties": false,
+        "description": "A merge patch of ``caution``.",
+        "properties": {
+          "nuance": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nuance"
+          },
+          "setting": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Caution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "CautionDispositionPatch",
         "type": "object"
       },
       "ChainRef": {
@@ -404,7 +496,7 @@
       },
       "CharacterCard": {
         "additionalProperties": false,
-        "description": "A catalog character's public card (``projection=card``, the default; FR-CAT-2,\nFR-SCN-10): only what a player-facing client may show, never a definition field.\n``version`` is the version shown; a draft read shows the draft with the latest published\nversion (``null`` before the first publish). ``images`` are the primary image, then the\ngallery, each with its asset's alt text; ``content_rating`` is the rating's version a\npublished version recorded (for a draft, the rating's current version). Until #115,\n``labels`` are empty.",
+        "description": "A catalog character's public card (``projection=card``, the default; FR-CAT-2,\nFR-SCN-10): only what a player-facing client may show, never a definition field.\n``version`` is the version shown; a draft read shows the draft with the latest published\nversion (``null`` before the first publish). ``images`` holds the primary image and the\ngallery, each with its asset's alt text; ``content_rating`` is the rating's version a\npublished version recorded (for a draft, the rating's current version).",
         "properties": {
           "content_rating": {
             "anyOf": [
@@ -421,11 +513,7 @@
             "type": "string"
           },
           "images": {
-            "items": {
-              "$ref": "#/components/schemas/CardImage"
-            },
-            "title": "Images",
-            "type": "array"
+            "$ref": "#/components/schemas/CharacterCardImages"
           },
           "labels": {
             "items": {
@@ -489,16 +577,54 @@
         "title": "CharacterCard",
         "type": "object"
       },
+      "CharacterCardImages": {
+        "additionalProperties": false,
+        "description": "The card's images: the primary image (``null`` when there is none) and the gallery, in\norder.",
+        "properties": {
+          "gallery": {
+            "items": {
+              "$ref": "#/components/schemas/CardImage"
+            },
+            "title": "Gallery",
+            "type": "array"
+          },
+          "primary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CardImage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "CharacterCardImages",
+        "type": "object"
+      },
       "CharacterCreate": {
         "additionalProperties": false,
-        "description": "``POST /catalog/characters``: the new entry's first draft — any of the draft's fields —\nand, optionally, its ``owner``: an opaque principal, by default the requesting one, never\n``system`` (FR-AUTH-5). Ownership confers no permission (FR-AUTH-8).",
+        "description": "``POST /catalog/characters``: the new entry's first draft (any of the draft's fields)\nand, optionally, its ``owner``: an opaque principal, by default the requesting one, never\n``system`` (FR-AUTH-5). Ownership confers no permission (FR-AUTH-8).",
         "examples": [
           {
             "definition": {
-              "personality": "Patient, private and slow to trust."
+              "dispositions": {
+                "honesty": {
+                  "setting": "honest"
+                }
+              },
+              "personality": "Patient, private and slow to trust.",
+              "true_age": 41
             },
-            "name": "Mara Venn",
-            "public_description": "Keeps the light on Gull Rock."
+            "metadata": {
+              "labels": [
+                "quiet"
+              ]
+            },
+            "public_card": {
+              "name": "Mara Venn",
+              "public_description": "Keeps the light on Gull Rock."
+            }
           }
         ],
         "properties": {
@@ -507,29 +633,7 @@
             "description": "The private definition: returned only by the `full` projection."
           },
           "metadata": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CharacterMetadata"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The content rating (public, on the card)."
-          },
-          "name": {
-            "anyOf": [
-              {
-                "maxLength": 120,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The character's name (public).",
-            "title": "Name"
+            "$ref": "#/components/schemas/CharacterMetadata"
           },
           "owner": {
             "anyOf": [
@@ -545,17 +649,28 @@
             "title": "Owner"
           },
           "public_card": {
+            "$ref": "#/components/schemas/CharacterPublicCard"
+          },
+          "visual_identity": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/CharacterPublicCard"
+                "$ref": "#/components/schemas/VisualIdentity"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "The card's images (public)."
-          },
-          "public_description": {
+            "description": "Optional image settings, versioned with the character."
+          }
+        },
+        "title": "CharacterCreate",
+        "type": "object"
+      },
+      "CharacterDefinition": {
+        "additionalProperties": false,
+        "description": "The private character definition (FR-CAT-2): who the character is. It is seeded into\nevery story the character joins and is otherwise returned only by the ``full``\nprojection. ``true_age`` (FR-CAT-12) is the character's objective age, 0 to 150, never on\nthe card. ``deflection_style`` is how the character refuses or changes the subject: a\nstory's Lite prompt carries it with the character's notes, so a reply regenerated after a\nguardrail violation stays in character (FR-GUARD-7). ``safe_fallback_text`` is the line the\ncharacter says when every regenerated reply fails its guardrails (#68). A definition\npromoted from a story lands in ``background_flavor`` (FR-CAT-8).",
+        "properties": {
+          "appearance": {
             "anyOf": [
               {
                 "maxLength": 4000,
@@ -565,17 +680,9 @@
                 "type": "null"
               }
             ],
-            "description": "Free text for the public card; never seeded into a story.",
-            "title": "Public Description"
-          }
-        },
-        "title": "CharacterCreate",
-        "type": "object"
-      },
-      "CharacterDefinition": {
-        "additionalProperties": false,
-        "description": "The private character definition (FR-CAT-2): who the character is. It is seeded into\nevery story the character joins and is otherwise returned only by the ``full`` projection.\nUntil #115 adds the other fields it holds ``personality``, the character's ``true_age``\n(FR-CAT-12), ``background_flavor`` (free text: a definition promoted from a story lands\nhere, FR-CAT-8) and ``safe_fallback_text`` (the line the character says when every\nregenerated reply fails its guardrails, #68).",
-        "properties": {
+            "description": "What the character looks like.",
+            "title": "Appearance"
+          },
           "background_flavor": {
             "anyOf": [
               {
@@ -588,6 +695,49 @@
             ],
             "description": "Optional background, as free text (private).",
             "title": "Background Flavor"
+          },
+          "deflection_style": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the character refuses or changes the subject, in its own voice (FR-GUARD-7; optional, private).",
+            "title": "Deflection Style"
+          },
+          "dispositions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Dispositions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "interaction_style": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InteractionStyle"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "likes_dislikes": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LikesDislikes"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "personality": {
             "anyOf": [
@@ -628,6 +778,19 @@
             ],
             "description": "The character's true age (FR-CAT-12): 0 to 150. Never on the card.",
             "title": "True Age"
+          },
+          "values_motivations": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Values and motivations, in general terms.",
+            "title": "Values Motivations"
           }
         },
         "title": "CharacterDefinition",
@@ -635,8 +798,20 @@
       },
       "CharacterDefinitionPatch": {
         "additionalProperties": false,
-        "description": "The ``definition`` part of a draft patch: a key sets that field, ``null`` removes it.",
+        "description": "The ``definition`` part of a draft patch: a key sets that field, ``null`` removes it,\nand the groups merge the same way.",
         "properties": {
+          "appearance": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Appearance"
+          },
           "background_flavor": {
             "anyOf": [
               {
@@ -648,6 +823,48 @@
               }
             ],
             "title": "Background Flavor"
+          },
+          "deflection_style": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deflection Style"
+          },
+          "dispositions": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DispositionsPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "interaction_style": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InteractionStylePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "likes_dislikes": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LikesDislikesPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "personality": {
             "anyOf": [
@@ -685,6 +902,18 @@
               }
             ],
             "title": "True Age"
+          },
+          "values_motivations": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Values Motivations"
           }
         },
         "title": "CharacterDefinitionPatch",
@@ -694,6 +923,13 @@
         "additionalProperties": false,
         "description": "The draft after a create or save, in ``full``: ``draft_revision`` is the revision the\nnext save or publish must send; ``config_revision`` is the deployment's (unchanged).",
         "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
           "companion_id": {
             "anyOf": [
               {
@@ -758,11 +994,7 @@
             "title": "Idempotency Key"
           },
           "images": {
-            "items": {
-              "$ref": "#/components/schemas/CardImage"
-            },
-            "title": "Images",
-            "type": "array"
+            "$ref": "#/components/schemas/CharacterImagesDetail"
           },
           "labels": {
             "items": {
@@ -831,6 +1063,16 @@
               }
             ],
             "title": "Version"
+          },
+          "visual_identity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VisualIdentityDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -851,15 +1093,24 @@
           "images",
           "labels",
           "content_rating",
-          "definition"
+          "aliases",
+          "definition",
+          "visual_identity"
         ],
         "title": "CharacterDraftBody",
         "type": "object"
       },
       "CharacterFull": {
         "additionalProperties": false,
-        "description": "A catalog character in full (``projection=full``; FR-SCN-10): the entry's envelope, the\npublic card's fields and the private ``definition``. ``draft_revision`` is present only on a\ndraft read (``?draft=true``): the revision the next save or publish must send.\n``published_at`` is when ``version`` was published; ``companion_id`` names the character's\ncompanion scenario (#116; ``null`` until then). ``owner_principal`` is the entry's owner\n(FR-AUTH-5), recorded for listing and attribution only.",
+        "description": "A catalog character in full (``projection=full``; FR-SCN-10): the entry's envelope, the\npublic card's fields with each image's media row, the aliases, the private ``definition``\nand the ``visual_identity``. ``draft_revision`` is present only on a draft read\n(``?draft=true``): the revision the next save or publish must send. ``published_at`` is\nwhen ``version`` was published; ``companion_id`` names the character's companion scenario\n(#116; ``null`` until then). ``owner_principal`` is the entry's owner (FR-AUTH-5), recorded\nfor listing and attribution only.",
         "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
           "companion_id": {
             "anyOf": [
               {
@@ -916,11 +1167,7 @@
             "type": "string"
           },
           "images": {
-            "items": {
-              "$ref": "#/components/schemas/CardImage"
-            },
-            "title": "Images",
-            "type": "array"
+            "$ref": "#/components/schemas/CharacterImagesDetail"
           },
           "labels": {
             "items": {
@@ -989,6 +1236,16 @@
               }
             ],
             "title": "Version"
+          },
+          "visual_identity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VisualIdentityDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1007,14 +1264,98 @@
           "images",
           "labels",
           "content_rating",
-          "definition"
+          "aliases",
+          "definition",
+          "visual_identity"
         ],
         "title": "CharacterFull",
         "type": "object"
       },
+      "CharacterImageDetail": {
+        "additionalProperties": false,
+        "description": "An image as ``full`` shows it (FR-CAT-4; #105): the media asset's id and, from its live\nrow, its alt text, caption, MIME type, dimensions and generation metadata, exactly as stored\n(every field ``null`` for an asset no row holds).",
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alt Text"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption"
+          },
+          "generation_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Metadata"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "media_id": {
+            "title": "Media Id",
+            "type": "string"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "media_id"
+        ],
+        "title": "CharacterImageDetail",
+        "type": "object"
+      },
       "CharacterImages": {
         "additionalProperties": false,
-        "description": "The public card's images (FR-CAT-4; #115's shape): a ``primary`` image and a ``gallery``\n(up to 20, distinct), as media asset ids. The assets are referenced, never copied; each must\nbe ``live`` when a save adds it.",
+        "description": "The public card's images (FR-CAT-4): an optional ``primary`` image and a ``gallery`` (up\nto 20, distinct; the primary may also be in it), as media asset ids. The assets are\nreferenced, never copied: each must be a ``live`` image when it is added (422\n``media_retired``), and every image is optional unless the deployment's\n``require_primary_image`` is on (then a publish needs the primary).",
         "properties": {
           "gallery": {
             "description": "More images, in order.",
@@ -1041,6 +1382,31 @@
           }
         },
         "title": "CharacterImages",
+        "type": "object"
+      },
+      "CharacterImagesDetail": {
+        "additionalProperties": false,
+        "description": "``full``'s images: the primary image (``null`` when there is none) and the gallery.",
+        "properties": {
+          "gallery": {
+            "items": {
+              "$ref": "#/components/schemas/CharacterImageDetail"
+            },
+            "title": "Gallery",
+            "type": "array"
+          },
+          "primary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CharacterImageDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "CharacterImagesDetail",
         "type": "object"
       },
       "CharacterImagesPatch": {
@@ -1127,11 +1493,7 @@
             "type": "string"
           },
           "images": {
-            "items": {
-              "$ref": "#/components/schemas/CardImage"
-            },
-            "title": "Images",
-            "type": "array"
+            "$ref": "#/components/schemas/CharacterCardImages"
           },
           "labels": {
             "items": {
@@ -1219,8 +1581,18 @@
       },
       "CharacterMetadata": {
         "additionalProperties": false,
-        "description": "The draft's metadata (#115's shape): its ``content_rating_id`` (FR-RATE-3), which must be\nassignable when a save sets it.",
+        "description": "Search and filtering metadata, never seeded (FR-CAT-2): ``aliases`` (up to 20, each\ntrimmed, up to 60 characters, never the name or another alias, ignoring case), ``labels``\nthat describe the character (up to 30 of ``A-Z a-z 0-9 _ -`` and spaces, stored trimmed and\nlower-cased, distinct) and the ``content_rating_id`` (FR-RATE-3), which must be assignable\nwhen a save sets it and is required to publish. The labels and the rating are on the card;\nthe aliases are searched (#110) and shown in ``full``.",
         "properties": {
+          "aliases": {
+            "items": {
+              "maxLength": 60,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Aliases",
+            "type": "array"
+          },
           "content_rating_id": {
             "anyOf": [
               {
@@ -1233,6 +1605,15 @@
             ],
             "description": "The content rating's id.",
             "title": "Content Rating Id"
+          },
+          "labels": {
+            "items": {
+              "pattern": "^[A-Za-z0-9 _-]{1,40}$",
+              "type": "string"
+            },
+            "maxItems": 30,
+            "title": "Labels",
+            "type": "array"
           }
         },
         "title": "CharacterMetadata",
@@ -1240,8 +1621,25 @@
       },
       "CharacterMetadataPatch": {
         "additionalProperties": false,
-        "description": "The ``metadata`` part of a draft patch.",
+        "description": "The ``metadata`` part of a draft patch: a list replaces the stored one.",
         "properties": {
+          "aliases": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 60,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aliases"
+          },
           "content_rating_id": {
             "anyOf": [
               {
@@ -1253,6 +1651,22 @@
               }
             ],
             "title": "Content Rating Id"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[A-Za-z0-9 _-]{1,40}$",
+                  "type": "string"
+                },
+                "maxItems": 30,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labels"
           }
         },
         "title": "CharacterMetadataPatch",
@@ -1260,14 +1674,16 @@
       },
       "CharacterPatch": {
         "additionalProperties": false,
-        "description": "``PATCH /catalog/characters/{id}``: a JSON merge patch (RFC 7386) over the draft — a key\nsets that field, ``null`` removes it, and ``definition``, ``public_card`` and ``metadata``\nmerge the same way (an array, the gallery, replaces the stored one) — with the\n``draft_revision`` it is based on (FR-CAT-3).",
+        "description": "``PATCH /catalog/characters/{id}``: a JSON merge patch (RFC 7386) over the draft — a key\nsets that field, ``null`` removes it, and every group merges the same way (a list replaces\nthe stored one) — with the ``draft_revision`` it is based on (FR-CAT-3). The draft it makes\nis validated as a whole: an error is 422 at ``body.<path>``, wherever the field came from.",
         "examples": [
           {
             "definition": {
               "personality": "Patient and wry."
             },
             "draft_revision": 1,
-            "public_description": "Keeps the light on Gull Rock, and the logbook."
+            "public_card": {
+              "public_description": "Keeps the light on Gull Rock, and the logbook."
+            }
           }
         ],
         "properties": {
@@ -1298,6 +1714,40 @@
               }
             ]
           },
+          "public_card": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CharacterPublicCardPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "visual_identity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VisualIdentityPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "draft_revision"
+        ],
+        "title": "CharacterPatch",
+        "type": "object"
+      },
+      "CharacterPublicCard": {
+        "additionalProperties": false,
+        "description": "What a player browsing the catalog may see (FR-CAT-2): the name, a public description\n(never seeded into a story) and the images.",
+        "properties": {
+          "images": {
+            "$ref": "#/components/schemas/CharacterImages"
+          },
           "name": {
             "anyOf": [
               {
@@ -1309,17 +1759,8 @@
                 "type": "null"
               }
             ],
+            "description": "The character's name (public).",
             "title": "Name"
-          },
-          "public_card": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CharacterPublicCardPatch"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "public_description": {
             "anyOf": [
@@ -1331,21 +1772,8 @@
                 "type": "null"
               }
             ],
+            "description": "Free text for the public card; never seeded into a story.",
             "title": "Public Description"
-          }
-        },
-        "required": [
-          "draft_revision"
-        ],
-        "title": "CharacterPatch",
-        "type": "object"
-      },
-      "CharacterPublicCard": {
-        "additionalProperties": false,
-        "description": "The public card's part of the interim draft that lives under ``public_card`` (#115 moves\n``name`` and ``public_description`` here too): its ``images``.",
-        "properties": {
-          "images": {
-            "$ref": "#/components/schemas/CharacterImages"
           }
         },
         "title": "CharacterPublicCard",
@@ -1364,6 +1792,31 @@
                 "type": "null"
               }
             ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "public_description": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Description"
           }
         },
         "title": "CharacterPublicCardPatch",
@@ -1451,6 +1904,20 @@
             "minLength": 1,
             "title": "Definition",
             "type": "string"
+          },
+          "deflection_style": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the character refuses or changes the subject, in its own voice (FR-GUARD-7): rendered with its author notes, so a reply regenerated after a guardrail violation stays in character. Checked by the input gate.",
+            "title": "Deflection Style"
           },
           "is_player": {
             "default": false,
@@ -1995,6 +2462,191 @@
           "id"
         ],
         "title": "DepictedSubject",
+        "type": "object"
+      },
+      "Dispositions": {
+        "additionalProperties": false,
+        "description": "The behavioural dispositions (FR-CAT-2): five axes, each a closed five-step ``setting``\nplus free-text ``nuance``. Each may be missing from a draft; a publish needs all five.",
+        "properties": {
+          "caution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CautionDisposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dominance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DominanceDisposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "honesty": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HonestyDisposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "threat_response": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThreatResponseDisposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warmth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WarmthDisposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "Dispositions",
+        "type": "object"
+      },
+      "DispositionsPatch": {
+        "additionalProperties": false,
+        "description": "A merge patch of the dispositions: an axis merges, ``null`` removes it.",
+        "properties": {
+          "caution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CautionDispositionPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dominance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DominanceDispositionPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "honesty": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HonestyDispositionPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "threat_response": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThreatResponseDispositionPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warmth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WarmthDispositionPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "DispositionsPatch",
+        "type": "object"
+      },
+      "Dominance": {
+        "description": "How dominant or submissive the character is.",
+        "enum": [
+          "very_submissive",
+          "submissive",
+          "balanced",
+          "dominant",
+          "very_dominant"
+        ],
+        "title": "Dominance",
+        "type": "string"
+      },
+      "DominanceDisposition": {
+        "additionalProperties": false,
+        "description": "How dominant or submissive the character is: a setting and its nuance.",
+        "properties": {
+          "nuance": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free text that qualifies the setting (private; at most 500 characters).",
+            "title": "Nuance"
+          },
+          "setting": {
+            "$ref": "#/components/schemas/Dominance"
+          }
+        },
+        "required": [
+          "setting"
+        ],
+        "title": "DominanceDisposition",
+        "type": "object"
+      },
+      "DominanceDispositionPatch": {
+        "additionalProperties": false,
+        "description": "A merge patch of ``dominance``.",
+        "properties": {
+          "nuance": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nuance"
+          },
+          "setting": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Dominance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "DominanceDispositionPatch",
         "type": "object"
       },
       "DormantChainBody": {
@@ -4366,6 +5018,75 @@
         "title": "HistoryResponse",
         "type": "object"
       },
+      "Honesty": {
+        "description": "How honest or deceitful the character is.",
+        "enum": [
+          "very_deceitful",
+          "deceitful",
+          "balanced",
+          "honest",
+          "very_honest"
+        ],
+        "title": "Honesty",
+        "type": "string"
+      },
+      "HonestyDisposition": {
+        "additionalProperties": false,
+        "description": "How honest or deceitful the character is: a setting and its nuance.",
+        "properties": {
+          "nuance": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free text that qualifies the setting (private; at most 500 characters).",
+            "title": "Nuance"
+          },
+          "setting": {
+            "$ref": "#/components/schemas/Honesty"
+          }
+        },
+        "required": [
+          "setting"
+        ],
+        "title": "HonestyDisposition",
+        "type": "object"
+      },
+      "HonestyDispositionPatch": {
+        "additionalProperties": false,
+        "description": "A merge patch of ``honesty``.",
+        "properties": {
+          "nuance": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nuance"
+          },
+          "setting": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Honesty"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "HonestyDispositionPatch",
+        "type": "object"
+      },
       "ImpactPreviewRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/impact-preview``: the change to preview, a profile to assign\n(``profile_id``), a change of the story's overrides (``overrides``: a JSON merge patch over\nthem, as ``PATCH /stories/{id}/profile-overrides`` takes its ``settings``, so ``null``\nremoves an override), or both at once. Nothing is written.",
@@ -5142,6 +5863,194 @@
           "replayed"
         ],
         "title": "IngestedEventBody",
+        "type": "object"
+      },
+      "InteractionStyle": {
+        "additionalProperties": false,
+        "description": "How the character talks: its speech style and vocabulary (required to publish), its\nmannerisms and sample lines of dialogue (each list may be empty).",
+        "properties": {
+          "mannerisms": {
+            "items": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Mannerisms",
+            "type": "array"
+          },
+          "sample_dialogue": {
+            "items": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Sample Dialogue",
+            "type": "array"
+          },
+          "speech_style": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speech Style"
+          },
+          "vocabulary": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vocabulary"
+          }
+        },
+        "title": "InteractionStyle",
+        "type": "object"
+      },
+      "InteractionStylePatch": {
+        "additionalProperties": false,
+        "description": "A merge patch of the interaction style: a list replaces the stored one.",
+        "properties": {
+          "mannerisms": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 500,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mannerisms"
+          },
+          "sample_dialogue": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 1000,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Dialogue"
+          },
+          "speech_style": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speech Style"
+          },
+          "vocabulary": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vocabulary"
+          }
+        },
+        "title": "InteractionStylePatch",
+        "type": "object"
+      },
+      "LikesDislikes": {
+        "additionalProperties": false,
+        "description": "What the character likes and dislikes, in general terms (each list may be empty).",
+        "properties": {
+          "dislikes": {
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 30,
+            "title": "Dislikes",
+            "type": "array"
+          },
+          "likes": {
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 30,
+            "title": "Likes",
+            "type": "array"
+          }
+        },
+        "title": "LikesDislikes",
+        "type": "object"
+      },
+      "LikesDislikesPatch": {
+        "additionalProperties": false,
+        "description": "A merge patch of the likes and dislikes: a list replaces the stored one.",
+        "properties": {
+          "dislikes": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 30,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dislikes"
+          },
+          "likes": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 30,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Likes"
+          }
+        },
+        "title": "LikesDislikesPatch",
         "type": "object"
       },
       "ListingStatusBody": {
@@ -11142,6 +12051,119 @@
         "title": "RecentMessage",
         "type": "object"
       },
+      "ReferenceImage": {
+        "additionalProperties": false,
+        "description": "A reference image of the visual identity: a media asset (a ``live`` image when it is\nadded) and its required ``audience``.",
+        "properties": {
+          "audience": {
+            "$ref": "#/components/schemas/Audience",
+            "description": "`perceivable` or `restricted`; required, with no default (422 when it is missing)."
+          },
+          "media_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Media Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "media_id",
+          "audience"
+        ],
+        "title": "ReferenceImage",
+        "type": "object"
+      },
+      "ReferenceImageDetail": {
+        "additionalProperties": false,
+        "description": "A reference image as ``full`` shows it: its asset (see ``CharacterImageDetail``) and its\naudience.",
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alt Text"
+          },
+          "audience": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Audience"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption"
+          },
+          "generation_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Metadata"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "media_id": {
+            "title": "Media Id",
+            "type": "string"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "media_id"
+        ],
+        "title": "ReferenceImageDetail",
+        "type": "object"
+      },
       "RegenerateRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/regenerate`` and ``Engine.regenerate`` (#66, FR-STORE-12).\n\nThe recorded ``player_input`` of the head turn is reused, never re-sent. ``turn``, when\ngiven, must be the head turn (422 otherwise). ``render_character_ids``,\n``output_viewpoint`` and ``prompt_params`` override the values the turn was played with;\nomitted, the recorded (resolved) ones are reused. ``budget`` is this call's own (#69).",
@@ -14570,6 +15592,11 @@
             ],
             "title": "Public Base Url"
           },
+          "require_primary_image": {
+            "default": false,
+            "title": "Require Primary Image",
+            "type": "boolean"
+          },
           "structured_retry_budget": {
             "default": 2,
             "maximum": 10.0,
@@ -15219,6 +16246,17 @@
               }
             ],
             "title": "Public Base Url"
+          },
+          "require_primary_image": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Require Primary Image"
           },
           "structured_retry_budget": {
             "anyOf": [
@@ -16550,6 +17588,75 @@
         "title": "Target",
         "type": "string"
       },
+      "ThreatResponse": {
+        "description": "How the character responds to being threatened or challenged.",
+        "enum": [
+          "flees",
+          "yields",
+          "deflects",
+          "stands",
+          "attacks"
+        ],
+        "title": "ThreatResponse",
+        "type": "string"
+      },
+      "ThreatResponseDisposition": {
+        "additionalProperties": false,
+        "description": "How the character responds to being threatened or challenged: a setting and its\nnuance.",
+        "properties": {
+          "nuance": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free text that qualifies the setting (private; at most 500 characters).",
+            "title": "Nuance"
+          },
+          "setting": {
+            "$ref": "#/components/schemas/ThreatResponse"
+          }
+        },
+        "required": [
+          "setting"
+        ],
+        "title": "ThreatResponseDisposition",
+        "type": "object"
+      },
+      "ThreatResponseDispositionPatch": {
+        "additionalProperties": false,
+        "description": "A merge patch of ``threat_response``.",
+        "properties": {
+          "nuance": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nuance"
+          },
+          "setting": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThreatResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "ThreatResponseDispositionPatch",
+        "type": "object"
+      },
       "TruncateRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/truncate``: keep turns 1..``to_turn``; ``0`` keeps only genesis.",
@@ -17239,6 +18346,276 @@
         "title": "VariantsBody",
         "type": "object"
       },
+      "VisualIdentity": {
+        "additionalProperties": false,
+        "description": "A character's stored image settings, versioned with the character (FR-CAT-4): the\npreferred image model (free text), a base appearance prompt (always ``perceivable``), a\nnegative prompt, a seed (0 to 2^32 - 1), up to 10 reference images (each with its\n``audience``), adapter-specific parameters kept opaque (a JSON object of at most 8 KiB, every\nnumber finite) and an optional prompt for restricted details. Optional as a whole; when it\nis present, a publish needs every field but ``reference_images``, ``adapter_params`` and\n``restricted_details_prompt``.",
+        "properties": {
+          "adapter_params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Adapter-specific parameters, stored and returned as sent.",
+            "title": "Adapter Params"
+          },
+          "base_appearance_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What anyone who meets the character sees (`perceivable`).",
+            "title": "Base Appearance Prompt"
+          },
+          "negative_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Negative Prompt"
+          },
+          "preferred_image_model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Image Model"
+          },
+          "reference_images": {
+            "items": {
+              "$ref": "#/components/schemas/ReferenceImage"
+            },
+            "maxItems": 10,
+            "title": "Reference Images",
+            "type": "array"
+          },
+          "restricted_details_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Hidden details (`restricted`); optional.",
+            "title": "Restricted Details Prompt"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "maximum": 4294967295.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          }
+        },
+        "title": "VisualIdentity",
+        "type": "object"
+      },
+      "VisualIdentityDetail": {
+        "additionalProperties": false,
+        "description": "The visual identity as ``full`` shows it: as stored, each reference image with its\nasset.",
+        "properties": {
+          "adapter_params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adapter Params"
+          },
+          "base_appearance_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Appearance Prompt"
+          },
+          "negative_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Negative Prompt"
+          },
+          "preferred_image_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Image Model"
+          },
+          "reference_images": {
+            "items": {
+              "$ref": "#/components/schemas/ReferenceImageDetail"
+            },
+            "title": "Reference Images",
+            "type": "array"
+          },
+          "restricted_details_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restricted Details Prompt"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          }
+        },
+        "title": "VisualIdentityDetail",
+        "type": "object"
+      },
+      "VisualIdentityPatch": {
+        "additionalProperties": false,
+        "description": "The ``visual_identity`` part of a draft patch: a key sets that field, ``null`` removes\nit; ``reference_images`` replaces the stored list (each image complete, with its audience),\nand ``adapter_params`` merges as JSON.",
+        "properties": {
+          "adapter_params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adapter Params"
+          },
+          "base_appearance_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Appearance Prompt"
+          },
+          "negative_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Negative Prompt"
+          },
+          "preferred_image_model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Image Model"
+          },
+          "reference_images": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ReferenceImage"
+                },
+                "maxItems": 10,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Images"
+          },
+          "restricted_details_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restricted Details Prompt"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "maximum": 4294967295.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          }
+        },
+        "title": "VisualIdentityPatch",
+        "type": "object"
+      },
       "VisualStyle": {
         "additionalProperties": false,
         "description": "The art style every image generated for the scenario uses (FR-IMG-2): never in a\ntext-generation prompt.",
@@ -17269,6 +18646,75 @@
           }
         },
         "title": "VisualStyle",
+        "type": "object"
+      },
+      "Warmth": {
+        "description": "How warm or cold the character is.",
+        "enum": [
+          "cold",
+          "cool",
+          "neutral",
+          "warm",
+          "very_warm"
+        ],
+        "title": "Warmth",
+        "type": "string"
+      },
+      "WarmthDisposition": {
+        "additionalProperties": false,
+        "description": "How warm or cold the character is: a setting and its nuance.",
+        "properties": {
+          "nuance": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free text that qualifies the setting (private; at most 500 characters).",
+            "title": "Nuance"
+          },
+          "setting": {
+            "$ref": "#/components/schemas/Warmth"
+          }
+        },
+        "required": [
+          "setting"
+        ],
+        "title": "WarmthDisposition",
+        "type": "object"
+      },
+      "WarmthDispositionPatch": {
+        "additionalProperties": false,
+        "description": "A merge patch of ``warmth``.",
+        "properties": {
+          "nuance": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nuance"
+          },
+          "setting": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Warmth"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "WarmthDispositionPatch",
         "type": "object"
       },
       "WordlistRule": {
@@ -17452,6 +18898,7 @@
                           "profile_defaults.verification.extraction_mode",
                           "profile_defaults.verification.level",
                           "public_base_url",
+                          "require_primary_image",
                           "structured_retry_budget",
                           "timer_lag_alert",
                           "turn_queue_max",
@@ -19933,7 +21380,7 @@
         ]
       },
       "put": {
-        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` accept `null` (unset: no hook, no base URL, no ceiling); no other key does. A list replaces the stored one. `profile_defaults` holds the engine profiles' defaults (FR-PROF-5): the bottom layer of every story's configuration, under its profile's version and its own overrides, seeded from the Lite preset. A write is laid over them (an object merges into an object; any other value replaces, `null` included, so `budgets.model_calls: null` is the formula `9 + G`), and must leave a document every profile in use and every story can run under (422 `validation_error` at the setting, or `invalid_profile` naming `details.profiles` or `details.stories`); each changed setting is recorded as `profile_defaults.<path>`. The engine dials that moved there (`lite_generation_defaults`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`) are 422 with `details.reason: superseded` and their replacement in `details.replacement`. `listing_status_values` lists the catalog's listing status values in order (a new entry takes the first; distinct, case-sensitive, 1 to 40 printable characters each); removing a value a catalog entry still holds is 409 `listing_status_in_use` (`details.value`, `details.count`). `validation_model_calls` (0 to 1000, default 0) is how many model calls one catalog validation (a publish, or a dry run) may spend on model-assisted input policies; those it does not reach are listed `unavailable` in the report. `feedback_tags` lists the reason tags a message rating may carry (FR-FB-1's nine to start; distinct, 1 to 40 of `a-z 0-9 _` each, up to 50; may be empty); removing a tag a rating or its history still carries is 409 `feedback_tag_in_use` (`details.in_use`: each tag with its `current` and `history` counts). `feedback_text_max_chars` (1 to 20000, default 2000) caps a rating's free text, and `feedback_retention` keeps ratings for the story's life (`story_lifetime`, the default) or a number of days (1 to 3650).",
+        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` accept `null` (unset: no hook, no base URL, no ceiling); no other key does. A list replaces the stored one. `profile_defaults` holds the engine profiles' defaults (FR-PROF-5): the bottom layer of every story's configuration, under its profile's version and its own overrides, seeded from the Lite preset. A write is laid over them (an object merges into an object; any other value replaces, `null` included, so `budgets.model_calls: null` is the formula `9 + G`), and must leave a document every profile in use and every story can run under (422 `validation_error` at the setting, or `invalid_profile` naming `details.profiles` or `details.stories`); each changed setting is recorded as `profile_defaults.<path>`. The engine dials that moved there (`lite_generation_defaults`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`) are 422 with `details.reason: superseded` and their replacement in `details.replacement`. `listing_status_values` lists the catalog's listing status values in order (a new entry takes the first; distinct, case-sensitive, 1 to 40 printable characters each); removing a value a catalog entry still holds is 409 `listing_status_in_use` (`details.value`, `details.count`). `validation_model_calls` (0 to 1000, default 0) is how many model calls one catalog validation (a publish, or a dry run) may spend on model-assisted input policies; those it does not reach are listed `unavailable` in the report. `require_primary_image` (default `false`) makes a primary image required to publish a catalog character (422 `publish_invalid`, `primary_image_required`); off, a character publishes with no image. `feedback_tags` lists the reason tags a message rating may carry (FR-FB-1's nine to start; distinct, 1 to 40 of `a-z 0-9 _` each, up to 50; may be empty); removing a tag a rating or its history still carries is 409 `feedback_tag_in_use` (`details.in_use`: each tag with its `current` and `history` counts). `feedback_text_max_chars` (1 to 20000, default 2000) caps a rating's free text, and `feedback_retention` keeps ratings for the story's life (`story_lifetime`, the default) or a number of days (1 to 3650).",
         "operationId": "update_deployment_settings",
         "parameters": [
           {
@@ -20482,7 +21929,7 @@
         ]
       },
       "post": {
-        "description": "Create a catalog character whose draft holds the given fields: draft revision 1, status `draft`, and the first of the deployment's `listing_status_values` (`private` by default) as its listing status. `owner` names its owner principal (default: the requesting principal; never `system`). Answers 201 with the draft in `full`. A draft larger than 256 KiB is 413 `draft_too_large`.",
+        "description": "Create a catalog character whose draft holds the given fields (FR-CAT-2,4): its `public_card` (name, public description, images), its private `definition`, its `metadata` (aliases, labels, content rating) and optionally its `visual_identity`. Any field may be missing from a draft; a publish needs the rest. Draft revision 1, status `draft`, and the first of the deployment's `listing_status_values` (`private` by default) as its listing status. `owner` names its owner principal (default: the requesting principal; never `system`). A reference image without an `audience` (`perceivable` or `restricted`; there is no default) and an alias that is the name or another alias are 422 `validation_error`; a rating that cannot be assigned is 422 `rating_retired`, and an image that is not live 422 `media_retired`. Answers 201 with the draft in `full`. A draft larger than 256 KiB is 413 `draft_too_large`.",
         "operationId": "create_character_draft",
         "parameters": [
           {
@@ -20599,7 +22046,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`."
+            "description": "Invalid request; nothing was written: `media_retired`, `rating_retired`, `validation_error`."
           },
           "503": {
             "content": {
@@ -20780,7 +22227,7 @@
         ]
       },
       "get": {
-        "description": "The latest published version; `version` reads another one (404 when it does not exist) and `draft=true` the draft, with its `draft_revision` (not both: 422). Before the first publish, a read without `draft=true` is 422 `not_published`. `projection` is `card` (the default: only the public card, never a definition field) or `full` (FR-SCN-10). Archived entries read as any other.",
+        "description": "The latest published version; `version` reads another one (404 when it does not exist) and `draft=true` the draft, with its `draft_revision` (not both: 422). Before the first publish, a read without `draft=true` is 422 `not_published`. `projection` is `card` (the default: only the public card, its labels and rating, each image as its id and alt text, never a definition field) or `full` (FR-SCN-10: adds the aliases, the definition and the visual identity, each image and reference image with its media row: alt text, caption, MIME type, dimensions and generation metadata as stored). Archived entries read as any other.",
         "operationId": "get_character",
         "parameters": [
           {
@@ -20929,7 +22376,7 @@
         ]
       },
       "patch": {
-        "description": "Change the draft with a JSON merge patch (RFC 7386): a key sets that field, `null` removes it, and `definition` merges the same way; unknown keys are 422. `draft_revision` is the revision the patch is based on: when another save or publish came first it is 409 `draft_stale` (`details.current_draft_revision`) and nothing changes (FR-CAT-3). Every save moves the draft to the next revision. An archived entry is 422 `entry_archived`.",
+        "description": "Change the draft with a JSON merge patch (RFC 7386): a key sets that field, `null` removes it, every group merges the same way and a list replaces the stored one; unknown keys are 422, and so is a draft the patch would leave invalid (at `body.<path>`), with the create's checks of what it adds. `draft_revision` is the revision the patch is based on: when another save or publish came first it is 409 `draft_stale` (`details.current_draft_revision`) and nothing changes (FR-CAT-3). Every save moves the draft to the next revision. An archived entry is 422 `entry_archived`.",
         "operationId": "save_character_draft",
         "parameters": [
           {
@@ -21071,7 +22518,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `entry_archived`, `validation_error`."
+            "description": "Invalid request; nothing was written: `entry_archived`, `media_retired`, `rating_retired`, `validation_error`."
           },
           "503": {
             "content": {
@@ -21593,7 +23040,7 @@
     },
     "/catalog/characters/{character_id}/publish": {
       "post": {
-        "description": "Publish the draft as the next immutable version (FR-CAT-3): `draft_revision` is compared like a save's (409 `draft_stale`). The draft must be publishable (422 `publish_invalid` with `details.report`: it needs a `name`). The draft stays equal to what was published, at the next revision. Publishing an unchanged draft still makes a new version.",
+        "description": "Publish the draft as the next immutable version (FR-CAT-3): `draft_revision` is compared like a save's (409 `draft_stale`). The draft must be publishable (422 `publish_invalid` with `details.report`, every error at once): every field of the public card and the definition but the optional ones (images, background flavor, deflection style, safe fallback line; lists may be empty), each disposition axis, a true age (`true_age_missing`), a content rating that can be assigned (`content_rating_missing`, `rating_retired`), an `audience` on every reference image (`reference_image_missing_audience`), live images (`media_retired`, …) and, when the deployment's `require_primary_image` is on, a primary image (`primary_image_required`; off by default, so a character publishes with no image). The draft stays equal to what was published, at the next revision. Publishing an unchanged draft still makes a new version, and the visual identity is versioned with the rest.",
         "operationId": "publish_character",
         "parameters": [
           {
@@ -21725,7 +23172,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `entry_archived`, `publish_invalid`, `validation_error`."
+            "description": "Invalid request; nothing was written: `entry_archived`, `publish_invalid`, `rating_retired`, `validation_error`."
           },
           "503": {
             "content": {
@@ -30789,7 +32236,7 @@
         ]
       },
       "post": {
-        "description": "Create a blank story with its cast (each character with a required `true_age`), its content rating (default: the deployment's) and its settings, in one operation. Every character `definition` passes the input gate first: a violation is 422 `guardrail_violation` and no story exists. Answers 201 with `Location`.",
+        "description": "Create a blank story with its cast (each character with a required `true_age`), its content rating (default: the deployment's) and its settings, in one operation. Every character `definition` (and `deflection_style`, how it refuses or changes the subject: FR-GUARD-7) passes the input gate first: a violation is 422 `guardrail_violation` and no story exists. Answers 201 with `Location`.",
         "operationId": "create_story",
         "parameters": [
           {
@@ -31407,7 +32854,7 @@
     },
     "/stories/{story_id}/characters": {
       "post": {
-        "description": "Add an ad-hoc character to the story's cast (FR-CAT-7): its `name`, its free-text `definition`, its required `true_age` (FR-CAT-12) and optionally its `safe_fallback_text` and `images` (media asset ids it shows, each a live image, by reference). It is story-scoped and never a catalog entry or a player character; `POST /stories/{id}/characters/{cid}/promote` makes a catalog draft from it. A full cast (20 characters), a name the story has (ignoring case) or an image that is not a live image asset is 422. The definition passes the input gate, with the new character's age in the cast: a violation is 422 `guardrail_violation`. 409 `story_archived` on an archived story, 423 `story_busy` while a turn is in flight. The addition bumps the story's revision (the cast is part of every prompt), records a `character_defined` event and is kept by a truncation and copied by every fork, as a story-text edit is. Answers 201 with the new character's id and place in the cast.",
+        "description": "Add an ad-hoc character to the story's cast (FR-CAT-7): its `name`, its free-text `definition`, its required `true_age` (FR-CAT-12) and optionally its `safe_fallback_text`, its `deflection_style` (FR-GUARD-7) and `images` (media asset ids it shows, each a live image, by reference). It is story-scoped and never a catalog entry or a player character; `POST /stories/{id}/characters/{cid}/promote` makes a catalog draft from it. A full cast (20 characters), a name the story has (ignoring case) or an image that is not a live image asset is 422. The definition and the deflection style pass the input gate, with the new character's age in the cast: a violation is 422 `guardrail_violation`. 409 `story_archived` on an archived story, 423 `story_busy` while a turn is in flight. The addition bumps the story's revision (the cast is part of every prompt), records a `character_defined` event and is kept by a truncation and copied by every fork, as a story-text edit is. Answers 201 with the new character's id and place in the cast.",
         "operationId": "add_story_character",
         "parameters": [
           {

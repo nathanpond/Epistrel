@@ -1,13 +1,13 @@
-"""What the scenario checks read from a catalog character's version document (#111). Not a
-check.
+"""What the catalog checks read from a catalog character's document (#111, #115). Not a check.
 
-A character version's ``content`` is #103's interim draft (``name``, ``public_description``,
-``definition.personality``) until #115 gives it its full shape (``public_card {name,
-public_description, images {primary, gallery}}``, ``definition {true_age, …}``, ``metadata
-{aliases, labels, content_rating_id}``). These readers accept both and never fail: a value that
-is missing or of another type reads as absent, and the check that needs it decides what absent
-means (an eligibility filter on an absent value fails). #115 must keep these paths, or change
-them here.
+A character's draft and version ``content`` have #115's shape (``core.catalog.models``):
+``public_card {name, public_description, images {primary, gallery}}``, ``definition {true_age,
+…}``, ``metadata {aliases, labels, content_rating_id}`` and ``visual_identity
+{reference_images [{media_id, audience}], …}``. Migration 0032 moved the name and public
+description of #103's interim documents under ``public_card``; ``name_of`` still reads a
+top-level ``name``, which only a document planted outside the catalog can hold. These readers
+never fail: a value that is missing or of another type reads as absent, and the check that needs
+it decides what absent means (an eligibility filter on an absent value fails).
 """
 
 from __future__ import annotations
@@ -67,4 +67,23 @@ def images_of(document: Mapping[str, Any] | None) -> list[tuple[str, str]]:
     return found
 
 
-__all__ = ["images_of", "labels_of", "name_of", "rating_id_of", "true_age_of"]
+def reference_images_of(document: Mapping[str, Any] | None) -> list[tuple[str, str]]:
+    """``(field, media id)`` for each reference image of the character's visual identity
+    (``visual_identity.reference_images[i].media_id``)."""
+    found: list[tuple[str, str]] = []
+    images = _group(document, "visual_identity").get("reference_images")
+    for index, image in enumerate(images if isinstance(images, list) else []):
+        media_id = image.get("media_id") if isinstance(image, Mapping) else None
+        if isinstance(media_id, str):
+            found.append((f"visual_identity.reference_images[{index}].media_id", media_id))
+    return found
+
+
+__all__ = [
+    "images_of",
+    "labels_of",
+    "name_of",
+    "rating_id_of",
+    "reference_images_of",
+    "true_age_of",
+]

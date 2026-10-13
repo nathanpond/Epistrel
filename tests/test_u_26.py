@@ -27,6 +27,7 @@ from epistrel.core.config_changes import read_settings
 from epistrel.core.ids import new_ulid
 from epistrel.core.seeds.ratings import EVERYONE_ID, TEEN_ID
 from tests.catalog_support import scratch_catalog
+from tests.character_support import named
 from tests.event_support import scalar
 from tests.scenario_support import (
     BASE,
@@ -227,7 +228,7 @@ async def test_u_26__validation(pg_url: str) -> None:
             client, db, "Fit Brann", rating_id=EVERYONE_ID, labels=["Warm", "patient"], true_age=50
         )
         draft = (
-            await client.post("/catalog/characters", json={"name": "Una Draft"}, headers=WRITE)
+            await client.post("/catalog/characters", json=named("Una Draft"), headers=WRITE)
         ).json()["id"]
         wanted = {
             "labels": ["warm", "patient"],

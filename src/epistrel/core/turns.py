@@ -76,6 +76,9 @@ class CastEntry:
     is_player: bool
     safe_fallback_text: str | None = None
     """The character's own safe fallback line (#50, #68); never part of a prompt."""
+    deflection_style: str | None = None
+    """How the character refuses or changes the subject (FR-GUARD-7; #115): rendered with its
+    author notes, so a reply regenerated after a guardrail violation stays in character."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +136,7 @@ def _cast_query(story_id: str) -> Any:
             characters.c.definition,
             characters.c.is_player,
             characters.c.safe_fallback_text,
+            characters.c.deflection_style,
         )
         .where(characters.c.story_id == story_id)
         .order_by(characters.c.ordinal)
@@ -147,6 +151,7 @@ def _cast(rows: Any) -> tuple[CastEntry, ...]:
             definition=r.definition,
             is_player=bool(r.is_player),
             safe_fallback_text=r.safe_fallback_text,
+            deflection_style=r.deflection_style,
         )
         for r in rows
     )

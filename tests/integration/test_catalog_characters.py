@@ -255,13 +255,8 @@ async def test_draft_save_publish_and_versions(
         1,
         4,
         "The second description.",
-        # #114's interim definition fields (true age, background, safe fallback) are unset.
-        {
-            "personality": "Wry, these days.",
-            "true_age": None,
-            "background_flavor": None,
-            "safe_fallback_text": None,
-        },
+        # The patch merged into the definition: only the personality changed.
+        {**created["definition"], "personality": "Wry, these days."},
     )
     second = await publish(client, cid, 4)
     assert (second.status_code, second.json()["version"]) == (201, 2)
@@ -306,13 +301,8 @@ async def test_save_is_a_json_merge_patch(client: httpx.AsyncClient) -> None:
     assert removed.json()["definition"] == created["definition"]
 
     merged = await save(client, cid, 2, definition={"personality": None})
-    # #114's interim definition fields (true age, background, safe fallback) are unset too.
-    assert merged.json()["definition"] == {
-        "personality": None,
-        "true_age": None,
-        "background_flavor": None,
-        "safe_fallback_text": None,
-    }
+    # Only the personality went: the rest of the definition merged as it was.
+    assert merged.json()["definition"] == {**created["definition"], "personality": None}
     assert merged.json()["name"] == created["name"]
 
     nothing = await save(client, cid, 3)
@@ -325,9 +315,11 @@ async def test_save_is_a_json_merge_patch(client: httpx.AsyncClient) -> None:
 
     for body, field in (
         ({"draft_revision": 4, "mood": "stormy"}, "body.mood"),
-        ({"draft_revision": 4, "name": 7}, "body.name"),
+        ({"draft_revision": 4, "public_card": {"name": 7}}, "body.public_card.name"),
+        # #103's top-level name moved under the public card (#115).
+        ({"draft_revision": 4, "name": "Top level"}, "body.name"),
         ({"draft_revision": 4, "definition": {"secret": "x"}}, "body.definition.secret"),
-        ({"name": "No revision"}, "body.draft_revision"),
+        ({"public_card": {"name": "No revision"}}, "body.draft_revision"),
         ({"draft_revision": 2**31}, "body.draft_revision"),
         ({"draft_revision": "4"}, "body.draft_revision"),
     ):
@@ -483,8 +475,12 @@ async def test_card_never_shows_a_definition_field(client: httpx.AsyncClient) ->
         assert card.status_code == 200, (params, card.text)
         assert set(card.json()) == CARD_KEYS, params
         assert phrase not in card.text, params
-        assert (card.json()["images"], card.json()["labels"]) == ([], [])
-        assert card.json()["content_rating"] is None
+        assert (card.json()["images"], card.json()["labels"]) == (
+            {"primary": None, "gallery": []},
+            [],
+        )
+        # A published character carries a rating (#115): the card shows its name and version.
+        assert card.json()["content_rating"]["name"] == "Everyone"
     for params in ({"projection": "full"}, {"draft": True, "projection": "full"}):
         full = await read(client, cid, **params)
         assert phrase in full.json()["definition"]["personality"], params
@@ -636,7 +632,7 @@ async def test_every_write_is_idempotent_and_attributed(
     cid = created.json()["id"]
     calls: list[tuple[str, str, str, dict[str, Any] | None]] = [
         ("create", "POST", BASE, body),
-        ("save", "PATCH", f"{BASE}/{cid}", {"draft_revision": 1, "name": "Ilse"}),
+        ("save", "PATCH", f"{BASE}/{cid}", {"draft_revision": 1, "public_card": {"name": "Ilse"}}),
         ("publish", "POST", f"{BASE}/{cid}/publish", {"draft_revision": 2}),
         ("archive", "POST", f"{BASE}/{cid}/archive", None),
         ("unarchive", "POST", f"{BASE}/{cid}/unarchive", None),
@@ -719,7 +715,13 @@ async def test_writes_record_the_requester_not_the_owner(
     assert created.status_code == 201, created.text
     cid = created.json()["id"]
     writes: list[tuple[str, str, str, dict[str, Any] | None, str]] = [
-        ("save", "PATCH", f"{BASE}/{cid}", {"draft_revision": 1, "name": "Edited"}, editor),
+        (
+            "save",
+            "PATCH",
+            f"{BASE}/{cid}",
+            {"draft_revision": 1, "public_card": {"name": "Edited"}},
+            editor,
+        ),
         ("publish", "POST", f"{BASE}/{cid}/publish", {"draft_revision": 2}, editor),
         ("republish", "POST", f"{BASE}/{cid}/publish", {"draft_revision": 3}, reviewer),
         ("archive", "POST", f"{BASE}/{cid}/archive", None, reviewer),
@@ -768,7 +770,9 @@ async def test_publish_refuses_an_unpublishable_draft(
     """A draft without a name, or one the draft schema no longer accepts, is 422
     ``publish_invalid`` with the validation report (#111's shape: each error ``rejected`` at
     its location in the draft), and nothing is written. Complement: a named draft publishes."""
-    created = await client.post(BASE, json={"public_description": "No name yet."}, headers=WRITE)
+    nameless = character()
+    del nameless["public_card"]["name"]
+    created = await client.post(BASE, json=nameless, headers=WRITE)
     assert created.status_code == 201, created.text
     cid = created.json()["id"]
     entry, operations = await entry_row(engine, cid), await _operations(engine)
@@ -783,13 +787,14 @@ async def test_publish_refuses_an_unpublishable_draft(
                     "entry": cid,
                     "version": "draft",
                     "role": None,
-                    "field": "name",
+                    "field": "public_card.name",
                     "seed_id": None,
                 },
                 "text": None,
                 "outcome": "rejected",
                 "source": None,
-                "rule": "a published entry is named",
+                "rule": "a published catalog character holds every field of its definition "
+                "(FR-CAT-2)",
             }
         ],
         "warnings": [],
@@ -803,7 +808,8 @@ async def test_publish_refuses_an_unpublishable_draft(
         engine,
         (
             "UPDATE catalog.character_catalog "
-            'SET draft = draft || \'{"name": "Named", "retired_field": 1}\'::jsonb '
+            "SET draft = jsonb_set(draft, '{public_card,name}', '\"Named\"') "
+            "|| '{\"retired_field\": 1}'::jsonb "
             "WHERE id = :c",
             {"c": cid},
         ),
@@ -831,11 +837,13 @@ async def test_drafts_are_capped(
 ) -> None:
     """A draft over the cap (canonical JSON bytes) is 413 ``draft_too_large`` on create and on
     save, and nothing is written. Complement: a draft within the cap saves."""
-    monkeypatch.setattr(characters, "DRAFT_MAX_BYTES", 600)
+    # The fixture's complete document is about 840 bytes, and 1,500 with a 700-character
+    # description (#115's complete character).
+    monkeypatch.setattr(characters, "DRAFT_MAX_BYTES", 1_200)
     too_large = await client.post(BASE, json=character(public_description="x" * 700), headers=WRITE)
     assert (too_large.status_code, _error(too_large)["code"]) == (413, "draft_too_large")
-    assert _error(too_large)["details"]["limit"] == 600
-    assert _error(too_large)["details"]["size"] > 600
+    assert _error(too_large)["details"]["limit"] == 1_200
+    assert _error(too_large)["details"]["size"] > 1_200
 
     cid = (await create(client))["id"]
     entry = await entry_row(engine, cid)
@@ -849,7 +857,9 @@ async def test_library_refuses_like_rest(settings: Settings, engine: AsyncEngine
     """The in-process library raises the errors REST answers with, and needs a principal."""
     lib = Engine(settings, db=engine)
     ctx = RequestContext(principal=PRINCIPAL)
-    created = await lib.create_character_draft(ctx, characters.CharacterCreate(name="Lib"))
+    created = await lib.create_character_draft(
+        ctx, characters.CharacterCreate.model_validate(character("Lib"))
+    )
     cid = created.character.id
     with pytest.raises(NotPublished):
         await lib.get_character(ctx, cid)

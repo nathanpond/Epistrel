@@ -21,6 +21,7 @@ import pytest
 from epistrel.core.ids import new_ulid
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
 from tests import scenario_support as scenarios
+from tests.character_support import named
 from tests.event_support import rows
 from tests.media_support import media_client, scratch, uploaded, video
 from tests.validation_support import (
@@ -80,7 +81,7 @@ async def test_i_20__validation(pg_url: str, tmp_path: Path) -> None:
         assert archived.status_code == 200, archived.text
         unpublished = (
             await client.post(
-                "/catalog/characters", json={"name": "Una Draft"}, headers=scenarios.WRITE
+                "/catalog/characters", json=named("Una Draft"), headers=scenarios.WRITE
             )
         ).json()["id"]
         cover = await uploaded(client, headers=scenarios.WRITE)

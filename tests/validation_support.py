@@ -79,7 +79,7 @@ def character_document(
     images: Iterable[str] = (),
     personality: str = "Patient, private and slow to trust.",
 ) -> dict[str, Any]:
-    """A character version's content in #115's planned shape."""
+    """A character version's content in #115's shape."""
     gallery = list(images)
     document: dict[str, Any] = {
         "public_card": {"name": name, "images": {"gallery": gallery}},
@@ -106,7 +106,9 @@ async def rated_character(
     """A catalog character created over REST whose published version is planted in #115's
     shape, recorded under its rating's current version: its id and version."""
     created = await client.post(
-        "/catalog/characters", json={"name": name, "public_description": "Planted."}, headers=WRITE
+        "/catalog/characters",
+        json={"public_card": {"name": name, "public_description": "Planted."}},
+        headers=WRITE,
     )
     assert created.status_code == 201, created.text
     character_id: str = created.json()["id"]

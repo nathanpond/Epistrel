@@ -337,12 +337,23 @@ async def test_s_promote(stub_settings: Settings, engine: AsyncEngine) -> None:
         entry = draft.json()
         assert (entry["status"], entry["version"], entry["name"]) == ("draft", None, "Dale Pruitt")
         assert entry["definition"] == {
-            "personality": None,
             "true_age": 52,
+            "appearance": None,
+            "personality": None,
+            "likes_dislikes": None,
+            "dispositions": None,
+            "values_motivations": None,
+            "interaction_style": None,
             "background_flavor": DRIVER,
+            "deflection_style": None,
             "safe_fallback_text": DRIVER_FALLBACK,
         }
-        assert entry["images"] == [{"media_id": portrait["id"], "alt_text": "Dale at the door"}]
+        shown = entry["images"]["primary"]
+        assert (shown["media_id"], shown["alt_text"], entry["images"]["gallery"]) == (
+            portrait["id"],
+            "Dale at the door",
+            [],
+        )
         assert entry["content_rating"]["id"] == story["content_rating"]["id"]
         assert (entry["public_description"], entry["labels"]) == (None, [])
         stored = await scalar(

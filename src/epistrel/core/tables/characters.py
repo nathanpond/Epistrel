@@ -24,6 +24,13 @@ the story.
   character shows survives its retirement until the story goes.
 - ``promoted_to``: the catalog entries promoted from the character (FR-CAT-8), oldest first, as
   plain ids: the one link a promotion leaves on the character.
+
+#115 adds ``deflection_style`` (FR-GUARD-7): how the character refuses or changes the subject,
+in its own voice (at most ``DEFLECTION_STYLE_MAX`` characters; ``null`` for none). The Lite
+prompt renders it with the character's author notes, so a reply regenerated after a guardrail
+violation (#68) stays in character. It is set when the character is created: from the request
+(a story's cast, a character added later), or by #119's genesis from the catalog definition's
+``definition.deflection_style``.
 """
 
 from __future__ import annotations
@@ -47,6 +54,8 @@ from epistrel.core.tables.base import metadata, ulid_type
 
 TRUE_AGE_MIN = 0
 TRUE_AGE_MAX = 150
+DEFLECTION_STYLE_MAX = 2_000
+"""The longest deflection style, for a story character and a catalog definition alike."""
 
 characters = Table(
     "characters",
@@ -72,6 +81,7 @@ characters = Table(
     Column("persona_snapshot", JSONB, nullable=True),
     Column("images", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     Column("promoted_to", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("deflection_style", Text, nullable=True),
     CheckConstraint(f"true_age BETWEEN {TRUE_AGE_MIN} AND {TRUE_AGE_MAX}", name="true_age"),
     CheckConstraint(
         "(persona_id IS NULL AND persona_snapshot IS NULL) OR is_player", name="persona_player"

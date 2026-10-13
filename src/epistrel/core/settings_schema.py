@@ -535,19 +535,26 @@ MAX_VALIDATION_MODEL_CALLS = 1_000
 
 
 class CatalogValidationSettings(BaseModel):
-    """How many model calls one catalog validation (a publish, or a dry run) may spend on
-    model-assisted input policies, stored under ``deployment_state.settings`` (#111):
-    ``validation_model_calls``, one call per policy and text, default 0. Deterministic policies
-    always run; model-assisted ones the budget does not reach are listed ``unavailable``
-    (``input_policy_model_assisted``) and run when a story is created from the scenario, inside
-    its creation budget (#119). Prospective: a validation uses the value in force when it
-    starts."""
+    """How a catalog validation (a publish, or a dry run) runs, stored under
+    ``deployment_state.settings``:
+
+    - ``validation_model_calls`` (#111): how many model calls it may spend on model-assisted
+      input policies, one call per policy and text, default 0. Deterministic policies always
+      run; model-assisted ones the budget does not reach are listed ``unavailable``
+      (``input_policy_model_assisted``) and run when a story is created from the scenario,
+      inside its creation budget (#119).
+    - ``require_primary_image`` (FR-CAT-4; #115): whether publishing a catalog character needs
+      a primary image (``primary_image_required`` otherwise). Off by default, so a text-only or
+      accessibility-focused deployment never needs an image; a visual product turns it on.
+
+    Prospective: a validation uses the values in force when it starts."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     validation_model_calls: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_VALIDATION_MODEL_CALLS, ge=0, le=MAX_VALIDATION_MODEL_CALLS
     )
+    require_primary_image: Annotated[bool, PROSPECTIVE] = False
 
 
 # -- message feedback (FR-FB-1,2; #112) -----------------------------------------------------------

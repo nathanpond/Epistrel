@@ -46,9 +46,16 @@ text when no span can be located."""
 CODES: Mapping[str, str] = types.MappingProxyType(
     {
         # errors (outcome ``rejected``)
-        "field_required": "a required field is missing (a name)",
-        "content_rating_missing": "a published scenario has no content rating (FR-RATE-3)",
+        "field_required": "a field a published entry must hold is missing (a name; a catalog "
+        "character's definition, FR-CAT-2)",
+        "content_rating_missing": "a published scenario or catalog character has no content "
+        "rating (FR-RATE-3)",
         "rating_retired": "the content rating is unknown or retired",
+        "true_age_missing": "a published catalog character has no true age (FR-CAT-12)",
+        "reference_image_missing_audience": "a catalog character's reference image declares no "
+        "audience; there is no default (FR-CAT-4)",
+        "primary_image_required": "the deployment requires a primary image to publish a catalog "
+        "character (require_primary_image, FR-CAT-4)",
         "role_required": "a published scenario has no role",
         "world_required": "a published scenario has no world description",
         "opening_required": "a published scenario has no opening narration",
@@ -62,8 +69,8 @@ CODES: Mapping[str, str] = types.MappingProxyType(
         "seed_missing_holder": "a seed declares no holder (FR-SCN-8)",
         "seed_missing_audience": "a seed declares no audience (FR-SCN-8)",
         "seed_missing_disclosure": "a seed declares no disclosure (FR-SCN-8)",
-        "media_missing": "a media asset the scenario shows does not exist",
-        "media_retired": "a media asset the scenario shows was retired",
+        "media_missing": "a media asset the entry shows does not exist",
+        "media_retired": "a media asset the entry shows was retired",
         "media_not_allowed": "a media asset's type or size is not allowed now",
         "media_kind_mismatch": "a video where an image belongs, or the reverse",
         "provider_undeclared": "a provider the content names is not in required_providers",

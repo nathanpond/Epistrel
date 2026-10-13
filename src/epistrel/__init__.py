@@ -37,6 +37,13 @@ if TYPE_CHECKING:
         VersionSummary,
     )
     from epistrel.core.catalog.listing import ListingStatusChange, ListingStatusRequest
+    from epistrel.core.catalog.models import (
+        Audience,
+        CharacterDefinition,
+        CharacterDraft,
+        ReferenceImage,
+        VisualIdentity,
+    )
     from epistrel.core.catalog.personas import (
         DeletedPersona,
         Persona,
@@ -286,6 +293,11 @@ _EXPORTS: dict[str, str] = {
     "ApiKeyBody": "epistrel.orchestrator.models.config",
     "CharacterCreate": "epistrel.core.catalog.characters",
     "CharacterPatch": "epistrel.core.catalog.characters",
+    "CharacterDraft": "epistrel.core.catalog.models",
+    "CharacterDefinition": "epistrel.core.catalog.models",
+    "VisualIdentity": "epistrel.core.catalog.models",
+    "ReferenceImage": "epistrel.core.catalog.models",
+    "Audience": "epistrel.core.catalog.models",
     "PublishRequest": "epistrel.core.catalog.characters",
     "Projection": "epistrel.core.catalog.characters",
     "ScenarioCreate": "epistrel.core.catalog.scenario_models",
@@ -488,6 +500,7 @@ __all__ = [
     "AdHocPersona",
     "AffectedStory",
     "ApiKeyBody",
+    "Audience",
     "BackfillEstimate",
     "BudgetBelowSafetyMinimum",
     "BudgetExhausted",
@@ -499,6 +512,8 @@ __all__ = [
     "ChainRef",
     "CharacterCard",
     "CharacterCreate",
+    "CharacterDefinition",
+    "CharacterDraft",
     "CharacterFull",
     "CharacterListItem",
     "CharacterNotFound",
@@ -636,6 +651,7 @@ __all__ = [
     "RatingNotFound",
     "RatingReplacement",
     "RatingRetired",
+    "ReferenceImage",
     "ReferenceReplay",
     "RegenerateRequest",
     "RegenerateResult",
@@ -699,6 +715,7 @@ __all__ = [
     "ValidationResult",
     "VersionSummary",
     "ViewpointUnresolved",
+    "VisualIdentity",
     "__version__",
     "effective_cast_limit",
     "scenario_schema_classes",

@@ -82,6 +82,7 @@ from tests.auth_support import auth_settings, bearer
 from tests.catalog_support import character as catalog_character
 from tests.catalog_support import ids as listed_ids
 from tests.catalog_support import scratch_catalog, set_listing_status
+from tests.character_support import named
 from tests.conformance.conftest import migrated_database
 from tests.event_support import rows, scalar
 from tests.integration.ownership_fixtures import (
@@ -571,7 +572,9 @@ async def test_i_21__companion(companion_db: tuple[Engine, AsyncEngine]) -> None
 
     Complement asserted: the story snapshot does see the story's own archive."""
     lib, db = companion_db
-    created = await lib.create_character_draft(_as(OWNER), CharacterCreate(name="Mara Venn"))
+    created = await lib.create_character_draft(
+        _as(OWNER), CharacterCreate.model_validate(named("Mara Venn"))
+    )
     x = created.character.id
     y = await _scenario(lib, OWNER, companion_of=x)
     z = await _scenario(lib, OWNER)
@@ -664,15 +667,15 @@ async def test_i_21__media_retire(pg_url: str, tmp_path: Path) -> None:
     ):
         shown = await uploaded(client, headers=a)
         alone = await uploaded(client, headers=a)
-        created = await client.post("/catalog/characters", json={"name": "Mara Venn"}, headers=b)
+        created = await client.post("/catalog/characters", json=named("Mara Venn"), headers=b)
         character = (await ok(created, 201))["id"]
         async with space.db.begin() as conn:
             await conn.execute(
                 text(
                     "INSERT INTO catalog.character_versions (catalog_id, version, content, "
-                    "published_at, published_by) VALUES (:c, 1, jsonb_build_object('name', "
-                    "'Mara Venn', 'public_card', jsonb_build_object('images', jsonb_build_object("
-                    "'primary', CAST(:m AS text)))), now(), 'p-media-b')"
+                    "published_at, published_by) VALUES (:c, 1, jsonb_build_object("
+                    "'public_card', jsonb_build_object('name', 'Mara Venn', 'images', "
+                    "jsonb_build_object('primary', CAST(:m AS text)))), now(), 'p-media-b')"
                 ),
                 {"c": character, "m": shown["id"]},
             )

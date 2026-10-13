@@ -3,11 +3,11 @@
 ``assemble`` turns the turn's inputs (``core.turns.TurnInputs``, the Engine's own records) into
 the ``generation`` purpose's ``GenerationInputs``; the ``lite_generation.j2`` template renders
 them as one ``system`` message (rating guidance first, then custom instructions, the actor's
-and render characters' definitions as ``### Author notes: <name>`` in request order, pinned
-memories, the rolling summary and the preamble), the verbatim window as alternating
-``user``/``assistant`` messages, and the player input as the final ``user`` message. Nothing
-from the request's scene context is an argument here, so it cannot reach the prompt
-(FR-RESP-4).
+and render characters' definitions as ``### Author notes: <name>`` in request order, each with
+its deflection style when it has one (FR-GUARD-7), pinned memories, the rolling summary and the
+preamble), the verbatim window as alternating ``user``/``assistant`` messages, and the player
+input as the final ``user`` message. Nothing from the request's scene context is an argument
+here, so it cannot reach the prompt (FR-RESP-4).
 
 Several render characters share this one generation (FR-RESP-5, FR-LITE-5). Their knowledge is
 separated only by instruction: each one's notes are labelled with its name and the preamble says
@@ -15,7 +15,8 @@ each character knows only what its notes and the scene show. The notes all sit i
 prompt, so a secret in one character's notes is in the context the others are voiced from.
 
 On a guardrail regeneration (#68) the system block ends with the output gate's constraint
-lines, one per output policy an earlier draft broke.
+lines, one per output policy an earlier draft broke; the deflection styles in the notes let the
+regenerated reply refuse or change the subject in character (FR-GUARD-7; #115).
 
 ``model_params`` maps the resolved generation settings onto the call: ``length`` →
 ``max_tokens``, ``temperature``/``top_p`` as given, and the stop sequence ``"\\n<Actor>:"`` so
@@ -74,7 +75,9 @@ def assemble(
         rating_guidance=inputs.guidance,
         custom_instructions=inputs.instructions,
         character_definitions=[
-            CharacterDefinition(name=c.name, definition=c.definition)
+            CharacterDefinition(
+                name=c.name, definition=c.definition, deflection_style=c.deflection_style
+            )
             for c in (current.get(entry.id, entry) for entry in cast.noted)
         ],
         pinned_memories=list(inputs.pins),

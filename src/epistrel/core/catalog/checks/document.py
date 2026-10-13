@@ -1,5 +1,7 @@
-"""The document check (#111): what is validated is a valid draft of its kind and, for a scenario,
-keeps every save rule (``core.catalog.scenario_rules``).
+"""The document check (#111): what is validated is a valid draft of its kind and keeps every save
+rule of its kind (``core.catalog.scenario_rules`` for a scenario; ``models.character_rules`` for a
+catalog character, #115, whose missing reference-image audience is the character content check's
+to report, with its own code).
 
 A save validates every draft it stores, so a stored draft fails here only when a rule changed
 since it was saved. Each failure is an error at its field: the code is the schema error's type
@@ -16,6 +18,7 @@ from typing import Any, ClassVar
 from pydantic import ValidationError
 
 from epistrel.core.catalog.checks.base import Check, Findings, Subject, ValidationContext
+from epistrel.core.catalog.models import CharacterDraft, character_rules
 from epistrel.core.catalog.report import Entry, Outcome
 from epistrel.core.catalog.scenario_models import ScenarioDraft
 from epistrel.core.catalog.scenario_rules import dotted, rule_errors
@@ -62,6 +65,8 @@ class DocumentCheck(Check):
             return Findings(entries=_entries(subject, list(exc.errors())))
         if isinstance(parsed, ScenarioDraft):
             return Findings(entries=_entries(subject, rule_errors(parsed)))
+        if isinstance(parsed, CharacterDraft):
+            return Findings(entries=_entries(subject, character_rules(parsed)))
         return Findings()
 
 

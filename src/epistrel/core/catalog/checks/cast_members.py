@@ -32,8 +32,9 @@ class FilledRole:
     """A ``locked`` or ``default`` role and its character: the catalog row (``None`` when the
     character does not exist), the version row used (``None`` when there is none: the pinned
     version is missing, or nothing is published), and that version's content rating, by its
-    stored version id (``None`` until #115 records one) and the rating's id (the stored
-    version's, else the one the document names)."""
+    stored version id (``None`` when the version recorded none: one published before a rating
+    was required, #115) and the rating's id (the stored version's, else the one the document
+    names)."""
 
     index: int
     role: ScenarioRole

@@ -2,10 +2,11 @@
 
 The ``system`` block holds, in order: the story rating's prompt guidance (always first,
 FR-RATE-4), the custom instructions, each character's definition as labelled author notes
-(never a public card) in request order, the pinned memories, the rolling summary, then the constant preamble: who is voiced, in request order, and
-the one line that separates the characters' knowledge (FR-LITE-5: by instruction only), and on
-a guardrail regeneration one constraint line per violated output policy (#68).
-Empty sections are left out. The verbatim window follows as chat messages, one per transcript
+(never a public card) in request order, each followed by its deflection style when it has one
+(FR-GUARD-7, #115), the pinned memories, the rolling summary, then the constant preamble: who
+is voiced, in request order, and the one line that separates the characters' knowledge
+(FR-LITE-5: by instruction only), and on a guardrail regeneration one constraint line per
+violated output policy (#68). Empty sections are left out. The verbatim window follows as chat messages, one per transcript
 row through the ``line`` macro (``prompts.render``), and the ``user`` block is the player input,
 the final ``user`` message. -#}
 {% macro line(entry) -%}
@@ -25,6 +26,9 @@ the final ``user`` message. -#}
 {% for character in character_definitions %}
 ### Author notes: {{ character.name }}
 {{ character.definition }}
+{% if character.deflection_style %}
+When {{ character.name }} refuses or changes the subject: {{ character.deflection_style }}
+{% endif %}
 
 {% endfor %}
 {% if pinned_memories %}

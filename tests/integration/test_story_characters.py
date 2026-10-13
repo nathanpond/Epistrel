@@ -23,6 +23,7 @@ from epistrel.core.media.assets import referenced
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.stories import CAST_MAX
 from tests.auth_support import auth_settings, bearer
+from tests.character_support import complete
 from tests.event_support import rows, scalar
 from tests.media_support import mp4, png, uploaded
 from tests.policy_support import story_item, words
@@ -486,7 +487,8 @@ async def test_promotion_cuts_the_definition_and_leaves_out_retired_images(
             c=left_out.json()["catalog_id"],
         )
         assert draft["public_card"] == {
-            "images": {"primary": second["id"], "gallery": [third["id"]]}
+            "name": DRIVER["name"],
+            "images": {"primary": second["id"], "gallery": [third["id"]]},
         }
         assert await scalar(
             engine, "SELECT images FROM characters WHERE id = :c", c=added.json()["id"]
@@ -503,24 +505,24 @@ async def test_catalog_drafts_hold_the_promoted_fields(
     definition's ``true_age``, ``background_flavor`` and ``safe_fallback_text``, the card's
     images (a primary image and a gallery) and the content rating. A save checks what it adds:
     an image that is not live is 422 ``media_retired`` and a rating that cannot be assigned 422
-    ``rating_retired``, at their fields. The card shows the images (the primary first, with
-    their alt text) and the rating, never a definition field; ``full`` adds the definition; a
+    ``rating_retired``, at their fields. The card shows the primary image and the gallery, each
+    with its alt text, and the rating, never a definition field; ``full`` adds the definition; a
     publish records the rating's version, and the version's card shows it."""
     async with respond_client(stub_settings, engine) as (client, _):
         image = await uploaded(client, png(nonce=new_ulid()), alt_text="A lantern")
         extra = await uploaded(client, png(nonce=new_ulid()))
         retired = await uploaded(client, png(nonce=new_ulid()))
         await client.delete(f"/media/{retired['id']}", headers=as_())
-        body = {
-            "name": "Mara Venn",
-            "public_card": {"images": {"primary": image["id"]}},
-            "definition": {"true_age": 41, "background_flavor": "Raised on Gull Rock."},
-            "metadata": {"content_rating_id": EVERYONE_ID},
-        }
+        body = complete(
+            "Mara Venn",
+            images={"primary": image["id"]},
+            definition_changes={"background_flavor": "Raised on Gull Rock."},
+        )
         created = await client.post("/catalog/characters", json=body, headers=as_())
         assert created.status_code == 201, created.text
         cid = created.json()["id"]
-        assert created.json()["images"] == [{"media_id": image["id"], "alt_text": "A lantern"}]
+        primary = created.json()["images"]["primary"]
+        assert (primary["media_id"], primary["alt_text"]) == (image["id"], "A lantern")
         assert created.json()["content_rating"]["id"] == EVERYONE_ID
         assert created.json()["definition"]["true_age"] == 41
         for patch, expected in (
@@ -555,7 +557,10 @@ async def test_catalog_drafts_hold_the_promoted_fields(
         card = await client.get(
             f"/catalog/characters/{cid}", params={"draft": "true"}, headers=READ
         )
-        assert [i["media_id"] for i in card.json()["images"]] == [image["id"], extra["id"]]
+        assert card.json()["images"] == {
+            "primary": {"media_id": image["id"], "alt_text": "A lantern"},
+            "gallery": [{"media_id": extra["id"], "alt_text": None}],
+        }
         assert "definition" not in card.json()
         published = await client.post(
             f"/catalog/characters/{cid}/publish", json={"draft_revision": 2}, headers=as_()

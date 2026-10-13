@@ -1,7 +1,7 @@
 """The catalog validation's pure parts (#111): the report shape and its order, the runner's
 capability rule and gate, the personality heuristic, the policy texts a scenario sends, the
 matched span of a word list, the character-document readers, the provider walk, and a catalog
-character's interim publish rules run through the same runner."""
+character's publish rules (#115) run through the same runner."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from epistrel.core.catalog.checks.personality import (
     personality_sentences,
 )
 from epistrel.core.catalog.checks.providers import provider_names
+from epistrel.core.catalog.models import PUBLISH_REQUIRED
 from epistrel.core.catalog.report import (
     CODES,
     DRAFT,
@@ -41,6 +42,7 @@ from epistrel.core.config_changes import DeploymentState
 from epistrel.core.policies.evaluate import matched_span
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.tables.ownership import EntityType
+from tests.character_support import complete
 from tests.policy_support import policy
 from tests.scenario_support import COMPLETE
 
@@ -238,6 +240,7 @@ def test_the_checks_and_the_capabilities() -> None:
     assert names == [
         "document",
         "required",
+        "character_content",
         "cast_limit",
         "role_characters",
         "eligibility",
@@ -271,15 +274,46 @@ async def test_capability_checks_never_pass_silently() -> None:
         assert (found.entries, found.unavailable) == ([], [check.name])
 
 
-async def test_a_character_runs_its_interim_rules() -> None:
-    """A catalog character is validated through the same runner: a named, valid draft has
-    nothing to report; a nameless one is ``field_required`` at ``name``; one the draft model no
-    longer accepts has an error per field, at its path (and the gate stops the name rule)."""
-    named = await validation.run(_subject({"name": "Mara", "definition": {}}), _context())
-    assert named == ValidationReport()
-    nameless = await validation.run(_subject({"definition": {}}), _context())
-    assert [(e.code, e.location.field, e.outcome) for e in nameless.errors] == [
-        ("field_required", "name", Outcome.rejected)
+async def test_a_character_runs_its_rules() -> None:
+    """A catalog character is validated through the same runner (#115). A draft holding every
+    required field but its rating reports exactly ``content_rating_missing`` (judging a rating
+    that is set, and images, takes the database: the integration tests do that). An empty draft
+    reports every missing field at once, ``true_age_missing`` at the true age, and, with the
+    deployment's ``require_primary_image`` on, ``primary_image_required``. A stored alias that is
+    the name breaks a save rule (the document check: ``alias_is_name``, and the gate stops the
+    rest), and a document the draft model no longer accepts has an error per field, at its
+    path."""
+    unrated = complete("Mara")
+    del unrated["metadata"]["content_rating_id"]
+    report = await validation.run(_subject(unrated), _context())
+    assert [(e.code, e.location.field, e.outcome) for e in report.errors] == [
+        ("content_rating_missing", "metadata.content_rating_id", Outcome.rejected)
+    ]
+    assert (report.warnings, report.unavailable) == ([], [])
+
+    empty = await validation.run(_subject({}), _context())
+    expected = [
+        *(("field_required", path) for path in PUBLISH_REQUIRED),
+        ("true_age_missing", "definition.true_age"),
+        ("content_rating_missing", "metadata.content_rating_id"),
+    ]
+    assert sorted((e.code, e.location.field) for e in empty.errors) == sorted(expected)
+    required = _context()
+    required = ValidationContext(
+        conn=required.conn,
+        settings=required.settings.model_copy(update={"require_primary_image": True}),
+        capabilities=required.capabilities,
+    )
+    pictured = await validation.run(_subject(unrated), required)
+    assert sorted((e.code, e.location.field) for e in pictured.errors) == [
+        ("content_rating_missing", "metadata.content_rating_id"),
+        ("primary_image_required", "public_card.images.primary"),
+    ]
+
+    aliased = {**unrated, "metadata": {"aliases": ["MARA"]}}
+    found = await validation.run(_subject(aliased), _context())
+    assert [(e.code, e.location.field) for e in found.errors] == [
+        ("alias_is_name", "metadata.aliases[0]")
     ]
     broken = await validation.run(
         _subject({"definition": {"personality": 7}, "mood": "x"}), _context()
@@ -383,7 +417,7 @@ def test_matched_span_quotes_the_words_as_written() -> None:
 
 
 def test_character_documents_read_both_shapes() -> None:
-    """#103's interim document and #115's planned one both read; a value of another type reads
+    """#103's interim document and #115's both read; a value of another type reads
     as absent."""
     interim = {"name": "Mara", "definition": {"personality": "Wry."}}
     planned = {

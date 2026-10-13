@@ -3,8 +3,8 @@
 A scenario is validated when it is published and on demand (``POST
 /catalog/scenarios/{id}/validate``, a dry run that writes nothing); story creation (#119) runs
 it again for what the new story uses. Catalog characters run through the same runner with their
-own checks (#103's interim rules; #115 adds its own). Every surface answers one
-``ValidationReport`` (``core.catalog.report``, re-exported here with ``Entry``).
+own checks (the document check, ``character_content`` and the media check; #115). Every surface
+answers one ``ValidationReport`` (``core.catalog.report``, re-exported here with ``Entry``).
 
 **The checks** are ``CHECKS``, an explicit ordered list of modules under
 ``core.catalog.checks``, one per check. Each names the entry types it applies to and the
@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.catalog.checks import (
     cast_limit,
+    character_content,
     document,
     eligibility,
     fact_consistency,
@@ -75,6 +76,7 @@ from epistrel.core.tables.ownership import EntityType
 CHECKS: tuple[Check, ...] = (
     document.CHECK,
     required.CHECK,
+    character_content.CHECK,
     cast_limit.CHECK,
     role_characters.CHECK,
     eligibility.CHECK,

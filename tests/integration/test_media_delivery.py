@@ -37,6 +37,8 @@ from epistrel.core.clock import frozen_at
 from epistrel.core.media.signing import CLOCK_SKEW_S
 from epistrel.engine import Engine
 from tests.auth_support import auth_settings
+from tests.catalog_support import create, publish, read, save, scratch_catalog, version_rows
+from tests.character_support import complete, require_primary_image
 from tests.conftest import S3Endpoint
 from tests.media_support import (
     READ,
@@ -52,9 +54,11 @@ from tests.media_support import (
     set_media,
     sha256,
     staged_files,
+    uploaded,
     video,
 )
 from tests.model_support import config_key
+from tests.story_support import rest
 
 ADAPTERS = ("local", "s3")
 PUBLIC_BASE = "https://media.example.test/epistrel"
@@ -331,6 +335,50 @@ async def test_c_23__delivery(
         assert await count(bare.space.db, "SELECT count(*) FROM media_assets") == 0
         assert not bare.engine.media.exists(sha256(clip))
         assert staged_files(bare.space.root) == []
+
+
+@pytest.mark.part("M3", "FR-CAT-4")
+async def test_c_23__optional_images(pg_url: str) -> None:
+    """Images are optional (#115): by default (the deployment's ``require_primary_image`` reads
+    off) a character with no image at all publishes, and its card shows no image. With the
+    setting on, a character without a primary image is refused, one with a gallery image only
+    too (422 ``publish_invalid``, ``primary_image_required`` at ``public_card.images.primary``),
+    and nothing is written.
+
+    Complements asserted: with the setting on, the refused draft publishes once it names a
+    primary image, so the refusal was the setting's doing; off again, a character with no image
+    publishes."""
+    async with scratch_catalog(pg_url) as (settings, db), rest(settings, db) as client:
+        shown = await client.get("/admin/settings", headers=READ)
+        assert shown.json()["require_primary_image"] is False
+        bare = await create(client, complete("Wren Hale"))
+        published = await publish(client, bare["id"], bare["draft_revision"])
+        assert (published.status_code, published.json()["version"]) == (201, 1), published.text
+        card = (await read(client, bare["id"])).json()
+        assert card["images"] == {"primary": None, "gallery": []}
+
+        await require_primary_image(client, True)
+        picture = await uploaded(client, png(nonce=secrets.token_hex(4)))
+        gallery_only = await create(
+            client, complete("Ivo Brand", images={"gallery": [picture["id"]]})
+        )
+        refused = await publish(client, gallery_only["id"], 1)
+        status, code, details = _error(refused)
+        assert (status, code) == (422, "publish_invalid")
+        assert [(e["code"], e["location"]["field"]) for e in details["report"]["errors"]] == [
+            ("primary_image_required", "public_card.images.primary")
+        ]
+        assert await version_rows(db, gallery_only["id"]) == []
+        named = await save(
+            client, gallery_only["id"], 1, public_card={"images": {"primary": picture["id"]}}
+        )
+        assert named.status_code == 200, named.text
+        accepted = await publish(client, gallery_only["id"], named.json()["draft_revision"])
+        assert accepted.status_code == 201, accepted.text
+
+        await require_primary_image(client, False)
+        again = await create(client, complete("Tom Reed"))
+        assert (await publish(client, again["id"], 1)).status_code == 201
 
 
 # -- helpers' own checks -------------------------------------------------------------------------

@@ -4,9 +4,9 @@
 repository check is ``tests/test_catalog_listing.py``.
 
 Each test runs on its own scratch database, so a list holds exactly what the test put there.
-A catalog character's labels, aliases and content rating have no request field until #115, so
-the tests that need them plant a published version in #115's planned shape
-(``metadata.labels``, ``metadata.aliases``, ``metadata.content_rating_id``)."""
+A catalog character's labels, aliases and content rating are request fields since #115
+(``metadata.labels``, ``metadata.aliases``, ``metadata.content_rating_id``); a test that needs
+one published without going through a publish plants a version in that shape."""
 
 from __future__ import annotations
 
@@ -279,7 +279,7 @@ async def test_search_reads_only_the_latest_published_public_card(space: Space) 
     mara = await _character(client, "Mara Venn", public_description="Keeps the lamp.")
     edited = await client.patch(
         f"{CHARACTERS}/{mara}",
-        json={"draft_revision": 2, "public_description": "Keeps the orchard."},
+        json={"draft_revision": 2, "public_card": {"public_description": "Keeps the orchard."}},
         headers=WRITE,
     )
     assert edited.status_code == 200, edited.text
@@ -325,9 +325,10 @@ async def test_search_reads_only_the_latest_published_public_card(space: Space) 
 
 
 async def test_character_search_reads_labels_and_aliases(space: Space) -> None:
-    """In #115's planned shape (planted here), a character's aliases and labels are searched
-    with its name and public description, its labels filter, and so does its content rating:
-    exactly that rating, no other. A rating that does not exist is 422 at the filter."""
+    """In #115's shape (planted here), a character's aliases and labels are searched with its
+    name and public description, its labels filter, and so does its content rating: exactly that
+    rating, no other (the other character carries the Everyone rating its complete body names).
+    A rating that does not exist is 422 at the filter."""
     client = space.client
     meg = await _character(client, "Margaret Lowe", publish=False)
     await _plant(
@@ -349,7 +350,7 @@ async def test_character_search_reads_labels_and_aliases(space: Space) -> None:
     assert await ids(client, CHARACTERS, label="quiet") == [meg]
     assert await ids(client, CHARACTERS, label=["quiet", "chatty"]) == []
     assert await ids(client, CHARACTERS, content_rating=TEEN_ID) == [meg]
-    assert await ids(client, CHARACTERS, content_rating=EVERYONE_ID) == []
+    assert await ids(client, CHARACTERS, content_rating=EVERYONE_ID) == [other]
     assert set(await ids(client, CHARACTERS)) == {meg, other}
     unknown = await list_page(client, CHARACTERS, content_rating="0" * 26)
     assert _error(unknown)[:2] == (422, "validation_error")
@@ -389,11 +390,21 @@ async def test_list_items_are_the_single_read_cards(space: Space) -> None:
     edits: dict[str, tuple[str, dict[str, Any], str, str]] = {
         mara: (
             CHARACTERS,
-            {"name": "Margaret Venn", "public_description": "Keeps the orchard now."},
+            {
+                "public_card": {
+                    "name": "Margaret Venn",
+                    "public_description": "Keeps the orchard now.",
+                }
+            },
             "Mara Venn",
             "Margaret Venn",
         ),
-        archived: (CHARACTERS, {"name": "Thomas Reed"}, "Tom Reed", "Thomas Reed"),
+        archived: (
+            CHARACTERS,
+            {"public_card": {"name": "Thomas Reed"}},
+            "Tom Reed",
+            "Thomas Reed",
+        ),
         complete: (
             SCENARIOS,
             {

@@ -1,7 +1,5 @@
-"""The required-content check (FR-RATE-3, FR-SCN-2,9; #103, #108, #111): what a published entry
-must hold. Every finding is an error.
-
-A **scenario** needs:
+"""The required-content check (FR-RATE-3, FR-SCN-2,9; #108, #111): what a published scenario must
+hold. Every finding is an error. A scenario needs:
 
 - ``field_required`` at ``public_card.name``: a name;
 - ``content_rating_missing`` at ``metadata.content_rating_id``: a content rating (FR-RATE-3:
@@ -17,22 +15,19 @@ The last four are #108's hand-off to #111 (its plan's "content rules"). #116 exe
 companion version that a character-alone publish creates from ``world_required`` and
 ``opening_required``.
 
-A **catalog character** needs a name (``field_required`` at ``name``; #103's interim rule, which
-#115 extends with its own).
+What a published catalog character must hold is the character content check's
+(``checks.character_content``, #115), which shares ``rating_unusable``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, ClassVar
-
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.catalog.checks.base import Check, Findings, Subject, ValidationContext
 from epistrel.core.catalog.checks.scenario import draft_of
 from epistrel.core.catalog.report import Outcome
 from epistrel.core.tables import content_ratings
-from epistrel.core.tables.ownership import EntityType
 
 NAME_RULE = "a published entry is named"
 RATING_RULE = "a published scenario carries a content rating from the deployment's set (FR-RATE-3)"
@@ -46,27 +41,23 @@ def _blank(value: str | None) -> bool:
     return value is None or not value.strip()
 
 
-def _character_name(document: Mapping[str, Any]) -> Any:
-    card = document.get("public_card")
-    if isinstance(card, Mapping) and card.get("name") is not None:
-        return card.get("name")
-    return document.get("name")
+async def rating_unusable(conn: AsyncConnection, rating_id: str) -> bool:
+    """Whether ``rating_id`` cannot be newly assigned: no rating has it, or it is retired."""
+    row = (
+        await conn.execute(
+            select(content_ratings.c.retired_at).where(content_ratings.c.id == rating_id)
+        )
+    ).one_or_none()
+    return row is None or row.retired_at is not None
 
 
 class RequiredCheck(Check):
     """See the module docstring."""
 
     name = "required"
-    kinds: ClassVar[frozenset[EntityType]] = frozenset({EntityType.SCENARIO, EntityType.CHARACTER})
 
     async def run(self, subject: Subject, ctx: ValidationContext) -> Findings:
         found = Findings()
-        if subject.entity_type is EntityType.CHARACTER:
-            if _character_name(subject.document) is None:
-                found.entries.append(
-                    subject.entry("field_required", Outcome.rejected, field="name", rule=NAME_RULE)
-                )
-            return found
         draft = draft_of(subject)
         if draft.public_card.name is None:
             found.entries.append(
@@ -84,21 +75,16 @@ class RequiredCheck(Check):
                     rule=RATING_RULE,
                 )
             )
-        else:
-            retired_at = await ctx.conn.execute(
-                select(content_ratings.c.retired_at).where(content_ratings.c.id == rating)
-            )
-            row = retired_at.one_or_none()
-            if row is None or row.retired_at is not None:
-                found.entries.append(
-                    subject.entry(
-                        "rating_retired",
-                        Outcome.rejected,
-                        field="metadata.content_rating_id",
-                        source=rating,
-                        rule=RETIRED_RULE,
-                    )
+        elif await rating_unusable(ctx.conn, rating):
+            found.entries.append(
+                subject.entry(
+                    "rating_retired",
+                    Outcome.rejected,
+                    field="metadata.content_rating_id",
+                    source=rating,
+                    rule=RETIRED_RULE,
                 )
+            )
         if not draft.cast.roles:
             found.entries.append(
                 subject.entry("role_required", Outcome.rejected, field="cast.roles", rule=ROLE_RULE)

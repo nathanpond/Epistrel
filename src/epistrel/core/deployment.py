@@ -1,8 +1,9 @@
 """Deployment-wide settings: ``GET/PUT /admin/settings`` (#48; #64 covers every setting).
 
-The settings are ``DeploymentSettings`` (``core/settings_schema.py``): the two
-``deployment_state`` columns (``default_content_rating_id``, ``minor_age_threshold``) and the
-sections of its ``settings`` document — the Lite defaults (#57), the story-level text caps
+The settings are ``DeploymentSettings`` (``core/settings_schema.py``): the
+``deployment_state`` columns (``default_content_rating_id``, ``minor_age_threshold``, and the
+starting-cast limits ``max_characters_at_start_default``/``_ceiling``, #108) and the sections of
+its ``settings`` document — the Lite defaults (#57), the story-level text caps
 (#60), the idempotency result window (#61), the default ``turn_queue_max`` (#63), the
 structured-result settings (#53), the safe fallback (#68), the default
 ``max_model_calls_per_turn`` (#69) and the media settings (#105). ``media_sweep_interval`` also
@@ -75,17 +76,24 @@ __all__ = [
 
 
 NULLABLE = frozenset(
-    {"max_model_calls_per_turn", "media_moderation_webhook_url", "public_base_url"}
+    {
+        "max_model_calls_per_turn",
+        "media_moderation_webhook_url",
+        "public_base_url",
+        "max_characters_at_start_ceiling",
+    }
 )
 """Top-level settings whose ``null`` resets them to their default instead of being refused: the
-call cap's formula (#69), and no moderation hook or base URL (#105)."""
+call cap's formula (#69), no moderation hook or base URL (#105), and no starting-cast ceiling
+(#108)."""
 
 
 class SettingsPatch(BaseModel):
     """A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,
     ``lite_generation_defaults`` merges key by key, and ``null`` is refused for a top-level
     field (except ``max_model_calls_per_turn``, whose ``null`` restores the formula, and
-    ``media_moderation_webhook_url`` and ``public_base_url``, whose ``null`` unsets them). A list
+    ``media_moderation_webhook_url``, ``public_base_url`` and
+    ``max_characters_at_start_ceiling``, whose ``null`` unsets them). A list
     (``media_allowed_types``) replaces the stored one. Bounds are ``DeploymentSettings``'s,
     checked on the merged settings (422 ``validation_error`` at ``body.<field>``)."""
 
@@ -96,6 +104,8 @@ class SettingsPatch(BaseModel):
 
     default_content_rating_id: str | None = None
     minor_age_threshold: int | None = None
+    max_characters_at_start_default: int | None = None
+    max_characters_at_start_ceiling: int | None = None
     lite_generation_defaults: GenerationSettings | None = None
     lite_window_messages: int | None = None
     lite_summary_chunk: int | None = None

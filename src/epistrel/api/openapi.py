@@ -74,8 +74,8 @@ TAGS: list[dict[str, str]] = [
     {"name": "settings", "description": "A story's settings, guardrails and config changes."},
     {
         "name": "catalog",
-        "description": "Catalog characters: drafts, immutable published versions and their "
-        "`card`/`full` projections (FR-CAT, FR-SCN-10).",
+        "description": "Catalog characters and scenarios: drafts, immutable published versions "
+        "and their `card`/`full` projections (FR-CAT, FR-SCN-1..4,10).",
     },
     {
         "name": "media",
@@ -191,6 +191,7 @@ ERROR_STATUS: dict[str, int] = {
     "range_not_satisfiable": 416,
     "budget_below_safety_minimum": 422,
     "cannot_relax": 422,
+    "cast_limit_exceeded": 422,
     "checksum_mismatch": 422,
     "companion_follows_character": 422,
     "entry_archived": 422,
@@ -257,6 +258,8 @@ _UPLOADED = (
 )
 """What storing an upload can answer, directly or from a resumable session (#105, #107)."""
 _GATED = ("guardrail_violation", "budget_below_safety_minimum", "model_unavailable")
+_SCENARIO_SAVE = ("draft_too_large", "cast_limit_exceeded", "rating_retired", "media_retired")
+"""What a scenario's create or save can answer besides the rules' ``validation_error`` (#108)."""
 _ADMIN_CONFIG = ("config_conflict",)
 
 OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
@@ -313,6 +316,10 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "save_character_draft": ("draft_stale", "draft_too_large", "entry_archived"),
     "publish_character": ("draft_stale", "entry_archived", "publish_invalid"),
     "get_character": ("not_published",),
+    "create_scenario_draft": _SCENARIO_SAVE,
+    "save_scenario_draft": ("draft_stale", "entry_archived", *_SCENARIO_SAVE),
+    "publish_scenario": ("draft_stale", "entry_archived", "publish_invalid", "rating_retired"),
+    "get_scenario": ("not_published",),
     "upload_media": (
         *_UPLOADED,
         "use_multipart",

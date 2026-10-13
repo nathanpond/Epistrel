@@ -40,6 +40,7 @@ from epistrel.core.enums import Authority, EventCategory, Provenance
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import (
+    DEFAULT_MAX_CHARACTERS_AT_START,
     DEPLOYMENT_COLUMNS,
     ConfigClass,
     DeploymentSettings,
@@ -201,13 +202,15 @@ def section[M: BaseModel](view: type[M], document: Mapping[str, Any] | None) -> 
 
 @dataclass(frozen=True, slots=True)
 class DeploymentState:
-    """``deployment_state``: the configuration revision, the two column settings and the
-    ``settings`` document (every section, defaults filled in) — what ``/admin/settings``
-    returns."""
+    """``deployment_state``: the configuration revision, the column settings
+    (``DEPLOYMENT_COLUMNS``) and the ``settings`` document (every section, defaults filled in)
+    — what ``/admin/settings`` returns."""
 
     config_revision: int
     default_content_rating_id: str
     minor_age_threshold: int
+    max_characters_at_start_default: int = DEFAULT_MAX_CHARACTERS_AT_START
+    max_characters_at_start_ceiling: int | None = None
     settings: dict[str, Any] = field(default_factory=dict)
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
@@ -219,6 +222,8 @@ class DeploymentState:
                 **self.settings,
                 "default_content_rating_id": self.default_content_rating_id,
                 "minor_age_threshold": self.minor_age_threshold,
+                "max_characters_at_start_default": self.max_characters_at_start_default,
+                "max_characters_at_start_ceiling": self.max_characters_at_start_ceiling,
             }
         )
 
@@ -236,6 +241,8 @@ def _state(row: Any) -> DeploymentState:
         config_revision=int(row.config_revision),
         default_content_rating_id=row.default_content_rating_id,
         minor_age_threshold=int(row.minor_age_threshold),
+        max_characters_at_start_default=int(row.max_characters_at_start_default),
+        max_characters_at_start_ceiling=row.max_characters_at_start_ceiling,
         settings=document_settings(row.settings),
     )
 
@@ -244,6 +251,8 @@ _COLUMNS = (
     deployment_state.c.config_revision,
     deployment_state.c.default_content_rating_id,
     deployment_state.c.minor_age_threshold,
+    deployment_state.c.max_characters_at_start_default,
+    deployment_state.c.max_characters_at_start_ceiling,
     deployment_state.c.settings,
 )
 

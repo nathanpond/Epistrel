@@ -14,9 +14,10 @@ one file. Later stories add theirs here (#106 profiles, #110 listing status, #11
   a stranger, and a principal holding relations named ``admin`` and ``owner`` with the same
   status, and every read with the same body.
 - ``test_i_21__companion``: a character's companion scenario moves with it and cannot be
-  transferred or related on its own; a scenario transfer leaves stories alone. Until #108 and
-  #116 create ``catalog.scenario_catalog`` with ``companion_of``, the test stands one in on its
-  own scratch database. When the real table arrives, the test is rebuilt on it.
+  transferred or related on its own; a scenario transfer leaves stories alone. It runs on real
+  scenarios (#108) in its own scratch database (it counts every ownership event). Until #116
+  creates companions with their characters, the test makes a scenario a companion by setting
+  its ``companion_of``.
 
 The detailed tests are in ``tests/integration/test_ownership.py``. The story-creation clauses
 (player relations, creating from another owner's entry) are #119's.
@@ -50,10 +51,11 @@ from epistrel import (
     OwnerTransferRequest,
     RelationRequest,
     RequestContext,
+    ScenarioCreate,
     StorySpec,
 )
 from epistrel.config import Settings
-from epistrel.core.db import make_engine, make_sync_engine
+from epistrel.core.db import make_engine
 from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.media.sweep import sweep
 from epistrel.core.stories import STORY_TABLES
@@ -475,33 +477,11 @@ async def test_i_21__nothing_gates(
 
 # -- companions ------------------------------------------------------------------------------------
 
-STAND_IN = """
-CREATE TABLE catalog.scenario_catalog (
-    id char(26) PRIMARY KEY,
-    owner_principal text NOT NULL,
-    companion_of char(26) NULL,
-    updated_at timestamptz NOT NULL
-)
-"""
-"""The columns ownership reads of #108's scenario catalog with #116's ``companion_of``."""
-
 
 @pytest.fixture
 async def companion_db(pg_url: str) -> AsyncIterator[tuple[Engine, AsyncEngine]]:
-    """An Engine on its own scratch database, where a stand-in ``catalog.scenario_catalog``
-    exists (see the module docstring)."""
+    """An Engine on its own scratch database: the test counts every ownership event there."""
     with migrated_database(pg_url, f"epistrel_i21_{secrets.token_hex(4)}") as url:
-        sync = make_sync_engine(url)
-        try:
-            with sync.begin() as conn:
-                exists = conn.execute(text("SELECT to_regclass('catalog.scenario_catalog')"))
-                assert exists.scalar() is None, (
-                    "catalog.scenario_catalog exists now (#108): rebuild this test on real "
-                    "scenarios and companions"
-                )
-                conn.execute(text(STAND_IN))
-        finally:
-            sync.dispose()
         settings = auth_settings(url, model_adapter="stub")
         db = make_engine(settings)
         lib = Engine(settings, db=db)
@@ -525,33 +505,40 @@ async def _owners(db: AsyncEngine) -> dict[str, str]:
     return {str(r.id): str(r.owner_principal) for r in found}
 
 
+async def _scenario(lib: Engine, owner: str, *, companion_of: str | None = None) -> str:
+    """A scenario created as ``owner``; made the companion of ``companion_of`` (#116 does that
+    itself, at the character's creation)."""
+    created = await lib.create_scenario_draft(
+        _as(owner), ScenarioCreate.model_validate({"public_card": {"name": "Gull Rock"}})
+    )
+    scenario_id = created.scenario.id
+    if companion_of is not None:
+        async with lib.db.begin() as conn:
+            await conn.execute(
+                text("UPDATE catalog.scenario_catalog SET companion_of = :x WHERE id = :y"),
+                {"x": companion_of, "y": scenario_id},
+            )
+    return scenario_id
+
+
 @pytest.mark.integration
 @pytest.mark.part("M3", "FR-AUTH-5; FR-CAT-9")
 async def test_i_21__companion(companion_db: tuple[Engine, AsyncEngine]) -> None:
     """Transferring catalog character X moves X and its companion scenario Y to the new owner in
     one transaction: one ``transfer`` event each, at the same time, by the acting principal,
-    with Y's ``updated_at`` bumped. A companion row already at the new owner (Y2, planted out of
+    with Y's ``updated_at`` moved on. A companion row already at the new owner (Y2, made out of
     step; #116 keeps one per character) is left as it is, with no event of its own. Y cannot be
-    transferred, related or unrelated on its own
-    (422 ``companion_follows_character``), and nothing changes. A scenario that is nobody's
-    companion transfers and takes relations normally. A story whose character came from X stays
-    byte-identical throughout.
+    transferred, related or unrelated on its own (422 ``companion_follows_character``), and
+    nothing changes. A scenario that is nobody's companion transfers and takes relations
+    normally. A story whose character came from X stays byte-identical throughout.
 
     Complement asserted: the story snapshot does see the story's own archive."""
     lib, db = companion_db
     created = await lib.create_character_draft(_as(OWNER), CharacterCreate(name="Mara Venn"))
     x = created.character.id
-    y, z = "0000000000000000000000CMP1", "0000000000000000000000SCN1"
-    y2 = "0000000000000000000000CMP2"  # out of step: already the new owner's
-    async with db.begin() as conn:
-        await conn.execute(
-            text(
-                "INSERT INTO catalog.scenario_catalog VALUES "
-                "(:y, :o, :x, '2026-01-01T00:00:00Z'), (:z, :o, NULL, '2026-01-01T00:00:00Z'), "
-                "(:y2, :n, :x, '2026-01-01T00:00:00Z')"
-            ),
-            {"y": y, "z": z, "y2": y2, "o": OWNER, "n": NEW_OWNER, "x": x},
-        )
+    y = await _scenario(lib, OWNER, companion_of=x)
+    z = await _scenario(lib, OWNER)
+    y2 = await _scenario(lib, NEW_OWNER, companion_of=x)  # out of step: already the new owner's
     story = await lib.create_story(_as(OWNER), StorySpec.model_validate(story_body("Wren", "Ada")))
     async with db.begin() as conn:
         await conn.execute(
@@ -562,6 +549,8 @@ async def test_i_21__companion(companion_db: tuple[Engine, AsyncEngine]) -> None
             {"x": x, "c": story.characters[1].id},
         )
     before = await _snapshot(db, story.story_id)
+    stamp = "SELECT updated_at FROM catalog.scenario_catalog WHERE id = :y"
+    y_updated, y2_updated = await scalar(db, stamp, y=y), await scalar(db, stamp, y=y2)
 
     moved = await lib.transfer_owner(
         _as(RELATED), EntityType.CHARACTER, x, OwnerTransferRequest(principal=NEW_OWNER)
@@ -578,11 +567,9 @@ async def test_i_21__companion(companion_db: tuple[Engine, AsyncEngine]) -> None
         ("scenario", y, "transfer", OWNER, NEW_OWNER, RELATED),
     ]
     assert events[0].at == events[1].at, "one transaction"
-    # The companion already at the new owner is left as it is: no event of its own.
-    bumped = await scalar(
-        db, "SELECT updated_at > '2026-01-01' FROM catalog.scenario_catalog WHERE id = :y", y=y
-    )
-    assert bumped is True
+    assert await scalar(db, stamp, y=y) > y_updated
+    # The companion already at the new owner is left as it is: no event, no new timestamp.
+    assert await scalar(db, stamp, y=y2) == y2_updated
 
     request = RelationRequest(principal=STRANGER, relation="editor")
     refusals = [

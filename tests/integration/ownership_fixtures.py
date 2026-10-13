@@ -30,6 +30,7 @@ from epistrel.core.tables.ownership import EntityType
 from tests.auth_support import bearer
 from tests.catalog_support import character as catalog_character
 from tests.media_support import files, metadata, png
+from tests.scenario_support import scenario as catalog_scenario
 from tests.story_support import story_body
 
 OWNER = "p-owner-a"
@@ -77,6 +78,13 @@ async def create_story(client: httpx.AsyncClient, principal: str, owner: str | N
 async def create_character(client: httpx.AsyncClient, principal: str, owner: str | None) -> Entity:
     body = catalog_character("Mara Venn", **({"owner": owner} if owner is not None else {}))
     response = await client.post("/catalog/characters", json=body, headers=headers(principal))
+    created = await ok(response, 201)
+    return Entity(created["id"])
+
+
+async def create_scenario(client: httpx.AsyncClient, principal: str, owner: str | None) -> Entity:
+    body = catalog_scenario("Sunday Dinner", **({"owner": owner} if owner is not None else {}))
+    response = await client.post("/catalog/scenarios", json=body, headers=headers(principal))
     created = await ok(response, 201)
     return Entity(created["id"])
 
@@ -133,6 +141,11 @@ KINDS: dict[EntityType, Kind] = {
         EntityType.CHARACTER,
         create_character,
         "SELECT owner_principal FROM catalog.character_catalog WHERE id = :id",
+    ),
+    EntityType.SCENARIO: Kind(
+        EntityType.SCENARIO,
+        create_scenario,
+        "SELECT owner_principal FROM catalog.scenario_catalog WHERE id = :id",
     ),
     EntityType.MEDIA: Kind(
         EntityType.MEDIA,
@@ -281,6 +294,7 @@ class Call:
 
 S = "/stories/{story_id}"
 C = "/catalog/characters/{character_id}"
+SC = "/catalog/scenarios/{scenario_id}"
 M = "/media/{media_id}"
 RELATION = "/relations/{relation}/{principal:path}"
 OMNISCIENT = {"viewpoint": "omniscient"}
@@ -339,6 +353,19 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", C): Call(200, queries=ENTRY_READS, prepare=_published),
     ("GET", f"{C}/versions"): Call(200, prepare=_published),
     ("GET", f"{C}/relations"): Call(200, prepare=_related),
+    # -- scenarios (#108): writes
+    ("PATCH", SC): Call(200, {"draft_revision": 1, "drivers": {"plot_hooks": ["A knock."]}}),
+    ("POST", f"{SC}/publish"): Call(201, {"draft_revision": 1}),
+    ("POST", f"{SC}/archive"): Call(200),
+    ("POST", f"{SC}/unarchive"): Call(200, prepare=_archived),
+    ("DELETE", SC): Call(204),
+    ("PUT", f"{SC}/owner"): Call(200, {"principal": NEW_OWNER}),
+    ("POST", f"{SC}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
+    ("DELETE", f"{SC}{RELATION}"): Call(204, prepare=_related),
+    # -- scenarios: reads of a `private` scenario, as for catalog characters
+    ("GET", SC): Call(200, queries=ENTRY_READS, prepare=_published),
+    ("GET", f"{SC}/versions"): Call(200, prepare=_published),
+    ("GET", f"{SC}/relations"): Call(200, prepare=_related),
     # -- media assets (#105): writes
     ("DELETE", M): Call(204),
     ("PUT", f"{M}/owner"): Call(200, {"principal": NEW_OWNER}),
@@ -389,6 +416,7 @@ __all__ = [
     "Kind",
     "create_character",
     "create_media",
+    "create_scenario",
     "create_story",
     "headers",
     "ok",

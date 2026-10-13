@@ -7,15 +7,31 @@ Every C-15 (M3) part lives in this file (traceability counts a test ID per miles
   are in ``tests/integration/test_catalog_characters.py``.
 - #105's part, ``test_c_15__media_upload``: the media upload endpoint (FR-MEDIA-1, FR-API-6).
   The details are in ``tests/integration/test_media_assets.py``.
+- #108's parts: ``test_c_15__scenario_lifecycle``, a scenario's drafts, immutable published
+  versions and its ``card``/``full`` projections (FR-SCN-1,2,10); and
+  ``test_c_15__scenario_field_classes``, the build-time check that every scenario field carries
+  its class (FR-SCN-2). The details are in ``tests/integration/test_scenario_catalog.py``; the
+  roles and the starting-cast limit are U-26's (``tests/test_u_26.py``).
 """
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import pytest
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.catalog.scenario_models import (
+    FieldClass,
+    ScenarioDraft,
+    Use,
+    classification_problems,
+    scenario_schema_classes,
+)
+from tests import scenario_support as scenarios
 from tests.catalog_support import (
     BASE,
     CARD_KEYS,
@@ -215,3 +231,167 @@ async def test_c_15__media_upload(settings: Settings, engine: AsyncEngine) -> No
             assert (await upload(client, big)).status_code == 201
         finally:
             await set_media(client, media_max_bytes=50 * 1024 * 1024)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-SCN-1,2,10")
+async def test_c_15__scenario_lifecycle(settings: Settings, engine: AsyncEngine) -> None:
+    """A scenario that fills every group starts as an editable draft; a save based on an older
+    draft revision is 409 ``draft_stale`` and changes nothing. It is published as version 1,
+    edited (the edit shows only in a draft read until it is published) and published as
+    version 2; version 1 reads unchanged afterwards and its row cannot be updated; the version
+    list names both. A read with no projection is the public card of the ``published``
+    scenario: exactly the card's keys (the envelope, name, public description, media, labels,
+    content rating, and each role's id, public label, setup description, kind and fill), and
+    none of the phrases planted in the world description, a role's seeded memory and the
+    director guidance; ``full`` returns every group. An archived scenario still reads in both
+    projections.
+
+    Complement asserted: each planted phrase is present in ``full``, so its absence from every
+    card is the projection's doing."""
+    base = scenarios.BASE
+    async with rest(settings, engine) as client:
+        created = await scenarios.create(client, scenarios.complete())
+        sid = created["id"]
+        assert (created["status"], created["draft_revision"], created["version"]) == (
+            "draft",
+            1,
+            None,
+        )
+        edited = await scenarios.save(client, sid, 1, public_card={"public_description": "One."})
+        assert (edited.status_code, edited.json()["draft_revision"]) == (200, 2)
+        stale = await scenarios.save(client, sid, 1, public_card={"public_description": "Lost."})
+        assert (stale.status_code, stale.json()["error"]["code"]) == (409, "draft_stale")
+        assert stale.json()["error"]["details"]["current_draft_revision"] == 2
+        first = await scenarios.publish(client, sid, 2)
+        assert (first.status_code, first.json()["version"]) == (201, 1)
+        version_1 = (await scenarios.read(client, sid, version=1, projection="full")).json()
+
+        edited = await scenarios.save(client, sid, 3, public_card={"public_description": "Two."})
+        assert edited.status_code == 200
+        shown = (await scenarios.read(client, sid)).json()
+        assert (shown["version"], shown["public_description"]) == (1, "One.")
+        pending = (await scenarios.read(client, sid, draft=True)).json()
+        assert (pending["version"], pending["public_description"]) == (1, "Two.")
+        second = await scenarios.publish(client, sid, 4)
+        assert (second.status_code, second.json()["version"]) == (201, 2)
+
+        again = (await scenarios.read(client, sid, version=1, projection="full")).json()
+        for key in ("version", "published_at", *scenarios.GROUPS):
+            assert again[key] == version_1[key], key
+        stored = await scenarios.version_rows(engine, sid)
+        with pytest.raises(DBAPIError) as refused:
+            await execute_in_tx(
+                engine,
+                (
+                    "UPDATE catalog.scenario_versions SET content = '{}'::jsonb "
+                    "WHERE catalog_id = :c AND version = 1",
+                    {"c": sid},
+                ),
+            )
+        assert sqlstate(refused.value) == "EPI01"
+        assert await scenarios.version_rows(engine, sid) == stored
+        listed = await client.get(f"{base}/{sid}/versions", headers=scenarios.READ)
+        assert [(v["version"], v["published_at"]) for v in listed.json()["items"]] == [
+            (1, version_1["published_at"]),
+            (2, second.json()["published_at"]),
+        ]
+
+        card = await scenarios.read(client, sid)
+        assert card.status_code == 200
+        assert set(card.json()) == scenarios.CARD_KEYS
+        assert [set(r) for r in card.json()["roles"]] == [scenarios.CARD_ROLE_KEYS] * 3
+        assert (card.json()["version"], card.json()["status"], card.json()["name"]) == (
+            2,
+            "published",
+            "The Harrow Inheritance",
+        )
+        assert [r["public_label"] for r in card.json()["roles"]] == [
+            "Mother",
+            "The younger brother",
+            "The eldest",
+        ]
+        full = await scenarios.read(client, sid, projection="full")
+        assert set(full.json()) == scenarios.FULL_KEYS
+        for phrase in scenarios.PRIVATE_PHRASES:
+            assert phrase not in card.text, phrase
+            assert phrase in full.text, phrase
+
+        archived = await client.post(f"{base}/{sid}/archive", headers=scenarios.WRITE)
+        assert archived.json()["status"] == "archived"
+        for projection in ("card", "full"):
+            found = await scenarios.read(client, sid, projection=projection)
+            assert (found.status_code, found.json()["status"]) == (200, "archived")
+            for phrase in scenarios.PRIVATE_PHRASES:
+                assert (phrase in found.text) == (projection == "full"), (projection, phrase)
+
+
+class _Untagged(BaseModel):
+    """A fixture document with one field of each kind of mistake."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fine: Annotated[str, FieldClass.public_card] = "x"
+    missing: str = "x"
+    twice: Annotated[str, FieldClass.public_card, FieldClass.director] = "x"
+    no_use: Annotated[int, FieldClass.configuration] = 1
+    stray_use: Annotated[int, FieldClass.style, Use.policy] = 1
+
+
+@pytest.mark.part("M3", "FR-SCN-2")
+def test_c_15__scenario_field_classes() -> None:
+    """Every field of the scenario document carries its class (and, for ``configuration``, its
+    use), checked by walking the model, groups and list items included; the map genesis and the
+    validation report read names every field, with all eight classes and all three uses in use.
+
+    Complement asserted: the same walk reports a fixture's untagged field, a field with two
+    classes, a ``configuration`` field without a use and a use on another class, so an
+    untagged field fails the build."""
+    assert classification_problems(ScenarioDraft) == []
+    classes = scenario_schema_classes()
+    assert {found for found, _ in classes.values()} == set(FieldClass)
+    assert {use for _, use in classes.values() if use is not None} == set(Use)
+    assert {use for found, use in classes.values() if found is FieldClass.configuration} == set(Use)
+    for path, expected in CLASSES.items():
+        assert classes[path] == expected, path
+
+    assert classification_problems(_Untagged) == [
+        "missing: untagged",
+        "twice: more than one class",
+        "no_use: a configuration field needs exactly one use",
+        "stray_use: only a configuration field has a use",
+    ]
+
+
+CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
+    "public_card.name": (FieldClass.public_card, None),
+    "public_card.media.videos[].caption": (FieldClass.public_card, None),
+    "metadata.labels": (FieldClass.public_card, None),
+    "world.description": (FieldClass.knowledge_seed, None),
+    "world.entities[].aliases": (FieldClass.knowledge_seed, None),
+    "cast.roles[].public_label": (FieldClass.public_card, None),
+    "cast.roles[].setup_description": (FieldClass.public_card, None),
+    "cast.roles[].fill": (FieldClass.configuration, Use.creation_only),
+    "cast.roles[].eligibility.age_range": (FieldClass.configuration, Use.creation_only),
+    "cast.roles[].seeded_memories[].audience": (FieldClass.knowledge_seed, None),
+    "cast.roles[].relationships[].to_role": (FieldClass.knowledge_seed, None),
+    "cast.roles[].name_overrides.aliases": (FieldClass.knowledge_seed, None),
+    "cast.roles[].starting_location": (FieldClass.knowledge_seed, None),
+    "cast.roles[].state_initial_values": (FieldClass.starting_state, None),
+    "cast.roles[].participation": (FieldClass.configuration, Use.story_setting),
+    "cast.max_characters_at_start": (FieldClass.configuration, Use.creation_only),
+    "starting_state.opening.narration": (FieldClass.starting_state, None),
+    "starting_state.opening.roles_present": (FieldClass.starting_state, None),
+    "starting_state.predicates": (FieldClass.story_rule, None),
+    "starting_state.scheduled_events": (FieldClass.knowledge_seed, None),
+    "drivers.director_guidance": (FieldClass.director, None),
+    "drivers.planned_reveals[].truth.text": (FieldClass.knowledge_seed, None),
+    "drivers.planned_reveals[].allowed_roles": (FieldClass.director, None),
+    "story_settings_defaults.turn_concurrency": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.policies[].rule": (FieldClass.configuration, Use.policy),
+    "story_settings_defaults.required_providers": (FieldClass.configuration, Use.policy),
+    "recommendation.engine_profile_id": (FieldClass.recommendation, None),
+    "visual_style.negative_prompt": (FieldClass.style, None),
+    "creation_rules.overridable": (FieldClass.configuration, Use.creation_only),
+}
+"""Where FR-SCN-11 and docs/02 §4.10 put a field, for a sample of every class and use."""

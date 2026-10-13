@@ -12,10 +12,11 @@
   extra field, JSON syntax, path id, query, header), each refused at its field with zero rows.
 
 The app runs on a scratch database migrated to head, so generated writes (stories, policies,
-ratings, deployment settings, catalog characters, media) never reach the session database.
-Excluded from generation: ``delete_story`` and ``archive_story`` (they would end the fixture
-story every later example needs), ``delete_character`` (it would end the fixture catalog
-character, #103), the API-key routes (they need ``EPISTREL_CONFIG_KEY``) and ``upload_media``
+ratings, deployment settings, catalog characters and scenarios, media) never reach the session
+database. Excluded from generation: ``delete_story`` and ``archive_story`` (they would end the
+fixture story every later example needs), ``delete_character`` and ``delete_scenario`` (they
+would end the fixture catalog character and scenario, #103, #108), the API-key routes (they need
+``EPISTREL_CONFIG_KEY``) and ``upload_media``
 (#105: a streamed multipart body whose ``metadata`` part is JSON, which generation cannot
 encode; ``test_c_01__malformed`` sends its malformed cases by hand); all are covered by C-03 and
 their own tests. ``replace_model_config`` is generated, and each successful write is undone so
@@ -63,6 +64,7 @@ from epistrel.api.auth import EXEMPT_ROUTES
 from epistrel.api.openapi import TAG_NAMES, dumps
 from epistrel.config import Settings
 from epistrel.core.catalog.characters import CharacterCreate, PublishRequest
+from epistrel.core.catalog.scenario_models import ScenarioCreate
 from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.core.deployment import SettingsPatch
 from epistrel.core.media.assets import MediaUpload
@@ -81,6 +83,7 @@ from tests.conftest import REPO_ROOT
 from tests.media_support import files, metadata, png
 from tests.model_support import config_key
 from tests.respond_support import AUTHOR, body
+from tests.scenario_support import scenario as catalog_scenario
 from tests.story_support import story_body
 
 SCHEMA_PATH = REPO_ROOT / "docs" / "openapi.json"
@@ -104,6 +107,7 @@ EXCLUDED = (
     "delete_story",
     "archive_story",
     "delete_character",
+    "delete_scenario",
     "set_model_api_key",
     "remove_model_api_key",
     "upload_media",
@@ -139,6 +143,7 @@ class Live:
     character_id: str
     media_id: str
     upload_id: str
+    scenario_id: str
 
     def counts(self) -> dict[str, int]:
         sync = make_sync_engine(self.url)
@@ -162,13 +167,15 @@ class Live:
             "character_id": self.character_id,
             "media_id": self.media_id,
             "upload_id": self.upload_id,
+            "scenario_id": self.scenario_id,
         }
 
 
-async def _seed(settings: Settings) -> tuple[str, str, str, str, str]:
+async def _seed(settings: Settings) -> tuple[str, str, str, str, str, str]:
     """A two-character story with one played turn, a published catalog character, an
-    uploaded image and an open upload session (#107): the story's id, the turn's operation id,
-    the character's id, the image's id and the session's id."""
+    uploaded image, an open upload session (#107) and a published scenario (#108): the story's
+    id, the turn's operation id, the character's id, the image's id, the session's id and the
+    scenario's id."""
     db = make_engine(settings)
     engine = Engine.from_settings(settings)
     engine.bind(db)
@@ -200,12 +207,18 @@ async def _seed(settings: Settings) -> tuple[str, str, str, str, str]:
                 }
             ),
         )
+        drafted = await engine.create_scenario_draft(
+            AUTHOR, ScenarioCreate.model_validate(catalog_scenario("Sunday Dinner"))
+        )
+        scenario_id = drafted.scenario.id
+        await engine.publish_scenario(AUTHOR, scenario_id, PublishRequest(draft_revision=1))
         return (
             created.story_id,
             played.beats[0].operation_id,
             character_id,
             image.asset.id,
             session.upload_id,
+            scenario_id,
         )
     finally:
         await engine.models.aclose()
@@ -566,6 +579,42 @@ MALFORMED: list[tuple[str, str, str, dict[str, Any], str]] = [
     ("media path id", "GET", "/media/not-a-ulid", {}, "path.media_id"),
     ("media list state", "GET", "/media", {"params": {"state": "lost"}}, "query.state"),
     ("media list limit", "GET", "/media", {"params": {"limit": 0}}, "query.limit"),
+    # Scenarios (#108): an unknown field inside a group, a role rule, a revision past int32.
+    (
+        "scenario unknown group field",
+        "POST",
+        "/catalog/scenarios",
+        {"json": {"public_card": {"name": "Sunday", "secret": "x"}}},
+        "body.public_card.secret",
+    ),
+    (
+        "scenario locked role without its character",
+        "POST",
+        "/catalog/scenarios",
+        {
+            "json": {
+                "cast": {
+                    "roles": [
+                        {
+                            "id": "mother",
+                            "public_label": "Mother",
+                            "setup_description": "Home for the weekend.",
+                            "kind": "npc",
+                            "fill": "locked",
+                        }
+                    ]
+                }
+            }
+        },
+        "body.cast.roles[0].character",
+    ),
+    (
+        "scenario draft revision past int32",
+        "PATCH",
+        "/catalog/scenarios/{scenario}",
+        {"json": {"draft_revision": 2**31}},
+        "body.draft_revision",
+    ),
 ]
 
 
@@ -577,7 +626,10 @@ def _malformed(live: Live) -> list[str]:
             before = live.counts()
             sent = {**kwargs, "headers": headers | kwargs.get("headers", {})}
             path = template.format(
-                story=live.story_id, rating=EVERYONE_ID, character=live.character_id
+                story=live.story_id,
+                rating=EVERYONE_ID,
+                character=live.character_id,
+                scenario=live.scenario_id,
             )
             response = client.request(method, path, **sent)
             error = response.json().get("error", {}) if response.status_code == 422 else {}

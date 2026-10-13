@@ -47,6 +47,12 @@ from epistrel.api.routes.catalog_characters import (
     CharacterStatusBody,
     CharacterVersionsBody,
 )
+from epistrel.api.routes.catalog_scenarios import (
+    ScenarioDraftBody,
+    ScenarioPublishedBody,
+    ScenarioStatusBody,
+    ScenarioVersionsBody,
+)
 from epistrel.api.routes.history import HistoryResponse
 from epistrel.api.routes.media import (
     MediaListBody,
@@ -94,6 +100,7 @@ from epistrel.core.catalog.characters import (
     Projection,
     PublishRequest,
 )
+from epistrel.core.catalog.scenario_models import ScenarioCreate, ScenarioPatch
 from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
@@ -123,6 +130,7 @@ from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
 from tests.media_support import files, metadata, png
 from tests.model_support import config_key
+from tests.scenario_support import complete as complete_scenario
 from tests.story_support import story_body
 
 PRINCIPAL = "p-parity"
@@ -171,6 +179,8 @@ class Step:
     rest: Callable[[Ids], Rest]
     library: Library
     capture: Callable[[dict[str, Any], Ids], None] = lambda body, ids: None
+    group: str = ""
+    """Steps checked together by their statuses (``ENTRY_GROUP``)."""
 
     @property
     def label(self) -> str:
@@ -284,6 +294,34 @@ CHARACTER = {
 }
 CHARACTER_PATCH = {"draft_revision": 1, "public_description": "Keeps the Gull Rock light."}
 GHOST = {"name": "Ghost", "public_description": "Never published."}
+SCENARIO = complete_scenario()
+"""A scenario filling every group (#108): its seeds' ids are minted per surface, as ids are."""
+SCENARIO_PATCH = {"draft_revision": 1, "drivers": {"plot_hooks": ["A stranger knocks."]}}
+SCENARIO_GHOST = {"public_card": {"name": "Ghost"}}
+ENTRY_ANSWERS = [
+    ("create_scenario_draft", 201),
+    ("save_scenario_draft", 200),
+    ("save_scenario_draft", 409),
+    ("publish_scenario", 201),
+    ("get_scenario", 200),
+    ("get_scenario", 200),
+    ("get_scenario", 200),
+    ("list_scenario_versions", 200),
+    ("archive_scenario", 200),
+    ("unarchive_scenario", 200),
+    ("create_scenario_draft", 201),
+    ("get_scenario", 422),
+    ("delete_scenario", 204),
+    ("transfer_owner", 200),
+    ("add_relation", 201),
+    ("list_relations", 200),
+]
+"""What the scenario steps (#108) answer on both surfaces: a draft created, saved, refused as
+stale, published, read as its card, as version 1 in full and as its draft in full, its versions
+listed, archived and unarchived; a second draft never published (422 ``not_published``) and
+deleted; and the first scenario's owner and relations."""
+ENTRY_GROUP = "scenario"
+"""The ``Step.group`` of the scenario steps (#108)."""
 NEW_OWNER = {"principal": "p-parity-owner"}
 RELATION = {"principal": "p-parity-d", "relation": "co_author"}
 MODEL_OVERRIDE = {"model": "parity-model", "params": {"temperature": 0.5}}
@@ -665,6 +703,137 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", "/catalog/characters/{character}/relations"),
             lambda e, ids: _relations(e, EntityType.CHARACTER, ids["character"]),
         ),
+        # -- the scenario catalog (#108)
+        Step(
+            "create_scenario_draft",
+            lambda ids: Rest("POST", "/catalog/scenarios", SCENARIO),
+            lambda e, ids: _scenario_draft(
+                e.create_scenario_draft(CTX, ScenarioCreate.model_validate(SCENARIO))
+            ),
+            _keep("scenario", "id"),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "save_scenario_draft",
+            lambda ids: Rest("PATCH", "/catalog/scenarios/{scenario}", SCENARIO_PATCH),
+            lambda e, ids: _scenario_draft(
+                e.save_scenario_draft(
+                    CTX, ids["scenario"], ScenarioPatch.model_validate(SCENARIO_PATCH)
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(  # stale: the same patch again, from revision 1 (409 draft_stale on both)
+            "save_scenario_draft",
+            lambda ids: Rest("PATCH", "/catalog/scenarios/{scenario}", SCENARIO_PATCH),
+            lambda e, ids: _scenario_draft(
+                e.save_scenario_draft(
+                    CTX, ids["scenario"], ScenarioPatch.model_validate(SCENARIO_PATCH)
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "publish_scenario",
+            lambda ids: Rest(
+                "POST", "/catalog/scenarios/{scenario}/publish", {"draft_revision": 2}
+            ),
+            lambda e, ids: _scenario_published(
+                e.publish_scenario(CTX, ids["scenario"], PublishRequest(draft_revision=2))
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "get_scenario",
+            lambda ids: Rest("GET", "/catalog/scenarios/{scenario}"),
+            lambda e, ids: _scenario(e, ids["scenario"]),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "get_scenario",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/scenarios/{scenario}",
+                params={"version": 1, "projection": "full"},
+            ),
+            lambda e, ids: _scenario(e, ids["scenario"], version=1, projection=Projection.FULL),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "get_scenario",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/scenarios/{scenario}",
+                params={"draft": "true", "projection": "full"},
+            ),
+            lambda e, ids: _scenario(e, ids["scenario"], draft=True, projection=Projection.FULL),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "list_scenario_versions",
+            lambda ids: Rest("GET", "/catalog/scenarios/{scenario}/versions"),
+            lambda e, ids: _scenario_versions(e, ids["scenario"]),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "archive_scenario",
+            lambda ids: Rest("POST", "/catalog/scenarios/{scenario}/archive"),
+            lambda e, ids: _scenario_status(e.archive_scenario(CTX, ids["scenario"])),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "unarchive_scenario",
+            lambda ids: Rest("POST", "/catalog/scenarios/{scenario}/unarchive"),
+            lambda e, ids: _scenario_status(e.unarchive_scenario(CTX, ids["scenario"])),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "create_scenario_draft",
+            lambda ids: Rest("POST", "/catalog/scenarios", SCENARIO_GHOST),
+            lambda e, ids: _scenario_draft(
+                e.create_scenario_draft(CTX, ScenarioCreate.model_validate(SCENARIO_GHOST))
+            ),
+            _keep("ghost_scenario", "id"),
+            group=ENTRY_GROUP,
+        ),
+        Step(  # never published: 422 not_published on both
+            "get_scenario",
+            lambda ids: Rest("GET", "/catalog/scenarios/{ghost_scenario}"),
+            lambda e, ids: _scenario(e, ids["ghost_scenario"]),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "delete_scenario",
+            lambda ids: Rest("DELETE", "/catalog/scenarios/{ghost_scenario}"),
+            lambda e, ids: _no_content(e.delete_scenario(CTX, ids["ghost_scenario"])),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", "/catalog/scenarios/{scenario}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX, EntityType.SCENARIO, ids["scenario"], OwnerTransferRequest(**NEW_OWNER)
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "add_relation",
+            lambda ids: Rest("POST", "/catalog/scenarios/{scenario}/relations", RELATION),
+            lambda e, ids: _relation(
+                e.add_relation(
+                    CTX, EntityType.SCENARIO, ids["scenario"], RelationRequest(**RELATION)
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "list_relations",
+            lambda ids: Rest("GET", "/catalog/scenarios/{scenario}/relations"),
+            lambda e, ids: _relations(e, EntityType.SCENARIO, ids["scenario"]),
+            group=ENTRY_GROUP,
+        ),
         # -- media assets (#105)
         Step(
             "upload_media",
@@ -1011,6 +1180,26 @@ async def _character_versions(engine: Engine, character_id: str) -> dict[str, An
     return dump(CharacterVersionsBody.of(found))
 
 
+async def _scenario_draft(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ScenarioDraftBody.of(await call))
+
+
+async def _scenario_published(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ScenarioPublishedBody.of(await call))
+
+
+async def _scenario_status(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ScenarioStatusBody.of(await call))
+
+
+async def _scenario(engine: Engine, scenario_id: str, **params: Any) -> dict[str, Any]:
+    return dump(await engine.get_scenario(CTX, scenario_id, **params))
+
+
+async def _scenario_versions(engine: Engine, scenario_id: str) -> dict[str, Any]:
+    return dump(ScenarioVersionsBody.of(await engine.list_scenario_versions(CTX, scenario_id)))
+
+
 async def _uploaded(engine: Engine, fields: dict[str, Any]) -> dict[str, Any]:
     request = MediaUpload.model_validate(fields)
     written = await engine.upload_media(CTX, request, MEDIA_BYTES, content_type="image/png")
@@ -1346,6 +1535,12 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         if step.operation in SESSION_OPERATIONS
     ]
     assert sessions == SESSION_ANSWERS
+    entries = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == ENTRY_GROUP
+    ]
+    assert entries == ENTRY_ANSWERS
 
 
 def test_c_03_bites_on_a_method_without_a_route_or_step(dummy_dsn: str) -> None:

@@ -50,7 +50,9 @@ async def read_settings(ctx: ContextDep, engine: EngineDep) -> SettingsBody:
         "Change any of the deployment settings; omitted keys keep their values. Every change "
         "is recorded as a configuration change and moves `config_revision`; a write that "
         "changes nothing writes nothing. `max_model_calls_per_turn` accepts `null` (the Lite "
-        "formula `9 + G`); no other key does."
+        "formula `9 + G`), and so do `media_moderation_webhook_url`, `public_base_url` and "
+        "`max_characters_at_start_ceiling` (unset: no hook, no base URL, no ceiling); no other "
+        "key does."
     ),
 )
 async def update_settings(

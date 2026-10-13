@@ -66,6 +66,8 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "lite_summary_chunk": ConfigClass.prospective,
         "lite_summary_max_tokens": ConfigClass.prospective,
         "default_safe_fallback": ConfigClass.prospective,
+        "max_characters_at_start_default": ConfigClass.prospective,
+        "max_characters_at_start_ceiling": ConfigClass.prospective,
     },
 }
 

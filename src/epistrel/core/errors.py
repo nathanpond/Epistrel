@@ -385,19 +385,28 @@ class CharacterNotFound(EpistrelError):
     http_status = 404
 
 
+class ScenarioNotFound(EpistrelError):
+    """The scenario (or the version of it) a call names does not exist (#108). ``details``:
+    ``scenario_id`` and, for a version read, ``version``."""
+
+    code = "not_found"
+    http_status = 404
+
+
 class DraftStale(EpistrelError):
     """The ``draft_revision`` a save or publish was based on is no longer the draft's
     (FR-CAT-3): another editor saved or published since. Nothing is written; re-read the draft
-    and retry from its revision. ``details``: ``character_id``, ``draft_revision`` (sent) and
-    ``current_draft_revision``."""
+    and retry from its revision. ``details``: the entry (``character_id`` or ``scenario_id``),
+    ``draft_revision`` (sent) and ``current_draft_revision``."""
 
     code = "draft_stale"
     http_status = 409
 
 
 class DraftTooLarge(EpistrelError):
-    """The draft, after the patch is applied, is larger than the cap (256 KiB of canonical
-    JSON). Nothing is written. ``details``: ``size`` and ``limit`` (bytes)."""
+    """The draft, after the patch is applied, is larger than the cap (canonical JSON: 256 KiB
+    for a character, 1 MiB for a scenario). Nothing is written. ``details``: ``size`` and
+    ``limit`` (bytes)."""
 
     code = "draft_too_large"
     http_status = 413
@@ -405,15 +414,16 @@ class DraftTooLarge(EpistrelError):
 
 class EntryArchived(EpistrelError):
     """The catalog entry is archived: its draft cannot be saved or published until it is
-    unarchived (reads still work). Nothing is written. ``details``: ``character_id``."""
+    unarchived (reads still work). Nothing is written. ``details``: the entry
+    (``character_id`` or ``scenario_id``)."""
 
     code = "entry_archived"
     http_status = 422
 
 
 class NotPublished(EpistrelError):
-    """A read of the published character before its first publish: read the draft
-    (``?draft=true``) instead. ``details``: ``character_id``."""
+    """A read of the published entry before its first publish: read the draft
+    (``?draft=true``) instead. ``details``: the entry (``character_id`` or ``scenario_id``)."""
 
     code = "not_published"
     http_status = 422
@@ -425,6 +435,15 @@ class PublishInvalid(EpistrelError):
     dotted path in the draft (``name``, ``definition.personality``)."""
 
     code = "publish_invalid"
+    http_status = 422
+
+
+class CastLimitExceeded(EpistrelError):
+    """A scenario's ``max_characters_at_start`` above the deployment's
+    ``max_characters_at_start_ceiling`` (FR-SCN-4; #108). Nothing is written. ``details``:
+    ``field``, ``max_characters_at_start`` and ``ceiling``."""
+
+    code = "cast_limit_exceeded"
     http_status = 422
 
 

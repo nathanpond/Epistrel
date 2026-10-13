@@ -520,9 +520,20 @@ reconcile reads the setting (``orchestrator.jobs.timers.reconcile``)."""
 DEFAULT_MINOR_AGE_THRESHOLD = 18
 MINOR_AGE_THRESHOLD_MIN = 0
 MINOR_AGE_THRESHOLD_MAX = 120
-DEPLOYMENT_COLUMNS = ("default_content_rating_id", "minor_age_threshold")
-"""Deployment settings kept in their own ``deployment_state`` columns (#48) rather than in its
-``settings`` document."""
+DEFAULT_MAX_CHARACTERS_AT_START = 16
+"""FR-SCN-4's deployment default for the starting cast, player slots included (#108)."""
+CAST_LIMIT_MIN = 1
+CAST_LIMIT_MAX = 1_000
+"""The bounds of every starting-cast limit: the deployment's default and ceiling, a scenario's
+own value and (#119) a story creation's override."""
+DEPLOYMENT_COLUMNS = (
+    "default_content_rating_id",
+    "minor_age_threshold",
+    "max_characters_at_start_default",
+    "max_characters_at_start_ceiling",
+)
+"""Deployment settings kept in their own ``deployment_state`` columns (#48; the starting-cast
+limits, #108) rather than in its ``settings`` document."""
 
 
 class DeploymentSettings(
@@ -537,9 +548,10 @@ class DeploymentSettings(
     WorkerHealthSettings,
     MediaSettings,
 ):
-    """Every deployment setting ``/admin/settings`` reads and writes (#64): the two
-    ``deployment_state`` columns and the ``settings`` document's sections, each of which earlier
-    stories read through its own view (``LiteDefaults``, ``StoryTextCaps``, …)."""
+    """Every deployment setting ``/admin/settings`` reads and writes (#64): the
+    ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's
+    sections, each of which earlier stories read through its own view (``LiteDefaults``,
+    ``StoryTextCaps``, …)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -550,6 +562,21 @@ class DeploymentSettings(
         default=DEFAULT_MINOR_AGE_THRESHOLD, ge=MINOR_AGE_THRESHOLD_MIN, le=MINOR_AGE_THRESHOLD_MAX
     )
     """Below this true age a character is a minor (docs/02 §4.12). Interpretive."""
+
+    max_characters_at_start_default: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_MAX_CHARACTERS_AT_START, ge=CAST_LIMIT_MIN, le=CAST_LIMIT_MAX
+    )
+    """The most character slots, player slots included, a story created from a scenario starts
+    with when the scenario sets none (FR-SCN-4; default 16). Prospective: a story created after
+    a change uses the new value."""
+
+    max_characters_at_start_ceiling: Annotated[int | None, PROSPECTIVE] = Field(
+        default=None, ge=CAST_LIMIT_MIN, le=CAST_LIMIT_MAX
+    )
+    """An optional deployment-wide ceiling (``null``: none) on every starting-cast limit: a
+    scenario saved above it is 422 ``cast_limit_exceeded``, and a story creation's override is
+    capped by it (FR-SCN-4). Lowering it below a stored scenario's value is allowed; validation
+    and story creation catch that scenario. Prospective."""
 
     def document(self) -> dict[str, Any]:
         """The fields stored in ``deployment_state.settings`` (JSON)."""

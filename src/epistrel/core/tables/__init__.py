@@ -2,7 +2,12 @@
 
 from epistrel.core.tables.audit_log import audit_log
 from epistrel.core.tables.base import NAMING_CONVENTION, metadata
-from epistrel.core.tables.catalog import character_catalog, character_versions
+from epistrel.core.tables.catalog import (
+    character_catalog,
+    character_versions,
+    scenario_catalog,
+    scenario_versions,
+)
 from epistrel.core.tables.characters import characters
 from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.deployment import config_changes, deployment_state
@@ -48,6 +53,8 @@ __all__ = [
     "ownership_events",
     "policies",
     "recurring_tasks",
+    "scenario_catalog",
+    "scenario_versions",
     "stories",
     "story_heads",
     "story_texts",

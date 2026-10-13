@@ -1440,12 +1440,14 @@ MEDIA_REFERENCE_SOURCES: list[ReferenceSource] = [
     ReferenceSource("catalog.character_catalog", "draft"),
     ReferenceSource("catalog.character_versions", "content"),
     ReferenceSource(f"public.{RECORD_TABLE}", "poster_media_id", None),
+    ReferenceSource("catalog.scenario_catalog", "draft"),
+    ReferenceSource("catalog.scenario_versions", "content"),
 ]
-"""Where references to assets live (FR-MEDIA-2): catalog drafts and published versions, and a
-video's poster (#107); #108 (scenarios), #119 (story snapshots; #316 tracks both) and M8
-(candidates, story images) register theirs. A source whose table does not exist (yet) is
-skipped; one whose column does not exist fails the query, so a source is registered only once
-its column exists."""
+"""Where references to assets live (FR-MEDIA-2): catalog character and scenario drafts and
+published versions (#108: a scenario's cover, gallery and videos), and a video's poster (#107);
+#119 (story snapshots; #316) and M8 (candidates, story images) register theirs. A source whose
+table does not exist (yet) is skipped; one whose column does not exist fails the query, so a
+source is registered only once its column exists."""
 
 
 def register_reference_source(source: ReferenceSource) -> None:

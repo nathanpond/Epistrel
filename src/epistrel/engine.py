@@ -41,6 +41,8 @@ from epistrel.core import (
 )
 from epistrel.core import story_settings as settings_store
 from epistrel.core.catalog import characters as catalog_characters
+from epistrel.core.catalog import scenario_models
+from epistrel.core.catalog import scenarios as catalog_scenarios
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import StoryStatus
@@ -188,6 +190,24 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "unarchive_character": ResultCodec.of(catalog_characters.StatusChange, revision_field=_CONFIG),
     "delete_character": ResultCodec.of(
         catalog_characters.DeletedCharacter, status=204, revision_field=_CONFIG
+    ),
+    "create_scenario_draft": ResultCodec.of(
+        catalog_scenarios.ScenarioDraftWrite, status=201, revision_field=_CONFIG
+    ),
+    "save_scenario_draft": ResultCodec.of(
+        catalog_scenarios.ScenarioDraftWrite, revision_field=_CONFIG
+    ),
+    "publish_scenario": ResultCodec.of(
+        catalog_scenarios.Published, status=201, revision_field=_CONFIG
+    ),
+    "archive_scenario": ResultCodec.of(
+        catalog_scenarios.ScenarioStatusChange, revision_field=_CONFIG
+    ),
+    "unarchive_scenario": ResultCodec.of(
+        catalog_scenarios.ScenarioStatusChange, revision_field=_CONFIG
+    ),
+    "delete_scenario": ResultCodec.of(
+        catalog_scenarios.DeletedScenario, status=204, revision_field=_CONFIG
     ),
     "upload_media": ResultCodec.of(media.MediaWrite, status=201, revision_field=_CONFIG),
     "delete_media": ResultCodec.of(media.MediaRetirement, status=204, revision_field=_CONFIG),
@@ -1685,7 +1705,7 @@ class Engine:
             ctx,
             "publish_character",
             lambda _: catalog_characters.publish(
-                self.db, character_id, request, principal=principal
+                self.db, character_id, request, principal=principal, ports=self.ports
             ),
             material={"character_id": character_id, "body": _body(request)},
         )
@@ -1750,6 +1770,131 @@ class Engine:
     ) -> list[catalog_characters.VersionSummary]:
         """Every published version of the entry, oldest first: number, time and publisher."""
         return await catalog_characters.versions(self.db, character_id)
+
+    # -- the scenario catalog (FR-SCN-1..4,10; FR-API-6; #108) --------------------------------
+    # The same lifecycle as the character catalog's (``core.catalog.service``), deployment-scoped
+    # the same way. Nothing here reads or changes a story (FR-CAT-9).
+
+    async def create_scenario_draft(
+        self, ctx: RequestContext, request: scenario_models.ScenarioCreate
+    ) -> catalog_scenarios.ScenarioDraftWrite:
+        """Create a scenario whose draft holds ``request``'s groups, at draft revision 1 and
+        status ``draft`` (FR-SCN-1), owned by ``request.owner`` or else the requesting
+        principal (FR-AUTH-5). The save rules (roles, references, seeds) apply: 422
+        ``validation_error`` at the field; 422 ``cast_limit_exceeded`` above the deployment's
+        ceiling (FR-SCN-4); 422 ``rating_retired``/``media_retired`` for a rating or media asset
+        that cannot be referenced. Answers the draft in ``full``."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "create_scenario_draft",
+            lambda _: catalog_scenarios.create(self.db, request, principal=principal),
+            material={"body": _body(request)},
+        )
+
+    async def save_scenario_draft(
+        self,
+        ctx: RequestContext,
+        scenario_id: str,
+        patch: scenario_models.ScenarioPatch,
+    ) -> catalog_scenarios.ScenarioDraftWrite:
+        """Apply a JSON merge patch to the draft (``null`` removes a field, an array replaces
+        the stored one), compared on ``patch.draft_revision``: a stale revision is 409
+        ``draft_stale`` and changes nothing (FR-CAT-3); an archived scenario is 422
+        ``entry_archived``. The merged draft keeps the save rules. Bumps the draft revision."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "save_scenario_draft",
+            lambda _: catalog_scenarios.save(self.db, scenario_id, patch, principal=principal),
+            material={
+                "scenario_id": scenario_id,
+                "body": patch.model_dump(mode="json", exclude_unset=True),
+            },
+        )
+
+    async def publish_scenario(
+        self,
+        ctx: RequestContext,
+        scenario_id: str,
+        request: catalog_scenarios.PublishRequest,
+    ) -> catalog_scenarios.Published:
+        """Publish the draft as an immutable version ``n + 1`` (FR-SCN-1), compared on
+        ``request.draft_revision`` like a save; 422 ``publish_invalid`` with the report when the
+        draft cannot be published (it needs a name, and every seed its holder, audience and
+        disclosure). The draft stays equal to what was published, at the next revision."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "publish_scenario",
+            lambda _: catalog_scenarios.publish(
+                self.db, scenario_id, request, principal=principal, ports=self.ports
+            ),
+            material={"scenario_id": scenario_id, "body": _body(request)},
+        )
+
+    async def archive_scenario(
+        self, ctx: RequestContext, scenario_id: str
+    ) -> catalog_scenarios.ScenarioStatusChange:
+        """Archive the scenario: it still reads, but cannot be edited, published, or used to
+        create a story (#119) until it is unarchived. Archiving an archived one changes
+        nothing."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "archive_scenario",
+            lambda _: catalog_scenarios.archive(self.db, scenario_id, principal=principal),
+            material={"scenario_id": scenario_id},
+        )
+
+    async def unarchive_scenario(
+        self, ctx: RequestContext, scenario_id: str
+    ) -> catalog_scenarios.ScenarioStatusChange:
+        """Restore an archived scenario to ``published`` (``draft`` if never published); any
+        other is left as it is."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "unarchive_scenario",
+            lambda _: catalog_scenarios.unarchive(self.db, scenario_id, principal=principal),
+            material={"scenario_id": scenario_id},
+        )
+
+    async def delete_scenario(
+        self, ctx: RequestContext, scenario_id: str
+    ) -> catalog_scenarios.DeletedScenario:
+        """Delete the scenario and its versions, from any status, with a
+        ``catalog_entry_deleted`` audit row. Stories created from it keep their snapshot and
+        provenance (FR-CAT-9)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "delete_scenario",
+            lambda _: catalog_scenarios.delete(self.db, scenario_id, principal=principal),
+            material={"scenario_id": scenario_id},
+        )
+
+    async def get_scenario(
+        self,
+        ctx: RequestContext,
+        scenario_id: str,
+        *,
+        version: int | None = None,
+        draft: bool = False,
+        projection: catalog_scenarios.Projection = catalog_scenarios.Projection.CARD,
+    ) -> scenario_models.ScenarioCard | scenario_models.ScenarioFull:
+        """The latest published version (``version``: that one; ``draft``: the draft) as its
+        public ``card`` (the default) or in ``full`` (FR-SCN-10). 422 ``not_published`` before
+        the first publish (read the draft instead); 404 for an unknown scenario or version."""
+        return await catalog_scenarios.get(
+            self.db, scenario_id, version=version, draft=draft, projection=projection
+        )
+
+    async def list_scenario_versions(
+        self, ctx: RequestContext, scenario_id: str
+    ) -> list[catalog_scenarios.VersionSummary]:
+        """Every published version of the scenario, oldest first: number, time and publisher."""
+        return await catalog_scenarios.versions(self.db, scenario_id)
 
     # -- ownership (FR-AUTH-5,6,8; #104) --------------------------------------------------------
     # One owner and any number of relations per story, catalog character, scenario, persona,

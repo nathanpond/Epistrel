@@ -2,7 +2,8 @@
 
 ``deployment_state`` has exactly one row (``id = 1``): the deployment's ``config_revision``
 (FR-CONC-14), the default rating for a story created without one, ``minor_age_threshold``
-(docs/02 §4.12), a ``settings`` document later stories extend (#64), and ``media_store``: the
+(docs/02 §4.12), the starting-cast limit's default (16) and optional ceiling (FR-SCN-4; #108), a
+``settings`` document later stories extend (#64), and ``media_store``: the
 blob store kind (``local`` or ``s3``) the deployment's media live in, recorded at the first
 start-up and compared at every later one, so switching stores with media in place is refused
 (#107).
@@ -42,6 +43,8 @@ deployment_state = Table(
     Column("config_revision", BigInteger, nullable=False, server_default=text("0")),
     Column("default_content_rating_id", ulid_type(), nullable=False),
     Column("minor_age_threshold", Integer, nullable=False, server_default=text("18")),
+    Column("max_characters_at_start_default", Integer, nullable=False, server_default=text("16")),
+    Column("max_characters_at_start_ceiling", Integer, nullable=True),
     Column("settings", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("media_store", Text, nullable=True),
     CheckConstraint(f"id = {DEPLOYMENT_ROW_ID}", name="single_row"),

@@ -74,8 +74,9 @@ async def test_every_delivered_type_is_covered(dummy_dsn: str, engine: AsyncEngi
     """Every owned type whose table exists has its four routes mounted, a factory in
     ``ownership_fixtures.KINDS``, and a request in ``CALLS`` for every route under its entities.
     So the nothing-gates matrix and the creation checks cover every delivered type, and a
-    story that delivers a type must extend them. Complement: the scenario, persona and profile
-    types are in the registry, and none has a table yet (media arrived with #105)."""
+    story that delivers a type must extend them. Complement: the persona and profile types are
+    in the registry, and neither has a table yet (media arrived with #105, scenarios with
+    #108)."""
     app = create_app(auth_settings(dummy_dsn))
     async with engine.connect() as conn:
         delivered = await ownership.delivered(conn)
@@ -91,7 +92,6 @@ async def test_every_delivered_type_is_covered(dummy_dsn: str, engine: AsyncEngi
         for method in ("transfer_owner", "add_relation", "remove_relation", "list_relations"):
             assert f"{method}_{entity_type.value}" in operation_ids
     assert set(EntityType) - set(delivered) == {
-        EntityType.SCENARIO,
         EntityType.PERSONA,
         EntityType.ENGINE_PROFILE,
     }

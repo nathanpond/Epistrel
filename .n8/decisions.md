@@ -2351,3 +2351,114 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** The M3 section continues here, after the two `## Ad-hoc` entries #107 recorded for its owner-decided invariant changes. Later stories append below.
   **Why:** #107's owner lines ("(user, round one)", "(user, round two)") say both decisions are recorded as `## Ad-hoc` entries. M2 logged its planned amendments (#44, #71) as decisions, to keep the run's section last. Appending the entries and reopening the section keeps both: the drift ledger has the entries, and the M3 section is still last. Cost if wrong: one heading.
   **Issue:** #107
+- **Decision (drift):** The parts follow docs/04 §15. `test_c_15__scenario_lifecycle` (`part("M3", "FR-SCN-1,2,10")`) and `test_c_15__scenario_field_classes` (`part("M3", "FR-SCN-2")`, the build-time check and its untagged-fixture complement) are in `tests/conformance/test_c_15.py`. `test_u_26__roles_and_limit` (`part("M3", "FR-SCN-3,4")`) is in the new shared `tests/test_u_26.py`, which #111 and #119 join. The detailed tests are unmarked in `tests/integration/test_scenario_catalog.py`, and their docstrings name no FR id. The parts take every field name from `tests/scenario_support.py`, because the scenario's fields carry later milestones' lexicon terms (the clock, predicates, `reactive`, `backfill_conflict_policy`). check-parts, check-lexicon and check-traceability pass (155 parts, 0 lexicon violations).
+  **Why:** §15 maps FR-SCN-3 and FR-SCN-4 to U-26 (M3) only, so the planned C-15 marker for FR-SCN-1,2,3,4,10 fails check-traceability, and one test ID's M3 parts must share one file. Cost if wrong: renames only.
+  **Issue:** #108
+- **Decision:** #103's lifecycle moved to `core/catalog/service.py` as `CatalogService`, an abstract base with hooks: `stored` (validate and normalise), `checked` (database checks inside the write's transaction), `version_values`, `recorded`/`forgotten` (what a write or delete keeps beside the rows), `project` and `envelope`. `CharacterCatalog` and `ScenarioCatalog` subclass it. It is generic by subclassing, not by the plan's type parameter (`CatalogService[CharacterDraft]`). `characters.py` keeps every public name, message and behaviour: `merge_patch`, `Projection`, `PublishRequest`, `Published`, `PublishReport`, `ReportEntry`, `VersionSummary` and `CardRating` now live in the service and are re-exported, and `DRAFT_MAX_BYTES` is still read at call time, so `test_drafts_are_capped`'s monkeypatch works. The Validator protocol is `async validate(draft, ctx) -> PublishReport`, where `ctx` is `ValidationContext(conn, settings, ports)`. `Engine` now passes `self.ports` to both publishes. The report type stays #103's `PublishReport`; #111 brings `ValidationReport` and replaces both validators.
+  **Why:** This is the pass-1 Discretion's "#103's service becomes `catalog/service.py` … refactored onto it". The kinds differ in their hooks, not in their types, so a type parameter would add nothing. All #103, #104 and #105 tests pass unchanged, except the truncate assertion below. Cost if wrong: hook signatures change before #111 and #115 build on them.
+  **Issue:** #108, #103, #111
+- **Decision:** The document groups are the pass-1 groups, with these deviations:
+  - Relationships live on each role (`cast.roles[].relationships`, the AC's role shape). There is no `cast.relationships` list.
+  - `recommendation {engine_profile_id, capabilities}` is its own group (pass 1), not part of `story_settings_defaults` (the first planner line).
+  - "Retention options" is `audit_retention_days`, the story's only retention setting at HEAD. M7's compaction options will be an additive key.
+  - `schema_version: 1` is tagged `configuration`/`creation_only`, because genesis reads it to interpret the snapshot and every field needs a class.
+  - `scenario_schema_classes()` paths carry their group: `cast.roles[].public_label`.
+
+  Classes follow FR-SCN-11 and docs/02 §4.10:
+  - a role's `id` is `public_card` (the card shows it);
+  - its `kind`, `required`, `fill`, `character` and eligibility are `configuration`/`creation_only`, and its participation is `configuration`/`story_setting`;
+  - pre-scheduled events, starting locations, name overrides and the truth of a planned reveal are `knowledge_seed`;
+  - the opening's narration and `roles_present` are `starting_state`;
+  - predicates, closed sets and rules are `story_rule`.
+  **Why:** The AC fixes the role shape, and FR-SCN-11 names the class of each field. Cost if wrong: a field moves between groups before #119 and #122 snapshot it.
+  **Issue:** #108, #119, #122
+- **Decision (drift):** `story_settings_defaults` is a dedicated core model, `StorySettingsDefaults`, with `extra="forbid"`, so unknown names are 422.
+  - M2's keys: `turn_concurrency` (`reject`/`queue`), `default_output_viewpoint` (a role id the save checks; genesis resolves it to `character:<id>`) and `audit_retention_days` (1–3650).
+  - The later keys, typed with docs/03's value sets: `interaction_mode` (`sequential`/`simultaneous`, FR-MULTI-5), `player_authority` (`own_character`/`co_author`), `ambiguous_retcon_timing` (`include_if_possible`/`ask_author`) and `backfill_conflict_policy` (`last_mention`/`first_mention`/`ask`).
+  - `policies` are `ScenarioPolicy` items `{name, applies_to?, rule, age_condition?, message}` built from `core.policies.model`'s `Rule`, `Target` and `AgeCondition`. They have no `effect` and no scope: #119 writes them as `story` policies.
+  - `required_providers` is a list of distinct names.
+  **Why:** This is the drift note's correction. `StoryPolicyItem` is the orchestrator's and core cannot import it. Cost if wrong: a value set widens later, which is additive.
+  **Issue:** #108, #119
+- **Decision:** These save rules go beyond the plan (Rule 2, input validation). Each is a 422 `validation_error` at its field, and every finding is listed in `details.errors`:
+  - Role ids `world`, `self`, `acquaintances`, `perceivable` and `public` are reserved, because a seed's holder and audience use them with another meaning. `npc` and `player` stay free for #116.
+  - The player role must be `open`. FR-CAT-6 says a catalog character never plays the player.
+  - An explicit `character.version: null` is refused. Omitting it means floating; the plan keeps `null` for companions, which #116 adds.
+  - Every reference is checked: seed holders (a role or `world`), `relationships[].to_role` (never the role's own id), role and opening starting locations, `roles_present`, a reveal's `allowed_roles`, and the default viewpoint.
+  - Location, entity and seed ids are unique, and a scenario holds at most 200 seeds across all lists.
+  - Labels are trimmed and lower-cased, at most 30 of up to 40 characters. The pattern admits upper case, so the OpenAPI schema never refuses what the server accepts (C-01's negative-data check).
+  - A non-finite number (`1e400` parses as Infinity) in a free-form structure is refused. A JSON-mode dump would otherwise store it as `null` without a word. `ScenarioPatch.document()` keeps the parsed values for the same reason, since `null` in a merge patch removes a key. The same defect exists in media generation metadata, out of scope; I filed it as #317.
+  **Why:** Each rule closes an ambiguity that a later story would otherwise inherit, or a silent data change. Cost if wrong: a rule is relaxed later, which is additive.
+  **Issue:** #108, #116, #317
+- **Decision:** Seed ids and seed presence:
+  - Every seed without an `id` gets a ULID when it is stored, and one sent back keeps its id. A save that sends `roles` again without the seed ids mints new ones.
+  - A draft seed may leave out `holder`, `audience` and `disclosure` (#116 pass 2).
+  - Publish requires all three on every seed, with a `field_required` report entry at each gap, as well as `public_card.name`. It also re-runs the save rules.
+  This goes beyond the plan's "publish in #108 is schema-level only". The AC says audiences are "validated for presence in M3", and #116's plan says they are required at publish.
+  **Why:** Without a publish check, a scenario with seeds that have no audience could be published before #111 lands. Cost if wrong: #111 replaces these entries with its `seed_incomplete`.
+  **Issue:** #108, #111, #116
+- **Decision:** `PATCH /catalog/scenarios/{id}` takes `ScenarioPatch {draft_revision, <group>: object | null}`, with the groups as free JSON objects. A group merges into the draft by RFC 7386, an array replaces the stored one, and `null` resets a group. The merged draft is validated as a whole, and errors land at `body.<path>`, wherever the field came from. I did not derive typed patch models for every nested group.
+  **Why:** Typed patch models would double the schema surface (a `…Patch` for every nested object) and still mis-type RFC 7386's `null`. C-01's negative-data check only needs the schema to be no stricter than the server, and it is not. Cost if wrong: typed patch models can be added later without changing the wire format.
+  **Issue:** #108
+- **Decision (drift):** The starting-cast limit's settings, as the drift note says:
+  - `max_characters_at_start_default` (16) and `max_characters_at_start_ceiling` (null) are `deployment_state` columns. They are listed in `DEPLOYMENT_COLUMNS`, carried by `DeploymentState`, declared prospective on `DeploymentSettings`, and in `SettingsPatch`; the ceiling is in `NULLABLE`.
+  - The scenario value, the default and the ceiling are all bounded 1–1000 (`CAST_LIMIT_MAX`, int32-safe).
+  - The ceiling is checked against the merged document on every create and save, even one that does not touch the value. A scenario stored above a since-lowered ceiling is refused on its next save until its value is lowered.
+  - `effective_cast_limit(scenario, request, deployment)` and `CastLimits` live in `scenario_models` (pure), for #119. The order is the request's override, else the scenario's value, else the default, capped by the ceiling.
+  - Also fixed: `PUT /admin/settings`'s description now names every key that accepts `null` (#105's URL keys were missing).
+  **Why:** The AC says "saving a scenario above the ceiling → 422". 1000 is generous next to the 32-role cap, and no consumer value should reach an INTEGER column's edge. Cost if wrong: a bound or the save-time check is relaxed.
+  **Issue:** #108, #119
+- **Decision:** Table details:
+  - `scenario_catalog.companion_of` is a foreign key to `character_catalog` with `ON DELETE CASCADE` (#124's "companion cascades"), and it is indexed.
+  - The pin `(pinned_character_id, pinned_character_version)` is a composite foreign key to `character_versions` with `ON DELETE SET NULL` (#124), indexed and guarded by `ck_scenario_versions_pin_complete` (both columns or neither). Both are NULL until #116.
+  - Scenario versions get their own trigger function, `catalog.epistrel_scenario_versions_immutable()`, honouring the same `epistrel.erasure` setting. Under that setting, a character delete's cascade and the pin's SET NULL pass it.
+  - The downgrade deletes scenarios' `entity_relations` and `subject_references` rows, so nothing dangles, and keeps their ownership events and audit rows as history.
+  - Scenario drafts are capped at 1 MiB (characters keep 256 KiB).
+  **Why:** A scenario holds a world, up to 32 roles and up to 200 seeds. #116 still writes the companion's own audit row and `deleted` event when it deletes a companion explicitly. Cost if wrong: a foreign-key action changes in a migration before M3 merges.
+  **Issue:** #108, #116, #124
+- **Decision:** The projections:
+  - `card` is #103's envelope (`id, version, listing_status, status`) plus `companion_of` (the pass-1 Discretion), plus AC5's `name, public_description, media, labels, content_rating, roles[{id, public_label, setup_description, kind, fill}]`.
+  - `media` keeps the AC's `cover`/`gallery`/`videos`, each item `{media_id, alt_text, caption}`, rather than a flat list. The alt text is the asset's; a video's caption is the scenario's, else the asset's.
+  - `content_rating` is `{id, version_id, name}`: the version a published version recorded, or for a draft the rating's current version.
+  - `full` is the envelope plus every group of the document as stored, the shape a PATCH targets, rather than the card's flattened fields plus the private ones.
+  **Why:** A flat media list would lose which image is the cover. Editors read `full` to patch it. Cost if wrong: an additive card key, or a reshaped `full` before a consumer depends on it.
+  **Issue:** #108
+- **Decision:** References (#316's #108 half, cross-referenced on #108, not on #316):
+  - `catalog.scenario_catalog.draft` and `catalog.scenario_versions.content` join the static `MEDIA_REFERENCE_SOURCES` list. I did not use `register_reference_source` at import, because a sweep in a process that never imported `scenarios` would miss them.
+  - A create or save checks only the media ids it adds (`assert_referenceable`, 422 `media_retired`). An asset retired after it was added does not block unrelated edits.
+  - A changed `content_rating_id` must be assignable (422 `rating_retired`). Publish records the rating's current version through `rating_version`, which is 422 `rating_retired` if the rating was retired since.
+  - Drafts and versions are indexed with `index_references`: `record_table` `scenario_catalog` (`record_id` the id) and `scenario_versions` (`<id>@<n>`). The fields are every prose field, and the declared subjects are the role characters' catalog ids. A delete drops the scenario's rows.
+  **Why:** FR-MEDIA-2 forbids purging an asset a draft or version references. The Discretion has #108 call `index_references` "for drafts/versions". The publish-time rating check is the minimum needed to record a version id. Cost if wrong: #111 moves the rating and media checks into its report.
+  **Issue:** #108, #316, #111, #123
+- **Decision:** Existing tests changed because the story changes the behaviour they pin; no assertion was loosened:
+  - `test_catalog_tables_have_the_planned_shape` reads only the two character tables. The scenario tables have their own shape test.
+  - A plain `TRUNCATE catalog.character_versions` is now refused by PostgreSQL with `0A000`, because the scenario pin references the table. The trigger's `EPI01` is now asserted with `TRUNCATE … CASCADE`, so both refusals are asserted (I-01 already uses this form for `events`).
+  - `test_every_delivered_type_is_covered` no longer lists scenarios as undelivered.
+  - `test_i_21__companion` now runs on real scenarios in its own scratch database. `companion_of` is set by SQL until #116, and the stand-in table is gone. Y's `updated_at` is compared before and after, because real rows are created "now". The test also asserts that Y2's timestamp does not move, which is stricter.
+  - The ownership fixtures gain the scenario kind and 11 `CALLS`, so the nothing-gates matrix covers scenarios.
+  - C-01 seeds a published scenario, excludes `delete_scenario` from generation, and adds three malformed cases. Its full run passed: 84 passed, up from 73.
+  - C-03 gains 16 scenario steps, and their statuses are checked against `ENTRY_ANSWERS` through `Step.group`, since C-03 is an M2 part and "scenario" is an M3 lexicon term.
+  - `test_u_18` pins the two new settings as prospective.
+  **Why:** These are the smallest changes that hold each new behaviour. Cost if wrong: none.
+  **Issue:** #108, #104
+- **Decision:** I mutation-checked the parts, applying each mutation and restoring the sources from a scratch copy byte for byte afterwards. Each mutation fails the named test:
+  - no ceiling check (U-26);
+  - a `locked` role without a character allowed (U-26);
+  - a second player role allowed (U-26);
+  - the age range dropped when stored (U-26);
+  - the world description shown as the card's public description (C-15 lifecycle);
+  - a role's seed text shown in its card setup description (C-15 lifecycle);
+  - an untagged `conditions` field (C-15 field classes).
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
+  **Issue:** #108
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** docs/02 §4.10's `scenario_roles` table is replaced by the roles inside each scenario draft and version document (jsonb), and docs/02 is amended to match. A role carries the fields the table planned: kind, required, fill mode, public label and setup description, default or locked `character_id@version`, eligibility filters, role seeds with holder, audience and disclosure, relationships, role-scoped State values, starting location, default participation role and name overrides. `scenario_catalog` gains `companion_of`, and `scenario_versions` gains the companion pin `(pinned_character_id, pinned_character_version)`. Applied by #108.
+  **Why:** #108's planner line: "Seeds and roles are jsonb documents inside the version content", and "docs/02 §4.10's `scenario_roles` table is replaced by jsonb roles — logged as an `## Ad-hoc` entry and a docs/02 amendment in this story". A version is immutable and copied whole into a story's snapshot at genesis, so its roles belong with it.
+  **Affects:** No other plan names `scenario_roles` (searched: only #108). The stories that read roles already plan to read them from the document or the snapshot: #110 (search over role public labels), #111 (validation), #116 (companion slots fixed by the validator, "not by DB constraint (roles are jsonb)"), #119 and #122 (genesis from `stories.scenario_snapshot`) and #124 (redaction in versions and drafts). No `/n8-replan` is needed.
+
+## /n8-exec M3 — 2026-10-12 (continued)
+
+- **Decision:** The M3 section continues here, after the `## Ad-hoc` entry #108's planner line asked for, as #107 did for its entries. Later stories append below.
+  **Why:** This keeps the drift ledger entry and keeps the run's section last. Cost if wrong: one heading.
+  **Issue:** #108

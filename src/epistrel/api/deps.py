@@ -138,6 +138,14 @@ CharacterId = Annotated[
         examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"],
     ),
 ]
+ScenarioId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The scenario's id (a ULID).",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"],
+    ),
+]
 MediaId = Annotated[
     str,
     Path(

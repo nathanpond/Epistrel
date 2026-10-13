@@ -91,13 +91,15 @@ async def _lock_waiters(engine: AsyncEngine, wanted: int, within: float = 10.0) 
 
 
 async def test_catalog_tables_have_the_planned_shape(engine: AsyncEngine) -> None:
-    """``catalog.character_catalog`` and ``catalog.character_versions`` hold the planned columns;
-    a version is unique per ``(catalog_id, version)`` and goes with its entry; the status is the
-    enum ``catalog.entry_status``; stories name their catalog source by identifiers only."""
+    """``catalog.character_catalog`` and ``catalog.character_versions`` hold the planned columns
+    (the scenario tables beside them are ``test_scenario_catalog``'s); a version is unique per
+    ``(catalog_id, version)`` and goes with its entry; the status is the enum
+    ``catalog.entry_status``; stories name their catalog source by identifiers only."""
     found = await rows(
         engine,
         "SELECT table_name, column_name, udt_name, is_nullable FROM information_schema.columns "
-        "WHERE table_schema = 'catalog' ORDER BY table_name, ordinal_position",
+        "WHERE table_schema = 'catalog' AND table_name LIKE 'character%' "
+        "ORDER BY table_name, ordinal_position",
     )
     columns: dict[str, list[str]] = {}
     for row in found:
@@ -408,7 +410,9 @@ async def test_published_versions_are_immutable(
     client: httpx.AsyncClient, engine: AsyncEngine
 ) -> None:
     """The trigger refuses UPDATE (of ``content`` or any column), DELETE and TRUNCATE of a
-    published version with ``EPI01``. Complement: under ``epistrel.erasure = on`` (the
+    published version with ``EPI01``. A plain TRUNCATE is refused before the trigger since a
+    scenario version's pin references the table (#108: ``0A000``), so the trigger's refusal is
+    shown with ``TRUNCATE … CASCADE``. Complement: under ``epistrel.erasure = on`` (the
     exemption delete and #124's erasure use) an UPDATE goes through."""
     cid, _ = await published(client)
     stored = await version_rows(engine, cid)
@@ -422,6 +426,9 @@ async def test_published_versions_are_immutable(
         assert sqlstate(caught.value) == "EPI01", statement
     with pytest.raises(DBAPIError) as caught:
         await execute_in_tx(engine, ("TRUNCATE catalog.character_versions", {}))
+    assert sqlstate(caught.value) == "0A000"  # referenced by scenario_versions' pin (#108)
+    with pytest.raises(DBAPIError) as caught:
+        await execute_in_tx(engine, ("TRUNCATE catalog.character_versions CASCADE", {}))
     assert sqlstate(caught.value) == "EPI01"
     assert await version_rows(engine, cid) == stored
 

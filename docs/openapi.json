@@ -1166,6 +1166,36 @@
         "title": "ConfigReplacement",
         "type": "object"
       },
+      "CreationRules": {
+        "additionalProperties": false,
+        "description": "What a story creator may change at creation: ``overridable`` dotted paths (a path names\nthe field and everything under it), and optional ``bounds`` for settings.",
+        "properties": {
+          "bounds": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bounds"
+          },
+          "overridable": {
+            "items": {
+              "maxLength": 200,
+              "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Overridable",
+            "type": "array"
+          }
+        },
+        "title": "CreationRules",
+        "type": "object"
+      },
       "CreationSettings": {
         "additionalProperties": false,
         "description": "The settings a story is created with: the full ``StorySettings`` schema, unknown keys\nrefused. ``default_output_viewpoint`` names a character of the cast **by name** here; it is\nstored as ``character:<id>``.",
@@ -3660,6 +3690,37 @@
         "title": "ModelParams",
         "type": "object"
       },
+      "NameOverrides": {
+        "additionalProperties": false,
+        "description": "Names the role gives whoever fills it in the story: ``canonical`` replaces the\ncharacter's name, ``aliases`` are added to its own.",
+        "properties": {
+          "aliases": {
+            "items": {
+              "maxLength": 60,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Aliases",
+            "type": "array"
+          },
+          "canonical": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical"
+          }
+        },
+        "title": "NameOverrides",
+        "type": "object"
+      },
       "OmniscientCharacterBody": {
         "description": "A character as an omniscient read returns it: with its true age.",
         "properties": {
@@ -4273,6 +4334,41 @@
         "title": "PinnedMemoriesWritten",
         "type": "object"
       },
+      "PlannedReveal": {
+        "additionalProperties": false,
+        "description": "A hidden truth (seeded as secret canon) with the roles allowed to learn it and when.",
+        "properties": {
+          "allowed_roles": {
+            "items": {
+              "pattern": "^[a-z0-9_]{1,40}$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Allowed Roles",
+            "type": "array"
+          },
+          "conditions": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conditions"
+          },
+          "truth": {
+            "$ref": "#/components/schemas/Seed"
+          }
+        },
+        "required": [
+          "truth"
+        ],
+        "title": "PlannedReveal",
+        "type": "object"
+      },
       "PlayerInputBody": {
         "additionalProperties": false,
         "description": "The actor's ``say`` and/or ``do``; at least one, and whitespace alone counts as none.",
@@ -4870,7 +4966,7 @@
       },
       "PublishRequest": {
         "additionalProperties": false,
-        "description": "``POST /catalog/characters/{id}/publish``: the draft revision being published\n(FR-CAT-3); a stale one is 409 ``draft_stale``.",
+        "description": "``POST /catalog/{characters|scenarios}/{id}/publish``: the draft revision being published\n(FR-CAT-3); a stale one is 409 ``draft_stale``.",
         "examples": [
           {
             "draft_revision": 2
@@ -6135,6 +6231,1836 @@
         "title": "RespondResponse",
         "type": "object"
       },
+      "RoleCharacter": {
+        "additionalProperties": false,
+        "description": "The catalog character a ``default`` or ``locked`` role is filled with: its id and,\noptionally, a version (omitted: the latest published when a story is created).",
+        "properties": {
+          "catalog_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Catalog Id",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "catalog_id"
+        ],
+        "title": "RoleCharacter",
+        "type": "object"
+      },
+      "RoleEligibility": {
+        "additionalProperties": false,
+        "description": "Who may fill a role (FR-SCN-3): a character needs every label listed, one of the\ncontent ratings listed (when any are), and a true age within ``age_range``\n(``[min, max]``, inclusive, either end open). Never applied to the player's persona.",
+        "properties": {
+          "age_range": {
+            "anyOf": [
+              {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "anyOf": [
+                      {
+                        "maximum": 150.0,
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "maximum": 150.0,
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Range"
+          },
+          "content_ratings": {
+            "items": {
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Content Ratings",
+            "type": "array"
+          },
+          "labels": {
+            "items": {
+              "pattern": "^[A-Za-z0-9 _-]{1,40}$",
+              "type": "string"
+            },
+            "maxItems": 30,
+            "title": "Labels",
+            "type": "array"
+          }
+        },
+        "title": "RoleEligibility",
+        "type": "object"
+      },
+      "RoleRelationship": {
+        "additionalProperties": false,
+        "description": "A relationship of the role to another role (``mother_of``, ``sibling_of``), seeded as\ncanon and as beliefs of the roles that know it. Free text; no inverse is added.",
+        "properties": {
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "to_role": {
+            "pattern": "^[a-z0-9_]{1,40}$",
+            "title": "To Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to_role",
+          "name"
+        ],
+        "title": "RoleRelationship",
+        "type": "object"
+      },
+      "ScenarioCard": {
+        "additionalProperties": false,
+        "description": "A scenario's public card (``projection=card``, the default; FR-SCN-10): the entry's\nenvelope, the name, public description, media, labels and content rating, and each role's\npublic label and setup description with its kind and fill mode — never a world\ndescription, seed, secret, director guidance or any other private field. ``version`` is the\nversion shown (a draft read shows the draft with the latest published version, ``null``\nbefore the first publish); ``companion_of`` names the character whose companion this is\n(#116).",
+        "properties": {
+          "companion_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Companion Of"
+          },
+          "content_rating": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CardRating"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "listing_status": {
+            "title": "Listing Status",
+            "type": "string"
+          },
+          "media": {
+            "$ref": "#/components/schemas/ScenarioCardMediaSet"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "public_description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Description"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioCardRole"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EntryStatus"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "listing_status",
+          "status",
+          "companion_of",
+          "name",
+          "public_description",
+          "media",
+          "labels",
+          "content_rating",
+          "roles"
+        ],
+        "title": "ScenarioCard",
+        "type": "object"
+      },
+      "ScenarioCardMedia": {
+        "additionalProperties": false,
+        "description": "One media asset on a scenario's card: its id, its alt text (the asset's), and its\ncaption (a video's caption in the scenario, else the asset's).",
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alt Text"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption"
+          },
+          "media_id": {
+            "title": "Media Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "media_id",
+          "alt_text",
+          "caption"
+        ],
+        "title": "ScenarioCardMedia",
+        "type": "object"
+      },
+      "ScenarioCardMediaSet": {
+        "additionalProperties": false,
+        "description": "The card's media: the cover image, the gallery images and the videos.",
+        "properties": {
+          "cover": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScenarioCardMedia"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "gallery": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioCardMedia"
+            },
+            "title": "Gallery",
+            "type": "array"
+          },
+          "videos": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioCardMedia"
+            },
+            "title": "Videos",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cover",
+          "gallery",
+          "videos"
+        ],
+        "title": "ScenarioCardMediaSet",
+        "type": "object"
+      },
+      "ScenarioCardRole": {
+        "additionalProperties": false,
+        "description": "A role as the card shows it: what a player choosing who fills it needs, nothing\nprivate.",
+        "properties": {
+          "fill": {
+            "enum": [
+              "open",
+              "default",
+              "locked"
+            ],
+            "title": "Fill",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "npc",
+              "player"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "public_label": {
+            "title": "Public Label",
+            "type": "string"
+          },
+          "setup_description": {
+            "title": "Setup Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "public_label",
+          "setup_description",
+          "kind",
+          "fill"
+        ],
+        "title": "ScenarioCardRole",
+        "type": "object"
+      },
+      "ScenarioCast": {
+        "additionalProperties": false,
+        "description": "The cast: the roles, and the most character slots (player slots included) a story\nstarts with (FR-SCN-4; ``null``: the deployment's default).",
+        "properties": {
+          "max_characters_at_start": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Characters At Start"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioRole"
+            },
+            "maxItems": 32,
+            "title": "Roles",
+            "type": "array"
+          }
+        },
+        "title": "ScenarioCast",
+        "type": "object"
+      },
+      "ScenarioCreate": {
+        "additionalProperties": false,
+        "description": "``POST /catalog/scenarios``: the new scenario's first draft — any of the draft's groups\n— and, optionally, its ``owner``: an opaque principal, by default the requesting one, never\n``system`` (FR-AUTH-5). Ownership confers no permission (FR-AUTH-8).",
+        "examples": [
+          {
+            "cast": {
+              "max_characters_at_start": 6,
+              "roles": [
+                {
+                  "eligibility": {
+                    "age_range": [
+                      40,
+                      70
+                    ]
+                  },
+                  "fill": "open",
+                  "id": "mother",
+                  "kind": "npc",
+                  "public_label": "Mother",
+                  "seeded_memories": [
+                    {
+                      "audience": [
+                        "self"
+                      ],
+                      "disclosure": "secret",
+                      "holder": "mother",
+                      "text": "The house is being sold."
+                    }
+                  ],
+                  "setup_description": "Her children are home for the weekend.",
+                  "starting_location": "kitchen"
+                },
+                {
+                  "id": "player",
+                  "kind": "player",
+                  "public_label": "The eldest",
+                  "relationships": [
+                    {
+                      "name": "child_of",
+                      "to_role": "mother"
+                    }
+                  ],
+                  "setup_description": "Back home for the first time in a year."
+                }
+              ]
+            },
+            "drivers": {
+              "director_guidance": "Keep the sale secret until the meal ends."
+            },
+            "metadata": {
+              "labels": [
+                "family",
+                "slice of life"
+              ]
+            },
+            "public_card": {
+              "name": "Sunday Dinner",
+              "public_description": "The whole family is home for the weekend."
+            },
+            "starting_state": {
+              "opening": {
+                "narration": "Rain on the windows; the roast is late.",
+                "roles_present": [
+                  "mother",
+                  "player"
+                ],
+                "starting_location": "kitchen"
+              }
+            },
+            "world": {
+              "description": "A farmhouse outside a small river town.",
+              "locations": [
+                {
+                  "id": "kitchen",
+                  "name": "The kitchen"
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "cast": {
+            "$ref": "#/components/schemas/ScenarioCast"
+          },
+          "creation_rules": {
+            "$ref": "#/components/schemas/CreationRules"
+          },
+          "drivers": {
+            "$ref": "#/components/schemas/ScenarioDrivers"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/ScenarioMetadata"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The scenario's owner principal (default: the requesting principal; never `system`). Recorded, never interpreted.",
+            "title": "Owner"
+          },
+          "public_card": {
+            "$ref": "#/components/schemas/ScenarioPublicCard"
+          },
+          "recommendation": {
+            "$ref": "#/components/schemas/ScenarioRecommendation"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "starting_state": {
+            "$ref": "#/components/schemas/ScenarioStartingState"
+          },
+          "story_settings_defaults": {
+            "$ref": "#/components/schemas/StorySettingsDefaults"
+          },
+          "visual_style": {
+            "$ref": "#/components/schemas/VisualStyle"
+          },
+          "world": {
+            "$ref": "#/components/schemas/ScenarioWorld"
+          }
+        },
+        "title": "ScenarioCreate",
+        "type": "object"
+      },
+      "ScenarioDraftBody": {
+        "additionalProperties": false,
+        "description": "The scenario's draft after a create or save, in ``full``: ``draft_revision`` is the\nrevision the next save or publish must send; ``config_revision`` is the deployment's\n(unchanged).",
+        "properties": {
+          "cast": {
+            "$ref": "#/components/schemas/ScenarioCast"
+          },
+          "companion_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Companion Of"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "creation_rules": {
+            "$ref": "#/components/schemas/CreationRules"
+          },
+          "current_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version"
+          },
+          "draft_revision": {
+            "title": "Draft Revision",
+            "type": "integer"
+          },
+          "drivers": {
+            "$ref": "#/components/schemas/ScenarioDrivers"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "listing_status": {
+            "title": "Listing Status",
+            "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/ScenarioMetadata"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "public_card": {
+            "$ref": "#/components/schemas/ScenarioPublicCard"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "recommendation": {
+            "$ref": "#/components/schemas/ScenarioRecommendation"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "starting_state": {
+            "$ref": "#/components/schemas/ScenarioStartingState"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EntryStatus"
+          },
+          "story_settings_defaults": {
+            "$ref": "#/components/schemas/StorySettingsDefaults"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "visual_style": {
+            "$ref": "#/components/schemas/VisualStyle"
+          },
+          "world": {
+            "$ref": "#/components/schemas/ScenarioWorld"
+          }
+        },
+        "required": [
+          "config_revision",
+          "id",
+          "status",
+          "listing_status",
+          "owner_principal",
+          "version",
+          "current_version",
+          "draft_revision",
+          "created_at",
+          "updated_at",
+          "published_at",
+          "companion_of",
+          "schema_version",
+          "public_card",
+          "metadata",
+          "world",
+          "cast",
+          "starting_state",
+          "drivers",
+          "story_settings_defaults",
+          "recommendation",
+          "visual_style",
+          "creation_rules"
+        ],
+        "title": "ScenarioDraftBody",
+        "type": "object"
+      },
+      "ScenarioDrivers": {
+        "additionalProperties": false,
+        "description": "What drives the plot: hooks, objectives, hidden director guidance, planned reveals, and\noptional milestones and endings. Instructions to the storytelling, never facts.",
+        "properties": {
+          "director_guidance": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Director Guidance"
+          },
+          "endings": {
+            "items": {
+              "maxLength": 8000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Endings",
+            "type": "array"
+          },
+          "milestones": {
+            "items": {
+              "maxLength": 8000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Milestones",
+            "type": "array"
+          },
+          "objectives": {
+            "items": {
+              "maxLength": 8000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Objectives",
+            "type": "array"
+          },
+          "planned_reveals": {
+            "items": {
+              "$ref": "#/components/schemas/PlannedReveal"
+            },
+            "maxItems": 100,
+            "title": "Planned Reveals",
+            "type": "array"
+          },
+          "plot_hooks": {
+            "items": {
+              "maxLength": 8000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Plot Hooks",
+            "type": "array"
+          }
+        },
+        "title": "ScenarioDrivers",
+        "type": "object"
+      },
+      "ScenarioEntity": {
+        "additionalProperties": false,
+        "description": "A named entity of the world (an organisation, an item, a place) with its aliases.",
+        "properties": {
+          "aliases": {
+            "items": {
+              "maxLength": 60,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Aliases",
+            "type": "array"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "id": {
+            "pattern": "^[a-z0-9_]{1,40}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ScenarioEntity",
+        "type": "object"
+      },
+      "ScenarioFull": {
+        "additionalProperties": false,
+        "description": "A scenario in full (``projection=full``; FR-SCN-10): the entry's envelope and every field\nof the document. ``draft_revision`` is present only on a draft read (``?draft=true``): the\nrevision the next save or publish must send. ``published_at`` is when ``version`` was\npublished. ``owner_principal`` is the entry's owner (FR-AUTH-5), recorded for listing and\nattribution only.",
+        "properties": {
+          "cast": {
+            "$ref": "#/components/schemas/ScenarioCast"
+          },
+          "companion_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Companion Of"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "creation_rules": {
+            "$ref": "#/components/schemas/CreationRules"
+          },
+          "current_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version"
+          },
+          "draft_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Revision"
+          },
+          "drivers": {
+            "$ref": "#/components/schemas/ScenarioDrivers"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "listing_status": {
+            "title": "Listing Status",
+            "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/ScenarioMetadata"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "public_card": {
+            "$ref": "#/components/schemas/ScenarioPublicCard"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "recommendation": {
+            "$ref": "#/components/schemas/ScenarioRecommendation"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "starting_state": {
+            "$ref": "#/components/schemas/ScenarioStartingState"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EntryStatus"
+          },
+          "story_settings_defaults": {
+            "$ref": "#/components/schemas/StorySettingsDefaults"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "visual_style": {
+            "$ref": "#/components/schemas/VisualStyle"
+          },
+          "world": {
+            "$ref": "#/components/schemas/ScenarioWorld"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "listing_status",
+          "owner_principal",
+          "version",
+          "current_version",
+          "created_at",
+          "updated_at",
+          "published_at",
+          "companion_of",
+          "schema_version",
+          "public_card",
+          "metadata",
+          "world",
+          "cast",
+          "starting_state",
+          "drivers",
+          "story_settings_defaults",
+          "recommendation",
+          "visual_style",
+          "creation_rules"
+        ],
+        "title": "ScenarioFull",
+        "type": "object"
+      },
+      "ScenarioLocation": {
+        "additionalProperties": false,
+        "description": "A named place in the world: an id roles and the opening start at, a name and a\ndescription.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "id": {
+            "pattern": "^[a-z0-9_]{1,40}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ScenarioLocation",
+        "type": "object"
+      },
+      "ScenarioMedia": {
+        "additionalProperties": false,
+        "description": "The public card's media (FR-SCN-2, FR-MEDIA-1): a cover image, gallery images and\nvideos, each a live media asset when it is added.",
+        "properties": {
+          "cover": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover"
+          },
+          "gallery": {
+            "items": {
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Gallery",
+            "type": "array"
+          },
+          "videos": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioVideo"
+            },
+            "maxItems": 20,
+            "title": "Videos",
+            "type": "array"
+          }
+        },
+        "title": "ScenarioMedia",
+        "type": "object"
+      },
+      "ScenarioMetadata": {
+        "additionalProperties": false,
+        "description": "Search and filtering metadata, returned with the card and never seeded: labels that\ndescribe the scenario and its content rating.",
+        "properties": {
+          "content_rating_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Rating Id"
+          },
+          "labels": {
+            "items": {
+              "pattern": "^[A-Za-z0-9 _-]{1,40}$",
+              "type": "string"
+            },
+            "maxItems": 30,
+            "title": "Labels",
+            "type": "array"
+          }
+        },
+        "title": "ScenarioMetadata",
+        "type": "object"
+      },
+      "ScenarioOpening": {
+        "additionalProperties": false,
+        "description": "How the story opens: the opening narration (turn 1), where it starts and which roles are\npresent.",
+        "properties": {
+          "narration": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narration"
+          },
+          "roles_present": {
+            "items": {
+              "pattern": "^[a-z0-9_]{1,40}$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Roles Present",
+            "type": "array"
+          },
+          "starting_location": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9_]{1,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starting Location"
+          }
+        },
+        "title": "ScenarioOpening",
+        "type": "object"
+      },
+      "ScenarioPatch": {
+        "additionalProperties": false,
+        "description": "``PATCH /catalog/scenarios/{id}``: a JSON merge patch (RFC 7386) over the draft, group\nby group — a key sets that field, ``null`` removes it, an object merges into the stored one\nand an array replaces it (``roles``, ``seeded_memories``, …) — with the ``draft_revision``\nit is based on (FR-CAT-3). The merged draft is validated as a whole: an invalid field is 422\nat ``body.<path>``, wherever the field came from.",
+        "examples": [
+          {
+            "draft_revision": 1,
+            "drivers": {
+              "plot_hooks": [
+                "The will is read after dessert."
+              ]
+            },
+            "public_card": {
+              "public_description": "Everyone is home, for once."
+            }
+          }
+        ],
+        "properties": {
+          "cast": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A JSON merge patch over the draft's `cast` group (see `ScenarioCreate`): a key sets that field, `null` removes it, an object merges, an array replaces the stored one.",
+            "title": "Cast"
+          },
+          "creation_rules": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A JSON merge patch over the draft's `creation_rules` group (see `ScenarioCreate`): a key sets that field, `null` removes it, an object merges, an array replaces the stored one.",
+            "title": "Creation Rules"
+          },
+          "draft_revision": {
+            "description": "The draft revision this patch is based on; a stale one is 409 `draft_stale`.",
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "Draft Revision",
+            "type": "integer"
+          },
+          "drivers": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A JSON merge patch over the draft's `drivers` group (see `ScenarioCreate`): a key sets that field, `null` removes it, an object merges, an array replaces the stored one.",
+            "title": "Drivers"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A JSON merge patch over the draft's `metadata` group (see `ScenarioCreate`): a key sets that field, `null` removes it, an object merges, an array replaces the stored one.",
+            "title": "Metadata"
+          },
+          "public_card": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A JSON merge patch over the draft's `public_card` group (see `ScenarioCreate`): a key sets that field, `null` removes it, an object merges, an array replaces the stored one.",
+            "title": "Public Card"
+          },
+          "recommendation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A JSON merge patch over the draft's `recommendation` group (see `ScenarioCreate`): a key sets that field, `null` removes it, an object merges, an array replaces the stored one.",
+            "title": "Recommendation"
+          },
+          "starting_state": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A JSON merge patch over the draft's `starting_state` group (see `ScenarioCreate`): a key sets that field, `null` removes it, an object merges, an array replaces the stored one.",
+            "title": "Starting State"
+          },
+          "story_settings_defaults": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A JSON merge patch over the draft's `story_settings_defaults` group (see `ScenarioCreate`): a key sets that field, `null` removes it, an object merges, an array replaces the stored one.",
+            "title": "Story Settings Defaults"
+          },
+          "visual_style": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A JSON merge patch over the draft's `visual_style` group (see `ScenarioCreate`): a key sets that field, `null` removes it, an object merges, an array replaces the stored one.",
+            "title": "Visual Style"
+          },
+          "world": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A JSON merge patch over the draft's `world` group (see `ScenarioCreate`): a key sets that field, `null` removes it, an object merges, an array replaces the stored one.",
+            "title": "World"
+          }
+        },
+        "required": [
+          "draft_revision"
+        ],
+        "title": "ScenarioPatch",
+        "type": "object"
+      },
+      "ScenarioPolicy": {
+        "additionalProperties": false,
+        "description": "A story-scoped guardrail policy every story from the scenario gets (FR-GUARD): a name,\nthe targets it applies to (default: text output), a deterministic or model-assisted rule,\nan optional age condition, and the message a refusal carries. It can add to the global and\nrating policies, never relax one.",
+        "properties": {
+          "age_condition": {
+            "anyOf": [
+              {
+                "const": "minor_involved_or_present",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Condition"
+          },
+          "applies_to": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Target"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applies To"
+          },
+          "message": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "rule": {
+            "discriminator": {
+              "mapping": {
+                "entity_list": "#/components/schemas/EntityListRule",
+                "model_assisted": "#/components/schemas/ModelAssistedRule",
+                "regex": "#/components/schemas/RegexRule",
+                "wordlist": "#/components/schemas/WordlistRule"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WordlistRule"
+              },
+              {
+                "$ref": "#/components/schemas/RegexRule"
+              },
+              {
+                "$ref": "#/components/schemas/EntityListRule"
+              },
+              {
+                "$ref": "#/components/schemas/ModelAssistedRule"
+              }
+            ],
+            "title": "Rule"
+          }
+        },
+        "required": [
+          "name",
+          "rule",
+          "message"
+        ],
+        "title": "ScenarioPolicy",
+        "type": "object"
+      },
+      "ScenarioPublicCard": {
+        "additionalProperties": false,
+        "description": "What a player browsing scenarios may see: the name, a public description (never\nseeded into a story) and media.",
+        "properties": {
+          "media": {
+            "$ref": "#/components/schemas/ScenarioMedia"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "public_description": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Description"
+          }
+        },
+        "title": "ScenarioPublicCard",
+        "type": "object"
+      },
+      "ScenarioPublishedBody": {
+        "description": "The version a scenario's publish made: its number, the draft's new ``draft_revision``\n(the draft still equals what was published), the scenario's ``status``, when it was\npublished, and the validation ``report``.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "draft_revision": {
+            "title": "Draft Revision",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "published_at": {
+            "format": "date-time",
+            "title": "Published At",
+            "type": "string"
+          },
+          "report": {
+            "$ref": "#/components/schemas/PublishReportBody"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EntryStatus"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "config_revision",
+          "id",
+          "version",
+          "draft_revision",
+          "status",
+          "published_at",
+          "report"
+        ],
+        "title": "ScenarioPublishedBody",
+        "type": "object"
+      },
+      "ScenarioRecommendation": {
+        "additionalProperties": false,
+        "description": "The engine profile and capabilities the scenario recommends (FR-PROF-7): compared with\nthe story's profile at creation, producing warnings, never blocks.",
+        "properties": {
+          "capabilities": {
+            "items": {
+              "pattern": "^[a-z][a-z0-9_]{0,63}$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "engine_profile_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Profile Id"
+          }
+        },
+        "title": "ScenarioRecommendation",
+        "type": "object"
+      },
+      "ScenarioRole": {
+        "additionalProperties": false,
+        "description": "A character role (a slot; FR-SCN-3). ``public_label`` and ``setup_description`` are\nshown to the player at setup. ``kind`` is ``npc`` or ``player`` (at most one player role);\n``fill`` is ``open`` (the creator picks or defines a character), ``default`` (pre-filled\nwith ``character``, replaceable) or ``locked`` (fixed to ``character``). A role defines\nsituation, not personality: whoever fills it brings their own.",
+        "properties": {
+          "character": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoleCharacter"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eligibility": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoleEligibility"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fill": {
+            "default": "open",
+            "enum": [
+              "open",
+              "default",
+              "locked"
+            ],
+            "title": "Fill",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[a-z0-9_]{1,40}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "npc",
+              "player"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name_overrides": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NameOverrides"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "participation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "primary",
+                  "reactive",
+                  "silent"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Participation"
+          },
+          "public_label": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Public Label",
+            "type": "string"
+          },
+          "relationships": {
+            "items": {
+              "$ref": "#/components/schemas/RoleRelationship"
+            },
+            "maxItems": 64,
+            "title": "Relationships",
+            "type": "array"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "seeded_memories": {
+            "items": {
+              "$ref": "#/components/schemas/Seed"
+            },
+            "maxItems": 200,
+            "title": "Seeded Memories",
+            "type": "array"
+          },
+          "setup_description": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Setup Description",
+            "type": "string"
+          },
+          "starting_location": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9_]{1,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starting Location"
+          },
+          "state_initial_values": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Initial Values"
+          }
+        },
+        "required": [
+          "id",
+          "public_label",
+          "setup_description",
+          "kind"
+        ],
+        "title": "ScenarioRole",
+        "type": "object"
+      },
+      "ScenarioStartingState": {
+        "additionalProperties": false,
+        "description": "The story's starting state: seeded world memories, State trackers with initial values,\nthe starting clock, pre-scheduled events, author-declared predicates, closed sets and rules\n(each stored as given in M3), and the opening.",
+        "properties": {
+          "clock": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clock"
+          },
+          "closed_sets": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 200,
+            "title": "Closed Sets",
+            "type": "array"
+          },
+          "opening": {
+            "$ref": "#/components/schemas/ScenarioOpening"
+          },
+          "predicates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 200,
+            "title": "Predicates",
+            "type": "array"
+          },
+          "rules": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 200,
+            "title": "Rules",
+            "type": "array"
+          },
+          "scheduled_events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 200,
+            "title": "Scheduled Events",
+            "type": "array"
+          },
+          "seeded_memories": {
+            "items": {
+              "$ref": "#/components/schemas/Seed"
+            },
+            "maxItems": 200,
+            "title": "Seeded Memories",
+            "type": "array"
+          },
+          "states": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 200,
+            "title": "States",
+            "type": "array"
+          }
+        },
+        "title": "ScenarioStartingState",
+        "type": "object"
+      },
+      "ScenarioStatusBody": {
+        "description": "The scenario after archive or unarchive: its status, listing status, latest published\nversion and when it was published, its timestamps, and the character it is the companion\nof (``null`` for an authored scenario; #116).",
+        "properties": {
+          "companion_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Companion Of"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "listing_status": {
+            "title": "Listing Status",
+            "type": "string"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EntryStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_revision",
+          "id",
+          "status",
+          "listing_status",
+          "current_version",
+          "created_at",
+          "updated_at",
+          "published_at",
+          "companion_of"
+        ],
+        "title": "ScenarioStatusBody",
+        "type": "object"
+      },
+      "ScenarioVersionBody": {
+        "description": "One published version of a scenario: its number, when and by which principal it was\npublished.",
+        "properties": {
+          "published_at": {
+            "format": "date-time",
+            "title": "Published At",
+            "type": "string"
+          },
+          "published_by": {
+            "title": "Published By",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "published_at",
+          "published_by"
+        ],
+        "title": "ScenarioVersionBody",
+        "type": "object"
+      },
+      "ScenarioVersionsBody": {
+        "description": "Every published version of a scenario, oldest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioVersionBody"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ScenarioVersionsBody",
+        "type": "object"
+      },
+      "ScenarioVideo": {
+        "additionalProperties": false,
+        "description": "A video on the scenario's public card: the media asset and the caption shown with it.",
+        "properties": {
+          "caption": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption"
+          },
+          "media_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Media Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "media_id"
+        ],
+        "title": "ScenarioVideo",
+        "type": "object"
+      },
+      "ScenarioWorld": {
+        "additionalProperties": false,
+        "description": "The world: its description (setting and lore, seeded as canon), named locations and\nnamed entities.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioEntity"
+            },
+            "maxItems": 100,
+            "title": "Entities",
+            "type": "array"
+          },
+          "locations": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioLocation"
+            },
+            "maxItems": 100,
+            "title": "Locations",
+            "type": "array"
+          }
+        },
+        "title": "ScenarioWorld",
+        "type": "object"
+      },
       "SceneContext": {
         "additionalProperties": false,
         "description": "What the consumer knows about the scene (FR-RESP-4): validated, then dropped.\n\n``characters_present`` must name cast members; in M2 it narrows nothing (M5 uses it).",
@@ -6170,6 +8096,109 @@
         ],
         "title": "Scope",
         "type": "string"
+      },
+      "Seed": {
+        "additionalProperties": false,
+        "description": "A seeded item (FR-SCN-3,8): its ``text``, its ``holder`` (a role id, or ``world``), its\n``audience`` (who starts out knowing it) and its ``disclosure`` (how the holder treats it:\n``open``, ``guarded`` or ``secret``), with an optional ``kind`` (``canon``, ``belief``,\n``nested`` or ``scheduled``) and ``valid_time``. ``id`` is assigned by the server when a\nsave stores the seed; send it back to keep it. A draft may leave the holder, audience and\ndisclosure out; publishing needs all three.",
+        "properties": {
+          "audience": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[a-z0-9_]([a-z0-9 _-]{0,58}[a-z0-9_])?$",
+                  "type": "string"
+                },
+                "maxItems": 40,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audience"
+          },
+          "disclosure": {
+            "anyOf": [
+              {
+                "enum": [
+                  "open",
+                  "guarded",
+                  "secret"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disclosure"
+          },
+          "holder": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9_]{1,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "canon",
+                  "belief",
+                  "nested",
+                  "scheduled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "text": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "valid_time": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Time"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "Seed",
+        "type": "object"
       },
       "SettingsBody": {
         "additionalProperties": false,
@@ -6251,6 +8280,26 @@
             "maximum": 500.0,
             "minimum": 1.0,
             "title": "Lite Window Messages",
+            "type": "integer"
+          },
+          "max_characters_at_start_ceiling": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Characters At Start Ceiling"
+          },
+          "max_characters_at_start_default": {
+            "default": 16,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Max Characters At Start Default",
             "type": "integer"
           },
           "max_custom_instructions_chars": {
@@ -6408,7 +8457,7 @@
       },
       "SettingsPatch": {
         "additionalProperties": false,
-        "description": "A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,\n``lite_generation_defaults`` merges key by key, and ``null`` is refused for a top-level\nfield (except ``max_model_calls_per_turn``, whose ``null`` restores the formula, and\n``media_moderation_webhook_url`` and ``public_base_url``, whose ``null`` unsets them). A list\n(``media_allowed_types``) replaces the stored one. Bounds are ``DeploymentSettings``'s,\nchecked on the merged settings (422 ``validation_error`` at ``body.<field>``).",
+        "description": "A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,\n``lite_generation_defaults`` merges key by key, and ``null`` is refused for a top-level\nfield (except ``max_model_calls_per_turn``, whose ``null`` restores the formula, and\n``media_moderation_webhook_url``, ``public_base_url`` and\n``max_characters_at_start_ceiling``, whose ``null`` unsets them). A list\n(``media_allowed_types``) replaces the stored one. Bounds are ``DeploymentSettings``'s,\nchecked on the merged settings (422 ``validation_error`` at ``body.<field>``).",
         "examples": [
           {
             "lite_window_messages": 40,
@@ -6513,6 +8562,28 @@
               }
             ],
             "title": "Lite Window Messages"
+          },
+          "max_characters_at_start_ceiling": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Characters At Start Ceiling"
+          },
+          "max_characters_at_start_default": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Characters At Start Default"
           },
           "max_custom_instructions_chars": {
             "anyOf": [
@@ -7275,6 +9346,132 @@
           "effective_budget"
         ],
         "title": "StorySettingsBody",
+        "type": "object"
+      },
+      "StorySettingsDefaults": {
+        "additionalProperties": false,
+        "description": "The settings a story created from the scenario starts with (what the story is, not how\nhard the engine works): each ``null`` leaves the deployment's or story's default. The\noutput viewpoint is a role id, which genesis turns into that role's character. Also the\nstory-scoped ``policies`` and the external providers the scenario requires. Unknown\nsetting names are refused.",
+        "properties": {
+          "ambiguous_retcon_timing": {
+            "anyOf": [
+              {
+                "enum": [
+                  "include_if_possible",
+                  "ask_author"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ambiguous Retcon Timing"
+          },
+          "audit_retention_days": {
+            "anyOf": [
+              {
+                "maximum": 3650.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audit Retention Days"
+          },
+          "backfill_conflict_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "last_mention",
+                  "first_mention",
+                  "ask"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backfill Conflict Policy"
+          },
+          "default_output_viewpoint": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9_]{1,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Output Viewpoint"
+          },
+          "interaction_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sequential",
+                  "simultaneous"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interaction Mode"
+          },
+          "player_authority": {
+            "anyOf": [
+              {
+                "enum": [
+                  "own_character",
+                  "co_author"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player Authority"
+          },
+          "policies": {
+            "items": {
+              "$ref": "#/components/schemas/ScenarioPolicy"
+            },
+            "maxItems": 50,
+            "title": "Policies",
+            "type": "array"
+          },
+          "required_providers": {
+            "items": {
+              "pattern": "^[a-z][a-z0-9_.-]{0,63}$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Required Providers",
+            "type": "array"
+          },
+          "turn_concurrency": {
+            "anyOf": [
+              {
+                "enum": [
+                  "reject",
+                  "queue"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Concurrency"
+          }
+        },
+        "title": "StorySettingsDefaults",
         "type": "object"
       },
       "StorySettingsPatch": {
@@ -8377,6 +10574,38 @@
         "title": "VariantsBody",
         "type": "object"
       },
+      "VisualStyle": {
+        "additionalProperties": false,
+        "description": "The art style every image generated for the scenario uses (FR-IMG-2): never in a\ntext-generation prompt.",
+        "properties": {
+          "negative_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Negative Prompt"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          }
+        },
+        "title": "VisualStyle",
+        "type": "object"
+      },
       "WordlistRule": {
         "additionalProperties": false,
         "description": "Whole words and phrases, compared after NFKC normalisation and case folding.",
@@ -8478,6 +10707,8 @@
                           "lite_summary_chunk",
                           "lite_summary_max_tokens",
                           "lite_window_messages",
+                          "max_characters_at_start_ceiling",
+                          "max_characters_at_start_default",
                           "max_custom_instructions_chars",
                           "max_model_calls_per_turn",
                           "max_pinned_memories",
@@ -10971,7 +13202,7 @@
         ]
       },
       "put": {
-        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `max_model_calls_per_turn` accepts `null` (the Lite formula `9 + G`); no other key does.",
+        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `max_model_calls_per_turn` accepts `null` (the Lite formula `9 + G`), and so do `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` (unset: no hook, no base URL, no ceiling); no other key does.",
         "operationId": "update_deployment_settings",
         "parameters": [
           {
@@ -13151,6 +15382,1842 @@
           }
         ],
         "summary": "List a catalog character's published versions",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/catalog/scenarios": {
+      "post": {
+        "description": "Create a scenario whose draft holds the given groups: draft revision 1, status `draft`, listing status `private`. `owner` names its owner principal (default: the requesting principal; never `system`). The draft must keep the save rules (422 `validation_error` at the field): unique, unreserved role ids; at most one player role, `open`; a `locked` or `default` role names its `character` and an `open` one none; relationships, holders, starting locations and the opening name declared roles and locations. A `max_characters_at_start` above the deployment's ceiling is 422 `cast_limit_exceeded`; a content rating or media asset that cannot be referenced is 422 `rating_retired` or `media_retired`. Each seed gets an `id`. Answers 201 with the draft in `full`. A draft larger than 1 MiB is 413 `draft_too_large`.",
+        "operationId": "create_scenario_draft",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScenarioCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioDraftBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too large; nothing was written: `draft_too_large`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `cast_limit_exceeded`, `media_retired`, `rating_retired`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create a scenario (a draft)",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}": {
+      "delete": {
+        "description": "Remove the scenario and every published version, from any status (204), recorded in the audit log. Stories created from it keep their snapshot and their provenance (FR-CAT-9). A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`.",
+        "operationId": "delete_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete a scenario",
+        "tags": [
+          "catalog"
+        ]
+      },
+      "get": {
+        "description": "The latest published version; `version` reads another one (404 when it does not exist) and `draft=true` the draft, with its `draft_revision` (not both: 422). Before the first publish, a read without `draft=true` is 422 `not_published`. `projection` is `card` (the default: the public card only — name, public description, media, labels, content rating, and each role's id, public label, setup description, kind and fill mode) or `full` (every field; FR-SCN-10). Archived scenarios read as any other.",
+        "operationId": "get_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A published version's number.",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A published version's number.",
+              "title": "Version"
+            }
+          },
+          {
+            "description": "Read the draft instead of a version.",
+            "in": "query",
+            "name": "draft",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Read the draft instead of a version.",
+              "title": "Draft",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "`card` (the default) or `full` (FR-SCN-10).",
+            "in": "query",
+            "name": "projection",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Projection",
+              "default": "card",
+              "description": "`card` (the default) or `full` (FR-SCN-10)."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ScenarioCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ScenarioFull"
+                    }
+                  ],
+                  "title": "Response Get Scenario"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `not_published`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a scenario",
+        "tags": [
+          "catalog"
+        ]
+      },
+      "patch": {
+        "description": "Change the draft with a JSON merge patch (RFC 7386) over its groups: a key sets that field, `null` removes it, an object merges and an array (`roles`, `seeded_memories`, …) replaces the stored one; unknown keys are 422. The merged draft keeps the save rules, as on create. `draft_revision` is the revision the patch is based on: when another save or publish came first it is 409 `draft_stale` (`details.current_draft_revision`) and nothing changes (FR-CAT-3). Every save moves the draft to the next revision. An archived scenario is 422 `entry_archived`.",
+        "operationId": "save_scenario_draft",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScenarioPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioDraftBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `draft_stale`, `idempotency_conflict`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too large; nothing was written: `draft_too_large`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `cast_limit_exceeded`, `entry_archived`, `media_retired`, `rating_retired`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Save the scenario's draft (a JSON merge patch)",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/archive": {
+      "post": {
+        "description": "Archive the scenario: it still reads in both projections, but its draft cannot be saved or published (422 `entry_archived`), and it cannot be used to create a story, until it is unarchived. Stories created from it are untouched (FR-CAT-9). Archiving an archived scenario changes nothing (200).",
+        "operationId": "archive_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioStatusBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Archive a scenario",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/owner": {
+      "put": {
+        "description": "Make `principal` the owner of a scenario (FR-AUTH-5): it answers the owner now and the one before, with the deployment's `config_revision` (unchanged). The transfer is recorded with the acting principal and time. A companion scenario follows its character: 422 `companion_follows_character`. A transfer to the current owner changes nothing and records nothing. `system` is refused (422). Allowed whatever the entity's status. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "transfer_owner_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerTransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `companion_follows_character`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Transfer a scenario's ownership",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/publish": {
+      "post": {
+        "description": "Publish the draft as the next immutable version (FR-SCN-1): `draft_revision` is compared like a save's (409 `draft_stale`). The draft must be publishable (422 `publish_invalid` with `details.report`: it needs `public_card.name`, and every seed its `holder`, `audience` and `disclosure`); its content rating must still be assignable (422 `rating_retired`). The draft stays equal to what was published, at the next revision. Publishing an unchanged draft still makes a new version.",
+        "operationId": "publish_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioPublishedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `draft_stale`, `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `entry_archived`, `publish_invalid`, `rating_retired`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Publish the scenario's draft as a new version",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/relations": {
+      "get": {
+        "description": "A scenario's owner and its relations, by relation name, then principal. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "list_relations_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a scenario's owner and relations",
+        "tags": [
+          "ownership"
+        ]
+      },
+      "post": {
+        "description": "Add the relation `relation` (consumer-defined, e.g. `editor`, `co_author`, `player`: 1 to 64 of `A-Z a-z 0-9 _ -`, case-sensitive) between `principal` and a scenario (FR-AUTH-6): 201 with the relation, recorded with the acting principal; 200 when it already exists (nothing recorded). Relations are list filters (`?relation=name:principal`), and Epistrel never interprets a name. A companion scenario's relations follow its character: 422 `companion_follows_character`. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "add_relation_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationBody"
+                }
+              }
+            },
+            "description": "The relation already existed; nothing was recorded.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `companion_follows_character`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Relate a principal to a scenario",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/relations/{relation}/{principal}": {
+      "delete": {
+        "description": "Remove a scenario's relation `relation` to `principal` (204), recorded with the acting principal; 404 `not_found` when there is no such relation. The principal is the rest of the path and may contain `/`. A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "remove_relation_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The relation's name.",
+            "in": "path",
+            "name": "relation",
+            "required": true,
+            "schema": {
+              "description": "The relation's name.",
+              "examples": [
+                "editor"
+              ],
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Relation",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The related principal: the rest of the path, so it may contain `/`.",
+            "in": "path",
+            "name": "principal",
+            "required": true,
+            "schema": {
+              "description": "The related principal: the rest of the path, so it may contain `/`.",
+              "examples": [
+                "p-7f3a9c"
+              ],
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Principal",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `companion_follows_character`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove a relation from a scenario",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/unarchive": {
+      "post": {
+        "description": "Restore an archived scenario to `published` (`draft` if it was never published); any other is left as it is (200).",
+        "operationId": "unarchive_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioStatusBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Unarchive a scenario",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/versions": {
+      "get": {
+        "description": "Every published version, oldest first: its number, time and publisher.",
+        "operationId": "list_scenario_versions",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioVersionsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a scenario's published versions",
         "tags": [
           "catalog"
         ]
@@ -20233,7 +24300,7 @@
       "name": "settings"
     },
     {
-      "description": "Catalog characters: drafts, immutable published versions and their `card`/`full` projections (FR-CAT, FR-SCN-10).",
+      "description": "Catalog characters and scenarios: drafts, immutable published versions and their `card`/`full` projections (FR-CAT, FR-SCN-1..4,10).",
       "name": "catalog"
     },
     {

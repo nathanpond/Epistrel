@@ -11,6 +11,7 @@ import base64
 import binascii
 import logging
 import os
+from pathlib import Path
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
@@ -88,6 +89,10 @@ class Settings(BaseSettings):
     # OpenTelemetry traces over OTLP/HTTP (FR-OBS-1; #74), e.g. ``http://collector:4318``; unset
     # (the default) leaves tracing off. ``OTEL_EXPORTER_OTLP_*`` variables tune the exporter.
     otlp_endpoint: str | None = None
+    # Where the local blob store keeps media bytes (FR-MEDIA-1; #105): ``<root>/<sha256[:2]>/
+    # <sha256>``, with uploads staged under ``<root>/tmp``. Created at start-up; a root that
+    # cannot be written refuses the start (exit 78). The image sets /var/lib/epistrel/media.
+    media_root: Path = Path("var/media")
 
     @field_validator("database_url")
     @classmethod

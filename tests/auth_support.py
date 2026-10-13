@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import atexit
+import shutil
+import tempfile
+from pathlib import Path
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -11,6 +16,10 @@ from epistrel.config import Settings
 CREDENTIAL_A = "test-credential-a-0123456789abcdef0123"
 CREDENTIAL_B = "test-credential-b-0123456789abcdef0123"
 TEST_PREFIX = "/_test"
+MEDIA_ROOT = Path(tempfile.mkdtemp(prefix="epistrel-test-media-"))
+"""The blob store every test app uses unless it names its own (#105): one per test process,
+removed when the process exits, so a test never writes media under the repository."""
+atexit.register(shutil.rmtree, MEDIA_ROOT, ignore_errors=True)
 
 
 def auth_settings(dsn: str, **overrides: object) -> Settings:
@@ -20,6 +29,7 @@ def auth_settings(dsn: str, **overrides: object) -> Settings:
         "database_url": dsn,
         "service_credentials": [CREDENTIAL_A, CREDENTIAL_B],
         "mode": "api",
+        "media_root": MEDIA_ROOT,
     }
     values.update(overrides)
     return Settings.model_validate(values)

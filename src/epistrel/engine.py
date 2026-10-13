@@ -14,7 +14,7 @@ import hashlib
 import inspect
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -56,10 +56,14 @@ from epistrel.core.idempotency import (
 )
 from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
+from epistrel.core.media import assets as media
+from epistrel.core.media.signing import Signer
+from epistrel.core.media.store import LocalFilesystemStore
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.ports import Ports
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.tables import events
+from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turn_gate import Concurrency, QueueItem
 from epistrel.core.viewpoint import is_omniscient, resolve_viewpoint, with_requested
@@ -74,6 +78,7 @@ from epistrel.orchestrator.budget import (
 )
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
+from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
 from epistrel.orchestrator.jobs.handlers.rebuild import (
     REBUILD_KIND,
@@ -181,6 +186,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "delete_character": ResultCodec.of(
         catalog_characters.DeletedCharacter, status=204, revision_field=_CONFIG
     ),
+    "upload_media": ResultCodec.of(media.MediaWrite, status=201, revision_field=_CONFIG),
+    "delete_media": ResultCodec.of(media.MediaRetirement, status=204, revision_field=_CONFIG),
 }
 """How each mutating method's result is stored under its ``Idempotency-Key`` and replayed: the
 result type, the REST status it answers with, and the revision a reference carries."""
@@ -347,6 +354,10 @@ class Engine:
             lambda: self.db,
             {turn_gate.RESPOND: self._drain_respond, turn_gate.INGEST: self._drain_ingest},
         )
+        # Media bytes (#105): the local blob store under EPISTREL_MEDIA_ROOT (created at
+        # start-up by ``prepare_media``), and the signer of the moderation hook's URL and body.
+        self.media = LocalFilesystemStore(settings.media_root)
+        self.signer = Signer(settings.config_key)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Engine:
@@ -370,6 +381,7 @@ class Engine:
         mode = mode or self.settings.mode
         turn_queue_job.bind(self.drainer.recover)
         lite_summary_job.bind(self.models)
+        media_sweep_job.bind(self.media)
         if mode == "api":
             self._recovery = asyncio.create_task(self._recover())
             return
@@ -407,6 +419,8 @@ class Engine:
             turn_queue_job.bind(None)
         if lite_summary_job.bound() is self.models:
             lite_summary_job.bind(None)
+        if media_sweep_job.bound() is self.media:
+            media_sweep_job.bind(None)
         await self.drainer.stop()
 
     @property
@@ -414,6 +428,11 @@ class Engine:
         if self._db is None:
             raise RuntimeError("the Engine has no database; bind one first")
         return self._db
+
+    def prepare_media(self) -> None:
+        """Create the media root and its staging area and prove them writable (the app's and
+        ``epistrel serve``'s start-up; ``MediaRootUnwritable`` otherwise, exit 78)."""
+        self.media.prepare()
 
     async def _keyed[T](
         self,
@@ -1832,6 +1851,123 @@ class Engine:
         """The entity's owner and its relations, by relation name, then principal."""
         return await ownership.list_relations(
             self.db, ownership.entity_type_of(entity_type), entity_id
+        )
+
+    # -- media assets (FR-MEDIA-1,2; FR-API-6; #105) --------------------------------------------
+    # Deployment-scoped: an upload or a delete records a story-less ``control`` operation, keyed
+    # per deployment. Media are referenced by id and never touch a story.
+
+    async def upload_media(
+        self,
+        ctx: RequestContext,
+        request: media.MediaUpload,
+        content: bytes | AsyncIterable[bytes],
+        *,
+        content_type: str | None = None,
+        body_size: int | None = None,
+    ) -> media.MediaWrite:
+        """Store an image or video as an immutable asset (FR-MEDIA-1): ``request`` is its
+        metadata (``depicted_subjects`` required: 422 ``subjects_required``), ``content`` its
+        bytes (or chunks), ``content_type`` the bytes' declared MIME type and ``body_size`` the
+        whole request's declared length (REST's ``Content-Length``). 415
+        ``media_type_not_allowed``, 413 ``media_too_large``, 422 ``rating_retired``; with a
+        moderation hook configured, 422 ``moderation_rejected`` or 503
+        ``moderation_unavailable`` (nothing stored). The key's request hash covers the metadata
+        and the bytes' SHA-256 (``core.media.assets``)."""
+        principal = self.require_principal(ctx)
+        request = media.require_subjects(request)
+        settings = await media.read_media_settings(self.db)
+        staged = await media.stage(
+            self.media,
+            new_ulid(),
+            media.content_of(content),
+            settings=settings,
+            kind=request.kind,
+            content_type=content_type,
+            body_size=body_size,
+        )
+        try:
+            return await self._keyed(
+                ctx,
+                "upload_media",
+                lambda _: media.upload(
+                    self.db,
+                    self.media,
+                    staged,
+                    request,
+                    principal=principal,
+                    settings=settings,
+                    signer=self.signer,
+                ),
+                material={
+                    "body": _body(request),
+                    "sha256": staged.sha256,
+                    "size": staged.size,
+                    "mime_type": staged.mime_type,
+                },
+            )
+        finally:
+            await media.discard(staged)
+
+    async def get_media(self, ctx: RequestContext, media_id: str) -> media.MediaAsset:
+        """An asset's metadata, ``live`` or ``retired``; 404 for an unknown asset."""
+        return await media.get(self.db, media_id)
+
+    async def get_media_content(
+        self,
+        ctx: RequestContext,
+        media_id: str,
+        *,
+        exp: int | None = None,
+        sig: str | None = None,
+    ) -> media.MediaContent:
+        """An asset's bytes, opened (read them with ``chunks()`` or ``read()``): served for a
+        ``live`` or ``retired`` asset, so whatever references a deleted asset keeps showing it
+        (FR-MEDIA-2). ``exp`` and ``sig`` are a signed URL's (the moderation hook's
+        ``content_url``): when they verify, an upload still waiting for the hook is served too.
+        404 otherwise."""
+        signed = (
+            exp is not None
+            and sig is not None
+            and self.signer.verify("GET", media.content_path(media_id), exp, sig)
+        )
+        return await media.open_content(self.db, self.media, media_id, signed=signed)
+
+    async def list_media(
+        self,
+        ctx: RequestContext,
+        *,
+        owner: str | None = None,
+        relation: Sequence[str] = (),
+        kind: MediaKind | None = None,
+        state: MediaState = MediaState.LIVE,
+        limit: int = media.DEFAULT_PAGE,
+        cursor: str | None = None,
+    ) -> media.MediaPage:
+        """``live`` assets (``state=retired``: the deleted ones), newest first, a page at a time
+        (``cursor``). ``owner``, ``relation`` and ``kind`` narrow the list only when given
+        (FR-AUTH-8)."""
+        return await media.list_assets(
+            self.db,
+            owner=ownership.owner_filter(owner),
+            relations=[ownership.parse_relation_filter(value) for value in relation],
+            kind=kind,
+            state=state,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    async def delete_media(self, ctx: RequestContext, media_id: str) -> media.MediaRetirement:
+        """Delete an asset by retiring it (FR-MEDIA-2): it leaves listings and refuses new
+        references (422 ``media_retired``), while everything that already references it keeps
+        its content until the media sweep finds no reference and purges it. Deleting a retired
+        asset changes nothing; 404 for an unknown one."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "delete_media",
+            lambda _: media.retire(self.db, media_id, principal=principal),
+            material={"media_id": media_id},
         )
 
 

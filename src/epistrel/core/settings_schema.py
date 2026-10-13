@@ -23,8 +23,9 @@ import typing
 from collections.abc import Iterator, Mapping
 from enum import StrEnum
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
 from pydantic.fields import FieldInfo
 
 
@@ -404,6 +405,91 @@ class WorkerHealthSettings(BaseModel):
     )
 
 
+# -- media assets (FR-MEDIA-1,2; #105) ----------------------------------------------------------
+
+DEFAULT_MEDIA_ALLOWED_TYPES = ("image/png", "image/jpeg", "image/webp", "video/mp4")
+DEFAULT_MEDIA_MAX_BYTES = 50 * 1024 * 1024
+MEDIA_MAX_BYTES_LIMIT = 10 * 1024 * 1024 * 1024
+DEFAULT_MEDIA_MODERATION_TIMEOUT_MS = 5_000
+MEDIA_MODERATION_TIMEOUT_MIN_MS = 100
+MEDIA_MODERATION_TIMEOUT_MAX_MS = 60_000
+DEFAULT_MEDIA_SWEEP_INTERVAL_S = 3_600
+MEDIA_SWEEP_INTERVAL_MIN_S = 60
+MEDIA_SWEEP_INTERVAL_MAX_S = 7 * 86_400
+URL_MAX_CHARS = 2_048
+MIME_TYPE_PATTERN = r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$"
+"""A MIME type as ``media_allowed_types`` lists it: ``type/subtype``, lowercase, no
+parameters."""
+
+MimeType = Annotated[str, Field(pattern=MIME_TYPE_PATTERN)]
+
+
+def _http_url(value: str | None) -> str | None:
+    """``value`` when it is an absolute ``http``/``https`` URL with a host; ``ValueError``
+    otherwise."""
+    if value is None:
+        return None
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.netloc
+        or any(ord(c) < 0x21 or ord(c) == 0x7F for c in value)
+    ):
+        raise ValueError("must be an absolute http:// or https:// URL")
+    return value
+
+
+HttpUrl = Annotated[str, Field(max_length=URL_MAX_CHARS), AfterValidator(_http_url)]
+
+
+class MediaSettings(BaseModel):
+    """The deployment's media settings, stored under ``deployment_state.settings`` (#105):
+    which MIME types an upload may be (``media_allowed_types``) and how large
+    (``media_max_bytes``); the optional moderation hook every upload is sent to before it is
+    stored (``media_moderation_webhook_url``; ``null``: none) and how long it may take
+    (``media_moderation_timeout_ms``); how often the media sweep runs (``media_sweep_interval``,
+    seconds); and the base URL the hook's ``content_url`` starts with (``public_base_url``;
+    ``null``: the URL is relative to Epistrel's root). Prospective: an upload or sweep uses the
+    values in force when it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    media_allowed_types: Annotated[list[MimeType], PROSPECTIVE] = Field(
+        default_factory=lambda: list(DEFAULT_MEDIA_ALLOWED_TYPES), min_length=1, max_length=50
+    )
+    media_max_bytes: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_MEDIA_MAX_BYTES, ge=1, le=MEDIA_MAX_BYTES_LIMIT
+    )
+    media_moderation_webhook_url: Annotated[HttpUrl | None, PROSPECTIVE] = None
+    media_moderation_timeout_ms: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_MEDIA_MODERATION_TIMEOUT_MS,
+        ge=MEDIA_MODERATION_TIMEOUT_MIN_MS,
+        le=MEDIA_MODERATION_TIMEOUT_MAX_MS,
+    )
+    media_sweep_interval: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_MEDIA_SWEEP_INTERVAL_S,
+        ge=MEDIA_SWEEP_INTERVAL_MIN_S,
+        le=MEDIA_SWEEP_INTERVAL_MAX_S,
+    )
+    public_base_url: Annotated[HttpUrl | None, PROSPECTIVE] = None
+
+    @field_validator("media_allowed_types")
+    @classmethod
+    def _unique_types(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("lists a MIME type more than once")
+        return value
+
+
+MEDIA_SWEEP_TASK = "media_sweep"
+"""The media sweep's recurring task (and job kind; ``orchestrator.jobs.handlers.media_sweep``)."""
+
+RECURRING_INTERVAL_SETTINGS: Mapping[str, str] = {"media_sweep_interval": MEDIA_SWEEP_TASK}
+"""Deployment settings (seconds) that set a recurring task's interval, by setting: the task's
+name. A settings write moves the task's ``recurring_tasks`` row, and every worker's start-up
+reconcile reads the setting (``orchestrator.jobs.timers.reconcile``)."""
+
+
 # -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
 
 DEFAULT_MINOR_AGE_THRESHOLD = 18
@@ -424,6 +510,7 @@ class DeploymentSettings(
     GuardrailSettings,
     RetentionSettings,
     WorkerHealthSettings,
+    MediaSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the two
     ``deployment_state`` columns and the ``settings`` document's sections, each of which earlier

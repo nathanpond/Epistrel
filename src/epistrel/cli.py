@@ -1,5 +1,7 @@
 """`epistrel` command line: `serve --mode all|api|worker` runs the Engine (default ``all``: the
-API and the background workers in one process); `worker` is `serve --mode worker`."""
+API and the background workers in one process); `worker` is `serve --mode worker`;
+`moderation-secret` prints the secret a media moderation hook verifies Epistrel's requests with
+(#105)."""
 
 from __future__ import annotations
 
@@ -40,6 +42,11 @@ def _build_parser() -> argparse.ArgumentParser:
     worker.add_argument(
         "--concurrency", type=_positive, help="override EPISTREL_WORKER_CONCURRENCY"
     )
+    sub.add_parser(
+        "moderation-secret",
+        help="print the secret a media moderation hook verifies X-Epistrel-Signature with "
+        "(derived from EPISTREL_CONFIG_KEY, which it never reveals)",
+    )
     return parser
 
 
@@ -71,10 +78,16 @@ def app_factory() -> FastAPI:
 
 
 async def _preflight(settings: Settings) -> str | None:
-    """Checks that need the database; ``None`` when the server may start."""
+    """Start-up checks: the media root is writable (#105), then those that need the database;
+    ``None`` when the server may start."""
     from epistrel.core.db import make_engine
+    from epistrel.core.media.store import LocalFilesystemStore, MediaRootUnwritable
     from epistrel.orchestrator.models.config import config_key_problem
 
+    try:
+        LocalFilesystemStore(settings.media_root).prepare()
+    except MediaRootUnwritable as exc:
+        return str(exc)
     engine = make_engine(settings)
     try:
         return await config_key_problem(settings, engine)
@@ -126,9 +139,28 @@ def serve(
     return 0
 
 
+def moderation_secret() -> int:
+    """``epistrel moderation-secret``: the hook secret derived from ``EPISTREL_CONFIG_KEY``
+    (``core.media.signing``); exit 78 when the key is unset or malformed."""
+    from epistrel.config import ENV_PREFIX, is_fernet_key
+    from epistrel.core.media.signing import moderation_secret as derive
+
+    key = os.environ.get(f"{ENV_PREFIX}CONFIG_KEY", "").strip()
+    if not is_fernet_key(key):
+        print(
+            "error: EPISTREL_CONFIG_KEY: must be set to URL-safe base64 of 32 bytes",
+            file=sys.stderr,
+        )
+        return EX_CONFIG
+    print(derive(key))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.command == "moderation-secret":
+        return moderation_secret()
     if args.command == "serve":
         return serve(args.host, args.port, args.mode, args.concurrency)
     if args.command == "worker":

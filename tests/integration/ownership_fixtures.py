@@ -29,6 +29,7 @@ from epistrel.core.ownership import REGISTRY
 from epistrel.core.tables.ownership import EntityType
 from tests.auth_support import bearer
 from tests.catalog_support import character as catalog_character
+from tests.media_support import files, metadata, png
 from tests.story_support import story_body
 
 OWNER = "p-owner-a"
@@ -80,14 +81,36 @@ async def create_character(client: httpx.AsyncClient, principal: str, owner: str
     return Entity(created["id"])
 
 
+MATRIX_IMAGE = png(nonce="ownership-matrix")
+"""The bytes every media entity of these tests holds: identical, so two fresh assets read the
+same (one blob serves them all)."""
+
+
+async def create_media(client: httpx.AsyncClient, principal: str, owner: str | None) -> Entity:
+    body = metadata(
+        alt_text="Mara at the lighthouse door",
+        caption="Gull Rock, the night of the storm.",
+        generation_metadata={"model": "sdxl", "prompt": "a lighthouse at dusk", "seed": 7},
+        depicted_subjects=[{"kind": "persona", "id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"}],
+        **({"owner": owner} if owner is not None else {}),
+    )
+    response = await client.post(
+        "/media", files=files(MATRIX_IMAGE, body), headers=headers(principal)
+    )
+    created = await ok(response, 201)
+    return Entity(created["id"])
+
+
 @dataclass(frozen=True)
 class Kind:
-    """A delivered owned type: where its entities live and how to make one."""
+    """A delivered owned type: where its entities live and how to make one. ``retires``: its
+    delete retires the entity instead of removing it (media, #105)."""
 
     entity_type: EntityType
     create: Create
     owner_sql: str
     """``SELECT owner_principal …`` of one entity (``:id``)."""
+    retires: bool = False
 
     @property
     def base(self) -> str:
@@ -110,6 +133,12 @@ KINDS: dict[EntityType, Kind] = {
         EntityType.CHARACTER,
         create_character,
         "SELECT owner_principal FROM catalog.character_catalog WHERE id = :id",
+    ),
+    EntityType.MEDIA: Kind(
+        EntityType.MEDIA,
+        create_media,
+        "SELECT owner_principal FROM media_assets WHERE id = :id",
+        retires=True,
     ),
 }
 
@@ -229,6 +258,7 @@ class Call:
 
 S = "/stories/{story_id}"
 C = "/catalog/characters/{character_id}"
+M = "/media/{media_id}"
 RELATION = "/relations/{relation}/{principal:path}"
 OMNISCIENT = {"viewpoint": "omniscient"}
 ENTRY_READS: tuple[dict[str, str], ...] = (
@@ -286,6 +316,15 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", C): Call(200, queries=ENTRY_READS, prepare=_published),
     ("GET", f"{C}/versions"): Call(200, prepare=_published),
     ("GET", f"{C}/relations"): Call(200, prepare=_related),
+    # -- media assets (#105): writes
+    ("DELETE", M): Call(204),
+    ("PUT", f"{M}/owner"): Call(200, {"principal": NEW_OWNER}),
+    ("POST", f"{M}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
+    ("DELETE", f"{M}{RELATION}"): Call(204, prepare=_related),
+    # -- media assets: reads of the metadata the upload stored, and of the bytes
+    ("GET", M): Call(200),
+    ("GET", f"{M}/content"): Call(200),
+    ("GET", f"{M}/relations"): Call(200, prepare=_related),
 }
 """Every route under an owned entity's path, ``/admin`` excluded."""
 
@@ -322,6 +361,7 @@ __all__ = [
     "Entity",
     "Kind",
     "create_character",
+    "create_media",
     "create_story",
     "headers",
     "ok",

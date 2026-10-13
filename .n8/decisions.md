@@ -1982,3 +1982,126 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - `test_ownership.py::test_principals_and_names_are_validated` is unchanged. Its filter check is about splitting `editor:team/ana:1` at the first colon, and under the real filter it gives the same answer whatever ran before. Its order-dependent catch of M1 is no longer needed.
   **Why:** The verifier showed that M1 and M2 passed every test unless the nothing-gates matrix ran first. In the old data, each relation name had one principal and each principal one name. The fresh owner keeps the `owner=` assertions unchanged. M3 is the third way to get the halves wrong, and the same 2×2 grid catches it at no extra cost. Cost if wrong: two stories, two relations and five list requests more in one test.
   **Issue:** #104
+- **Decision (drift):** The moderation hook calls the consumer with httpx2. httpx2 was already in the runtime closure through openai, and is now declared in `[project].dependencies` (and dropped from the dev group). Pillow 12.3.0 and python-multipart 0.0.32 were added with `uv add`. Pillow declares `MIT-CMU`, so `[tool.epistrel.gates.licenses].allow` gains `MIT-CMU` and `HPND`, as the Discretion says; both are permissive and Apache-2.0-compatible. The test hook is a stdlib `ThreadingHTTPServer`, following the pattern of `tests/model_support.py`.
+  **Why:** The drift note: httpx is not in the lock, and respx does not intercept httpx2. `check-deps` and `check-licenses` pass. I built the image under a throwaway tag (since removed), and Pillow imports there. Cost if wrong: the dependency's name.
+  **Issue:** #105
+- **Decision (drift):** An unknown or retired `content_rating_id` is 422 `rating_retired` (`reason` `unknown` or `retired`, field `metadata.content_rating_id`), through `require_assignable`. It is checked once before the hook and again, `FOR SHARE`, in the commit transaction, which stores the rating's current version. Only an omitted `content_rating_id` is a `validation_error`.
+  **Why:** #50 deliberately kept one code for unknown and retired ratings. The pass-1 `validation_error` for unknown would contradict it.
+  **Issue:** #105
+- **Decision (drift):** The media settings are a `MediaSettings` section of `DeploymentSettings`, every leaf prospective:
+  - `media_allowed_types`: lowercase `type/subtype`, unique, 1–50;
+  - `media_max_bytes`: 1 B–10 GiB, default 50 MiB;
+  - `media_moderation_webhook_url` and `public_base_url`: absolute http(s), ≤ 2048, default null;
+  - `media_moderation_timeout_ms`: 100–60000, default 5000;
+  - `media_sweep_interval`: 60 s–7 days, default 3600.
+
+  They are in `SettingsPatch`, and `NULLABLE` gains the two URLs. `MediaSettings` also joins `config_changes.SECTIONS`; without it, `/admin/settings` would read the media values back as their defaults.
+  **Why:** Deployment settings live in the `deployment_state.settings` jsonb, not in columns. While adding the section I found that `SECTIONS` already misses `RetentionSettings` and `WorkerHealthSettings` (#71). That is out of scope, so it is filed as #315.
+  **Issue:** #105, #315
+- **Decision (drift):** `media_sweep_interval` stays a deployment setting, and it drives the recurring task:
+  - `RecurringTask` gains `interval_setting`, and `timers.reconcile` takes that setting's value at every worker start-up.
+  - A settings write moves the `recurring_tasks` row at once: its interval, and `next_run_at` no later than one new interval after the last run. The mapping is `core.settings_schema.RECURRING_INTERVAL_SETTINGS`.
+
+  **Why:** The AC says "every `media_sweep_interval`", and pass 1 puts it under `/admin/settings`. Reconcile only ran at start-up and wrote code constants, so a setting it ignored would only change after a restart, or never. Cost if wrong: one optional field and one helper.
+  **Issue:** #105
+- **Decision (drift):** `subject_references` is created in #123's full shape:
+  - `story_id` is nullable, with a CHECK that a row names a story exactly when `scope = 'story'`;
+  - a unique constraint on `(subject_kind, subject_id, record_table, record_id, field)` with `NULLS NOT DISTINCT`;
+  - indexes on `(subject_id, scope, story_id)` and `(record_table, record_id)`.
+
+  So the table joins `STORY_TABLES` and `STORY_TABLES_NOT_COPIED`, and `determinism.ORDER` (story-scope rows only). S-DELETE plants a story-scope row, because there is no story writer before #123. `record_table` is `media_assets`, as the AC writes it, not the schema-qualified name #123's pass 1 proposes.
+  **Why:** The Discretion says "#123's full shape", and the drift note lists what that requires. The AC is what `/n8-verify` reads. Cost if wrong: #123 qualifies the name with one `UPDATE`.
+  **Issue:** #105, #123
+- **Decision (drift):** The parts are:
+  - `test_c_15__media_upload`, `part("M3", "FR-MEDIA-1; FR-API-6")`, in `test_c_15.py`;
+  - `test_i_17__media_sweep`, `part("M3", "FR-MEDIA-2")`, in `test_i_17.py`;
+  - `test_i_21__media_retire`, `part("M3", "FR-MEDIA-2")`, in `test_i_21.py`.
+
+  `test_media_moderation` is unmarked and lives in `tests/integration/test_media_assets.py` with the other detailed tests, including the sweep's, as the planned artifact says. The database-free tests are in `tests/test_media_units.py`. No unmarked docstring names an FR id. `check-lexicon` flagged three part bodies, and I reworded rather than amend the lexicon:
+  - C-03 (an M2 part) said `upload`, so its media expectations moved to the module constant `MEDIA_ANSWERS`;
+  - the I-17 slice said `clock.now()`, and now uses `datetime.now(UTC)`;
+  - the I-21 slice had a local `import`, and now imports at module level.
+
+  **Why:** A plain `test_media_sweep` maps to no §15 row. "clock" (M6) and "import" (M7) are lexicon terms that here mean the system clock and a Python import, not those capabilities. Cost if wrong: renames only.
+  **Issue:** #105
+- **Decision (drift):** Signing:
+  - `config_key_missing` (503) gets a core-side `SigningKeyMissing`.
+  - Both signers use an HKDF-SHA256 subkey of `EPISTREL_CONFIG_KEY`: `media-url` for content URLs (#107's planned info string; HMAC of `GET|<path>|<exp>`, unpadded base64url, 30 s skew) and `media-moderation-hook` for hook requests.
+  - The new `epistrel moderation-secret` command prints the hook subkey in hex, and exits 78 without a valid key.
+  - Deviation: `X-Epistrel-Signature` is `sha256=` + the HMAC of `"<X-Epistrel-Timestamp>." + body`, not of the body alone.
+
+  **Why:** The drift note: a consumer must never need the master key, which also decrypts the stored model API keys. Binding the timestamp means a captured request cannot be replayed under a fresh timestamp. Cost if wrong: a consumer who verifies the body alone must add the prefix.
+  **Issue:** #105, #107
+- **Decision (drift):** Invariant 4 is unchanged: `GET /media/{id}/content` still needs the service credential, and the hook fetches `content_url` with it. A valid `exp`/`sig` (checked against `/media/{id}/content`) only adds access to an upload that is still staged, waiting for the hook. The staged file is `<root>/tmp/<asset id>`, and its type is sniffed again for the response. A missing, invalid or expired signature falls through to committed content (404 while the upload is staged). `content_url` is `public_base_url` plus the signed path. When `public_base_url` is null, the URL is the signed path alone, relative to Epistrel's root, rather than a refusal.
+  **Why:** The signed-URL exemption is #107's invariant-4 amendment and the owner's round-two decision. Pulling it forward would mean editing CLAUDE.md, adding an ADR and an Ad-hoc entry for #107's work. A hook that only matches hashes does not need the URL at all. Cost if wrong: an operator sets `public_base_url`.
+  **Issue:** #105, #107
+- **Decision:** The upload route parses the multipart stream itself, with python-multipart's `MultipartParser`, instead of FastAPI's `UploadFile` as pass 1 says. The rules:
+  - the parts are `metadata` (JSON, ≤ 256 KiB) and then `file`, and nothing may follow;
+  - each part has at most 8 headers of 4 KiB each;
+  - a declared `Content-Length` above `media_max_bytes` plus a 272 KiB envelope is 413 before the file is read;
+  - the file's bytes are counted while they stream to `<root>/tmp`.
+
+  OpenAPI documents the body through `MULTIPART_BODIES` (the `MediaUpload` component). C-01 excludes `upload_media` from generation and adds hand-written malformed cases. `_body_problems` reads a multipart body's `metadata` component.
+  **Why:** FastAPI parses a form body before any dependency runs. With `UploadFile`, an unauthenticated client's whole upload would be spooled to disk before the 401, and the size could only be checked after the fact. Cost if wrong: a route with an `UploadFile` parameter.
+  **Issue:** #105
+- **Decision:** An upload's request hash covers the metadata and the bytes' SHA-256, size and MIME type, so the bytes are staged before the `Idempotency-Key` is claimed. The work is split around the claim:
+  - before it: the metadata, size and type checks, which are pure checks of the request;
+  - after it: the rating check, the probe, the hook and the commit, so a replay never calls the hook again.
+
+  The commit is one transaction under `pg_advisory_xact_lock(0x4D454449, <first 32 bits of the checksum>)`. That two-key space is separate from the one-key space of `DEPLOYMENT_LOCK_KEY`. The transaction inserts the row, indexes it, records the `control` operation and, last, renames the staged file into place: read-only, or dropped when the blob already exists.
+  **Why:** The same key with other bytes must be 409 `idempotency_conflict`. Mutation-checked: dropping the SHA-256 from the hash fails `test_upload_is_idempotent`. A commit that fails after the rename leaves a blob no row names, and the sweep removes it after an hour.
+  **Issue:** #105
+- **Decision:** The sweep runs in three steps:
+  - **Rows.** Each purge is its own transaction: lock the row (`FOR UPDATE SKIP LOCKED`), re-check its references under the lock, `drop_entity` (a `deleted` ownership event by `system`), `drop_references`, then the row.
+  - **Bytes.** A blob is deleted only under its checksum lock, and only when no row of any state names it: at once after a purge, and after an hour for any other blob nothing names.
+  - **Staging.** Staged files older than an hour are removed. A live asset younger than 24 hours is never purged, and candidates are never touched. Each run handles at most 20 batches of 500.
+
+  References are discovered through `MEDIA_REFERENCE_SOURCES` entries of `(table, jsonb column, jsonpath)`. The catalog draft and version sources use `strict $.** ? (@.type() == "string")`, which matches an asset id wherever a later story puts it. Tests plant references in #115's planned `public_card.images` shape.
+  **Why:** Querying the records, never a counter, is what the AC requires. A path-agnostic source keeps #115's shape free, and over-matching keeps an asset, which is the safe direction. A new pause point, `media.sweep.before_purge`, proves the re-check under the lock. Mutation-checked: without the re-check, `test_a_reference_added_mid_sweep_keeps_the_asset` fails. The pre-lock reference query only saves work, so no test can see it.
+  **Issue:** #105, #115
+- **Decision:** Files and probes:
+  - The job lives at `orchestrator/jobs/handlers/media_sweep.py`, beside the other recurring sweeps and registered in `handlers/__init__.py`, not at `orchestrator/jobs/media_sweep.py`. `Engine.start_workers` binds its store.
+  - The sweep's logic is `core/media/sweep.py`, the hook's HTTP exchange `core/media/moderation.py`, and the probes `core/media/probe.py`.
+  - Pillow reads image headers. `ffprobe` is taken from `PATH`, with `-protocol_whitelist file` and a 10 s timeout; a failed probe leaves the values null. #107 points it at `ffmpeg_path` and installs ffmpeg.
+  - The content route sends `ETag` (the SHA-256), `Cache-Control: private, max-age=31536000, immutable` and `Content-Length`, but not pass 1's `Accept-Ranges: bytes`: #107 adds that together with real ranges.
+
+  **Why:** That is the handlers' convention. Advertising ranges that the route ignores would mislead video players. Cost if wrong: moving files.
+  **Issue:** #105, #107
+- **Decision:** The routes:
+  - `GET /media` lists `live` assets by default and `retired` ones on request. `state=candidate` is 422. Filters are `owner`, `relation` (`ownership.list_filters`) and `kind`; `limit` is 1–200 (default 50); `cursor` is opaque (base64url of `[created_at, id]`), newest first. The answer is `{items, next_cursor}`.
+  - `DELETE` always answers 204. A second delete records nothing. The asset keeps its relations until the sweep purges it.
+  - The ownership fixtures gain `Kind.retires`, and `test_deleting_an_entity_drops_its_relations` now asserts retire semantics for media. This changes an existing test because FR-MEDIA-2 requires the behaviour.
+  - Media joins `KINDS` and `CALLS`, and the nothing-gates matrix compares the content route's bytes.
+  - `CONTENT_FIELDS` gains `caption`, `negative_prompt`, `generation_metadata` and `reason`.
+
+  **Why:** Pass 1 names the list filters, and #110's keyset is still to come. The matrix and the delivered-type guard must cover every owned type.
+  **Issue:** #105, #110
+- **Decision:** The media root:
+  - `Settings.media_root` (`EPISTREL_MEDIA_ROOT`) defaults to `var/media`. The image sets `/var/lib/epistrel/media`, created owned by uid 10001, and compose mounts the `media` volume there. `/var/` is gitignored.
+  - The app's lifespan and `epistrel serve`'s preflight both prove the root writable, and refuse the start with exit 78 otherwise.
+  - Test apps default to a per-process temporary root (`tests/auth_support.MEDIA_ROOT`). The fault harness's child and X-07's spawned workers get their own roots (Rule 3).
+
+  **Why:** Pass 1 asks for a fail-fast start-up. A full gate run showed that without these roots, the fault harness's child engine created `var/media` under the repository.
+  **Issue:** #105
+- **Decision (Rule 1):** The start-up writability probe is now unique per process (pid plus random). Previously every process wrote and removed the same `.writable` file. X-07's two spawned workers start on one media root at once, and one of them exited 78 with `FileNotFoundError` when the other unlinked the shared probe. The regression test is `test_processes_prepare_one_root_at_once` (8 threads × 50 checks); mutation-checked, the shared name fails it.
+  **Why:** An API and its workers sharing a volume start together.
+  **Issue:** #105
+- **Decision:** These mutations were checked, each run against the story's tests with the sources restored byte for byte afterwards. Each one fails a test:
+  - no hook call;
+  - a malformed answer accepted;
+  - bytes deleted while a row still names them;
+  - candidates swept;
+  - retired assets listed;
+  - retired assets referenceable;
+  - retired content refused;
+  - no size limit;
+  - subjects optional;
+  - the type unchecked;
+  - generation metadata dropped;
+  - one blob per asset;
+  - no subject index;
+  - no re-check of references under the lock;
+  - a shared probe name.
+
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group A's full run.
+  **Issue:** #105

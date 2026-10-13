@@ -1429,6 +1429,26 @@
         "title": "DegradationBody",
         "type": "object"
       },
+      "DepictedSubject": {
+        "additionalProperties": false,
+        "description": "A subject an image or video depicts (FR-IMG-9): a story ``character``, a\n``catalog_character`` or a ``persona``, by id. Stored as declared, unverified (the subject\nmay be created later), and indexed so that erasure finds the asset (FR-ADMIN-6).",
+        "properties": {
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SubjectKind"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "DepictedSubject",
+        "type": "object"
+      },
       "DormantChainBody": {
         "description": "A dormant continuation (#66): turns ``from_turn``..``through_turn`` of the chain\n``{from_turn, variant}``; ``POST /stories/{id}/swap`` makes it active.\n``truncate_operation_id`` names the truncation whose tail it is, when ``untruncate`` would\nundo that truncation.",
         "properties": {
@@ -1878,6 +1898,110 @@
           "variant_chain"
         ],
         "title": "ForkedFromBody",
+        "type": "object"
+      },
+      "GenerationMetadata": {
+        "additionalProperties": false,
+        "description": "How an image was generated (FR-CAT-4): the adapter, the model, the prompt and negative\nprompt, the seed, the parameters (a JSON object of at most 8 KiB) and the ids of the\nreference images. Stored and returned exactly as sent: a key that was not sent is not\nreturned.",
+        "properties": {
+          "adapter": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Adapter"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "negative_prompt": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Negative Prompt"
+          },
+          "parameters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parameters"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          },
+          "reference_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reference Ids"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "maximum": 18446744073709551615,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seed"
+          }
+        },
+        "title": "GenerationMetadata",
         "type": "object"
       },
       "GenerationSettings": {
@@ -2485,6 +2609,487 @@
           "replayed"
         ],
         "title": "IngestedEventBody",
+        "type": "object"
+      },
+      "MediaAsset": {
+        "description": "A media asset's metadata (FR-MEDIA-1): its owner, kind, MIME type (sniffed from the\nbytes), size, dimensions or duration (``null`` when no probe could read them), SHA-256\nchecksum, content rating and the rating's version it was uploaded under, alt text, caption,\ngeneration metadata (as sent), source, state (``live``, or ``retired`` once deleted), the\nsubjects it depicts, and who created it when.",
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alt Text"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "content_rating_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Rating Id"
+          },
+          "content_rating_version_id": {
+            "title": "Content Rating Version Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "depicted_subjects": {
+            "items": {
+              "$ref": "#/components/schemas/DepictedSubject"
+            },
+            "title": "Depicted Subjects",
+            "type": "array"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "generation_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Metadata"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MediaKind"
+          },
+          "mime_type": {
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/MediaSource"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MediaState"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "id",
+          "owner_principal",
+          "kind",
+          "mime_type",
+          "size",
+          "width",
+          "height",
+          "duration_ms",
+          "checksum",
+          "content_rating_id",
+          "content_rating_version_id",
+          "alt_text",
+          "caption",
+          "generation_metadata",
+          "source",
+          "state",
+          "depicted_subjects",
+          "created_at",
+          "created_by"
+        ],
+        "title": "MediaAsset",
+        "type": "object"
+      },
+      "MediaKind": {
+        "description": "What a media asset is: an ``image`` or a ``video`` (``image/*`` or ``video/*``).",
+        "enum": [
+          "image",
+          "video"
+        ],
+        "title": "MediaKind",
+        "type": "string"
+      },
+      "MediaListBody": {
+        "description": "A page of media assets, newest first; ``next_cursor`` fetches the next page (``null``\non the last).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MediaAsset"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "MediaListBody",
+        "type": "object"
+      },
+      "MediaSource": {
+        "description": "Where an asset came from: ``uploaded`` by the consumer, or ``generated`` (M8).",
+        "enum": [
+          "uploaded",
+          "generated"
+        ],
+        "title": "MediaSource",
+        "type": "string"
+      },
+      "MediaState": {
+        "description": "An asset's state: ``live``; ``retired`` once deleted (still served to what references\nit); or ``candidate`` (an unattached catalog image, M8; private).",
+        "enum": [
+          "live",
+          "retired",
+          "candidate"
+        ],
+        "title": "MediaState",
+        "type": "string"
+      },
+      "MediaUpload": {
+        "additionalProperties": false,
+        "description": "``POST /media``'s ``metadata`` part (FR-MEDIA-1): the asset's ``kind`` (which its bytes\nmust be), its content rating, optional alt text, caption and generation metadata, the\nsubjects it depicts (required: ``[]`` declares none) and, optionally, its ``owner`` (default:\nthe requesting principal; never ``system``).",
+        "examples": [
+          {
+            "alt_text": "Mara at the lighthouse door",
+            "caption": "Gull Rock, the night of the storm.",
+            "content_rating_id": "00000000000000000000RAT001",
+            "depicted_subjects": [
+              {
+                "id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5",
+                "kind": "catalog_character"
+              }
+            ],
+            "kind": "image"
+          }
+        ],
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alt Text"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Caption"
+          },
+          "content_rating_id": {
+            "description": "The asset's content rating (FR-RATE-1); an unknown or retired one is 422 `rating_retired`.",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Content Rating Id",
+            "type": "string"
+          },
+          "depicted_subjects": {
+            "description": "Every subject the asset depicts (required; `[]` declares none). Omitted: 422 `subjects_required`.",
+            "items": {
+              "$ref": "#/components/schemas/DepictedSubject"
+            },
+            "maxItems": 50,
+            "title": "Depicted Subjects",
+            "type": "array"
+          },
+          "generation_metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MediaKind",
+            "description": "`image` or `video`: what the bytes must be."
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The asset's owner principal (default: the requesting principal; never `system`). Recorded, never interpreted.",
+            "title": "Owner"
+          }
+        },
+        "required": [
+          "kind",
+          "content_rating_id",
+          "depicted_subjects"
+        ],
+        "title": "MediaUpload",
+        "type": "object"
+      },
+      "MediaUploadedBody": {
+        "description": "The asset an upload stored, with the deployment's ``config_revision`` (unchanged).",
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alt Text"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "content_rating_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Rating Id"
+          },
+          "content_rating_version_id": {
+            "title": "Content Rating Version Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "depicted_subjects": {
+            "items": {
+              "$ref": "#/components/schemas/DepictedSubject"
+            },
+            "title": "Depicted Subjects",
+            "type": "array"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "generation_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Metadata"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MediaKind"
+          },
+          "mime_type": {
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/MediaSource"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MediaState"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "config_revision",
+          "id",
+          "owner_principal",
+          "kind",
+          "mime_type",
+          "size",
+          "width",
+          "height",
+          "duration_ms",
+          "checksum",
+          "content_rating_id",
+          "content_rating_version_id",
+          "alt_text",
+          "caption",
+          "generation_metadata",
+          "source",
+          "state",
+          "depicted_subjects",
+          "created_at",
+          "created_by"
+        ],
+        "title": "MediaUploadedBody",
         "type": "object"
       },
       "Membership": {
@@ -5555,12 +6160,67 @@
             "title": "Max Pinned Memories",
             "type": "integer"
           },
+          "media_allowed_types": {
+            "items": {
+              "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Media Allowed Types",
+            "type": "array"
+          },
+          "media_max_bytes": {
+            "default": 52428800,
+            "maximum": 10737418240.0,
+            "minimum": 1.0,
+            "title": "Media Max Bytes",
+            "type": "integer"
+          },
+          "media_moderation_timeout_ms": {
+            "default": 5000,
+            "maximum": 60000.0,
+            "minimum": 100.0,
+            "title": "Media Moderation Timeout Ms",
+            "type": "integer"
+          },
+          "media_moderation_webhook_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Moderation Webhook Url"
+          },
+          "media_sweep_interval": {
+            "default": 3600,
+            "maximum": 604800.0,
+            "minimum": 60.0,
+            "title": "Media Sweep Interval",
+            "type": "integer"
+          },
           "minor_age_threshold": {
             "default": 18,
             "maximum": 120.0,
             "minimum": 0.0,
             "title": "Minor Age Threshold",
             "type": "integer"
+          },
+          "public_base_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Base Url"
           },
           "structured_retry_budget": {
             "default": 2,
@@ -5607,7 +6267,7 @@
       },
       "SettingsPatch": {
         "additionalProperties": false,
-        "description": "A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,\n``lite_generation_defaults`` merges key by key, and ``null`` is refused for a top-level\nfield (except ``max_model_calls_per_turn``, whose ``null`` restores the formula). Bounds\nare ``DeploymentSettings``'s, checked on the merged settings (422 ``validation_error`` at\n``body.<field>``).",
+        "description": "A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,\n``lite_generation_defaults`` merges key by key, and ``null`` is refused for a top-level\nfield (except ``max_model_calls_per_turn``, whose ``null`` restores the formula, and\n``media_moderation_webhook_url`` and ``public_base_url``, whose ``null`` unsets them). A list\n(``media_allowed_types``) replaces the stored one. Bounds are ``DeploymentSettings``'s,\nchecked on the merged settings (422 ``validation_error`` at ``body.<field>``).",
         "examples": [
           {
             "lite_window_messages": 40,
@@ -5746,6 +6406,64 @@
             ],
             "title": "Max Pinned Memories"
           },
+          "media_allowed_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Allowed Types"
+          },
+          "media_max_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Max Bytes"
+          },
+          "media_moderation_timeout_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Moderation Timeout Ms"
+          },
+          "media_moderation_webhook_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Moderation Webhook Url"
+          },
+          "media_sweep_interval": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Sweep Interval"
+          },
           "minor_age_threshold": {
             "anyOf": [
               {
@@ -5756,6 +6474,17 @@
               }
             ],
             "title": "Minor Age Threshold"
+          },
+          "public_base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Base Url"
           },
           "structured_retry_budget": {
             "anyOf": [
@@ -6801,6 +7530,16 @@
         "title": "StorySummaryBody",
         "type": "object"
       },
+      "SubjectKind": {
+        "description": "Who a subject is (#123): a story character, a catalog character, or a persona.",
+        "enum": [
+          "character",
+          "catalog_character",
+          "persona"
+        ],
+        "title": "SubjectKind",
+        "type": "string"
+      },
       "SummarySegmentModel": {
         "description": "A rolling-summary segment the prompt includes (#72).",
         "properties": {
@@ -7315,7 +8054,13 @@
                           "max_custom_instructions_chars",
                           "max_model_calls_per_turn",
                           "max_pinned_memories",
+                          "media_allowed_types",
+                          "media_max_bytes",
+                          "media_moderation_timeout_ms",
+                          "media_moderation_webhook_url",
+                          "media_sweep_interval",
                           "minor_age_threshold",
+                          "public_base_url",
                           "structured_retry_budget",
                           "timer_lag_alert",
                           "turn_queue_max",
@@ -12012,6 +12757,1383 @@
         ]
       }
     },
+    "/media": {
+      "get": {
+        "description": "`live` assets, newest first (`state=retired` lists the deleted ones), `limit` at a time; `cursor` (a page's `next_cursor`) continues. `owner`, `relation` (`name:principal`, or `name:` for any principal; repeatable, all must hold) and `kind` narrow the list only when a request asks: they gate nothing (FR-AUTH-8).",
+        "operationId": "list_media",
+        "parameters": [
+          {
+            "description": "Only the assets this principal owns.",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the assets with this relation: `name:principal`, or `name:` for any principal (repeatable; all must hold).",
+            "in": "query",
+            "name": "relation",
+            "required": false,
+            "schema": {
+              "items": {
+                "pattern": "^[A-Za-z0-9_-]{1,64}:[\\t ]*([^\\x00-\\x1f\\x7f]{1,256}[\\t ]*)?$",
+                "type": "string"
+              },
+              "title": "Relation",
+              "type": "array"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MediaKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "description": "`live` (the default) or `retired`; candidates are never listed.",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "live",
+              "enum": [
+                "live",
+                "retired"
+              ],
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's `next_cursor`.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaListBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List media assets",
+        "tags": [
+          "media"
+        ]
+      },
+      "post": {
+        "description": "A `multipart/form-data` body: the `metadata` part (JSON: `kind`, `content_rating_id`, `depicted_subjects`, optional `alt_text`, `caption`, `generation_metadata`, `owner`), then the `file` part. The bytes' type is sniffed: it must be one of the deployment's `media_allowed_types` and agree with `kind` and the part's own `Content-Type` (else 415 `media_type_not_allowed`); larger than `media_max_bytes` is 413 `media_too_large`. `depicted_subjects` is required (`[]` declares none; omitted: 422 `subjects_required`). When the deployment configures a moderation hook, the upload is sent to it before anything is stored; `reject` is 422 `moderation_rejected`, and a hook that times out, cannot be reached or answers anything else is 503 `moderation_unavailable` (it fails closed). Identical bytes are stored once. Answers 201 with the asset.",
+        "operationId": "upload_media",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "encoding": {
+                "metadata": {
+                  "contentType": "application/json"
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "file": {
+                    "description": "The bytes, as the part's own `Content-Type` declares them (or `application/octet-stream`).",
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "$ref": "#/components/schemas/MediaUpload"
+                  }
+                },
+                "required": [
+                  "metadata",
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaUploadedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too large; nothing was written: `media_too_large`."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unsupported media type; nothing was written: `media_type_not_allowed`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `moderation_rejected`, `rating_retired`, `subjects_required`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `moderation_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Upload an image or video",
+        "tags": [
+          "media"
+        ]
+      }
+    },
+    "/media/{media_id}": {
+      "delete": {
+        "description": "Retire the asset (FR-MEDIA-2): it leaves listings and refuses new references (422 `media_retired`), while the catalog versions, drafts and stories that already reference it keep its content until the media sweep finds no reference and purges it. Deleting a retired asset changes nothing (204). A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`.",
+        "operationId": "delete_media",
+        "parameters": [
+          {
+            "description": "The media asset's id (a ULID).",
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "description": "The media asset's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C6"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete (retire) a media asset",
+        "tags": [
+          "media"
+        ]
+      },
+      "get": {
+        "description": "The asset's metadata, `live` or `retired` (a deleted asset still reads, so whatever references it keeps showing it).",
+        "operationId": "get_media",
+        "parameters": [
+          {
+            "description": "The media asset's id (a ULID).",
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "description": "The media asset's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C6"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Media Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaAsset"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a media asset's metadata",
+        "tags": [
+          "media"
+        ]
+      }
+    },
+    "/media/{media_id}/content": {
+      "get": {
+        "description": "The asset's bytes with its stored MIME type, `ETag` (its SHA-256) and `Cache-Control: immutable`; served for a `live` or `retired` asset. `exp` and `sig` are a signed URL's (the moderation hook's `content_url`): with them, an upload still waiting for the hook is served too. Like every route but the public five, this one requires the service credential.",
+        "operationId": "get_media_content",
+        "parameters": [
+          {
+            "description": "The media asset's id (a ULID).",
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "description": "The media asset's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C6"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A signed URL's expiry (Unix seconds).",
+            "in": "query",
+            "name": "exp",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A signed URL's expiry (Unix seconds).",
+              "title": "Exp"
+            }
+          },
+          {
+            "description": "A signed URL's signature.",
+            "in": "query",
+            "name": "sig",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A signed URL's signature.",
+              "title": "Sig"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The asset's bytes.",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, max-age=31536000, immutable",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "The quoted SHA-256 of the bytes (absent while staged).",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a media asset's bytes",
+        "tags": [
+          "media"
+        ]
+      }
+    },
+    "/media/{media_id}/owner": {
+      "put": {
+        "description": "Make `principal` the owner of a media asset (FR-AUTH-5): it answers the owner now and the one before, with the deployment's `config_revision` (unchanged). The transfer is recorded with the acting principal and time. A transfer to the current owner changes nothing and records nothing. `system` is refused (422). Allowed whatever the entity's status. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "transfer_owner_media",
+        "parameters": [
+          {
+            "description": "The media asset's id (a ULID).",
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "description": "The media asset's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerTransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Transfer a media asset's ownership",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/media/{media_id}/relations": {
+      "get": {
+        "description": "A media asset's owner and its relations, by relation name, then principal. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "list_relations_media",
+        "parameters": [
+          {
+            "description": "The media asset's id (a ULID).",
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "description": "The media asset's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Media Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a media asset's owner and relations",
+        "tags": [
+          "ownership"
+        ]
+      },
+      "post": {
+        "description": "Add the relation `relation` (consumer-defined, e.g. `editor`, `co_author`, `player`: 1 to 64 of `A-Z a-z 0-9 _ -`, case-sensitive) between `principal` and a media asset (FR-AUTH-6): 201 with the relation, recorded with the acting principal; 200 when it already exists (nothing recorded). Relations are list filters (`?relation=name:principal`), and Epistrel never interprets a name. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "add_relation_media",
+        "parameters": [
+          {
+            "description": "The media asset's id (a ULID).",
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "description": "The media asset's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationBody"
+                }
+              }
+            },
+            "description": "The relation already existed; nothing was recorded.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Relate a principal to a media asset",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/media/{media_id}/relations/{relation}/{principal}": {
+      "delete": {
+        "description": "Remove a media asset's relation `relation` to `principal` (204), recorded with the acting principal; 404 `not_found` when there is no such relation. The principal is the rest of the path and may contain `/`. A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "remove_relation_media",
+        "parameters": [
+          {
+            "description": "The media asset's id (a ULID).",
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "description": "The media asset's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The relation's name.",
+            "in": "path",
+            "name": "relation",
+            "required": true,
+            "schema": {
+              "description": "The relation's name.",
+              "examples": [
+                "editor"
+              ],
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Relation",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The related principal: the rest of the path, so it may contain `/`.",
+            "in": "path",
+            "name": "principal",
+            "required": true,
+            "schema": {
+              "description": "The related principal: the rest of the path, so it may contain `/`.",
+              "examples": [
+                "p-7f3a9c"
+              ],
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Principal",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove a relation from a media asset",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
     "/metrics": {
       "get": {
         "description": "The Prometheus text exposition of the engine's metrics: identifiers and counts only, never story content (invariant 3). Served without a credential (invariant 4).",
@@ -16592,6 +18714,10 @@
     {
       "description": "Catalog characters: drafts, immutable published versions and their `card`/`full` projections (FR-CAT, FR-SCN-10).",
       "name": "catalog"
+    },
+    {
+      "description": "Media assets: immutable, content-addressed images and videos with their declared depicted subjects, an optional moderation hook, and delete-as-retire (FR-MEDIA-1,2).",
+      "name": "media"
     },
     {
       "description": "Each owned entity's one owner and its relations (FR-AUTH-5,6): transfers and relation changes, recorded with the acting principal. Ownership and relations exist for listing, attribution and offboarding only; nothing gates on them (FR-AUTH-8).",

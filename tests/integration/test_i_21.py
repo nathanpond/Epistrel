@@ -1,8 +1,8 @@
 """I-21: ownership, relations, and principal offboarding (docs/04 §4), its M3 parts.
 
 Every I-21 (M3) part lives in this file, because traceability counts a test ID per milestone in
-one file. Later stories add theirs here (#105 retire-not-purge, #106 profiles, #110 listing
-status, #117 offboarding). #104's parts:
+one file. Later stories add theirs here (#106 profiles, #110 listing status, #117 offboarding).
+#105's part, ``test_i_21__media_retire``, is at the end. #104's parts:
 
 - ``test_i_21__ownership``: creation sets the owner of every delivered type, a fork included. A
   transfer moves it and records the acting principal. A ``system``-owned entity transfers like
@@ -20,6 +20,12 @@ status, #117 offboarding). #104's parts:
 
 The detailed tests are in ``tests/integration/test_ownership.py``. The story-creation clauses
 (player relations, creating from another owner's entry) are #119's.
+
+- ``test_i_21__media_retire`` (#105): retire, not purge. An asset its owner deletes while
+  another owner's published character references it is still served for that character, refuses
+  new references, and survives the media sweep until nothing references it; then the sweep
+  purges it. Until #115 gives catalog versions image fields, the version that references it is
+  planted with #115's ``public_card.images`` shape.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ import json
 import re
 import secrets
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -39,6 +46,7 @@ from epistrel import (
     CharacterCreate,
     CompanionFollowsCharacter,
     Engine,
+    MediaRetired,
     OwnerTransferRequest,
     RelationRequest,
     RequestContext,
@@ -46,6 +54,8 @@ from epistrel import (
 )
 from epistrel.config import Settings
 from epistrel.core.db import make_engine, make_sync_engine
+from epistrel.core.media.assets import assert_referenceable
+from epistrel.core.media.sweep import sweep
 from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import stories
 from epistrel.core.tables.ownership import EntityType
@@ -68,6 +78,7 @@ from tests.integration.ownership_fixtures import (
     owner_of,
     request_path,
 )
+from tests.media_support import blob_path, media_client, scratch, uploaded
 from tests.respond_support import respond_client
 from tests.story_support import story_body
 
@@ -416,7 +427,8 @@ async def test_i_21__nothing_gates(
 
     A read answers all three with the same body too, once ids and times are blanked: the
     content A put there (a played turn, settings, pinned memories, relations, a published
-    version) is there for B and C, nothing narrowed. A ``private`` catalog character is read as
+    version, an uploaded image's metadata and its bytes) is there for B and C, nothing
+    narrowed. A ``private`` catalog character is read as
     its card (the default) and in ``full``, as version 1, and as its draft in both projections;
     a story and its history in the default viewpoint and the omniscient one."""
     method, path = route
@@ -444,7 +456,10 @@ async def test_i_21__nothing_gates(
             statuses[requester] = response.status_code
             assert response.status_code == call.expected, (requester, response.text)
             if method == "GET":
-                bodies[requester] = _blanked(response.json())
+                json_body = response.headers["content-type"].startswith("application/json")
+                bodies[requester] = (
+                    _blanked(response.json()) if json_body else response.content  # media bytes
+                )
     assert statuses == dict.fromkeys((OWNER, STRANGER, RELATED), call.expected)
     if method == "GET":
         assert bodies[STRANGER] == bodies[OWNER], "a stranger reads what the owner reads"
@@ -595,3 +610,65 @@ async def test_i_21__companion(companion_db: tuple[Engine, AsyncEngine]) -> None
 
     await lib.archive_story(_as(OWNER), story.story_id)
     assert await _snapshot(db, story.story_id) != before
+
+
+# -- retire, not purge (#105) ----------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-MEDIA-2")
+async def test_i_21__media_retire(pg_url: str, tmp_path: Path) -> None:
+    """Principal A uploads an image; B's catalog character publishes a version that shows it.
+    A deletes the image: it is retired, not purged. It leaves A's listing and refuses a new
+    reference (422 ``media_retired``), yet its bytes are still served for B's character, and
+    the media sweep keeps it while B's version references it. Once B deletes the character
+    (versions and all), the next sweep purges the asset and its bytes.
+
+    Complement asserted: an unreferenced asset A retires at the same time is purged by the very
+    first sweep, so the referenced one's survival is the reference's doing."""
+    a, b = headers("p-media-a"), headers("p-media-b")
+    async with (
+        scratch(pg_url, tmp_path / "media") as space,
+        media_client(space.settings, space.db) as client,
+    ):
+        shown = await uploaded(client, headers=a)
+        alone = await uploaded(client, headers=a)
+        created = await client.post("/catalog/characters", json={"name": "Mara Venn"}, headers=b)
+        character = (await ok(created, 201))["id"]
+        async with space.db.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO catalog.character_versions (catalog_id, version, content, "
+                    "published_at, published_by) VALUES (:c, 1, jsonb_build_object('name', "
+                    "'Mara Venn', 'public_card', jsonb_build_object('images', jsonb_build_object("
+                    "'primary', CAST(:m AS text)))), now(), 'p-media-b')"
+                ),
+                {"c": character, "m": shown["id"]},
+            )
+        for media_id in (shown["id"], alone["id"]):
+            deleted = await client.delete(f"/media/{media_id}", headers=a)
+            assert deleted.status_code == 204, deleted.text
+
+        listed = await ok(await client.get("/media", params={"owner": "p-media-a"}, headers=READ))
+        assert listed["items"] == []
+        async with space.db.begin() as conn:
+            with pytest.raises(MediaRetired) as refused:
+                await assert_referenceable(conn, [shown["id"]])
+        assert (refused.value.http_status, refused.value.details["reason"]) == (422, "retired")
+
+        counts = await sweep(space.db, space.lib.media)
+        assert counts["assets_purged"] == 1
+        served = await client.get(f"/media/{shown['id']}/content", headers=READ)
+        assert served.status_code == 200
+        assert (await ok(await client.get(f"/media/{shown['id']}", headers=READ)))["state"] == (
+            "retired"
+        )
+        gone = await client.get(f"/media/{alone['id']}", headers=READ)
+        assert gone.status_code == 404
+        assert not blob_path(space.root, alone["checksum"]).exists()
+
+        removed = await client.delete(f"/catalog/characters/{character}", headers=b)
+        assert removed.status_code == 204, removed.text
+        assert (await sweep(space.db, space.lib.media))["assets_purged"] == 1
+        assert (await client.get(f"/media/{shown['id']}/content", headers=READ)).status_code == 404
+        assert not blob_path(space.root, shown["checksum"]).exists()

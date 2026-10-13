@@ -13,6 +13,7 @@ from epistrel.api.routes import (
     catalog_characters,
     health,
     history,
+    media,
     operations,
     respond,
     stories,
@@ -33,6 +34,7 @@ router.include_router(story_texts.router)
 router.include_router(timeline.router)
 router.include_router(operations.router)
 router.include_router(catalog_characters.router)
+router.include_router(media.router)
 router.include_router(admin.router)
 
 __all__ = ["public_router", "router"]

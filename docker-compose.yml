@@ -37,8 +37,11 @@ services:
       EPISTREL_CONFIG_KEY: ZXBpc3RyZWwtZGV2LW9ubHktY29uZmlnLWtleS0wMDA=  # dev-only default — override for anything but local use
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - media:/var/lib/epistrel/media  # the local blob store (EPISTREL_MEDIA_ROOT, #105)
     extra_hosts:
       - "host.docker.internal:host-gateway"  # a host-run model server (LM Studio) is reachable from the container
 
 volumes:
   pgdata:
+  media:

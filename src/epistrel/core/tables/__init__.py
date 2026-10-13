@@ -9,6 +9,7 @@ from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.events import events
 from epistrel.core.tables.idempotency import idempotency_keys
 from epistrel.core.tables.jobs import jobs
+from epistrel.core.tables.media import media_assets, subject_references
 from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.operations import operations
 from epistrel.core.tables.ownership import entity_relations, ownership_events
@@ -40,6 +41,7 @@ __all__ = [
     "idempotency_keys",
     "jobs",
     "lite_summary_segments",
+    "media_assets",
     "metadata",
     "model_config",
     "operations",
@@ -49,6 +51,7 @@ __all__ = [
     "stories",
     "story_heads",
     "story_texts",
+    "subject_references",
     "timers",
     "transcript_messages",
     "turn_queue",

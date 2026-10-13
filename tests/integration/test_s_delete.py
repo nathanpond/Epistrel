@@ -33,8 +33,9 @@ AUTHOR = RequestContext(principal="p-author")
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:
     """Turns, background work between them, story and character policies, a rebuild, an
     ingested narration (a ``client_events`` row, #58), a rejected input (an ``audit_log``
-    row naming the story) and a relation (``entity_relations``, #104). The victim also gets a
-    queued turn (``turn_queue``, #63)."""
+    row naming the story), a relation (``entity_relations``, #104) and a story-scoped subject
+    reference (``subject_references``: #105 creates the index, #123 writes its story rows, so
+    the row is planted). The victim also gets a queued turn (``turn_queue``, #63)."""
     for n in range(1, 3):
         await play_turn(engine, story_id, f"turn {n} of {story_id}")
         await interleave(engine, story_id, after_turn=n)
@@ -72,6 +73,15 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
     with pytest.raises(GuardrailViolation):
         await lib.gate_input(
             AUTHOR, story_id, EntryPoint.INGEST, [GateText("events[0]", "an unsayable thing")]
+        )
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO subject_references (id, subject_kind, subject_id, scope, story_id, "
+                "record_table, record_id, field, ref_kind) VALUES (:id, 'character', :c, "
+                "'story', :s, 'events', :r, 'payload.text', 'mentioned')"
+            ),
+            {"id": new_ulid(), "c": character_id, "s": story_id, "r": new_ulid()},
         )
 
 

@@ -12,12 +12,15 @@
   extra field, JSON syntax, path id, query, header), each refused at its field with zero rows.
 
 The app runs on a scratch database migrated to head, so generated writes (stories, policies,
-ratings, deployment settings, catalog characters) never reach the session database. Excluded
-from generation: ``delete_story`` and ``archive_story`` (they would end the fixture story every
-later example needs), ``delete_character`` (it would end the fixture catalog character, #103)
-and the API-key routes (they need ``EPISTREL_CONFIG_KEY``); all are covered by C-03 and their own
-tests. ``replace_model_config`` is generated, and each successful write is undone so that later
-examples still reach the stub model.
+ratings, deployment settings, catalog characters, media) never reach the session database.
+Excluded from generation: ``delete_story`` and ``archive_story`` (they would end the fixture
+story every later example needs), ``delete_character`` (it would end the fixture catalog
+character, #103), the API-key routes (they need ``EPISTREL_CONFIG_KEY``) and ``upload_media``
+(#105: a streamed multipart body whose ``metadata`` part is JSON, which generation cannot
+encode; ``test_c_01__malformed`` sends its malformed cases by hand); all are covered by C-03 and
+their own tests. ``replace_model_config`` is generated, and each successful write is undone so
+that later examples still reach the stub model. The fixture media asset may be retired by a
+generated ``delete_media``: a retired asset still reads, so later examples still reach it.
 """
 
 from __future__ import annotations
@@ -53,6 +56,7 @@ from epistrel.api.openapi import TAG_NAMES, dumps
 from epistrel.config import Settings
 from epistrel.core.catalog.characters import CharacterCreate, PublishRequest
 from epistrel.core.db import make_engine, make_sync_engine
+from epistrel.core.media.assets import MediaUpload
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.stories import StorySpec
@@ -64,6 +68,7 @@ from tests.auth_support import auth_settings, bearer
 from tests.catalog_support import character as catalog_character
 from tests.conformance.conftest import migrated_database
 from tests.conftest import REPO_ROOT
+from tests.media_support import files, metadata, png
 from tests.respond_support import AUTHOR, body
 from tests.story_support import story_body
 
@@ -90,6 +95,7 @@ EXCLUDED = (
     "delete_character",
     "set_model_api_key",
     "remove_model_api_key",
+    "upload_media",
 )
 """Not generated against (see the module docstring); every other operation is."""
 COUNTED_TABLES = ("operations", "events", "config_changes")
@@ -117,6 +123,7 @@ class Live:
     story_id: str
     operation_id: str
     character_id: str
+    media_id: str
 
     def counts(self) -> dict[str, int]:
         sync = make_sync_engine(self.url)
@@ -138,12 +145,14 @@ class Live:
             "policy_id": MINORS_POLICY_ID,
             "purpose": "generation",
             "character_id": self.character_id,
+            "media_id": self.media_id,
         }
 
 
-async def _seed(settings: Settings) -> tuple[str, str, str]:
-    """A two-character story with one played turn, and a published catalog character: the
-    story's id, the turn's operation id and the character's id."""
+async def _seed(settings: Settings) -> tuple[str, str, str, str]:
+    """A two-character story with one played turn, a published catalog character, and an
+    uploaded image: the story's id, the turn's operation id, the character's id and the
+    image's id."""
     db = make_engine(settings)
     engine = Engine.from_settings(settings)
     engine.bind(db)
@@ -159,7 +168,8 @@ async def _seed(settings: Settings) -> tuple[str, str, str]:
         )
         character_id = draft.character.id
         await engine.publish_character(AUTHOR, character_id, PublishRequest(draft_revision=1))
-        return created.story_id, played.beats[0].operation_id, character_id
+        image = await engine.upload_media(AUTHOR, MediaUpload.model_validate(metadata()), png())
+        return created.story_id, played.beats[0].operation_id, character_id, image.asset.id
     finally:
         await engine.models.aclose()
         await db.dispose()
@@ -171,8 +181,8 @@ def live(pg_url: str) -> Iterator[Live]:
     with migrated_database(pg_url, "epistrel_c01") as url:
         try:
             settings = auth_settings(url, model_adapter="stub")
-            story_id, operation_id, character_id = asyncio.run(_seed(settings))
-            yield Live(create_app(settings), url, story_id, operation_id, character_id)
+            story_id, operation_id, character_id, media_id = asyncio.run(_seed(settings))
+            yield Live(create_app(settings), url, story_id, operation_id, character_id, media_id)
         finally:
             schemathesis_asgi.shutdown_lifespans()
 
@@ -252,9 +262,15 @@ def _operations(schema: dict[str, Any]) -> Iterator[tuple[str, str, dict[str, An
             yield method.upper(), path, operation
 
 
+MULTIPART_MODELS: dict[str, Any] = {"upload_media": MediaUpload}
+"""Routes that read a multipart body themselves (#105): the model of its JSON ``metadata``
+part, which the document's ``MULTIPART_BODIES`` component describes."""
+
+
 def _body_routes(app: FastAPI) -> dict[str, Any]:
-    """``operation_id → the handler's body type`` for every route that takes a body."""
-    found: dict[str, Any] = {}
+    """``operation_id → the handler's body type`` for every route that takes a body (for a
+    multipart upload, the type of its ``metadata`` part)."""
+    found: dict[str, Any] = dict(MULTIPART_MODELS)
     for context in iter_route_contexts(app.routes):
         route = context.original_route
         if isinstance(route, APIRoute) and route.body_field is not None:
@@ -305,7 +321,14 @@ def _body_problems(
     request = operation.get("requestBody")
     if request is None:
         return []
-    schema = request["content"]["application/json"]["schema"]
+    content = request["content"]
+    if "multipart/form-data" in content:
+        form = content["multipart/form-data"]["schema"]
+        if set(form["required"]) != {"metadata", "file"}:
+            return [f"{operation_id}: the multipart body is not `metadata` then `file`"]
+        schema = form["properties"]["metadata"]
+    else:
+        schema = content["application/json"]["schema"]
     refs = [schema.get("$ref")] + [option.get("$ref") for option in schema.get("anyOf", [])]
     names = [ref.rsplit("/", 1)[-1] for ref in refs if ref]
     if len(names) != 1:
@@ -469,6 +492,25 @@ MALFORMED: list[tuple[str, str, str, dict[str, Any], str]] = [
         {"params": {"version": 0}},
         "query.version",
     ),
+    # Media (#105): the upload's metadata part, a path id, and the listing's filters.
+    (
+        "media metadata kind",
+        "POST",
+        "/media",
+        {"files": files(png(), metadata(kind="sound"))},
+        "body.metadata.kind",
+    ),
+    (
+        "media metadata unknown field",
+        "POST",
+        "/media",
+        {"files": files(png(), metadata(secret="x"))},
+        "body.metadata.secret",
+    ),
+    ("media upload not multipart", "POST", "/media", {"json": metadata()}, "body"),
+    ("media path id", "GET", "/media/not-a-ulid", {}, "path.media_id"),
+    ("media list state", "GET", "/media", {"params": {"state": "lost"}}, "query.state"),
+    ("media list limit", "GET", "/media", {"params": {"limit": 0}}, "query.limit"),
 ]
 
 

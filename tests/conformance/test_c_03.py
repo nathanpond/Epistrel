@@ -16,6 +16,7 @@ an operation without a route, or without a step here, fails ``test_c_03``.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -47,6 +48,7 @@ from epistrel.api.routes.catalog_characters import (
     CharacterVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
+from epistrel.api.routes.media import MediaListBody, MediaUploadedBody
 from epistrel.api.routes.operations import OperationBody
 from epistrel.api.routes.ownership import (
     OwnerBody,
@@ -93,6 +95,7 @@ from epistrel.core.deployment import SettingsPatch
 from epistrel.core.errors import EpistrelError
 from epistrel.core.fork import ForkRequest
 from epistrel.core.ingest import IngestRequest
+from epistrel.core.media.assets import MediaUpload
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
 from epistrel.core.ratings import RatingFields, RatingReplacement
@@ -111,6 +114,7 @@ from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from epistrel.testing.normalize import Normalizer
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
+from tests.media_support import files, metadata, png
 from tests.model_support import config_key
 from tests.story_support import story_body
 
@@ -137,12 +141,13 @@ Rendered = tuple[int, dict[str, Any]]
 @dataclass(frozen=True)
 class Rest:
     """The REST form of a step: method, path (``{name}`` filled from the surface's ids), JSON
-    body and query parameters."""
+    body, query parameters, and a multipart body (``files``, an upload's; #105)."""
 
     method: str
     path: str
     json: Any = None
     params: dict[str, Any] = field(default_factory=dict)
+    files: dict[str, Any] | None = None
 
 
 Library = Callable[[Engine, Ids], Awaitable[Any]]
@@ -271,6 +276,25 @@ GHOST = {"name": "Ghost", "public_description": "Never published."}
 NEW_OWNER = {"principal": "p-parity-owner"}
 RELATION = {"principal": "p-parity-d", "relation": "co_author"}
 MODEL_OVERRIDE = {"model": "parity-model", "params": {"temperature": 0.5}}
+MEDIA_BYTES = png(nonce="c-03 parity")
+MEDIA = metadata(
+    alt_text="The lighthouse door",
+    caption="Gull Rock",
+    generation_metadata={"model": "sdxl", "seed": 9},
+    depicted_subjects=[{"kind": "persona", "id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"}],
+)
+UNDECLARED = metadata(depicted_subjects=None)
+MEDIA_ANSWERS = [
+    ("upload_media", 201),
+    ("upload_media", 422),
+    ("get_media", 200),
+    ("get_media_content", 200),
+    ("list_media", 200),
+    ("delete_media", 204),
+    ("get_media", 200),
+]
+"""What the media steps (#105) answer on both surfaces: an upload, one refused for its missing
+``depicted_subjects``, the reads, the delete (a retire) and a read of the retired asset."""
 
 
 def _steps() -> list[Step]:
@@ -609,6 +633,52 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", "/catalog/characters/{character}/relations"),
             lambda e, ids: _relations(e, EntityType.CHARACTER, ids["character"]),
         ),
+        # -- media assets (#105)
+        Step(
+            "upload_media",
+            lambda ids: Rest("POST", "/media", files=files(MEDIA_BYTES, MEDIA)),
+            lambda e, ids: _uploaded(e, MEDIA),
+            _keep("media", "id"),
+        ),
+        Step(  # no depicted subjects: 422 subjects_required on both
+            "upload_media",
+            lambda ids: Rest("POST", "/media", files=files(MEDIA_BYTES, UNDECLARED)),
+            lambda e, ids: _uploaded(e, UNDECLARED),
+        ),
+        Step(
+            "get_media",
+            lambda ids: Rest("GET", "/media/{media}"),
+            lambda e, ids: _media(e, ids["media"]),
+        ),
+        Step(
+            "get_media_content",
+            lambda ids: Rest("GET", "/media/{media}/content"),
+            lambda e, ids: _media_content(e, ids["media"]),
+        ),
+        Step(
+            "list_media",
+            lambda ids: Rest("GET", "/media", params={"kind": "image"}),
+            lambda e, ids: _media_list(e),
+        ),
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", "/media/{media}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX, EntityType.MEDIA, ids["media"], OwnerTransferRequest(**NEW_OWNER)
+                )
+            ),
+        ),
+        Step(
+            "delete_media",
+            lambda ids: Rest("DELETE", "/media/{media}"),
+            lambda e, ids: _no_content(e.delete_media(CTX, ids["media"])),
+        ),
+        Step(  # retired: still read
+            "get_media",
+            lambda ids: Rest("GET", "/media/{media}"),
+            lambda e, ids: _media(e, ids["media"]),
+        ),
         # -- the operator surface
         Step(
             "list_content_ratings",
@@ -866,6 +936,32 @@ async def _character_versions(engine: Engine, character_id: str) -> dict[str, An
     return dump(CharacterVersionsBody.of(found))
 
 
+async def _uploaded(engine: Engine, fields: dict[str, Any]) -> dict[str, Any]:
+    request = MediaUpload.model_validate(fields)
+    written = await engine.upload_media(CTX, request, MEDIA_BYTES, content_type="image/png")
+    return dump(MediaUploadedBody.of(written))
+
+
+async def _media(engine: Engine, media_id: str) -> dict[str, Any]:
+    return dump(await engine.get_media(CTX, media_id))
+
+
+async def _media_content(engine: Engine, media_id: str) -> dict[str, Any]:
+    content = await engine.get_media_content(CTX, media_id)
+    return _bytes(await content.read(), content.mime_type)
+
+
+async def _media_list(engine: Engine) -> dict[str, Any]:
+    from epistrel.core.tables.media import MediaKind
+
+    return dump(MediaListBody.of(await engine.list_media(CTX, kind=MediaKind.IMAGE)))
+
+
+def _bytes(data: bytes, content_type: str) -> dict[str, Any]:
+    """A content read as compared: the bytes' digest and type."""
+    return {"content_sha256": hashlib.sha256(data).hexdigest(), "content_type": content_type}
+
+
 async def _ratings(engine: Engine) -> dict[str, Any]:
     return dump(RatingList.of(await engine.list_content_ratings(CTX)))
 
@@ -1003,9 +1099,14 @@ async def run_rest(settings: Settings, steps: list[Step]) -> list[Rendered]:
                     call.path.format(**ids),
                     json=call.json,
                     params=call.params,
+                    files=call.files,
                     headers=headers,
                 )
-                body = response.json() if response.content else {}
+                kind = response.headers.get("content-type", "application/json")
+                if response.content and not kind.startswith("application/json"):
+                    body = _bytes(response.content, kind)
+                else:
+                    body = response.json() if response.content else {}
                 if response.is_success:
                     step.capture(body, ids)
                 out.append((response.status_code, body))
@@ -1099,8 +1200,8 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
     """The same calls give the same results over REST and in-process, for every operation.
 
     Complement asserted: the comparison sees real results (the turn's reply text came back on
-    both surfaces, the error steps answered errors, not successes, and each character step its
-    intended status)."""
+    both surfaces, the error steps answered errors, not successes, and each character and media
+    step its intended status)."""
     steps = _steps()
     app = create_app(auth_settings(dummy_dsn))
     assert parity_gaps(Engine, app, steps) == []
@@ -1132,6 +1233,13 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         ("get_character", 422),
         ("delete_character", 204),
     ]
+    # The media steps (#105) too (``MEDIA_ANSWERS``).
+    media = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if "media" in step.operation
+    ]
+    assert media == MEDIA_ANSWERS
 
 
 def test_c_03_bites_on_a_method_without_a_route_or_step(dummy_dsn: str) -> None:

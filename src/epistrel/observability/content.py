@@ -26,9 +26,16 @@ CONTENT_FIELDS = frozenset(
         "pinned",
         "instructions",
         "summary",
+        # media metadata (#105): what an upload says about its image or video, and the reason a
+        # moderation hook gave for a rejection
+        "caption",
+        "negative_prompt",
+        "generation_metadata",
+        "reason",
     }
 )
-"""Field names that hold story content (planner's set; any ``*_text`` field also counts)."""
+"""Field names that hold story content (planner's set; any ``*_text`` field also counts, so
+``alt_text`` does)."""
 
 CONTENT_SUFFIX = "_text"
 MAX_UNKNOWN_CHARS = 64

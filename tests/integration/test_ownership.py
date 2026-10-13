@@ -74,8 +74,8 @@ async def test_every_delivered_type_is_covered(dummy_dsn: str, engine: AsyncEngi
     """Every owned type whose table exists has its four routes mounted, a factory in
     ``ownership_fixtures.KINDS``, and a request in ``CALLS`` for every route under its entities.
     So the nothing-gates matrix and the creation checks cover every delivered type, and a
-    story that delivers a type must extend them. Complement: the scenario, persona, media and
-    profile types are in the registry, and none has a table yet."""
+    story that delivers a type must extend them. Complement: the scenario, persona and profile
+    types are in the registry, and none has a table yet (media arrived with #105)."""
     app = create_app(auth_settings(dummy_dsn))
     async with engine.connect() as conn:
         delivered = await ownership.delivered(conn)
@@ -93,7 +93,6 @@ async def test_every_delivered_type_is_covered(dummy_dsn: str, engine: AsyncEngi
     assert set(EntityType) - set(delivered) == {
         EntityType.SCENARIO,
         EntityType.PERSONA,
-        EntityType.MEDIA,
         EntityType.ENGINE_PROFILE,
     }
 
@@ -355,7 +354,10 @@ async def test_deleting_an_entity_drops_its_relations(
 ) -> None:
     """Deleting a story or a catalog character removes its relations and records a ``deleted``
     event with the acting principal, the owner and the relations removed; the earlier ownership
-    events stay. Complement: another entity's relation to the same principal stays."""
+    events stay. Deleting a media asset retires it (#105): the entity stays, with
+    its owner and relations and no ``deleted`` event, until the media sweep purges it
+    (``tests/integration/test_media_assets.py`` covers that ``deleted`` event, by ``system``).
+    Complement: another entity's relation to the same principal stays."""
     async with respond_client(stub_settings, engine) as (client, _):
         kept = await create_story(client, OWNER, None)
         await ok(
@@ -379,6 +381,19 @@ async def test_deleting_an_entity_drops_its_relations(
                 )
             deleted = await client.delete(kind.path(entity.id), headers=headers(STRANGER))
             assert deleted.status_code == 204, deleted.text
+            if kind.retires:
+                assert await owner_of(engine, kind, entity.id) == NEW_OWNER
+                kept_relations = await scalar(
+                    engine,
+                    "SELECT count(*) FROM entity_relations WHERE entity_id = :e",
+                    e=entity.id,
+                )
+                assert kept_relations == 2
+                kept_events = await rows(
+                    engine, "SELECT kind FROM ownership_events WHERE entity_id = :e", e=entity.id
+                )
+                assert [e.kind for e in kept_events] == ["relation_added", "relation_added"]
+                continue
             assert await owner_of(engine, kind, entity.id) is None
             remaining = await scalar(
                 engine, "SELECT count(*) FROM entity_relations WHERE entity_id = :e", e=entity.id

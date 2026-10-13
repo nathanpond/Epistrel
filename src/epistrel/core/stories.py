@@ -79,6 +79,7 @@ from epistrel.core.tables import (
     stories,
     story_heads,
     story_texts,
+    subject_references,
     timers,
     transcript_messages,
     turn_queue,
@@ -98,6 +99,7 @@ STORY_NAME_MAX = 200
 SAFE_FALLBACK_MAX = 500
 
 STORY_TABLES: tuple[Table, ...] = (
+    subject_references,
     client_events,
     events,
     transcript_messages,
@@ -126,11 +128,13 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         audit_log.name,
         idempotency_keys.name,
         worker_heartbeats.name,
+        subject_references.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
 ``timers``, worker heartbeats; #71), deployment-level audit
-records, and idempotency keys (a fork answers its own requests). Every other table in
+records, idempotency keys (a fork answers its own requests), and the subject-reference index
+(#105: a story's rows name its records, so #123 re-indexes the fork). Every other table in
 ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it is
 named here."""
 

@@ -19,6 +19,10 @@ port. Options the child applies to itself before serving:
 - ``mode``: ``EPISTREL_MODE`` (``all`` by default; ``api`` runs no job worker, so a harness
   drains jobs itself).
 
+The child's media root (``EPISTREL_MEDIA_ROOT``, #105) is a temporary directory of its own,
+kept across restarts and removed when the harness's context ends (or the harness is collected),
+so a child never writes under the working directory.
+
 Nothing in ``create_app`` or the Engine imports this module.
 """
 
@@ -28,9 +32,12 @@ import argparse
 import asyncio
 import contextlib
 import os
+import shutil
 import signal
 import socket
 import sys
+import tempfile
+import weakref
 from typing import Any
 
 from epistrel.testing.crash import POINTS, CrashPlan, crash_at, hit
@@ -72,6 +79,8 @@ class EngineProcess:
         self.stub_latency_s = stub_latency_s
         self.crash = crash
         self.mode = mode
+        self.media_root = tempfile.mkdtemp(prefix="epistrel-faults-media-")
+        weakref.finalize(self, shutil.rmtree, self.media_root, ignore_errors=True)
         self.process: asyncio.subprocess.Process | None = None
         self.markers: asyncio.Queue[str] = asyncio.Queue()
         self.starts = 0
@@ -93,6 +102,7 @@ class EngineProcess:
             "EPISTREL_STUB_LATENCY_S": str(self.stub_latency_s),
             "EPISTREL_LOG_LEVEL": "WARNING",
             "EPISTREL_MODE": self.mode,
+            "EPISTREL_MEDIA_ROOT": self.media_root,
             **(self.crash.env() if self.crash is not None else {}),
         }
         args = [
@@ -184,6 +194,7 @@ class EngineProcess:
 
     async def __aexit__(self, *exc: Any) -> None:
         await self.kill()
+        shutil.rmtree(self.media_root, ignore_errors=True)
 
 
 # -- the child ---------------------------------------------------------------------------------

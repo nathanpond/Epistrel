@@ -15,6 +15,8 @@ The points:
   draft revision; the version is not written yet.
 - ``ownership.add.found``: a relation add holds the entity's row lock and found the relation
   already stored (its insert did nothing); it has not read the stored row yet (#104).
+- ``media.sweep.before_purge``: the media sweep found no reference to an asset in its batch;
+  it has not locked the asset's row to purge it yet (#105).
 
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 """
@@ -28,7 +30,13 @@ from contextlib import contextmanager
 CATALOG_SAVE_BEFORE_CAS = "catalog.save.before_cas"
 CATALOG_PUBLISH_LOCKED = "catalog.publish.locked"
 OWNERSHIP_ADD_FOUND = "ownership.add.found"
-POINTS = (CATALOG_SAVE_BEFORE_CAS, CATALOG_PUBLISH_LOCKED, OWNERSHIP_ADD_FOUND)
+MEDIA_SWEEP_BEFORE_PURGE = "media.sweep.before_purge"
+POINTS = (
+    CATALOG_SAVE_BEFORE_CAS,
+    CATALOG_PUBLISH_LOCKED,
+    OWNERSHIP_ADD_FOUND,
+    MEDIA_SWEEP_BEFORE_PURGE,
+)
 
 ARRIVAL_TIMEOUT_S = 10.0
 
@@ -90,6 +98,7 @@ def held(point: str) -> Iterator[Hold]:
 __all__ = [
     "CATALOG_PUBLISH_LOCKED",
     "CATALOG_SAVE_BEFORE_CAS",
+    "MEDIA_SWEEP_BEFORE_PURGE",
     "OWNERSHIP_ADD_FOUND",
     "POINTS",
     "Hold",

@@ -81,10 +81,17 @@ ORDER: dict[str, str] = {
     "client_events": f"{_STORY_RANK}, t.client_event_id",
     "audit_log": f"{_STORY_RANK} NULLS FIRST, t.at, t.kind",
     "config_changes": "t.at, t.config_revision, t.setting",
+    # #105 creates the index; #123 writes its story-scoped rows and may refine this order.
+    "subject_references": (
+        f"{_STORY_RANK}, t.record_table, t.field NULLS FIRST, t.ref_kind, t.subject_kind"
+    ),
 }
 """Each compared table's ``ORDER BY`` (``t`` is the table): natural keys, never an id."""
 
-WHERE: dict[str, str] = {"config_changes": "t.scope = 'story'"}
+WHERE: dict[str, str] = {
+    "config_changes": "t.scope = 'story'",
+    "subject_references": "t.scope = 'story'",
+}
 """Rows of a compared table that are not story state are left out."""
 
 

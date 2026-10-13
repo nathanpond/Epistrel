@@ -17,9 +17,12 @@ What ``build`` adds or changes:
   mutations), ``Prefer: respond-async`` (respond and ingest) and the ``viewpoint`` query.
 - Response headers: ``Idempotency-Key`` and ``Idempotent-Replay`` on every mutation's success,
   ``Location`` on creations and 202s, ``Retry-After`` on 423 and 503.
-- Components only the document needs: ``Error``, ``QueuedTurn`` (a queued turn's 202) and
-  ``StorySettingsPatch`` (``PATCH /stories/{id}/settings``'s body, which the Engine validates).
-- Tags: stories, timeline, history, operations, settings, catalog, ownership, admin, ops. Every
+- Components only the document needs: ``Error``, ``QueuedTurn`` (a queued turn's 202),
+  ``StorySettingsPatch`` (``PATCH /stories/{id}/settings``'s body, which the Engine validates)
+  and ``MediaUpload`` (the ``metadata`` part of ``POST /media``'s multipart body, which the
+  route reads itself, #105; ``MULTIPART_BODIES``).
+- Tags: stories, timeline, history, operations, settings, catalog, media, ownership, admin, ops.
+  Every
   owned type's owner and relation routes (``routes.ownership``, #104) are tagged ``ownership``,
   whichever router serves them.
 - A route flagged ``mutating=False`` (``deps.route_flags``) is documented as a read with a
@@ -50,6 +53,7 @@ from epistrel.api.routes.ownership import OWNERSHIP_TAG, ownership_operation_ids
 from epistrel.api.routes.stories import StorySettingsPatch
 from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
+from epistrel.core.media.assets import MediaUpload
 from epistrel.core.ownership import REGISTRY
 
 SCHEMA_VERSION = "m2"
@@ -68,6 +72,12 @@ TAGS: list[dict[str, str]] = [
         "name": "catalog",
         "description": "Catalog characters: drafts, immutable published versions and their "
         "`card`/`full` projections (FR-CAT, FR-SCN-10).",
+    },
+    {
+        "name": "media",
+        "description": "Media assets: immutable, content-addressed images and videos with their "
+        "declared depicted subjects, an optional moderation hook, and delete-as-retire "
+        "(FR-MEDIA-1,2).",
     },
     {
         "name": OWNERSHIP_TAG,
@@ -165,16 +175,21 @@ ERROR_STATUS: dict[str, int] = {
     "config_conflict": 409,
     "draft_stale": 409,
     "draft_too_large": 413,
+    "media_too_large": 413,
+    "media_type_not_allowed": 415,
     "budget_below_safety_minimum": 422,
     "cannot_relax": 422,
     "companion_follows_character": 422,
     "entry_archived": 422,
     "guardrail_violation": 422,
     "inheritance_cycle": 422,
+    "media_retired": 422,
+    "moderation_rejected": 422,
     "not_published": 422,
     "nothing_to_regenerate": 422,
     "publish_invalid": 422,
     "rating_retired": 422,
+    "subjects_required": 422,
     "unsupported_event_kind": 422,
     "validation_error": 422,
     "viewpoint_unresolved": 422,
@@ -183,6 +198,7 @@ ERROR_STATUS: dict[str, int] = {
     "config_key_missing": 503,
     "database_unavailable": 503,
     "model_unavailable": 503,
+    "moderation_unavailable": 503,
     "original_in_flight_timeout": 503,
     "turn_interrupted": 503,
 }
@@ -197,6 +213,7 @@ STATUS_TEXT = {
     404: "Not found",
     409: "Conflict; nothing was written",
     413: "Too large; nothing was written",
+    415: "Unsupported media type; nothing was written",
     422: "Invalid request; nothing was written",
     423: "The story is busy",
     503: "Unavailable; nothing was written",
@@ -260,6 +277,15 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "save_character_draft": ("draft_stale", "draft_too_large", "entry_archived"),
     "publish_character": ("draft_stale", "entry_archived", "publish_invalid"),
     "get_character": ("not_published",),
+    "upload_media": (
+        "subjects_required",
+        "media_type_not_allowed",
+        "media_too_large",
+        "rating_retired",
+        "moderation_rejected",
+        "moderation_unavailable",
+        "config_key_missing",
+    ),
     # A companion scenario's owner and relations follow its character (#104, #116).
     **{
         operation_id: ("companion_follows_character",)
@@ -282,6 +308,35 @@ CREATING_OPERATIONS = frozenset({"create_story", "fork"})
 DOCUMENTED_BODIES = {"update_story_settings": "StorySettingsPatch"}
 """Operations whose handler takes a raw JSON object (validated by the Engine) and the component
 that documents it."""
+
+MULTIPART_BODIES = {"upload_media": "MediaUpload"}
+"""Operations whose handler reads a ``multipart/form-data`` body itself (#105): a ``metadata``
+part (the component named here, as JSON) followed by a binary ``file`` part."""
+
+
+def _multipart_body(component: str) -> dict[str, Any]:
+    return {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "required": ["metadata", "file"],
+                    "properties": {
+                        "metadata": {"$ref": REF.format(model=component)},
+                        "file": {
+                            "type": "string",
+                            "format": "binary",
+                            "description": "The bytes, as the part's own `Content-Type` "
+                            "declares them (or `application/octet-stream`).",
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                "encoding": {"metadata": {"contentType": "application/json"}},
+            }
+        },
+    }
 
 
 def _rule_errors(method: str, path: str, *, mutating: bool) -> list[str]:
@@ -420,6 +475,7 @@ def _extra_components() -> dict[str, Any]:
             (Error, "serialization"),
             (QueuedTurn, "serialization"),
             (StorySettingsPatch, "validation"),
+            (MediaUpload, "validation"),
         ],
         ref_template=REF,
     )
@@ -471,6 +527,8 @@ def _finish_operation(operation: dict[str, Any], method: str, path: str) -> None
                 }
             },
         }
+    if operation_id in MULTIPART_BODIES:
+        operation["requestBody"] = _multipart_body(MULTIPART_BODIES[operation_id])
     responses: dict[str, Any] = operation.setdefault("responses", {})
     exempt = (method, path) in EXEMPT_ROUTES or (
         method == "HEAD" and ("GET", path) in EXEMPT_ROUTES
@@ -521,6 +579,7 @@ def install(app: FastAPI) -> None:
 
 
 __all__ = [
+    "MULTIPART_BODIES",
     "OPERATION_ERRORS",
     "SCHEMA_VERSION",
     "TAG_NAMES",

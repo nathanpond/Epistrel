@@ -4,8 +4,9 @@ The settings are ``DeploymentSettings`` (``core/settings_schema.py``): the two
 ``deployment_state`` columns (``default_content_rating_id``, ``minor_age_threshold``) and the
 sections of its ``settings`` document — the Lite defaults (#57), the story-level text caps
 (#60), the idempotency result window (#61), the default ``turn_queue_max`` (#63), the
-structured-result settings (#53), the safe fallback (#68) and the default
-``max_model_calls_per_turn`` (#69).
+structured-result settings (#53), the safe fallback (#68), the default
+``max_model_calls_per_turn`` (#69) and the media settings (#105). ``media_sweep_interval`` also
+moves its recurring task's ``recurring_tasks`` row (``RECURRING_INTERVAL_SETTINGS``).
 
 A write is a JSON merge over them (``PUT /admin/settings``; the library helpers below take a
 section's values): the merged document is validated as a whole, and when anything changed the
@@ -17,12 +18,14 @@ changes nothing writes nothing.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
-from sqlalchemy import update
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import func, update
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import clock
 from epistrel.core.config_changes import (
     DeploymentState,
     bump_config_revision,
@@ -41,6 +44,7 @@ from epistrel.core.settings_schema import (
     DEPLOYMENT_COLUMNS,
     MINOR_AGE_THRESHOLD_MAX,
     MINOR_AGE_THRESHOLD_MIN,
+    RECURRING_INTERVAL_SETTINGS,
     DeploymentSettings,
     GenerationSettings,
     IdempotencySettings,
@@ -50,7 +54,7 @@ from epistrel.core.settings_schema import (
     merge_patch,
     setting_class,
 )
-from epistrel.core.tables import deployment_state
+from epistrel.core.tables import deployment_state, recurring_tasks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
 __all__ = [
@@ -70,16 +74,20 @@ __all__ = [
 ]
 
 
-NULLABLE = frozenset({"max_model_calls_per_turn"})
-"""Top-level settings whose ``null`` resets them to their default instead of being refused."""
+NULLABLE = frozenset(
+    {"max_model_calls_per_turn", "media_moderation_webhook_url", "public_base_url"}
+)
+"""Top-level settings whose ``null`` resets them to their default instead of being refused: the
+call cap's formula (#69), and no moderation hook or base URL (#105)."""
 
 
 class SettingsPatch(BaseModel):
     """A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,
     ``lite_generation_defaults`` merges key by key, and ``null`` is refused for a top-level
-    field (except ``max_model_calls_per_turn``, whose ``null`` restores the formula). Bounds
-    are ``DeploymentSettings``'s, checked on the merged settings (422 ``validation_error`` at
-    ``body.<field>``)."""
+    field (except ``max_model_calls_per_turn``, whose ``null`` restores the formula, and
+    ``media_moderation_webhook_url`` and ``public_base_url``, whose ``null`` unsets them). A list
+    (``media_allowed_types``) replaces the stored one. Bounds are ``DeploymentSettings``'s,
+    checked on the merged settings (422 ``validation_error`` at ``body.<field>``)."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -104,13 +112,19 @@ class SettingsPatch(BaseModel):
     job_retention_days: int | None = None
     worker_heartbeat_timeout: float | None = None
     timer_lag_alert: float | None = None
+    media_allowed_types: list[str] | None = None
+    media_max_bytes: int | None = None
+    media_moderation_webhook_url: str | None = None
+    media_moderation_timeout_ms: int | None = None
+    media_sweep_interval: int | None = None
+    public_base_url: str | None = None
 
     def changes(self) -> dict[str, Any]:
         present: dict[str, Any] = {}
         for name in self.model_fields_set:
             value = getattr(self, name)
             if value is None and name in NULLABLE:
-                present[name] = None  # back to the default (the Lite formula, #69)
+                present[name] = None  # back to the default (the Lite formula #69, unset #105)
                 continue
             if value is None:
                 raise InvalidRequest(f"{name} cannot be null", {"field": f"body.{name}"})
@@ -167,7 +181,32 @@ async def apply_settings(
                 actor=principal,
                 change_class=setting_class(DeploymentSettings, key),
             )
+        await _move_recurring_intervals(conn, wanted, changed)
         return await lock_deployment(conn)
+
+
+async def _move_recurring_intervals(
+    conn: AsyncConnection, wanted: DeploymentSettings, changed: list[str]
+) -> None:
+    """Give each recurring task whose interval setting changed its new interval (#105:
+    ``media_sweep_interval``): prospective, so the next run comes no later than one new interval
+    after the last one. A task no worker has reconciled yet has no row; reconcile reads the
+    setting when it creates it."""
+    for setting, task in RECURRING_INTERVAL_SETTINGS.items():
+        if setting not in changed:
+            continue
+        interval = timedelta(seconds=int(getattr(wanted, setting)))
+        await conn.execute(
+            update(recurring_tasks)
+            .where(recurring_tasks.c.name == task)
+            .values(
+                interval=interval,
+                next_run_at=func.least(
+                    recurring_tasks.c.next_run_at,
+                    func.coalesce(recurring_tasks.c.last_run_at, clock.now()) + interval,
+                ),
+            )
+        )
 
 
 async def update_settings(

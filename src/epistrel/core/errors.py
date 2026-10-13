@@ -454,3 +454,80 @@ class CompanionFollowsCharacter(EpistrelError):
 
     code = "companion_follows_character"
     http_status = 422
+
+
+# -- media (#105) -------------------------------------------------------------------------------
+
+
+class MediaNotFound(EpistrelError):
+    """The media asset a call names does not exist (or is a private candidate, FR-IMG-7).
+    ``details``: ``media_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class SubjectsRequired(EpistrelError):
+    """An upload that did not declare ``depicted_subjects`` (FR-MEDIA-1, FR-IMG-9): an
+    explicitly empty list is accepted, an omitted one is not. Nothing is stored. ``details``:
+    ``field`` (``body.metadata.depicted_subjects``)."""
+
+    code = "subjects_required"
+    http_status = 422
+
+
+class MediaTypeNotAllowed(EpistrelError):
+    """The upload's bytes are not a type the deployment allows (``media_allowed_types``), are
+    not a type Epistrel recognises, or disagree with the declared ``kind`` or MIME type.
+    Nothing is stored. ``details``: ``reason`` (``unrecognized``, ``not_allowed``,
+    ``declared_mismatch`` or ``kind_mismatch``), ``mime_type`` (sniffed, or null), ``declared``
+    and ``allowed``."""
+
+    code = "media_type_not_allowed"
+    http_status = 415
+
+
+class MediaTooLarge(EpistrelError):
+    """The upload is larger than ``media_max_bytes``. Nothing is stored. ``details``:
+    ``limit`` (bytes) and ``size`` (the bytes seen when the upload was cut, or the request's
+    declared length)."""
+
+    code = "media_too_large"
+    http_status = 413
+
+
+class ModerationRejected(EpistrelError):
+    """The deployment's moderation hook answered ``reject``. Nothing is stored. ``details``:
+    ``reason``, as the hook gave it (never logged)."""
+
+    code = "moderation_rejected"
+    http_status = 422
+
+
+class ModerationUnavailable(EpistrelError):
+    """The moderation hook did not answer ``accept`` or ``reject``: it timed out, could not be
+    reached, answered a status other than 2xx (a redirect included), or answered something that
+    is not ``{"decision": "accept" | "reject"}``. The upload fails closed and nothing is stored.
+    ``details``: ``reason`` (``timeout``, ``connection``, ``status`` or ``malformed``) and, for
+    ``status``, the hook's ``status``."""
+
+    code = "moderation_unavailable"
+    http_status = 503
+
+
+class MediaRetired(EpistrelError):
+    """A new reference to a media asset that cannot take one (FR-MEDIA-2): it was deleted
+    (``retired``), it does not exist (``unknown``), or it is an unattached ``candidate``.
+    Existing references keep their content. ``details``: ``media_id``, ``field`` and
+    ``reason``."""
+
+    code = "media_retired"
+    http_status = 422
+
+
+class SigningKeyMissing(EpistrelError):
+    """``EPISTREL_CONFIG_KEY`` is unset, so the moderation hook's signed content URL and its
+    request signature cannot be made: the upload is refused and nothing is stored."""
+
+    code = "config_key_missing"
+    http_status = 503

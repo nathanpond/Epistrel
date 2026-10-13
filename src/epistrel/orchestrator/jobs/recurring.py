@@ -5,7 +5,8 @@ falls due a worker enqueues a job of that kind (``timers.fire_due``). M2 registe
 ``idempotency_purge`` (hourly), ``retention_sweep`` (daily) and ``turn_queue_drain`` (every 30 s)
 in ``handlers``; later stories register theirs the same way (``register_recurring`` before any
 worker starts). A worker's recovery pass reconciles the registry into rows (``timers.reconcile``):
-a missing row is created due now and a changed interval is updated, and a row no task is
+a missing row is created due now and a changed interval is updated (a task whose interval is a
+deployment setting, ``interval_setting``, takes the setting's value), and a row no task is
 registered for is left alone, never fired, and logged.
 
 ``recording(name, run)`` wraps a task's handler so that the job records the run's outcome on
@@ -38,10 +39,14 @@ class NoPayload(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class RecurringTask:
-    """A sweep: its ``name`` (the job kind it enqueues) and how often it runs."""
+    """A sweep: its ``name`` (the job kind it enqueues) and how often it runs. With
+    ``interval_setting`` (a deployment setting in seconds, #105's ``media_sweep_interval``),
+    the setting decides the interval and ``interval`` is only its fallback: ``timers.reconcile``
+    reads it, and a settings write moves the task's row (``core.deployment``)."""
 
     name: str
     interval: timedelta
+    interval_setting: str | None = None
 
 
 _TASKS: dict[str, RecurringTask] = {}

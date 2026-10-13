@@ -15,6 +15,7 @@ from epistrel.api.auth import PROTECTED_DEPENDENCIES, TRUST_BOUNDARY_STATEMENT
 from epistrel.api.validation import strict_json_body
 from epistrel.config import ConfigError, Settings, load_settings
 from epistrel.core.db import database_url, make_engine
+from epistrel.core.media.store import MediaRootUnwritable
 from epistrel.engine import Engine
 from epistrel.observability import metrics
 from epistrel.observability.instrument import TelemetryMiddleware
@@ -25,9 +26,14 @@ from epistrel.orchestrator.models.config import config_key_problem
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Own the database engine for the life of the server process.
 
-    Refuses to start when a model API key is stored but ``EPISTREL_CONFIG_KEY`` is unset
-    (skipped under the stub adapter); ``epistrel serve`` runs the same check first and exits 78.
+    Refuses to start when the media root cannot be written (#105), or when a model API key is
+    stored but ``EPISTREL_CONFIG_KEY`` is unset (skipped under the stub adapter); ``epistrel
+    serve`` runs the same checks first and exits 78.
     """
+    try:
+        app.state.epistrel.prepare_media()
+    except MediaRootUnwritable as exc:
+        raise ConfigError([str(exc)]) from None
     engine = make_engine(app.state.settings)
     problem = await config_key_problem(app.state.settings, engine)
     if problem is not None:

@@ -19,10 +19,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
 FROM python:3.14-slim AS runtime
+# EPISTREL_MEDIA_ROOT: the local blob store (#105). Compose mounts the `media` volume there; the
+# directory is created owned by the runtime user, so a fresh named volume inherits that owner.
 ENV PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/.venv/bin:$PATH" \
+    EPISTREL_MEDIA_ROOT=/var/lib/epistrel/media
 RUN groupadd --system --gid 10001 epistrel \
-    && useradd --system --uid 10001 --gid 10001 --home-dir /app --shell /usr/sbin/nologin epistrel
+    && useradd --system --uid 10001 --gid 10001 --home-dir /app --shell /usr/sbin/nologin epistrel \
+    && mkdir -p /var/lib/epistrel/media \
+    && chown -R 10001:10001 /var/lib/epistrel
 WORKDIR /app
 COPY --from=builder --chown=epistrel:epistrel /app/.venv /app/.venv
 COPY --chown=epistrel:epistrel alembic.ini ./alembic.ini

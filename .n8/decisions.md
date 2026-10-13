@@ -2693,3 +2693,44 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** Filed #318 (`needs-triage`) and did not fix it. `tests/chaos/test_x_07.py::test_x_07__recurring` fails when it runs on its own, because the seeded recurring tasks fire beside its own. It passes in module order and in the full suite, and it reproduces at 87ce58e, before #106.
   **Why:** It is outside #106's scope; the discovered-work rule applies.
   **Issue:** #106, #318
+- **Decision (verification round 1):** A fork of a story whose engine profile is deleted keeps that profile, the verifier's option (a). The fork is created (201) and runs on the profile's last version. A repeated delete of the profile names the fork among the stories using it, and the purge waits until no story uses the profile, forks included. Two options were rejected: moving the fork to the deployment default with a warning, and refusing it with 422 `profile_deleted`.
+  - The behaviour is unchanged; `_copy_story_row` already copied the column. It is now pinned by `test_a_fork_keeps_its_sources_deleted_profile`: the fork is on the deleted profile, a turn plays on it, and the sweep keeps the profile until the source and then the fork are deleted. As a complement, a story created meanwhile gets the default. The earlier test `test_the_default_is_a_configuration_change` covered only a live source profile.
+  - Documented in the `DELETE /engine-profiles/{id}` and `POST /stories/{id}/fork` descriptions (`docs/openapi.json` regenerated) and in the docstrings of `core/profiles/store.py`, `core/fork.py` and the retention handler.
+  - The fork's answer carries no warning. No AC asks for one, and adding a field would change M2's fork contract.
+  **Why:**
+  - FR-STORE-15 makes a fork a full, independent copy of its story, and a story's profile is part of what is copied.
+  - FR-RATE-1 uses the same words for a retired rating ("hidden from listings and from new assignment, kept for what already uses it") and adds "a fork copies its story's rating". FR-PROF-1's delete clause follows it, so a fork is a continuation, not a new assignment.
+  - Moving a story to another profile is "assigning or changing a story's profile", which FR-PROF-7 runs as a warned two-stage operation, with FR-PROF-8's upgrade modes once profiles differ in data-producing modules. A fork that switched silently would skip that, and the story overrides it copies (FR-PROF-5) would then apply to a different profile. Refusing the fork would stop a story that FR-PROF-1 says "keeps running" from branching.
+  - Cost if wrong: one override in `fork._copy_story_row` plus an assignment check, and the new test flips.
+  **Issue:** #106, #113
+- **Decision (correction):** The #106 `retention_sweep` entry above says "no M3 path makes a deleted profile newly used" and calls the purge's re-check under its lock merely defensive. Both statements are wrong.
+  - A fork gives a deleted profile another story (the entry above).
+  - A fork reads its source in one REPEATABLE READ snapshot without locking it. So a fork that began before its source was deleted can commit a story on the deleted profile after the sweep's scan found the profile unused.
+  - The re-check under the lock is what keeps that profile. Without it, the purge's delete fails on `fk_stories_engine_profile_id_engine_profiles`, and the whole sweep run raises.
+  - A new pause point, `profiles.purge.before_lock` (`epistrel.testing.pauses`, called in `purge_deleted` before each candidate's lock), lets `test_a_fork_committing_mid_sweep_keeps_the_profile` produce the race with the real fork:
+    1. The fork is held after its snapshot through S-FORK-SNAPSHOT's `_select_operations` seam.
+    2. Its source is deleted, and the sweep scans and stops at the point.
+    3. The fork commits, then the sweep resumes and keeps the profile.
+    4. Complement: once the fork is deleted, the sweep purges the profile.
+  - The delete and the sweep run in fresh `contextvars` contexts, as separate requests and the job worker do. In the fork's context, the delete took the fork's `Idempotency-Key` call, and the fork's own bind then failed with a serialization error. That was an artifact of the test, not a production path.
+  - The mutation that survived before (the re-check removed) now fails that test with the foreign-key violation. I did not re-run the other 19 earlier mutations; no assertion they failed on was changed.
+  **Why:** The verifier showed the claim was false, and the log is the owner's record of why the code is shaped as it is. Cost if wrong: none.
+  **Issue:** #106, #71
+- **Decision (Rule 1):** `POST /engine-profiles/{id}/validate` now takes an optional body: `Annotated[ProfileValidate | None, Body()] = None`, as fork, regenerate and untruncate already do. No body, `{}` and `{"settings": null}` all validate the stored latest version, as `Engine.validate_profile(ctx, id)` does without a request.
+  - The earlier entry's "`{settings?}`" described the field, but the route declared the body required. So a call with no body was 422 `validation_error` (`Field required`), contrary to the pass-1 Discretion line ("takes an optional `settings` body (dry run) else validates the stored latest") and to the library.
+  - `docs/openapi.json` is regenerated: the request body is no longer required.
+  - `test_validate_without_a_body_checks_the_latest_version` covers it:
+    - A test-only rule is held, and the stored version 1 breaks it: no body, `{}` and `{"settings": null}` are each refused 422 `invalid_profile`, and so is the library call.
+    - A dry run of settings that meet the rule is accepted.
+    - After an edit makes version 2 meet the rule, a call with no body is accepted.
+    - Without the rule, the stored version is accepted, and an unknown profile is 404.
+  - C-03 gains a no-body parity step, so `PROFILE_ANSWERS` gains a 200.
+  - Mutation-checked, with the sources restored byte for byte (SHA-1 checked). Each of these fails a new test:
+    - the body required again (it also fails C-03, where REST answers 422 and the library 200);
+    - no body validating the model defaults;
+    - no body validating version 1;
+    - the body's settings ignored;
+    - the purge re-check removed;
+    - a fork taking Lite.
+  **Why:** The Discretion line prescribes it, and REST must answer as the library does (C-03). Cost if wrong: none; an optional body only adds accepted requests.
+  **Issue:** #106

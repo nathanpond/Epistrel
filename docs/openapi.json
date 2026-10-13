@@ -19677,7 +19677,7 @@
     },
     "/engine-profiles/{profile_id}": {
       "delete": {
-        "description": "Delete the profile (FR-PROF-1): it leaves listings (`include_deleted` lists it) and can no longer be made the default (422 `profile_deleted`), while every story that uses it keeps running on its last version. The answer warns of those stories and of the scenarios that recommend the profile. The retention sweep purges it, with its versions, once no story uses it. The deployment's default profile cannot be deleted (409 `validation_error`, `reason: is_default`); a preset is deleted like any profile once it is not the default (FR-PROF-3). Deleting a deleted profile changes nothing.",
+        "description": "Delete the profile (FR-PROF-1): it leaves listings (`include_deleted` lists it) and can no longer be made the default (422 `profile_deleted`), while every story that uses it keeps running on its last version. A fork of such a story runs under it too: a fork copies its story, profile included, as it copies a retired rating. The answer warns of those stories and of the scenarios that recommend the profile. The retention sweep purges it, with its versions, once no story uses it, forks included. The deployment's default profile cannot be deleted (409 `validation_error`, `reason: is_default`); a preset is deleted like any profile once it is not the default (FR-PROF-3). Deleting a deleted profile changes nothing.",
         "operationId": "delete_profile",
         "parameters": [
           {
@@ -20936,7 +20936,7 @@
     },
     "/engine-profiles/{profile_id}/validate": {
       "post": {
-        "description": "Validate the body's `settings` (a dry run of an edit), or without them the profile's latest version, against the delivered modules and the dependency graph (FR-PROF-2,4). A valid profile is answered 200; an invalid one is 422 `invalid_profile` naming the missing dependencies and the undelivered settings. Nothing is written: the call takes no `Idempotency-Key`.",
+        "description": "Validate the body's `settings` (a dry run of an edit), or the profile's latest version when the call sends no body or a body without `settings`, against the delivered modules and the dependency graph (FR-PROF-2,4). A valid profile is answered 200; an invalid one is 422 `invalid_profile` naming the missing dependencies and the undelivered settings. Nothing is written: the call takes no `Idempotency-Key`.",
         "operationId": "validate_profile",
         "parameters": [
           {
@@ -20969,11 +20969,18 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ProfileValidate"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ProfileValidate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -25020,7 +25027,7 @@
     },
     "/stories/{story_id}/fork": {
       "post": {
-        "description": "Copy the story's corrected history through `at_turn` (default the head) into a new story: every active record positioned at or before it, the cast, settings, rating, pinned memories, custom instructions and story policies, under new ids. The copy reads one snapshot of the source, so it equals the source at exactly one timeline revision (`forked_from.revision`), and the two stories are independent from then on. `variant_chain` (`{turn, variant}` or `\"turn:variant\"`) copies another chain, e.g. a dormant continuation, as the fork's active history; `at_turn` must then lie on it (422 otherwise), and a chain that names no variant or continues in more than one way is 409 `unknown_chain`. `at_turn` above the head is 422. An archived story can be forked; the fork is active. Answers 201 with `Location`. The source records a `fork` event and keeps its revision. `Idempotency-Key` (per deployment, like story creation) and `X-Epistrel-Expected-Revision` (the source's) are optional.",
+        "description": "Copy the story's corrected history through `at_turn` (default the head) into a new story: every active record positioned at or before it, the cast, settings, rating, engine profile (a deleted one too: the fork runs on its last version), pinned memories, custom instructions and story policies, under new ids. The copy reads one snapshot of the source, so it equals the source at exactly one timeline revision (`forked_from.revision`), and the two stories are independent from then on. `variant_chain` (`{turn, variant}` or `\"turn:variant\"`) copies another chain, e.g. a dormant continuation, as the fork's active history; `at_turn` must then lie on it (422 otherwise), and a chain that names no variant or continues in more than one way is 409 `unknown_chain`. `at_turn` above the head is 422. An archived story can be forked; the fork is active. Answers 201 with `Location`. The source records a `fork` event and keeps its revision. `Idempotency-Key` (per deployment, like story creation) and `X-Epistrel-Expected-Revision` (the source's) are optional.",
         "operationId": "fork",
         "parameters": [
           {

@@ -378,7 +378,8 @@ async def variants(story_id: StoryId, ctx: ContextDep, engine: EngineDep) -> Var
     description=(
         "Copy the story's corrected history through `at_turn` (default the head) into a new "
         "story: every active record positioned at or before it, the cast, settings, rating, "
-        "pinned memories, custom instructions and story policies, under new ids. The copy reads "
+        "engine profile (a deleted one too: the fork runs on its last version), pinned "
+        "memories, custom instructions and story policies, under new ids. The copy reads "
         "one snapshot of the source, so it equals the source at exactly one timeline revision "
         "(`forked_from.revision`), and the two stories are independent from then on. "
         '`variant_chain` (`{turn, variant}` or `"turn:variant"`) copies another chain, e.g. a '

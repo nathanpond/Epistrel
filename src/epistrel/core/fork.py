@@ -31,11 +31,13 @@ independent copy under new ids, isolated from the source from the moment it exis
   turn committing meanwhile is wholly in or wholly out (FR-CONC-10). A serialization failure is
   retried (``SNAPSHOT_ATTEMPTS``), then 503 ``database_unavailable``.
 - **The new story.** Status ``active`` (an archived source can be forked), its settings,
-  rating and ``config_revision`` copied, owned by the requester or the ``owner`` the request
-  names (FR-AUTH-5: a fork is a creation, so it never inherits the source's owner, and the
-  source's relations stay with the source), no turn in flight, ``next_turn_index`` N + 1 and
-  ``timeline_revision`` 1: its own ``genesis`` operation (after the copied one) records a
-  ``story_created`` event with ``forked_from {story_id, revision, at_turn, variant_chain}``.
+  rating, engine profile and ``config_revision`` copied (a retired rating or a deleted profile
+  too: a fork continues its story, so it is not a new assignment; #106), owned by the requester
+  or the ``owner`` the request names (FR-AUTH-5: a fork is a creation, so it never inherits the
+  source's owner, and the source's relations stay with the source), no turn in flight,
+  ``next_turn_index`` N + 1 and ``timeline_revision`` 1: its own ``genesis`` operation (after
+  the copied one) records a ``story_created`` event with ``forked_from {story_id, revision,
+  at_turn, variant_chain}``.
   Under an idempotent call the deployment-scoped key is bound to that operation.
 - **The source** records a ``fork`` control event (no revision bump) in a separate short
   transaction after the copy commits; a crash in between leaves a fork the source does not

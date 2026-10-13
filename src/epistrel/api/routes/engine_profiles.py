@@ -15,10 +15,12 @@ dials (FR-PROF-1..4, FR-API-6; #106).
 - ``POST /engine-profiles/{id}/copy``: a new profile with the settings of the latest version (or
   ``?version=n``); 201.
 - ``POST /engine-profiles/{id}/validate``: validates the body's settings (a dry run), or the
-  latest version; it changes nothing (``mutating=False``: no ``Idempotency-Key``).
+  latest version when there is no body or it holds no settings; it changes nothing
+  (``mutating=False``: no ``Idempotency-Key``).
 - ``GET /engine-profiles/{id}/versions``: every version, oldest first.
 - ``DELETE /engine-profiles/{id}``: a soft delete answering the stories still using the profile
-  and the scenarios recommending it; the ``retention_sweep`` purges it once no story uses it.
+  and the scenarios recommending it; the ``retention_sweep`` purges it once no story uses it. A
+  fork of a story on a deleted profile runs under it too (a fork copies its story).
 - ``PUT /engine-profiles/{id}/owner``, ``POST``/``GET …/relations`` and ``DELETE
   …/relations/{relation}/{principal}``: the profile's owner and relations (``routes.ownership``,
   #104). Nothing gates on them (FR-AUTH-8).
@@ -34,7 +36,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Body, Query, Response
 from fastapi import status as http_status
 from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
 
@@ -331,16 +333,19 @@ async def copy_profile(
     operation_id="validate_profile",
     summary="Validate an engine profile's settings",
     description=(
-        "Validate the body's `settings` (a dry run of an edit), or without them the profile's "
-        "latest version, against the delivered modules and the dependency graph (FR-PROF-2,4). "
-        "A valid profile is answered 200; an invalid one is 422 `invalid_profile` naming the "
-        "missing dependencies and the undelivered settings. Nothing is written: the call takes "
-        "no `Idempotency-Key`."
+        "Validate the body's `settings` (a dry run of an edit), or the profile's latest version "
+        "when the call sends no body or a body without `settings`, against the delivered "
+        "modules and the dependency graph (FR-PROF-2,4). A valid profile is answered 200; an "
+        "invalid one is 422 `invalid_profile` naming the missing dependencies and the "
+        "undelivered settings. Nothing is written: the call takes no `Idempotency-Key`."
     ),
     **route_flags(mutating=False),
 )
 async def validate_profile(
-    profile_id: ProfileId, body: ProfileValidate, ctx: ContextDep, engine: EngineDep
+    profile_id: ProfileId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    body: Annotated[ProfileValidate | None, Body()] = None,
 ) -> ProfileValidation:
     return await engine.validate_profile(ctx, profile_id, body)
 
@@ -366,11 +371,13 @@ async def list_profile_versions(
     description=(
         "Delete the profile (FR-PROF-1): it leaves listings (`include_deleted` lists it) and can "
         "no longer be made the default (422 `profile_deleted`), while every story that uses it "
-        "keeps running on its last version. The answer warns of those stories and of the "
-        "scenarios that recommend the profile. The retention sweep purges it, with its "
-        "versions, once no story uses it. The deployment's default profile cannot be deleted "
-        "(409 `validation_error`, `reason: is_default`); a preset is deleted like any profile "
-        "once it is not the default (FR-PROF-3). Deleting a deleted profile changes nothing."
+        "keeps running on its last version. A fork of such a story runs under it too: a fork "
+        "copies its story, profile included, as it copies a retired rating. The answer warns of "
+        "those stories and of the scenarios that recommend the profile. The retention sweep "
+        "purges it, with its versions, once no story uses it, forks included. The deployment's "
+        "default profile cannot be deleted (409 `validation_error`, `reason: is_default`); a "
+        "preset is deleted like any profile once it is not the default (FR-PROF-3). Deleting a "
+        "deleted profile changes nothing."
     ),
 )
 async def delete_profile(

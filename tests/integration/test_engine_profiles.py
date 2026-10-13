@@ -25,8 +25,10 @@ scratch database of their own. Module and level names come from the schema's reg
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from collections.abc import AsyncIterator
+from contextvars import Context
 from dataclasses import dataclass
 from typing import Annotated, Any
 
@@ -35,7 +37,7 @@ import pytest
 from alembic import command
 from pydantic import BaseModel, Field
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel import (
     InvalidProfile,
@@ -46,6 +48,7 @@ from epistrel import (
     RequestContext,
 )
 from epistrel.config import Settings
+from epistrel.core import fork as forking
 from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.profiles.schema import (
@@ -80,9 +83,11 @@ from epistrel.core.profiles.validate import (
 )
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
 from epistrel.core.settings_schema import ConfigClass
+from epistrel.core.stories import delete_story
 from epistrel.orchestrator.jobs.handlers import retention
 from epistrel.orchestrator.models.registry import DELIVERED as DELIVERED_PURPOSES
 from epistrel.orchestrator.models.registry import RESERVED as RESERVED_PURPOSES
+from epistrel.testing import pauses
 from epistrel.testing.profiles import TEST_CLAUSE, extra_rule
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
@@ -755,6 +760,55 @@ def _library_body(body: dict[str, Any]) -> ProfileCreate:
     return ProfileCreate.model_validate(body)
 
 
+async def test_validate_without_a_body_checks_the_latest_version(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """``POST /engine-profiles/{id}/validate`` with no body, ``{}`` or ``{"settings": null}``
+    validates the profile's latest version, as the library does without a request. While a
+    test-only rule makes pinned memories require the rolling summary, a profile stored with
+    pins on and the summary off is refused 422 ``invalid_profile`` naming the missing module,
+    on each of them and in the library, while a dry run of settings that meet the rule is
+    accepted. Once an edit stores those settings as version 2, the call with no body is
+    accepted: it validates the latest version, not the first. Complement: without the rule,
+    the first version validates with no body too. An unknown profile is 404."""
+    rule = DependencyRule(TEST_CLAUSE, "pins", (Requirement("rolling_summary"),))
+    lacking = merged(nest("pins.enabled", True), nest("memory.rolling_summary.enabled", False))
+    having = merged(lacking, nest("memory.rolling_summary.enabled", True))
+    expected = [
+        {"module": "pins", "level": "on", "requires": [{"module": "rolling_summary", "levels": []}]}
+    ]
+    valid = {"valid": True, "missing_dependencies": [], "undelivered": []}
+    ctx = RequestContext(principal=A)
+    async with respond_client(stub_settings, engine) as (client, lib):
+        created = await ok(
+            await client.post(PROFILES, json=profile_body(settings=lacking), headers=headers(A)),
+            201,
+        )
+        profile = created["id"]
+        path = f"{PROFILES}/{profile}/validate"
+        assert await ok(await client.post(path, headers=headers(A))) == valid
+        with extra_rule(rule):
+            for body in (None, {}, {"settings": None}):
+                found = refused(
+                    await client.post(path, json=body, headers=headers(A)), 422, "invalid_profile"
+                )
+                assert found["details"] == {"missing_dependencies": expected, "undelivered": []}
+            with pytest.raises(InvalidProfile):
+                await lib.validate_profile(ctx, profile)
+            dry = await client.post(path, json={"settings": having}, headers=headers(A))
+            assert await ok(dry) == valid
+            edited = await client.put(
+                f"{PROFILES}/{profile}",
+                json={"name": "Brisk Lite", "settings": having},
+                headers=headers(A),
+            )
+            assert (await ok(edited))["version"] == 2
+            assert await ok(await client.post(path, headers=headers(A))) == valid
+            assert (await lib.validate_profile(ctx, profile)).valid
+        unknown = await client.post(f"{PROFILES}/{'0' * 26}/validate", headers=headers(A))
+        refused(unknown, 404, "not_found")
+
+
 async def test_edits_record_their_requester_and_replay(
     stub_settings: Settings, engine: AsyncEngine
 ) -> None:
@@ -933,6 +987,113 @@ async def test_the_sweep_purges_only_unused_deleted_profiles(scratch: Space) -> 
         assert (await retention.sweep_retention(scratch.db))["engine_profiles"] == 1
         refused(await client.get(f"{PROFILES}/{used}", headers=READ), 404, "not_found")
         await ok(await client.get(f"{PROFILES}/{idle}", headers=READ))
+
+
+async def _deleted_in_use(client: httpx.AsyncClient) -> tuple[str, str, str, dict[str, Any]]:
+    """A profile deleted while a story uses it: the profile's id, the story's, the story's
+    player character's, and the delete's answer (the default is Lite again)."""
+    profile = (await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201))[
+        "id"
+    ]
+    await _default(client, profile)
+    story, actor = await _story(client)
+    await _default(client, LITE_PRESET_ID)
+    deleted = await ok(await client.delete(f"{PROFILES}/{profile}", headers=headers(A)))
+    assert deleted["warnings"] == [
+        {"kind": "profile_in_use", "story_id": story, "scenario_id": None}
+    ]
+    return profile, story, actor, deleted
+
+
+async def test_a_fork_keeps_its_sources_deleted_profile(scratch: Space) -> None:
+    """A fork copies its story, profile included, as it copies a retired rating, so it is not a
+    new assignment: a fork of a story whose profile is deleted is 201 and runs under the
+    deleted profile, and a turn plays on it. Deleting the profile again changes nothing and
+    names both stories. The retention sweep keeps the profile while the source or the fork uses
+    it, and purges it once neither does. Complement: a story created meanwhile runs under the
+    default, never the deleted profile."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        profile, story, actor, deleted = await _deleted_in_use(client)
+        forked = await ok(
+            await client.post(f"/stories/{story}/fork", json={"at_turn": 0}, headers=headers(A)),
+            201,
+        )
+        fork_id = forked["story_id"]
+        assert await _profile_of(scratch.db, fork_id) == profile
+        player = next(c["id"] for c in forked["characters"] if c["source_id"] == actor)
+        played = await client.post(
+            f"/stories/{fork_id}/respond", json=respond_body(player), headers=headers(A)
+        )
+        assert (await ok(played))["message"]["text"]
+        assert await _profile_of(scratch.db, fork_id) == profile
+
+        again = await ok(await client.delete(f"{PROFILES}/{profile}", headers=headers(A)))
+        assert (again["deleted_at"], again["stories_using"]) == (deleted["deleted_at"], 2)
+        assert again["warnings"] == [
+            {"kind": "profile_in_use", "story_id": using, "scenario_id": None}
+            for using in sorted([story, fork_id])
+        ]
+        fresh, _ = await _story(client)
+        assert await _profile_of(scratch.db, fresh) == LITE_PRESET_ID
+
+        assert (await retention.sweep_retention(scratch.db))["engine_profiles"] == 0
+        assert (await client.delete(f"/stories/{story}", headers=headers(A))).status_code == 204
+        assert (await retention.sweep_retention(scratch.db))["engine_profiles"] == 0
+        await ok(await client.get(f"{PROFILES}/{profile}", headers=READ))
+        assert (await client.delete(f"/stories/{fork_id}", headers=headers(A))).status_code == 204
+        assert (await retention.sweep_retention(scratch.db))["engine_profiles"] == 1
+        refused(await client.get(f"{PROFILES}/{profile}", headers=READ), 404, "not_found")
+
+
+async def test_a_fork_committing_mid_sweep_keeps_the_profile(
+    scratch: Space, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The purge checks a profile's stories again once it holds the profile's row. A fork reads
+    its source in one snapshot without locking it, so a fork that began before its source was
+    deleted still commits a story on the source's deleted profile. Here the source is deleted
+    while the fork holds its snapshot (S-FORK-SNAPSHOT's seam), the sweep finds the profile
+    unused and stops before its lock (``profiles.purge.before_lock``), and the fork commits:
+    the sweep then keeps the profile, and no foreign-key error ends it. Complement: once the
+    fork is deleted, the sweep purges the profile.
+
+    The delete and the sweep run in contexts of their own, as separate requests and the job
+    worker do: run in the fork's, the delete would take the fork's ``Idempotency-Key`` call."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        profile, story, _, _ = await _deleted_in_use(client)
+        original = forking._select_operations
+        sweeps: list[asyncio.Task[dict[str, int]]] = []
+        with pauses.held(pauses.PROFILE_PURGE_BEFORE_LOCK) as hold:
+
+            async def source_gone_then_sweep(conn: AsyncConnection, *args: Any) -> Any:
+                if not sweeps:
+                    await asyncio.create_task(
+                        delete_story(scratch.db, story, principal=A), context=Context()
+                    )
+                    sweeps.append(
+                        asyncio.create_task(
+                            retention.sweep_retention(scratch.db), context=Context()
+                        )
+                    )
+                    await hold.arrived(1)
+                return await original(conn, *args)
+
+            monkeypatch.setattr(forking, "_select_operations", source_gone_then_sweep)
+            forked = await ok(
+                await client.post(
+                    f"/stories/{story}/fork", json={"at_turn": 0}, headers=headers(A)
+                ),
+                201,
+            )
+            hold.release()
+            swept = await sweeps[0]
+        assert swept["engine_profiles"] == 0
+        fork_id = forked["story_id"]
+        assert await _profile_of(scratch.db, fork_id) == profile
+        assert await scalar(scratch.db, "SELECT count(*) FROM stories WHERE id = :s", s=story) == 0
+        await ok(await client.get(f"{PROFILES}/{profile}", headers=READ))
+        assert (await client.delete(f"/stories/{fork_id}", headers=headers(A))).status_code == 204
+        assert (await retention.sweep_retention(scratch.db))["engine_profiles"] == 1
+        refused(await client.get(f"{PROFILES}/{profile}", headers=READ), 404, "not_found")
 
 
 async def test_deleting_warns_of_recommending_scenarios(

@@ -22,6 +22,8 @@ The points:
   committed yet (#105).
 - ``media.complete.locked``: an upload session's completion holds the session's row lock and
   found it open with every part; it has not assembled the parts yet (#107).
+- ``profiles.purge.before_lock``: the profile purge (``retention_sweep``) found a deleted engine
+  profile that no story uses; it has not locked the profile's row to purge it yet (#106).
 
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 """
@@ -38,6 +40,7 @@ OWNERSHIP_ADD_FOUND = "ownership.add.found"
 MEDIA_SWEEP_BEFORE_PURGE = "media.sweep.before_purge"
 MEDIA_UPLOAD_BEFORE_COMMIT = "media.upload.before_commit"
 MEDIA_COMPLETE_LOCKED = "media.complete.locked"
+PROFILE_PURGE_BEFORE_LOCK = "profiles.purge.before_lock"
 POINTS = (
     CATALOG_SAVE_BEFORE_CAS,
     CATALOG_PUBLISH_LOCKED,
@@ -45,6 +48,7 @@ POINTS = (
     MEDIA_SWEEP_BEFORE_PURGE,
     MEDIA_UPLOAD_BEFORE_COMMIT,
     MEDIA_COMPLETE_LOCKED,
+    PROFILE_PURGE_BEFORE_LOCK,
 )
 
 ARRIVAL_TIMEOUT_S = 10.0
@@ -112,6 +116,7 @@ __all__ = [
     "MEDIA_UPLOAD_BEFORE_COMMIT",
     "OWNERSHIP_ADD_FOUND",
     "POINTS",
+    "PROFILE_PURGE_BEFORE_LOCK",
     "Hold",
     "held",
     "pause",

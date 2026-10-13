@@ -22,6 +22,9 @@ stories follow their profile).
   deleted profile changes nothing. ``purge_deleted`` (#71's ``retention_sweep``) removes a
   deleted profile and its versions once no story uses it, recording its ownership ``deleted``
   event by ``system``.
+- **A fork keeps its story's profile**, a deleted one included: a fork copies its story
+  (FR-STORE-15, ``core.fork``), as it copies a retired rating (FR-RATE-1), so it is not a new
+  assignment. The fork runs on the profile's last version, and the purge waits for it too.
 
 **Presets are ordinary profiles** (FR-PROF-3): a preset is edited, copied and deleted like any
 other; ``preset`` records provenance only.
@@ -30,7 +33,11 @@ other; ``preset`` records provenance only.
 ``FOR KEY SHARE`` a story insert's foreign key check takes. A delete first reads the deployment
 row ``FOR SHARE`` and assigning a default takes it ``FOR UPDATE`` (``core.deployment``), so the
 default never changes under either. The purge holds a profile ``FOR UPDATE``, so a story insert
-naming it waits and then fails its foreign key, instead of naming a profile that is gone.
+naming it waits and then fails its foreign key, instead of naming a profile that is gone. Under
+that lock the purge checks the profile's stories again: a fork reads its source in one snapshot
+without locking it, so a fork that began before its source was deleted can still commit a story
+on the profile after the purge found the profile unused. The re-check keeps that profile, where
+deleting it would end the sweep with a foreign-key error.
 """
 
 from __future__ import annotations
@@ -72,6 +79,7 @@ from epistrel.core.tables import (
 )
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.ownership import EntityType
+from epistrel.testing import pauses
 
 NAME_MAX = 120
 DEFAULT_PAGE = 50
@@ -564,7 +572,8 @@ async def purge_deleted(db: AsyncEngine) -> int:
     """Purge deleted profiles that no story uses and that are not the default (at most
     ``PURGE_BATCH`` per run), each in its own transaction under its row lock: its relations go
     and a ``deleted`` ownership event by ``system`` records it (``ownership.drop_entity``), then
-    the row and its versions. Returns how many it purged."""
+    the row and its versions. A profile that a story came to use after the candidates were read
+    (a fork committing late; see the module docstring) is kept. Returns how many it purged."""
     unused = ~exists().where(stories.c.engine_profile_id == engine_profiles.c.id)
     default = (
         select(deployment_state.c.default_engine_profile_id)
@@ -586,6 +595,7 @@ async def purge_deleted(db: AsyncEngine) -> int:
         )
     purged = 0
     for profile_id in candidates:
+        await pauses.pause(pauses.PROFILE_PURGE_BEFORE_LOCK)
         async with db.begin() as conn:
             locked = await conn.scalar(
                 select(engine_profiles.c.id)

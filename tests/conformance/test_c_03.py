@@ -393,6 +393,7 @@ PROFILE_ANSWERS = [
     ("list_profile_versions", 200),
     ("copy_profile", 201),
     ("validate_profile", 200),
+    ("validate_profile", 200),
     ("validate_profile", 422),
     ("profile_schema", 200),
     ("delete_profile", 409),
@@ -1018,6 +1019,12 @@ def _steps() -> list[Step]:
             lambda e, ids: _profile_check(e, ids["profile"], {}),
             group=PROFILE_GROUP,
         ),
+        Step(  # no body: the latest version on both (the library takes no request)
+            "validate_profile",
+            lambda ids: Rest("POST", "/engine-profiles/{profile}/validate"),
+            lambda e, ids: _profile_check(e, ids["profile"], None),
+            group=PROFILE_GROUP,
+        ),
         Step(  # an undelivered level: 422 invalid_profile on both
             "validate_profile",
             lambda ids: Rest("POST", "/engine-profiles/{profile}/validate", PROFILE_DRY_RUN),
@@ -1392,8 +1399,10 @@ async def _profile_versions(engine: Engine, profile_id: str) -> dict[str, Any]:
     return dump(ProfileVersionsBody(items=found))
 
 
-async def _profile_check(engine: Engine, profile_id: str, body: dict[str, Any]) -> dict[str, Any]:
-    request = ProfileValidate.model_validate(body)
+async def _profile_check(
+    engine: Engine, profile_id: str, body: dict[str, Any] | None
+) -> dict[str, Any]:
+    request = None if body is None else ProfileValidate.model_validate(body)
     return dump(await engine.validate_profile(CTX, profile_id, request))
 
 

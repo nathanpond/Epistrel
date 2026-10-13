@@ -15,7 +15,8 @@ FR-CONC-6, NFR-REL-5; #71).
 - deleted engine profiles that no story uses any more (FR-PROF-1; #106): each is purged with
   its versions and its relations, its ownership ``deleted`` event recorded by ``system``
   (``core.profiles.store.purge_deleted``). A deleted profile a story still uses is kept, and
-  the story keeps running on its last version.
+  the story keeps running on its last version; a fork of that story uses it too, so the purge
+  waits for the fork as well.
 
 No M2 operation kind writes only audit events, so no operation row is deleted. Every delete
 runs in chunks of ``CHUNK`` rows, each its own transaction, at most ``MAX_CHUNKS`` per table and

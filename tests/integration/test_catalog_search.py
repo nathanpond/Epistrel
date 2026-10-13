@@ -203,7 +203,9 @@ async def test_catalog_search(space: Space) -> None:
     assert PLANTED in full["definition"]["personality"]
 
     def labelled(name: str, *labels: str) -> dict[str, Any]:
-        return scenarios.scenario(name, metadata={"labels": list(labels)})
+        return scenarios.scenario(
+            name, metadata={"labels": list(labels), "content_rating_id": EVERYONE_ID}
+        )
 
     both = await _scenario(client, labelled("Harbour", "family", "noir"))
     family = await _scenario(client, labelled("Orchard", "Family"))
@@ -269,7 +271,9 @@ async def test_search_reads_only_the_latest_published_public_card(space: Space) 
     assert await ids(client, CHARACTERS, q="orchard") == [mara]
     assert await ids(client, CHARACTERS, q="lamp") == []
 
-    complete = await _scenario(client, scenarios.complete())
+    complete = await _scenario(
+        client, scenarios.complete_with(*await scenarios.cast_characters(client))
+    )
     full = (await scenarios.read(client, complete, projection="full")).text
     for phrase in (*scenarios.PRIVATE_PHRASES, "the deed"):
         assert phrase in full, phrase
@@ -329,7 +333,7 @@ async def test_character_search_reads_labels_and_aliases(space: Space) -> None:
         client,
         scenarios.scenario("Rated", metadata={"labels": ["noir"], "content_rating_id": TEEN_ID}),
     )
-    await _scenario(client, scenarios.scenario("Unrated"))
+    await _scenario(client, scenarios.scenario("Everyone"))  # rated Everyone (#111: required)
     assert await ids(client, SCENARIOS, content_rating=TEEN_ID) == [rated]
 
 
@@ -346,7 +350,8 @@ async def test_list_items_are_the_single_read_cards(space: Space) -> None:
     draft = await _character(client, "Ada Lowe", publish=False)
     archived = await _character(client, "Tom Reed")
     await _ok(await client.post(f"{CHARACTERS}/{archived}/archive", headers=WRITE))
-    complete = await _scenario(client, scenarios.complete())
+    cast = await scenarios.cast_characters(client)  # the characters its roles name (#111)
+    complete = await _scenario(client, scenarios.complete_with(*cast))
     unpublished = await _scenario(client, scenarios.scenario("Attic"), publish=False)
     expected = [
         (CHARACTERS, mara, "published", {}),
@@ -368,8 +373,9 @@ async def test_list_items_are_the_single_read_cards(space: Space) -> None:
             full["owner_principal"],
             full["updated_at"],
         )
-    (character_item,) = (await _ok(await list_page(client, CHARACTERS)))["items"]
-    assert set(character_item) == CARD_KEYS | LIST_EXTRA_KEYS
+    listed = (await _ok(await list_page(client, CHARACTERS)))["items"]
+    assert sorted(item["id"] for item in listed) == sorted([mara, *cast])
+    assert [set(item) for item in listed] == [CARD_KEYS | LIST_EXTRA_KEYS] * 3
     (found,) = (await _ok(await list_page(client, CHARACTERS, q="mara")))["items"]
     assert set(found) == CARD_KEYS | LIST_EXTRA_KEYS | {"rank"}
     projected = await list_page(client, CHARACTERS, projection="full")

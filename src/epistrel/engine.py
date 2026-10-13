@@ -46,6 +46,7 @@ from epistrel.core.catalog import listing as catalog_listing
 from epistrel.core.catalog import scenario_models
 from epistrel.core.catalog import scenarios as catalog_scenarios
 from epistrel.core.catalog import search as catalog_search
+from epistrel.core.catalog.report import ValidationResult
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import EntryStatus, StoryStatus
@@ -122,6 +123,7 @@ from epistrel.orchestrator.policies import admin as policy_admin
 from epistrel.orchestrator.policies import input_gate, output_gate
 from epistrel.orchestrator.policies import store as policy_store
 from epistrel.orchestrator.policies.age import CastMember
+from epistrel.orchestrator.policies.catalog_check import CatalogPolicyCheck
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText, InputPass
 from epistrel.orchestrator.policies.schemas import (
     PolicyFields,
@@ -393,13 +395,15 @@ class Engine:
     ) -> None:
         self.settings = settings
         self._db = db
-        # What Core asks of the Orchestrator (#103): the input gate, policy evaluation, model
-        # calls and background jobs. The no-op defaults stand until a story wires a real one.
-        self.ports = ports or Ports()
         # Every model call goes through this one layer (FR-MODEL-1); the adapter is chosen by
         # EPISTREL_MODEL_ADAPTER. Tests reach the stub through ``engine.models.stub``.
         self.models = models or ModelAccessLayer.from_settings(settings)
         self.models.bind(db)
+        # What Core asks of the Orchestrator (#103): the input gate, policy evaluation, model
+        # calls and background jobs. The policy evaluation is the Orchestrator's (#111: the
+        # catalog validation's input policies); the other no-op defaults stand until a story
+        # wires a real one.
+        self.ports = ports or Ports(policy_evaluator=CatalogPolicyCheck(self.models))
         # Queued turns (FR-CONC-5, #63) are drained in this process: kicked when queued here, and
         # by the worker's ``turn_queue`` recovery hook and ``turn_queue_drain`` task (#71).
         self._recovery: asyncio.Task[None] | None = None
@@ -1853,9 +1857,11 @@ class Engine:
         request: catalog_scenarios.PublishRequest,
     ) -> catalog_scenarios.Published:
         """Publish the draft as an immutable version ``n + 1`` (FR-SCN-1), compared on
-        ``request.draft_revision`` like a save; 422 ``publish_invalid`` with the report when the
-        draft cannot be published (it needs a name, and every seed its holder, audience and
-        disclosure). The draft stays equal to what was published, at the next revision."""
+        ``request.draft_revision`` like a save. The draft is validated (FR-SCN-5; #111): any
+        error is 422 ``publish_invalid`` with ``details.report`` and nothing is written; the
+        answer carries the report's warnings and the checks this deployment cannot run, and the
+        version keeps the report. The draft stays equal to what was published, at the next
+        revision."""
         principal = self.require_principal(ctx)
         return await self._keyed(
             ctx,
@@ -1864,6 +1870,24 @@ class Engine:
                 self.db, scenario_id, request, principal=principal, ports=self.ports
             ),
             material={"scenario_id": scenario_id, "body": _body(request)},
+        )
+
+    async def validate_scenario(
+        self,
+        ctx: RequestContext,
+        scenario_id: str,
+        request: catalog_scenarios.ValidateRequest | None = None,
+        *,
+        version: int | None = None,
+    ) -> ValidationResult:
+        """Validate the scenario's draft, or its published version ``version``, as a dry run
+        (FR-SCN-5; #111): ``{valid, report}``, the report the same shape a publish answers,
+        every check this deployment can run, and the others listed ``unavailable``. It writes
+        nothing (no operation, version or key), so it takes no ``Idempotency-Key``. 404 for an
+        unknown scenario or version; 409 ``draft_stale`` when ``request.draft_revision`` is no
+        longer the draft's; 422 when both are named. Archived scenarios validate too."""
+        return await catalog_scenarios.validate(
+            self.db, scenario_id, request, version=version, ports=self.ports
         )
 
     async def archive_scenario(

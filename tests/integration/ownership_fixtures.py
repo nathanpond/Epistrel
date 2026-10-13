@@ -395,6 +395,7 @@ CALLS: dict[tuple[str, str], Call] = {
     ("POST", f"{SC}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
     ("DELETE", f"{SC}{RELATION}"): Call(204, prepare=_related),
     ("PUT", f"{SC}/listing-status"): Call(200, {"value": "public"}),
+    ("POST", f"{SC}/validate"): Call(200),  # a dry run that writes nothing (#111)
     # -- scenarios: reads of a `private` scenario, as for catalog characters
     ("GET", SC): Call(200, queries=ENTRY_READS, prepare=_published),
     ("GET", f"{SC}/versions"): Call(200, prepare=_published),

@@ -62,13 +62,12 @@ from epistrel.core.catalog.characters import (
     DraftWrite,
     Projection,
     Published,
-    PublishReport,
     PublishRequest,
-    ReportEntry,
     StatusChange,
     VersionSummary,
 )
 from epistrel.core.catalog.listing import ListingStatusRequest
+from epistrel.core.catalog.report import ValidationReport
 from epistrel.core.catalog.search import DEFAULT_PAGE as DEFAULT_LIST_PAGE
 from epistrel.core.catalog.search import CatalogPage
 from epistrel.core.enums import EntryStatus
@@ -88,48 +87,18 @@ class CharacterDraftBody(CharacterFull, DeploymentMutationResponse):
         return cls(**write.character.model_dump(), config_revision=write.config_revision)
 
 
-class ReportEntryBody(BaseModel):
-    """One finding of the publish validation: a stable ``code``, the draft ``field`` it concerns
-    (a dotted path, e.g. ``definition.personality``) and a message."""
-
-    code: str
-    field: str
-    message: str
-
-    @classmethod
-    def of(cls, entry: ReportEntry) -> ReportEntryBody:
-        return cls(code=entry.code, field=entry.field, message=entry.message)
-
-
-class PublishReportBody(BaseModel):
-    """What the publish validation found: ``errors`` (none on a publish that succeeded; a 422
-    ``publish_invalid`` carries them in ``details.report``), ``warnings``, and the names of
-    checks that could not run (``unavailable``)."""
-
-    errors: list[ReportEntryBody]
-    warnings: list[ReportEntryBody]
-    unavailable: list[str]
-
-    @classmethod
-    def of(cls, report: PublishReport) -> PublishReportBody:
-        return cls(
-            errors=[ReportEntryBody.of(e) for e in report.errors],
-            warnings=[ReportEntryBody.of(e) for e in report.warnings],
-            unavailable=list(report.unavailable),
-        )
-
-
 class CharacterPublishedBody(DeploymentMutationResponse):
     """The version a publish made: its number, the draft's new ``draft_revision`` (the draft
     still equals what was published), the entry's ``status``, when it was published, and the
-    validation ``report``."""
+    validation ``report`` (no errors; its warnings and the checks this deployment cannot
+    run)."""
 
     id: str
     version: int
     draft_revision: int
     status: EntryStatus
     published_at: datetime
-    report: PublishReportBody
+    report: ValidationReport
 
     @classmethod
     def of(cls, published: Published) -> CharacterPublishedBody:
@@ -139,7 +108,7 @@ class CharacterPublishedBody(DeploymentMutationResponse):
             draft_revision=published.draft_revision,
             status=published.status,
             published_at=published.published_at,
-            report=PublishReportBody.of(published.report),
+            report=published.report,
             config_revision=published.config_revision,
         )
 

@@ -8,8 +8,9 @@ unarchive, delete, and the reads in the ``card`` and ``full`` projections — is
 catalog service's (``core.catalog.service``, #108), which scenarios share; this module supplies
 the character's document, its publish validation and its projections.
 
-Publishing needs a valid draft with a ``name`` (422 ``publish_invalid`` with the report); #111
-and #115 add their rules. A character carries no world truths of its own: those belong to a
+Publishing runs the catalog validation (``core.catalog.validation``, #111): the draft must be a
+valid ``CharacterDraft`` with a ``name`` (422 ``publish_invalid`` with ``details.report``); #115
+adds its rules there. A character carries no world truths of its own: those belong to a
 scenario, normally the character's companion scenario (FR-CAT-5).
 
 A read returns one projection (FR-SCN-10): ``card`` (the default), only the public card, or
@@ -44,16 +45,13 @@ from epistrel.core.catalog.service import (
     Follower,
     Projection,
     Published,
-    PublishReport,
     PublishRequest,
-    ReportEntry,
     Revision,
     Shown,
-    ValidationContext,
     VersionSummary,
     merge_patch,
-    schema_report,
 )
+from epistrel.core.catalog.validation import RUNNER
 from epistrel.core.enums import EntryStatus
 from epistrel.core.errors import CharacterNotFound, InvalidRequest
 from epistrel.core.ownership import Owner
@@ -349,37 +347,6 @@ class DeletedCharacter:
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
-# -- the publish validation --------------------------------------------------------------------
-
-
-def publish_report(document: Any) -> PublishReport:
-    """What stands in the way of publishing ``document``: it must be a valid draft
-    (``CharacterDraft``), and it must name the character. #111 replaces this builder and #115
-    adds the content rules (true age, content rating, images)."""
-    invalid = schema_report(CharacterDraft, document)
-    if invalid is not None:
-        return invalid
-    if CharacterDraft.model_validate(document).name is None:
-        return PublishReport(
-            errors=(
-                ReportEntry(
-                    code="field_required",
-                    field="name",
-                    message="a published character needs a name",
-                ),
-            )
-        )
-    return PublishReport()
-
-
-class CharacterValidator:
-    """The character's publish validation (``publish_report``) behind the ``Validator``
-    protocol; #111 replaces it with its runner."""
-
-    async def validate(self, draft: Any, ctx: ValidationContext) -> PublishReport:
-        return publish_report(draft)
-
-
 # -- the service -------------------------------------------------------------------------------
 
 
@@ -393,6 +360,7 @@ class CharacterCatalog(CatalogService):
     versions = character_versions
     not_found_error = CharacterNotFound
     list_item = CharacterListItem
+    document_model = CharacterDraft
 
     def max_bytes(self) -> int:
         return DRAFT_MAX_BYTES  # read at call time, so a test may lower it
@@ -436,8 +404,8 @@ class CharacterCatalog(CatalogService):
         )
 
 
-SERVICE = CharacterCatalog(CharacterValidator())
-"""The character catalog's service."""
+SERVICE = CharacterCatalog(RUNNER)
+"""The character catalog's service, publishing through the catalog validation (#111)."""
 
 
 # -- writes -----------------------------------------------------------------------------------
@@ -545,15 +513,12 @@ __all__ = [
     "CharacterFull",
     "CharacterListItem",
     "CharacterPatch",
-    "CharacterValidator",
     "DeletedCharacter",
     "DraftWrite",
     "Envelope",
     "Projection",
-    "PublishReport",
     "PublishRequest",
     "Published",
-    "ReportEntry",
     "StatusChange",
     "VersionSummary",
     "archive",
@@ -562,7 +527,6 @@ __all__ = [
     "get",
     "merge_patch",
     "publish",
-    "publish_report",
     "save",
     "unarchive",
     "versions",

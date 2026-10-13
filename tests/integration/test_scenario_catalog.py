@@ -37,7 +37,7 @@ from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.testing import pauses
 from tests.catalog_support import character
 from tests.event_support import execute_in_tx, rows, scalar, sqlstate
-from tests.media_support import media_client, scratch, uploaded
+from tests.media_support import media_client, scratch, uploaded, video
 from tests.scenario_support import (
     BASE,
     CARD_KEYS,
@@ -45,12 +45,14 @@ from tests.scenario_support import (
     CARD_ROLES,
     FULL_KEYS,
     GROUPS,
+    M3_UNAVAILABLE,
     PRINCIPAL,
     PRIVATE_PHRASES,
     READ,
     VERSION_KEYS,
     WRITE,
-    complete,
+    cast_characters,
+    complete_with,
     create,
     document_of,
     entry_row,
@@ -111,8 +113,9 @@ async def test_scenario_tables_have_the_planned_shape(engine: AsyncEngine) -> No
     """``catalog.scenario_catalog`` mirrors the character catalog plus ``companion_of`` (a
     foreign key to the character catalog that cascades); ``catalog.scenario_versions`` is keyed
     ``(catalog_id, version)``, cascades with its scenario, and pins a character version through
-    a foreign key that is set to NULL (both pin columns or neither). The deployment gains the
-    starting-cast default (16) and ceiling (none)."""
+    a foreign key that is set to NULL (both pin columns or neither), and keeps the validation
+    report its publish produced (#111). The deployment gains the starting-cast default (16) and
+    ceiling (none)."""
     found = await rows(
         engine,
         "SELECT table_name, column_name, udt_name, is_nullable FROM information_schema.columns "
@@ -145,6 +148,7 @@ async def test_scenario_tables_have_the_planned_shape(engine: AsyncEngine) -> No
             "published_at",
             "published_by",
             "search",
+            "report",
         ],
     }
     types = {(r.table_name, r.column_name): (r.udt_name, r.is_nullable) for r in found}
@@ -153,6 +157,7 @@ async def test_scenario_tables_have_the_planned_shape(engine: AsyncEngine) -> No
     assert types[("scenario_catalog", "companion_of")] == ("bpchar", "YES")
     assert types[("scenario_versions", "content")] == ("jsonb", "NO")
     assert types[("scenario_versions", "search")] == ("tsvector", "YES")  # generated (#110)
+    assert types[("scenario_versions", "report")] == ("jsonb", "YES")  # #111
     constraints = await rows(
         engine,
         "SELECT conrelid::regclass::text AS tbl, pg_get_constraintdef(oid) AS definition "
@@ -227,7 +232,9 @@ async def test_draft_save_publish_and_versions(
         "draft_revision": 3,
         "status": "published",
     }
-    assert first.json()["report"] == {"errors": [], "warnings": [], "unavailable": []}
+    report = first.json()["report"]
+    assert (report["errors"], report["warnings"]) == ([], [])
+    assert set(report["unavailable"]) >= set(M3_UNAVAILABLE)
     stored = await entry_row(engine, sid)
     assert (stored.status, stored.current_version, stored.draft_revision) == ("published", 1, 3)
     (pair,) = await rows(
@@ -676,9 +683,11 @@ async def test_seed_limit(client: httpx.AsyncClient) -> None:
 async def test_publish_needs_a_name_and_complete_seeds(
     client: httpx.AsyncClient, engine: AsyncEngine
 ) -> None:
-    """Publishing needs ``public_card.name`` and, on every seed, a holder, an audience and a
-    disclosure: otherwise 422 ``publish_invalid`` with one report entry per gap, and nothing is
-    written. Complement: once complete, it publishes."""
+    """Publishing needs ``public_card.name``, a content rating, a role, a world description, an
+    opening narration and, on every seed, a holder, an audience and a disclosure: otherwise 422
+    ``publish_invalid`` with one report entry per gap (in the report's order: by field), each
+    ``rejected``, the seed's entries naming its id, and nothing is written. Complement: once
+    complete, it publishes."""
     created = await create(
         client,
         {
@@ -687,27 +696,42 @@ async def test_publish_needs_a_name_and_complete_seeds(
         },
     )
     sid = created["id"]
+    seed_id = created["starting_state"]["seeded_memories"][0]["id"]
     entry, operations = await entry_row(engine, sid), await _operations(engine)
     refused = await publish(client, sid, 1)
     assert (refused.status_code, error_of(refused)["code"]) == (422, "publish_invalid")
     report = error_of(refused)["details"]["report"]
-    assert [(e["code"], e["field"]) for e in report["errors"]] == [
+    assert [(e["code"], e["location"]["field"]) for e in report["errors"]] == [
+        ("role_required", "cast.roles"),
+        ("content_rating_missing", "metadata.content_rating_id"),
         ("field_required", "public_card.name"),
-        ("field_required", "starting_state.seeded_memories[0].holder"),
-        ("field_required", "starting_state.seeded_memories[0].audience"),
-        ("field_required", "starting_state.seeded_memories[0].disclosure"),
+        ("opening_required", "starting_state.opening.narration"),
+        ("seed_missing_audience", "starting_state.seeded_memories[0].audience"),
+        ("seed_missing_disclosure", "starting_state.seeded_memories[0].disclosure"),
+        ("seed_missing_holder", "starting_state.seeded_memories[0].holder"),
+        ("world_required", "world.description"),
     ]
+    assert {e["outcome"] for e in report["errors"]} == {"rejected"}
+    assert {e["location"]["entry"] for e in report["errors"]} == {sid}
+    assert {e["location"]["version"] for e in report["errors"]} == {"draft"}
+    assert [e["location"]["seed_id"] for e in report["errors"][4:7]] == [seed_id] * 3
     assert error_of(refused)["details"]["scenario_id"] == sid
     assert await entry_row(engine, sid) == entry
     assert await version_rows(engine, sid) == []
     assert await _operations(engine) == operations
-    seed_id = created["starting_state"]["seeded_memories"][0]["id"]
+    whole = scenario("Named")
     fixed = await save(
         client,
         sid,
         1,
         public_card={"name": "Named"},
-        starting_state={"seeded_memories": [{**seed("Half a fact."), "id": seed_id}]},
+        metadata=whole["metadata"],
+        world=whole["world"],
+        cast=whole["cast"],
+        starting_state={
+            **whole["starting_state"],
+            "seeded_memories": [{**seed("Half a fact."), "id": seed_id}],
+        },
     )
     assert fixed.status_code == 200, fixed.text
     assert (await publish(client, sid, 2)).status_code == 201
@@ -789,8 +813,8 @@ async def test_card_and_full_projections(client: httpx.AsyncClient) -> None:
     default role and the player's, each with its kind and fill mode), and none of the phrases
     planted in the world description, a role's seed and the director guidance; ``full`` has
     every group and every phrase, and the whole document as sent (the published version and the
-    draft alike). Labels are stored lower-cased."""
-    sent = complete()
+    draft alike). Labels are stored lower-cased, and the card shows the scenario's rating."""
+    sent = complete_with(*await cast_characters(client))
     sid, _ = await published(client, sent)
     card_reads: tuple[dict[str, Any], ...] = (
         {},
@@ -808,7 +832,8 @@ async def test_card_and_full_projections(client: httpx.AsyncClient) -> None:
             assert phrase not in card.text, (params, phrase)
         assert card.json()["labels"] == ["family", "dark theme"]
         assert card.json()["media"] == {"cover": None, "gallery": [], "videos": []}
-        assert card.json()["content_rating"] is None
+        rating = card.json()["content_rating"]
+        assert (rating["id"], rating["name"]) == (EVERYONE_ID, "Everyone")
     full_reads: tuple[dict[str, Any], ...] = (
         {"projection": "full"},
         {"draft": True, "projection": "full"},
@@ -836,13 +861,16 @@ async def test_card_shows_media_and_rating(pg_url: str, tmp_path: Any) -> None:
             client, headers=WRITE, alt_text="A farmhouse at dusk", caption="Harrow Farm"
         )
         clip = await uploaded(client, headers=WRITE, caption="The asset's own caption")
+        film = await uploaded(
+            client, video(), content_type="video/mp4", headers=WRITE, kind="video"
+        )
         body = scenario(
             public_card={
                 "name": "Shown",
                 "media": {
                     "cover": cover["id"],
                     "gallery": [clip["id"]],
-                    "videos": [{"media_id": clip["id"], "caption": "Supper, 1987"}],
+                    "videos": [{"media_id": film["id"], "caption": "Supper, 1987"}],
                 },
             },
             metadata={"labels": [], "content_rating_id": EVERYONE_ID},
@@ -858,7 +886,7 @@ async def test_card_shows_media_and_rating(pg_url: str, tmp_path: Any) -> None:
             "gallery": [
                 {"media_id": clip["id"], "alt_text": None, "caption": "The asset's own caption"}
             ],
-            "videos": [{"media_id": clip["id"], "alt_text": None, "caption": "Supper, 1987"}],
+            "videos": [{"media_id": film["id"], "alt_text": None, "caption": "Supper, 1987"}],
         }
         rating = card["content_rating"]
         assert (rating["id"], rating["name"]) == (EVERYONE_ID, "Everyone")
@@ -941,6 +969,10 @@ async def test_subject_references_are_indexed(
     rewrites the draft's rows; a delete removes every row of the scenario."""
     name = f"Odile Vance {new_ulid()[-6:]}"
     held = (await client.post("/catalog/characters", json=character(name), headers=WRITE)).json()
+    published_held = await client.post(
+        f"/catalog/characters/{held['id']}/publish", json={"draft_revision": 1}, headers=WRITE
+    )
+    assert published_held.status_code == 201, published_held.text  # a locked role's character
     body = scenario(
         cast=_cast(
             role("mother", fill="locked", character={"catalog_id": held["id"]}),

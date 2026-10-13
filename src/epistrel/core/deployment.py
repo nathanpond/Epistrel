@@ -9,8 +9,9 @@ entry still holds is 409 ``listing_status_in_use``) and the sections of
 its ``settings`` document — the Lite defaults (#57), the story-level text caps
 (#60), the idempotency result window (#61), the default ``turn_queue_max`` (#63), the
 structured-result settings (#53), the safe fallback (#68), the default
-``max_model_calls_per_turn`` (#69) and the media settings (#105). ``media_sweep_interval`` also
-moves its recurring task's ``recurring_tasks`` row (``RECURRING_INTERVAL_SETTINGS``).
+``max_model_calls_per_turn`` (#69), the media settings (#105) and the catalog validation's
+model-call budget ``validation_model_calls`` (#111). ``media_sweep_interval`` also moves its
+recurring task's ``recurring_tasks`` row (``RECURRING_INTERVAL_SETTINGS``).
 
 A write is a JSON merge over them (``PUT /admin/settings``; the library helpers below take a
 section's values): the merged document is validated as a whole, and when anything changed the
@@ -139,6 +140,7 @@ class SettingsPatch(BaseModel):
     media_multipart_threshold: int | None = None
     media_upload_ttl: int | None = None
     listing_status_values: list[str] | None = None
+    validation_model_calls: int | None = None
 
     def changes(self) -> dict[str, Any]:
         present: dict[str, Any] = {}

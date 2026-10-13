@@ -430,9 +430,11 @@ class NotPublished(EpistrelError):
 
 
 class PublishInvalid(EpistrelError):
-    """The draft cannot be published as it stands. Nothing is written. ``details.report``:
-    ``{errors, warnings, unavailable}``, each error ``{code, field, message}`` with ``field`` a
-    dotted path in the draft (``name``, ``definition.personality``)."""
+    """The draft cannot be published as it stands. Nothing is written. ``details.report`` is the
+    validation report (FR-SCN-5; #111): ``{errors, warnings, unavailable}``, each entry ``{code,
+    location: {entry, version, role, field, seed_id}, text, outcome, source, rule}``, every
+    error's outcome ``rejected`` and its ``location.field`` a dotted path in the draft
+    (``name``, ``cast.roles[0].character``)."""
 
     code = "publish_invalid"
     http_status = 422

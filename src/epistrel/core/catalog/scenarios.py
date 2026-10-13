@@ -23,9 +23,11 @@ a scenario's own:
   (FR-SCN-4); a content rating the save sets must be assignable (422 ``rating_retired``), and
   each media asset it adds must be live (422 ``media_retired``, held ``FOR SHARE`` until the
   save commits).
-- **Publishing** needs a valid draft with a ``public_card.name`` and, on every seed, a holder, an
-  audience and a disclosure (``publish_invalid`` with the report; #111 replaces the validator
-  with its full one). The version records the content rating's current version.
+- **Publishing** runs the catalog validation (``core.catalog.validation``, #111): any error is
+  422 ``publish_invalid`` with ``details.report``; warnings and the checks the deployment cannot
+  run ride on the answer and are stored with the version (``scenario_versions.report``). The
+  version records the content rating's current version. ``validate`` is the same validation as
+  a dry run, of the draft or a published version, that writes nothing.
 - **References.** The media sweep counts scenario drafts and versions as references
   (``core.media.assets.MEDIA_REFERENCE_SOURCES``), and every draft write and publish indexes the
   subjects the scenario names (``core.erasure.index``): the catalog characters its roles name,
@@ -52,10 +54,8 @@ from sqlalchemy import and_, select
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core.catalog.report import ValidationReport, ValidationResult
 from epistrel.core.catalog.scenario_models import (
-    RESERVED_ROLE_IDS,
-    SEEDS_MAX,
-    WORLD_HOLDER,
     CastLimits,
     ScenarioCard,
     ScenarioCardMedia,
@@ -67,19 +67,18 @@ from epistrel.core.catalog.scenario_models import (
     ScenarioPatch,
     card_roles,
 )
+from epistrel.core.catalog.scenario_rules import dotted, rule_errors
 from epistrel.core.catalog.service import (
     CardRating,
     CatalogService,
     Projection,
     Published,
-    PublishReport,
     PublishRequest,
-    ReportEntry,
     Shown,
-    ValidationContext,
+    ValidateRequest,
     VersionSummary,
-    schema_report,
 )
+from epistrel.core.catalog.validation import RUNNER, validate_entry
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import EntryStatus
 from epistrel.core.erasure.index import Declared, drop_references, index_references
@@ -106,177 +105,6 @@ VERSION_RECORD = scenario_versions.name
 
 
 # -- the save rules ----------------------------------------------------------------------------
-
-Loc = tuple[str | int, ...]
-
-
-def _error(loc: Loc, kind: str, message: str) -> dict[str, Any]:
-    """One finding, in the shape of a pydantic error (``InvalidRequest.from_errors``)."""
-    return {"loc": loc, "type": kind, "msg": message}
-
-
-def rule_errors(draft: ScenarioDraft) -> list[dict[str, Any]]:
-    """Every save rule ``draft`` breaks (see the module docstring), each at its location in the
-    document; ``[]`` when it keeps them all."""
-    errors: list[dict[str, Any]] = []
-    roles = draft.cast.roles
-    role_ids = {role.id for role in roles}
-    location_ids: set[str] = set()
-    for index, location in enumerate(draft.world.locations):
-        if location.id in location_ids:
-            errors.append(
-                _error(
-                    ("world", "locations", index, "id"),
-                    "location_id_duplicate",
-                    f"another location is `{location.id}`; location ids are unique",
-                )
-            )
-        location_ids.add(location.id)
-    entity_ids: set[str] = set()
-    for index, entity in enumerate(draft.world.entities):
-        if entity.id in entity_ids:
-            errors.append(
-                _error(
-                    ("world", "entities", index, "id"),
-                    "entity_id_duplicate",
-                    f"another entity is `{entity.id}`; entity ids are unique",
-                )
-            )
-        entity_ids.add(entity.id)
-
-    seen: set[str] = set()
-    players = 0
-    for index, role in enumerate(roles):
-        at: Loc = ("cast", "roles", index)
-        if role.id in RESERVED_ROLE_IDS:
-            errors.append(
-                _error(
-                    (*at, "id"),
-                    "role_id_reserved",
-                    f"`{role.id}` is reserved: a seed's holder or audience uses it",
-                )
-            )
-        elif role.id in seen:
-            errors.append(
-                _error(
-                    (*at, "id"),
-                    "role_id_duplicate",
-                    f"another role is `{role.id}`; role ids are unique",
-                )
-            )
-        seen.add(role.id)
-        if role.kind == "player":
-            players += 1
-            if players > 1:
-                errors.append(
-                    _error((*at, "kind"), "player_role_limit", "a scenario has one player role")
-                )
-            if role.fill != "open":
-                errors.append(
-                    _error(
-                        (*at, "fill"),
-                        "player_role_fill",
-                        "the player role is filled by the player's persona: its fill mode is "
-                        "`open`",
-                    )
-                )
-        if role.fill in ("locked", "default") and role.character is None:
-            errors.append(
-                _error(
-                    (*at, "character"),
-                    "role_character_required",
-                    f"a `{role.fill}` role names the catalog character that fills it",
-                )
-            )
-        if role.fill == "open" and role.character is not None:
-            errors.append(
-                _error(
-                    (*at, "character"),
-                    "role_character_not_allowed",
-                    "an `open` role names no character: the story creator picks one",
-                )
-            )
-        character = role.character
-        if (
-            character is not None
-            and character.version is None
-            and "version" in character.model_fields_set
-        ):
-            errors.append(
-                _error(
-                    (*at, "character", "version"),
-                    "role_version_null",
-                    "omit `version` to use the latest published version at story creation",
-                )
-            )
-        for rel_index, relationship in enumerate(role.relationships):
-            where: Loc = (*at, "relationships", rel_index, "to_role")
-            if relationship.to_role == role.id:
-                errors.append(
-                    _error(where, "relationship_self", "a role has no relationship to itself")
-                )
-            elif relationship.to_role not in role_ids:
-                errors.append(_unknown_role(where, relationship.to_role))
-        if role.starting_location is not None and role.starting_location not in location_ids:
-            errors.append(_unknown_location((*at, "starting_location"), role.starting_location))
-
-    opening = draft.starting_state.opening
-    if opening.starting_location is not None and opening.starting_location not in location_ids:
-        errors.append(
-            _unknown_location(
-                ("starting_state", "opening", "starting_location"), opening.starting_location
-            )
-        )
-    for index, role_id in enumerate(opening.roles_present):
-        if role_id not in role_ids:
-            errors.append(
-                _unknown_role(("starting_state", "opening", "roles_present", index), role_id)
-            )
-    for index, reveal in enumerate(draft.drivers.planned_reveals):
-        for role_index, role_id in enumerate(reveal.allowed_roles):
-            if role_id not in role_ids:
-                errors.append(
-                    _unknown_role(
-                        ("drivers", "planned_reveals", index, "allowed_roles", role_index), role_id
-                    )
-                )
-    viewpoint = draft.story_settings_defaults.default_output_viewpoint
-    if viewpoint is not None and viewpoint not in role_ids:
-        errors.append(
-            _unknown_role(("story_settings_defaults", "default_output_viewpoint"), viewpoint)
-        )
-
-    seed_ids: set[str] = set()
-    for count, (loc, seed) in enumerate(draft.seeds(), start=1):
-        if count == SEEDS_MAX + 1:
-            errors.append(
-                _error(
-                    loc,
-                    "too_many_seeds",
-                    f"a scenario holds at most {SEEDS_MAX} seeds, all lists together",
-                )
-            )
-        if seed.holder is not None and seed.holder != WORLD_HOLDER and seed.holder not in role_ids:
-            errors.append(_unknown_role((*loc, "holder"), seed.holder))
-        if seed.id is not None:
-            if seed.id in seed_ids:
-                errors.append(
-                    _error(
-                        (*loc, "id"),
-                        "seed_id_duplicate",
-                        f"another seed is `{seed.id}`; seed ids are unique",
-                    )
-                )
-            seed_ids.add(seed.id)
-    return errors
-
-
-def _unknown_role(loc: Loc, role_id: str) -> dict[str, Any]:
-    return _error(loc, "unknown_role", f"no role of this scenario is `{role_id}`")
-
-
-def _unknown_location(loc: Loc, location_id: str) -> dict[str, Any]:
-    return _error(loc, "unknown_location", f"no location of this scenario is `{location_id}`")
 
 
 def stored_document(document: Any) -> dict[str, Any]:
@@ -365,7 +193,7 @@ def indexed_fields(draft: ScenarioDraft) -> dict[str, str | None]:
             for alias_index, alias in enumerate(role.name_overrides.aliases):
                 fields[f"{at}.name_overrides.aliases[{alias_index}]"] = alias
     for loc, seed in draft.seeds():
-        fields[_dotted((*loc, "text"))] = seed.text
+        fields[dotted((*loc, "text"))] = seed.text
     drivers = draft.drivers
     for name, items in (
         ("plot_hooks", drivers.plot_hooks),
@@ -380,13 +208,6 @@ def indexed_fields(draft: ScenarioDraft) -> dict[str, str | None]:
     return fields
 
 
-def _dotted(loc: Loc) -> str:
-    path = ""
-    for part in loc:
-        path += f"[{part}]" if isinstance(part, int) else (f".{part}" if path else part)
-    return path
-
-
 def declared_subjects(draft: ScenarioDraft) -> list[Declared]:
     """The catalog characters the scenario's roles are filled with, by id."""
     return [
@@ -398,50 +219,6 @@ def declared_subjects(draft: ScenarioDraft) -> list[Declared]:
         for index, role in enumerate(draft.cast.roles)
         if role.character is not None
     ]
-
-
-# -- the publish validation --------------------------------------------------------------------
-
-
-def publish_report(document: Any) -> PublishReport:
-    """What stands in the way of publishing ``document``: it must be a valid scenario draft
-    keeping the save rules, it must name the scenario, and every seed must declare its holder,
-    audience and disclosure. #111 replaces this builder with its full validation."""
-    invalid = schema_report(ScenarioDraft, document)
-    if invalid is not None:
-        return invalid
-    draft = ScenarioDraft.model_validate(document)
-    errors = [
-        ReportEntry(code=str(e["type"]), field=_dotted(e["loc"]), message=str(e["msg"]))
-        for e in rule_errors(draft)
-    ]
-    if draft.public_card.name is None:
-        errors.append(
-            ReportEntry(
-                code="field_required",
-                field="public_card.name",
-                message="a published scenario needs a name",
-            )
-        )
-    for loc, seed in draft.seeds():
-        for name in ("holder", "audience", "disclosure"):
-            if getattr(seed, name) is None:
-                errors.append(
-                    ReportEntry(
-                        code="field_required",
-                        field=_dotted((*loc, name)),
-                        message=f"a published seed declares its {name}",
-                    )
-                )
-    return PublishReport(errors=tuple(errors))
-
-
-class ScenarioValidator:
-    """The scenario's publish validation (``publish_report``) behind the ``Validator``
-    protocol; #111 replaces it with its runner."""
-
-    async def validate(self, draft: Any, ctx: ValidationContext) -> PublishReport:
-        return publish_report(draft)
 
 
 # -- results -----------------------------------------------------------------------------------
@@ -564,6 +341,7 @@ class ScenarioCatalog(CatalogService):
     versions = scenario_versions
     not_found_error = ScenarioNotFound
     list_item = ScenarioListItem
+    document_model = ScenarioDraft
 
     def max_bytes(self) -> int:
         return DRAFT_MAX_BYTES  # read at call time, so a test may lower it
@@ -601,13 +379,14 @@ class ScenarioCatalog(CatalogService):
                 await assert_referenceable(conn, [media_id], field=field)
 
     async def version_values(
-        self, conn: AsyncConnection, document: Mapping[str, Any]
+        self, conn: AsyncConnection, document: Mapping[str, Any], report: ValidationReport
     ) -> dict[str, Any]:
         rating = _content_rating(document)
         return {
             "content_rating_version_id": None
             if rating is None
-            else await rating_version(conn, rating)
+            else await rating_version(conn, rating),
+            "report": report.as_json(),
         }
 
     async def recorded(
@@ -684,8 +463,8 @@ class ScenarioCatalog(CatalogService):
         )
 
 
-SERVICE = ScenarioCatalog(ScenarioValidator())
-"""The scenario catalog's service."""
+SERVICE = ScenarioCatalog(RUNNER)
+"""The scenario catalog's service, publishing through the catalog validation (#111)."""
 
 
 # -- writes ------------------------------------------------------------------------------------
@@ -733,6 +512,28 @@ async def publish(
 ) -> Published:
     """Publish the draft as version ``current_version + 1`` (see ``core.catalog.service``)."""
     return await SERVICE.publish(db, scenario_id, request, principal=principal, ports=ports)
+
+
+async def validate(
+    db: AsyncEngine,
+    scenario_id: str,
+    request: ValidateRequest | None = None,
+    *,
+    version: int | None = None,
+    ports: Ports | None = None,
+) -> ValidationResult:
+    """Validate the draft, or published version ``version``, as a dry run that writes nothing
+    (``core.catalog.validation.validate_entry``): 404 for an unknown scenario or version, 409
+    ``draft_stale`` when ``request.draft_revision`` is no longer the draft's, 422 when both are
+    named. Archived scenarios validate too."""
+    return await validate_entry(
+        db,
+        SERVICE,
+        scenario_id,
+        draft_revision=None if request is None else request.draft_revision,
+        version=version,
+        ports=ports,
+    )
 
 
 async def archive(db: AsyncEngine, scenario_id: str, *, principal: str) -> ScenarioStatusChange:
@@ -799,7 +600,7 @@ __all__ = [
     "ScenarioDraftWrite",
     "ScenarioEnvelope",
     "ScenarioStatusChange",
-    "ScenarioValidator",
+    "ValidateRequest",
     "VersionSummary",
     "archive",
     "create",
@@ -809,10 +610,10 @@ __all__ = [
     "indexed_fields",
     "media_references",
     "publish",
-    "publish_report",
     "rule_errors",
     "save",
     "stored_document",
     "unarchive",
+    "validate",
     "versions",
 ]

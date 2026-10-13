@@ -3296,3 +3296,148 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - `epistrel` exports `ListingStatusRequest`, `ListingStatusChange`, `CatalogPage`, `CharacterListItem`, `ScenarioListItem`, `InvalidListingStatus`, `ListingStatusInUse` and `CursorInvalid`.
   **Why:** docs/02 is authoritative and should describe the routes as built, as #104 did. Cost if wrong: none.
   **Issue:** #110
+- **Decision (drift):** #111's parts follow docs/04 §15 and the shared-file rule. Each sits in the file that holds its test ID's M3 parts:
+  - `test_i_20__validation`, `part("M3", "FR-SCN-5; FR-RATE-5")`, in the new `tests/integration/test_i_20.py`. #116's `test_i_20` part must join this file, not `test_companion.py`.
+  - `test_c_15__validate`, `part("M3", "FR-API-6")`, in `tests/conformance/test_c_15.py`.
+  - `test_c_20__catalog_input_policy`, `part("M3", "FR-GUARD-10")`, in `tests/conformance/test_c_20.py`. #119's creation half must join it.
+  - `test_u_29__mismatch`, `part("M3", "FR-RATE-5")`, in `tests/test_u_29.py`, pure over an in-memory graph. #118's `test_u_29__classification` must join it.
+  - `test_u_26__validation`, `part("M3", "FR-SCN-5")`, in `tests/test_u_26.py`.
+
+  The detailed tests are unmarked:
+  - `tests/integration/test_scenario_validation.py`, the must-have's file, holds every check with a failing and a passing fixture.
+  - `tests/test_catalog_validation.py` holds the database-free tests.
+
+  Field names that are later milestones' lexicon terms (the scheduled items the provider check reads) come from `tests/validation_support.py`. check-parts counts 171 parts, check-lexicon finds 0 violations, and check-traceability passes.
+  **Why:** The drift note: §15 lists FR-GUARD-10 under C-20 (M3) only, and FR-SCN-5 and FR-RATE-5 under no C-15 entry. Traceability also counts one file per test ID and milestone. Cost if wrong: renames only.
+  **Issue:** #111, #116, #118, #119
+- **Decision:** How the modules are laid out.
+  - `core/catalog/report.py` holds the one report shape: `ValidationReport {errors, warnings, unavailable}` with its `ok` property, `Entry`, `EntryLocation`, `Outcome`, `ValidationResult {valid, report}`, the `CODES` vocabulary and `log_report`.
+  - `core/catalog/validation.py` re-exports the shape. It also holds:
+    - `CHECKS`, the explicit ordered list of 14 check modules under `core/catalog/checks/`, one per check;
+    - `prepare` and `run`;
+    - `Runner`, the services' `Validator`;
+    - `validate_entry`, the dry run.
+  - `checks/base.py` holds `Subject`, `Preparation`, `Findings`, the `Check` base class and `ValidationContext`. `ValidationContext` moved there from `service.py`, which re-exports it.
+  - `checks/scenario.py`, `cast_members.py` and `character_documents.py` are shared helpers, not checks.
+  - #108's `rule_errors` moved to `core/catalog/scenario_rules.py`; `scenarios.py` re-exports it.
+  - #103's `PublishReport`, `ReportEntry`, `schema_report` and both `publish_report`/`*Validator` builders are gone.
+
+  **Why:** The must-have puts `ValidationReport`, `Entry` and the runner in `validation.py`. But the generic service must name the report type, and `validation → checks → scenario_models → service` would be an import cycle, so the shape lives in a module the service can import and `validation.py` re-exports it. Cost if wrong: import paths move.
+  **Issue:** #111
+- **Decision:** Validation runs in two phases, so no lock is ever held across a model call.
+  - The `Validator` protocol is `prepare(subject, env)` followed by `validate(subject, ctx)`.
+  - A publish reads the entry, refuses a stale revision or an archived entry, and prepares from that draft outside any transaction. Only the input policies prepare anything, and they may call a model.
+  - It then takes the row lock, compares `draft_revision` again (it moves on every save, so the draft is the one prepared from), and validates under the lock with what was prepared.
+  - `test_no_lock_is_held_across_a_model_call` holds the stub's `guardrail_check`. Meanwhile it locks the scenario row `FOR UPDATE NOWAIT` from another session and finds no session idle in a transaction. In the complement, with the publish held at `catalog.publish.locked`, the same lock attempt fails with `55P03`.
+  **Why:** FR-CONC-2: "Database locks shall never be held across model calls". The single in-transaction validate that #108 left would hold the scenario's row lock for every model-assisted check. Mutation-checked: moving `prepare` inside the lock fails the test. Cost if wrong: one extra read per publish.
+  **Issue:** #111
+- **Decision (deviation):** Input policies reach the Orchestrator through #103's `PolicyEvaluator` port, not the `InputGate` port that the pass-1 Discretion and the drift note name.
+  - `InputGate.enforce` refuses and writes an audit row. `PolicyEvaluator` is the port for "evaluation without refusal or audit (a publish-time report)".
+  - Its signature is now `evaluate(db, texts, *, rating_id, max_model_calls) -> PolicyEvaluation {hits, unavailable, model_calls}`, and `PolicyHit` gained `span`. Nothing called the port before.
+  - `Engine` wires `orchestrator/policies/catalog_check.CatalogPolicyCheck(self.models)`, the first real port. The other three stay no-ops.
+  - The default `NoPolicies` now lists `input_policy` as unavailable instead of reporting no hit. So a core publish without the Engine never passes the check silently. `test_ports_default_to_no_ops` was changed for that behaviour (FR-SCN-5).
+  - Model-assisted policies run through `structured_call` with `check_inputs` and an empty deterministic step, not the drift note's `check_text`. `check_text` turns a budget-exhausted `Uncertain` into a violation through `on_uncertain`; here that case is listed `input_policy_model_assisted`. A `ModelError` (unavailable, deadline) is listed too, and never fails a publish.
+  - `creation_context` accepts `rating_id=None` (global policies only).
+  - Hand-offs:
+    - #119's genesis gate (with a cast, refusing and audited) must wire the `InputGate` port itself, which is still `PassingGate`.
+    - #118, #120 and #121 may reuse or extend `PolicyEvaluator`.
+  **Why:** A publish-time hit must write no audit row and never refuse (the pass-1 Discretion), and FR-SCN-5 forbids passing a check silently. Cost if wrong: a port renamed.
+  **Issue:** #111, #103, #118, #119, #120, #121
+- **Decision (drift):** `validation_model_calls` is a field of the deployment's settings document, not the `deployment_state` column the pass-1 Discretion names.
+  - It lives in a new `CatalogValidationSettings` section: prospective, 0 to 1000, default 0.
+  - The section is in `config_changes.SECTIONS` and `SettingsPatch`, and U-18 pins the class.
+  - `PUT /admin/settings`'s description and the README name it.
+  - Validate and publish both read it. With 0, no model-assisted policy runs at publish; story creation (#119) runs them within its genesis budget.
+  **Why:** The drift note: M2 keeps new deployment settings in the settings document. Cost if wrong: one migration moves it to a column.
+  **Issue:** #111
+- **Decision (AC over Discretion):** A seed missing a field gives one error per field, with codes `seed_missing_holder`, `seed_missing_audience` and `seed_missing_disclosure`. The pass-1 Discretion's single `seed_incomplete` is not used.
+  - Each error sits at the missing field, with the seed's `seed_id` and, for a role's seed, the role.
+  - `report.CODES` lists every code the report uses, AC1's later-milestone codes included (`fact_conflict_dropped`, `belief_conflict`). A unit test pins AC1's list against it.
+  **Why:** AC1 names `seed_missing_audience` among the codes, and `/n8-verify` reads the AC. A code per field still "names the missing field", as the Discretion wants. Cost if wrong: renames.
+  **Issue:** #111
+- **Decision:** #111 adds the content rules that #108's plan handed it, all errors.
+  - `content_rating_missing`: FR-RATE-3, "required to publish".
+  - `role_required`: at least one role.
+  - `world_required`: a world description.
+  - `opening_required`: an opening narration.
+  - `rating_retired`: the rating is unknown or retired. This check moved from the version insert into the report.
+
+  Consequences:
+  - A publish with a retired rating now answers 422 `publish_invalid` (a `rating_retired` entry), not 422 `rating_retired`. The route still documents `rating_retired` for the race between the check and the version insert, which holds the rating `FOR SHARE`.
+  - #116 must exempt a companion version made by a character-alone publish from `world_required` and `opening_required`, as its pass-2 line plans.
+  **Why:** #108's pass-1 line: "#111 adds the content rules `content_rating_missing`, `role_required`, `opening_required`, `world_required`". #116 relies on two of them, and #119 relies on an opening narration for turn 1. #108's log also anticipated that #111 would move the rating check into the report. Cost if wrong: one check module drops a rule.
+  **Issue:** #111, #108, #116, #119
+- **Decision:** How the checks read their inputs.
+  - **`unavailable`:**
+    - `seed_normalization` and `fact_consistency` (they need `structured`) and `state_schema` (it needs `states`). They are placeholders that list themselves even when given their capability, so a deployment that delivers the capability before M4 or M6 implements the check never passes silently.
+    - `age_conditioned_policies`, only while such an input policy is live.
+    - `input_policy_model_assisted`.
+    - `input_policy`, from the default port.
+  - **Capabilities** are derived from #106's `DELIVERED`: the pipeline by its levels, the other modules by name.
+  - **Input-policy texts:** the world, each role's setup description, relationships and name overrides, every seed, the opening, the drivers, and every string inside the objects stored as given. Never the public card or the visual style.
+  - **Input-policy entries:** one per (field, policy), outcome `kept`, `rule` = the policy id, `text` = the matched span.
+    - A word or name list's span is found by the new pure `core.policies.evaluate.matched_span`, case kept.
+    - A pattern or model-assisted policy has no span, so the text is the first 200 characters.
+    - Global and rating entity lists run, as the drift note says.
+  - **`rating_looser`** counts live policies only. It compares each item at the rating version it was stored with: a character version's `content_rating_version_id`, else the rating its document names at its current version, or an asset's own. An unrated item has no guardrails.
+  - **Location and errors:** location `role` is set only for fields inside a role. An entry is an error exactly when its outcome is `rejected`.
+  - **Named-role audiences** are not checked against role ids. FR-SCN-8 lets authors add named groups freely, and #108 stores tokens as written, so a role id cannot be told from a group; holders and reveal roles are #108's save rules.
+  - **The context** holds the connection, settings, ports, capabilities and what was prepared. The checks that need the rating closure and policies load them. The pass-1 line lists those in the context.
+  **Why:** These are the pass-1 lines, filled in where they are silent. Cost if wrong: one check module changes.
+  **Issue:** #111
+- **Decision:** The surfaces.
+  - **Publish** answers 201 with `report`; AC4's "200 body" is read as the publish's success answer, which has been 201 since #103 (the pass-1 line also says 201). A refused publish is 422 `publish_invalid` with `details.report`. Either way the INFO line `validation report` logs codes and locations, never text.
+  - **Storage:** migration 0028 adds a nullable `catalog.scenario_versions.report` jsonb, written with the version row.
+  - **The dry run** is `POST /catalog/scenarios/{id}/validate`:
+    - flagged `mutating=False`;
+    - optional body `ValidateRequest {draft_revision?}`, or `?version=n`;
+    - answers 200 `ValidationResult {valid, report}`;
+    - 409 `draft_stale`; 422 at `query.version` when both are named; 404 for an unknown scenario or version;
+    - archived scenarios validate.
+  - **Library and docs:**
+    - `Engine.validate_scenario` takes no `Idempotency-Key` and needs no principal in the library; REST requires one by method.
+    - It has three C-03 parity steps, a nothing-gates `CALLS` entry, `OPERATION_ERRORS` and library exports (`ValidationReport`, `ValidationResult`, `Entry`, `EntryLocation`, `Outcome`, `ValidateRequest`).
+    - `docs/02` §9 and the README describe it, and `docs/openapi.json` is regenerated.
+  **Why:** The pass-1 lines. Cost if wrong: the status code, which is #103's existing contract.
+  **Issue:** #111
+- **Decision:** Catalog characters publish through the same runner. `CharacterCatalog` now names `document_model = CharacterDraft` and uses `RUNNER`. Its interim rules (a valid draft, then `field_required` at `name`) are the `document` and `required` checks, which are entry-type aware. A character's report has the new shape, and still holds no warnings and nothing unavailable.
+
+  Hand-offs to #115:
+  - Add its rules as check modules (`kinds = {CHARACTER}`) in `validation.CHECKS`, not as the `core/catalog/validate.py` its artifact list names.
+  - Keep `checks/character_documents.py` in step with its document: `public_card.name`/`images`, `metadata.labels`/`content_rating_id`, `definition.true_age`.
+  - Record `content_rating_version_id` on character versions, so that `rating_looser` compares at the stored version.
+  **Why:** The pass-1 line: "#115's character checks run through the same generic runner (entry-type aware check modules)". Cost if wrong: #115 moves its rules.
+  **Issue:** #111, #115
+- **Decision:** Existing tests changed because the story changes what they pin; no assertion was loosened.
+  - **Fixtures (#108's hand-off):**
+    - `scenario_support.scenario()` now publishes as it is: the Everyone rating and an opening narration.
+    - `COMPLETE` gains the Everyone rating.
+    - `complete_with(...)` and `cast_characters()` give it real published characters (the locked one at three versions). They are used by C-15's lifecycle, `test_card_and_full_projections` (whose card now shows the rating) and the search tests.
+    - C-03 builds its scenario per surface around the surface's published character at version 1.
+  - **`test_scenario_catalog`:**
+    - the table shape gains `report`;
+    - the publish assertions use the new shape and rules;
+    - the video is real;
+    - the locked role's character is published first.
+  - **Report shape:** `test_catalog_characters`, and `test_catalog` (its publish-report test moved to `test_catalog_validation`'s character runner test; its ports test changed).
+  - **Search tests:** the labelled helper gains a rating; "Unrated" becomes "Everyone"; the list assertion now names the three published characters, which is stricter.
+  - **Helpers:** I-21's scenario helper gains a rating; `test_engine_profiles`'s scenario uses the fixture body.
+  - **Pins:** `ownership_fixtures.CALLS` gains the validate route, and U-18 pins the new setting.
+  **Why:** The AC require each behaviour; these are the smallest changes that keep the tests' intent. Cost if wrong: none.
+  **Issue:** #111, #108
+- **Decision:** I mutation-checked the story. A script applied each mutation, ran the named test and restored the source (SHA-1 checked). Each of these 13 mutations fails a test:
+  - publish ignoring errors (I-20);
+  - capability-gated checks not listed (C-15);
+  - negation ignored (the personality test);
+  - ratings compared at their current version (the stored-version test);
+  - an exclusive lower age bound (U-26);
+  - the limit off by one (U-26);
+  - media kind unchecked (I-20);
+  - archived characters unchecked (I-20);
+  - policy hits dropped (C-20);
+  - age-conditioned policies not listed (the detailed test);
+  - the default port silent (the detailed test);
+  - roles sorted last (I-20);
+  - prepare inside the lock (the no-lock test).
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #111

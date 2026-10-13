@@ -1,5 +1,6 @@
-"""Helpers for the scenario catalog tests (#108): request bodies, REST calls on scenarios, row
-snapshots, the fixture documents, and the form a ``full`` read shows a document in.
+"""Helpers for the scenario catalog tests (#108, #111): request bodies, REST calls on scenarios,
+row snapshots, the fixture documents, the catalog characters a fixture's roles name, and the form
+a ``full`` read shows a document in.
 
 The milestone parts (C-15, U-26) take their field names and documents from here: their bodies
 are checked against the capability lexicon (docs/04 §13), and a scenario's field names include
@@ -8,6 +9,7 @@ later milestones' terms (the starting State and its clock, predicates, participa
 from __future__ import annotations
 
 import copy
+import json
 import re
 import types
 import typing
@@ -85,11 +87,19 @@ ROLE_SECRET = "she burned the second deed before anyone woke"
 GUIDANCE_SECRET = "let the storm cut the power before dessert"
 """A phrase only the director guidance holds."""
 LOCKED_CHARACTER = "01J9Z8Q4N5V6W7X8Y9Z0A1B2D3"
-"""The catalog character ``COMPLETE``'s locked role names, at version 3. Neither a save nor a
-publish checks that a role's character exists in M3; #111's publish validation does."""
+"""The catalog character ``COMPLETE``'s locked role names, at version 3. No character has this
+id: a save never checks a role's character, but a publish does (#111), so a test that publishes
+``COMPLETE`` names real characters (``cast_characters``, ``complete_with``)."""
 DEFAULT_CHARACTER = "01J9Z8Q4N5V6W7X8Y9Z0A1B2D4"
 """The catalog character ``COMPLETE``'s default role is pre-filled with (no version: the latest
-published at story creation)."""
+published at story creation); like ``LOCKED_CHARACTER``, no character has it."""
+LOCKED_VERSIONS = 3
+"""The version ``COMPLETE``'s locked role pins: ``cast_characters`` publishes that many."""
+OPENING = "Rain on the windows; the roast is late."
+"""The opening narration of ``scenario()``'s body (a published scenario needs one, #111)."""
+M3_UNAVAILABLE = ("fact_consistency", "seed_normalization", "state_schema")
+"""The checks a validation lists ``unavailable`` on every M3 deployment (#111): they need the
+structured pipeline or the module tracking starting values, which M3 has not delivered."""
 
 
 def role(
@@ -123,14 +133,15 @@ def seed(seed_text: str, holder: str = "world", **fields: Any) -> dict[str, Any]
 
 
 def scenario(name: str = "Sunday Dinner", **groups: Any) -> dict[str, Any]:
-    """A ``POST /catalog/scenarios`` body: a public card, a world and two open roles (one the
-    player's); ``groups`` replace whole groups."""
+    """A ``POST /catalog/scenarios`` body that publishes as it is: a public card, the Everyone
+    rating, a world, two open roles (one the player's) and an opening narration; ``groups``
+    replace whole groups."""
     body: dict[str, Any] = {
         "public_card": {
             "name": name,
             "public_description": "The whole family is home for the weekend.",
         },
-        "metadata": {"labels": ["family"]},
+        "metadata": {"labels": ["family"], "content_rating_id": EVERYONE_ID},
         "world": {
             "description": "A farmhouse outside a small river town.",
             "locations": [{"id": "kitchen", "name": "The kitchen"}],
@@ -141,6 +152,7 @@ def scenario(name: str = "Sunday Dinner", **groups: Any) -> dict[str, Any]:
                 role("player", kind="player", label="The eldest"),
             ]
         },
+        "starting_state": {"opening": {"narration": OPENING}},
     }
     body.update(groups)
     return body
@@ -152,7 +164,7 @@ COMPLETE: dict[str, Any] = {
         "public_description": "Three siblings, one farm, and a will nobody has read.",
         "media": {"gallery": [], "videos": []},
     },
-    "metadata": {"labels": ["Family", "dark theme"]},
+    "metadata": {"labels": ["Family", "dark theme"], "content_rating_id": EVERYONE_ID},
     "world": {
         "description": f"A river farm in late autumn; {WORLD_SECRET}.",
         "locations": [
@@ -315,7 +327,8 @@ COMPLETE: dict[str, Any] = {
 """A scenario that fills every group: what the lifecycle and projection parts publish. Its cast
 has a role of each fill mode (an open one, one locked to a pinned catalog character, one
 pre-filled by default) and the player's. Its seeds use every disclosure, and every seed but the
-world's names several audience tokens (levels, a role and a named group)."""
+world's names several audience tokens (levels, a role and a named group). Its role characters
+are ids no character has: ``complete_with`` names real ones, which a publish needs (#111)."""
 
 CARD_ROLES: list[dict[str, Any]] = [
     {
@@ -358,6 +371,84 @@ def complete(**changes: Any) -> dict[str, Any]:
     body = copy.deepcopy(COMPLETE)
     body.update(changes)
     return body
+
+
+def complete_with(
+    locked: str, default: str, *, locked_version: int = LOCKED_VERSIONS, **changes: Any
+) -> dict[str, Any]:
+    """``complete(**changes)`` whose locked role names catalog character ``locked`` (pinned at
+    ``locked_version``) and whose default role names ``default``."""
+    body = complete(**changes)
+    roles = body["cast"]["roles"]
+    roles[1]["character"] = {"catalog_id": locked, "version": locked_version}
+    roles[2]["character"] = {"catalog_id": default}
+    return body
+
+
+async def published_character(
+    client: httpx.AsyncClient, name: str, *, versions: int = 1, **fields: Any
+) -> str:
+    """A catalog character created and published ``versions`` times (each an unchanged draft
+    publishing as the next version): its id."""
+    body = {"name": name, "public_description": f"{name}, a fixture.", **fields}
+    created = await client.post("/catalog/characters", json=body, headers=WRITE)
+    assert created.status_code == 201, created.text
+    character_id: str = created.json()["id"]
+    for revision in range(1, versions + 1):
+        done = await client.post(
+            f"/catalog/characters/{character_id}/publish",
+            json={"draft_revision": revision},
+            headers=WRITE,
+        )
+        assert done.status_code == 201, done.text
+    return character_id
+
+
+async def cast_characters(client: httpx.AsyncClient) -> tuple[str, str]:
+    """The two catalog characters ``COMPLETE``'s filled roles need to publish (#111): the
+    locked one published ``LOCKED_VERSIONS`` times (its role pins that version), then the
+    default one, published once. ``complete_with(*found)`` names them."""
+    locked = await published_character(client, "Tom Harrow", versions=LOCKED_VERSIONS)
+    return locked, await published_character(client, "Ivy Harrow")
+
+
+async def plant_character(
+    db: AsyncEngine,
+    character_id: str,
+    content: Mapping[str, Any],
+    *,
+    rating_version_id: str | None = None,
+) -> int:
+    """Publish ``content`` as the next version of catalog character ``character_id``, as #115's
+    shape will hold it (no request field takes ``metadata`` or ``definition.true_age`` yet),
+    recorded under ``rating_version_id``: the version's number."""
+    async with db.begin() as conn:
+        version = int(
+            await conn.scalar(
+                text(
+                    "SELECT coalesce(max(version), 0) + 1 FROM catalog.character_versions "
+                    "WHERE catalog_id = :c"
+                ),
+                {"c": character_id},
+            )
+            or 1
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO catalog.character_versions (catalog_id, version, content, "
+                "content_rating_version_id, published_at, published_by) "
+                "VALUES (:c, :v, CAST(:doc AS jsonb), :r, now(), 'p-plant')"
+            ),
+            {"c": character_id, "v": version, "doc": json.dumps(content), "r": rating_version_id},
+        )
+        await conn.execute(
+            text(
+                "UPDATE catalog.character_catalog SET status = 'published', "
+                "current_version = :v, updated_at = now() WHERE id = :c"
+            ),
+            {"c": character_id, "v": version},
+        )
+    return version
 
 
 # -- the document as a ``full`` read shows it -------------------------------------------------
@@ -541,6 +632,9 @@ __all__ = [
     "GROUPS",
     "GUIDANCE_SECRET",
     "LOCKED_CHARACTER",
+    "LOCKED_VERSIONS",
+    "M3_UNAVAILABLE",
+    "OPENING",
     "PRINCIPAL",
     "PRIVATE_PHRASES",
     "READ",
@@ -548,15 +642,19 @@ __all__ = [
     "VERSION_KEYS",
     "WORLD_SECRET",
     "WRITE",
+    "cast_characters",
     "complete",
+    "complete_with",
     "create",
     "document_of",
     "entry_row",
     "error_of",
     "fields_of",
     "headers",
+    "plant_character",
     "publish",
     "published",
+    "published_character",
     "read",
     "role",
     "save",

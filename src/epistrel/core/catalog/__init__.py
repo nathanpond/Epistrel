@@ -5,6 +5,8 @@ FR-SCN).
 immutable numbered versions, archive, delete, and the ``card``/``full`` projections (#103, made
 generic by #108). ``characters`` holds catalog characters (#103); ``scenario_models`` and
 ``scenarios`` hold scenarios: the document with every field's class, the roles and the
-starting-cast limit (#108). Running stories never read the catalog; story creation copies from
-it, and nothing done to an entry changes a story created from it (FR-CAT-9).
+starting-cast limit (#108). ``validation`` validates an entry on publish and on demand, with one
+module per check under ``checks`` and one report shape (``report``; #111). Running stories never
+read the catalog; story creation copies from it, and nothing done to an entry changes a story
+created from it (FR-CAT-9).
 """

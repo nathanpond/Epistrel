@@ -7,6 +7,11 @@ file); #111 (validation) and #119 (story creation) add theirs here.
   role's eligibility as stored, a scenario with no predefined character, a whole cast stored as
   sent, and the starting-cast limit's resolution (from the deployment's stored settings) and
   ceiling (FR-SCN-3,4). The details are in ``tests/integration/test_scenario_catalog.py``.
+- #111's part, ``test_u_26__validation``: what validation checks of a scenario's slots
+  (FR-SCN-5): every role within the starting-cast limit, and every ``locked`` and ``default``
+  role's character present, published and eligible. It runs on its own scratch database: it
+  changes the deployment's ceiling and plants characters in #115's shape. The details are in
+  ``tests/integration/test_scenario_validation.py``.
 """
 
 from __future__ import annotations
@@ -20,6 +25,8 @@ from epistrel import CastLimits, effective_cast_limit
 from epistrel.config import Settings
 from epistrel.core.config_changes import read_settings
 from epistrel.core.ids import new_ulid
+from epistrel.core.seeds.ratings import EVERYONE_ID, TEEN_ID
+from tests.catalog_support import scratch_catalog
 from tests.event_support import scalar
 from tests.scenario_support import (
     BASE,
@@ -36,6 +43,7 @@ from tests.scenario_support import (
     stored_form,
 )
 from tests.story_support import rest
+from tests.validation_support import codes, entries, filled, rated_character, validate
 
 COUNT = "SELECT count(*) FROM catalog.scenario_catalog"
 
@@ -160,3 +168,99 @@ async def test_u_26__roles_and_limit(settings: Settings, engine: AsyncEngine) ->
             assert [effective_cast_limit(v, None, limits) for v in values] == [13, 13, 12]
         finally:
             await set_cast_limits(client, default=16, ceiling=None)
+
+
+def _roles(count: int) -> dict[str, Any]:
+    """A cast of ``count`` open roles, the last the player's."""
+    return _cast(*(role(f"r{i}") for i in range(count - 1)), role("player", kind="player"))
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-SCN-5")
+async def test_u_26__validation(pg_url: str) -> None:
+    """Validation holds a scenario's slots to the starting-cast limit, counting every role, the
+    player's and the optional ones included: under the deployment's default, 16 roles validate
+    and 17 are ``cast_limit_exceeded`` at ``cast.roles``; a scenario that sets 20 validates 20
+    roles and refuses 21; once the ceiling is lowered to 18 below a stored 20, both its roles and
+    its own value are refused.
+
+    It holds each ``default`` and ``locked`` role to its character: a character that lacks a
+    label the role lists, and is younger than its age range, gives one ``eligibility_failed`` per
+    filter, at the filter's field and naming the character's version; one whose rating the role
+    does not accept gives one at ``content_ratings``. A role naming no character, a version that
+    does not exist, or a character never published is refused (``character_missing``,
+    ``character_not_published``).
+
+    Complements asserted: a character holding every label, an accepted rating and an age inside
+    the range validates, and so does one at an age range's two inclusive ends."""
+    async with scratch_catalog(pg_url) as (settings, db), rest(settings, db) as client:
+        for count, refused in ((16, False), (17, True)):
+            made = await create(client, scenario("Crowded", cast=_roles(count)))
+            report = (await validate(client, made["id"])).json()["report"]
+            assert codes(entries(report, "cast_limit_exceeded")) == (
+                [("cast_limit_exceeded", "cast.roles")] if refused else []
+            ), count
+        own = _roles(20)
+        own["max_characters_at_start"] = 20
+        twenty = await create(client, scenario("Twenty", cast=own))
+        assert (await validate(client, twenty["id"])).json()["valid"] is True
+        over = _roles(21)
+        over["max_characters_at_start"] = 20
+        crowded = await create(client, scenario("Over", cast=over))
+        crowded_report = (await validate(client, crowded["id"])).json()["report"]
+        assert codes(crowded_report["errors"]) == [("cast_limit_exceeded", "cast.roles")]
+        await set_cast_limits(client, ceiling=18)
+        capped = (await validate(client, twenty["id"])).json()["report"]
+        assert codes(capped["errors"]) == [
+            ("cast_limit_exceeded", "cast.max_characters_at_start"),
+            ("cast_limit_exceeded", "cast.roles"),
+        ]
+        await set_cast_limits(client, ceiling=None)
+
+        young, young_version = await rated_character(
+            client, db, "Young Wren", rating_id=EVERYONE_ID, labels=["warm"], true_age=30
+        )
+        rated, _ = await rated_character(
+            client, db, "Teen Ada", rating_id=TEEN_ID, labels=["warm", "patient"], true_age=50
+        )
+        fit, _ = await rated_character(
+            client, db, "Fit Brann", rating_id=EVERYONE_ID, labels=["Warm", "patient"], true_age=50
+        )
+        draft = (
+            await client.post("/catalog/characters", json={"name": "Una Draft"}, headers=WRITE)
+        ).json()["id"]
+        wanted = {
+            "labels": ["warm", "patient"],
+            "content_ratings": [EVERYONE_ID],
+            "age_range": [40, 70],
+        }
+        cast = _cast(
+            filled("young", "default", young, eligibility=wanted),
+            filled("rated", "locked", rated, eligibility=wanted),
+            filled("fit", "default", fit, eligibility=wanted),
+            filled("edge", "locked", fit, eligibility={"age_range": [50, 50]}),
+            filled("ghost", "locked", new_ulid()),
+            role("pinned", fill="locked", character={"catalog_id": fit, "version": 9}),
+            filled("drafted", "default", draft),
+            role("player", kind="player"),
+        )
+        made = await create(client, scenario("Picky", cast=cast))
+        report = (await validate(client, made["id"])).json()["report"]
+        assert codes(report["errors"]) == [
+            ("character_not_published", "cast.roles[6].character"),
+            ("character_missing", "cast.roles[4].character"),
+            ("character_missing", "cast.roles[5].character"),
+            ("eligibility_failed", "cast.roles[1].eligibility.content_ratings"),
+            ("eligibility_failed", "cast.roles[0].eligibility.age_range"),
+            ("eligibility_failed", "cast.roles[0].eligibility.labels"),
+        ]
+        assert [e["location"]["role"] for e in report["errors"]] == [
+            "drafted",
+            "ghost",
+            "pinned",
+            "rated",
+            "young",
+            "young",
+        ]
+        assert report["errors"][2]["source"] == f"{fit}@9"
+        assert {e["source"] for e in report["errors"][4:]} == {f"{young}@{young_version}"}

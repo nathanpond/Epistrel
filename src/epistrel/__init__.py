@@ -37,6 +37,13 @@ if TYPE_CHECKING:
         VersionSummary,
     )
     from epistrel.core.catalog.listing import ListingStatusChange, ListingStatusRequest
+    from epistrel.core.catalog.report import (
+        Entry,
+        EntryLocation,
+        Outcome,
+        ValidationReport,
+        ValidationResult,
+    )
     from epistrel.core.catalog.scenario_models import (
         CastLimits,
         FieldClass,
@@ -56,6 +63,7 @@ if TYPE_CHECKING:
         ScenarioStatusChange,
     )
     from epistrel.core.catalog.search import CatalogPage
+    from epistrel.core.catalog.service import ValidateRequest
     from epistrel.core.context import RequestContext
     from epistrel.core.deployment import SettingsPatch
     from epistrel.core.errors import (
@@ -249,6 +257,7 @@ _EXPORTS: dict[str, str] = {
     "ScenarioCreate": "epistrel.core.catalog.scenario_models",
     "ScenarioPatch": "epistrel.core.catalog.scenario_models",
     "ListingStatusRequest": "epistrel.core.catalog.listing",
+    "ValidateRequest": "epistrel.core.catalog.service",
     "ScenarioDraft": "epistrel.core.catalog.scenario_models",
     "FieldClass": "epistrel.core.catalog.scenario_models",
     "Use": "epistrel.core.catalog.scenario_models",
@@ -301,6 +310,11 @@ _EXPORTS: dict[str, str] = {
     "ScenarioListItem": "epistrel.core.catalog.scenario_models",
     "CatalogPage": "epistrel.core.catalog.search",
     "ListingStatusChange": "epistrel.core.catalog.listing",
+    "ValidationReport": "epistrel.core.catalog.report",
+    "ValidationResult": "epistrel.core.catalog.report",
+    "Entry": "epistrel.core.catalog.report",
+    "EntryLocation": "epistrel.core.catalog.report",
+    "Outcome": "epistrel.core.catalog.report",
     "OwnerTransfer": "epistrel.core.ownership",
     "Relation": "epistrel.core.ownership",
     "RelationWrite": "epistrel.core.ownership",
@@ -446,7 +460,9 @@ __all__ = [
     "EngineProfile",
     "EntityNotFound",
     "EntityType",
+    "Entry",
     "EntryArchived",
+    "EntryLocation",
     "EpistrelError",
     "FieldClass",
     "ForkRequest",
@@ -490,6 +506,7 @@ __all__ = [
     "NothingToUndo",
     "OmniscientRequired",
     "OriginalInFlightTimeout",
+    "Outcome",
     "OwnerTransfer",
     "OwnerTransferRequest",
     "PartInvalid",
@@ -581,6 +598,9 @@ __all__ = [
     "UrlExpired",
     "Use",
     "UseMultipart",
+    "ValidateRequest",
+    "ValidationReport",
+    "ValidationResult",
     "VersionSummary",
     "ViewpointUnresolved",
     "__version__",

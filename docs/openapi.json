@@ -1054,7 +1054,7 @@
         "type": "object"
       },
       "CharacterPublishedBody": {
-        "description": "The version a publish made: its number, the draft's new ``draft_revision`` (the draft\nstill equals what was published), the entry's ``status``, when it was published, and the\nvalidation ``report``.",
+        "description": "The version a publish made: its number, the draft's new ``draft_revision`` (the draft\nstill equals what was published), the entry's ``status``, when it was published, and the\nvalidation ``report`` (no errors; its warnings and the checks this deployment cannot\nrun).",
         "properties": {
           "config_revision": {
             "title": "Config Revision",
@@ -1085,7 +1085,7 @@
             "type": "string"
           },
           "report": {
-            "$ref": "#/components/schemas/PublishReportBody"
+            "$ref": "#/components/schemas/ValidationReport"
           },
           "status": {
             "$ref": "#/components/schemas/EntryStatus"
@@ -2607,6 +2607,124 @@
         ],
         "title": "EntityType",
         "type": "string"
+      },
+      "Entry": {
+        "additionalProperties": false,
+        "description": "One finding of a validation (FR-SCN-5): its stable ``code``, its ``location``, the exact\n``text`` affected (``null`` when no text is), its ``outcome`` (``rejected`` for an error), the\n``source`` it names and the ``rule`` applied.",
+        "properties": {
+          "code": {
+            "description": "Stable and snake_case; branch on it.",
+            "title": "Code",
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/EntryLocation"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "code",
+          "location",
+          "outcome"
+        ],
+        "title": "Entry",
+        "type": "object"
+      },
+      "EntryLocation": {
+        "additionalProperties": false,
+        "description": "Where an entry points: the catalog entry, the version validated (``\"draft\"`` for a draft),\nand when they apply the role id, the dotted field path\n(``cast.roles[1].seeded_memories[0].audience``) and the seed's server-assigned id.",
+        "properties": {
+          "entry": {
+            "title": "Entry",
+            "type": "string"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "seed_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed Id"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "const": "draft",
+                "type": "string"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "entry",
+          "version"
+        ],
+        "title": "EntryLocation",
+        "type": "object"
       },
       "EntryStatus": {
         "description": "A catalog entry's version status (FR-CAT-2; #103, #108): ``draft`` until its first\npublish, then ``published``; ``archived`` entries still read but cannot be edited,\npublished or used to create a story until they are unarchived. Postgres enum\n``catalog.entry_status``.",
@@ -5507,6 +5625,19 @@
         "title": "OperationBody",
         "type": "object"
       },
+      "Outcome": {
+        "description": "What happened to the item an entry names (FR-SCN-5): ``ignored`` (kept only as guidance\nthat yields), ``dropped``, ``kept``, ``deferred`` (kept until the story has the capability it\nneeds, FR-SCN-11), ``inactive`` (a stored setting for a capability the story lacks), or\n``rejected`` (an error: the entry cannot be published or used as it stands).",
+        "enum": [
+          "ignored",
+          "dropped",
+          "kept",
+          "deferred",
+          "inactive",
+          "rejected"
+        ],
+        "title": "Outcome",
+        "type": "string"
+      },
       "OwnerBody": {
         "description": "An entity's owner after a transfer, and its owner before. The two are equal when the\nrequest named the current owner: nothing was recorded then. ``config_revision`` is the\ndeployment's, unchanged.",
         "properties": {
@@ -8067,39 +8198,6 @@
         "title": "Projection",
         "type": "string"
       },
-      "PublishReportBody": {
-        "description": "What the publish validation found: ``errors`` (none on a publish that succeeded; a 422\n``publish_invalid`` carries them in ``details.report``), ``warnings``, and the names of\nchecks that could not run (``unavailable``).",
-        "properties": {
-          "errors": {
-            "items": {
-              "$ref": "#/components/schemas/ReportEntryBody"
-            },
-            "title": "Errors",
-            "type": "array"
-          },
-          "unavailable": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Unavailable",
-            "type": "array"
-          },
-          "warnings": {
-            "items": {
-              "$ref": "#/components/schemas/ReportEntryBody"
-            },
-            "title": "Warnings",
-            "type": "array"
-          }
-        },
-        "required": [
-          "errors",
-          "warnings",
-          "unavailable"
-        ],
-        "title": "PublishReportBody",
-        "type": "object"
-      },
       "PublishRequest": {
         "additionalProperties": false,
         "description": "``POST /catalog/{characters|scenarios}/{id}/publish``: the draft revision being published\n(FR-CAT-3); a stale one is 409 ``draft_stale``.",
@@ -9161,30 +9259,6 @@
           "items"
         ],
         "title": "RelationsBody",
-        "type": "object"
-      },
-      "ReportEntryBody": {
-        "description": "One finding of the publish validation: a stable ``code``, the draft ``field`` it concerns\n(a dotted path, e.g. ``definition.personality``) and a message.",
-        "properties": {
-          "code": {
-            "title": "Code",
-            "type": "string"
-          },
-          "field": {
-            "title": "Field",
-            "type": "string"
-          },
-          "message": {
-            "title": "Message",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "field",
-          "message"
-        ],
-        "title": "ReportEntryBody",
         "type": "object"
       },
       "RequiredModule": {
@@ -10975,7 +11049,7 @@
         "type": "object"
       },
       "ScenarioPublishedBody": {
-        "description": "The version a scenario's publish made: its number, the draft's new ``draft_revision``\n(the draft still equals what was published), the scenario's ``status``, when it was\npublished, and the validation ``report``.",
+        "description": "The version a scenario's publish made: its number, the draft's new ``draft_revision``\n(the draft still equals what was published), the scenario's ``status``, when it was\npublished, and the validation ``report`` (no errors; its warnings and the checks this\ndeployment cannot run), which the version keeps.",
         "properties": {
           "config_revision": {
             "title": "Config Revision",
@@ -11006,7 +11080,7 @@
             "type": "string"
           },
           "report": {
-            "$ref": "#/components/schemas/PublishReportBody"
+            "$ref": "#/components/schemas/ValidationReport"
           },
           "status": {
             "$ref": "#/components/schemas/EntryStatus"
@@ -11884,6 +11958,13 @@
             "title": "Uncertain Below",
             "type": "number"
           },
+          "validation_model_calls": {
+            "default": 0,
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Validation Model Calls",
+            "type": "integer"
+          },
           "worker_heartbeat_timeout": {
             "default": 60.0,
             "maximum": 3600.0,
@@ -12243,6 +12324,17 @@
               }
             ],
             "title": "Uncertain Below"
+          },
+          "validation_model_calls": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Model Calls"
           },
           "worker_heartbeat_timeout": {
             "anyOf": [
@@ -14028,6 +14120,106 @@
         "title": "UploadState",
         "type": "string"
       },
+      "ValidateRequest": {
+        "additionalProperties": false,
+        "description": "``POST /catalog/scenarios/{id}/validate`` (#111): optionally the draft revision the\ncaller holds, so the report is known to be about that draft (a stale one is 409\n``draft_stale``). Without it, the current draft is validated; ``?version=n`` validates a\npublished version instead.",
+        "examples": [
+          {
+            "draft_revision": 2
+          },
+          {}
+        ],
+        "properties": {
+          "draft_revision": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The draft revision the caller holds; omit it to validate the current draft.",
+            "title": "Draft Revision"
+          }
+        },
+        "title": "ValidateRequest",
+        "type": "object"
+      },
+      "ValidationReport": {
+        "additionalProperties": false,
+        "description": "What a validation found (FR-SCN-5): ``errors`` (each ``rejected``; any one refuses the\npublish), ``warnings`` (every other outcome; they never block) and ``unavailable``, the\nchecks this deployment cannot run (``check_unavailable``). The same shape answers a publish\n(its 201 body, or ``details.report`` of a 422 ``publish_invalid``), a validation and a story\ncreation (#119).",
+        "examples": [
+          {
+            "errors": [],
+            "unavailable": [
+              "fact_consistency",
+              "seed_normalization",
+              "state_schema"
+            ],
+            "warnings": [
+              {
+                "code": "personality_in_role",
+                "location": {
+                  "entry": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3",
+                  "field": "cast.roles[0].setup_description",
+                  "role": "mother",
+                  "version": "draft"
+                },
+                "outcome": "ignored",
+                "rule": "personality: character over scenario",
+                "text": "She is a habitual liar."
+              }
+            ]
+          }
+        ],
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "unavailable": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unavailable",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "title": "ValidationReport",
+        "type": "object"
+      },
+      "ValidationResult": {
+        "additionalProperties": false,
+        "description": "``POST /catalog/scenarios/{id}/validate`` (a dry run that writes nothing): ``valid`` when\nthe report has no error (a publish of what was validated would not be refused for it), and\nthe ``report``.",
+        "properties": {
+          "report": {
+            "$ref": "#/components/schemas/ValidationReport"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "valid",
+          "report"
+        ],
+        "title": "ValidationResult",
+        "type": "object"
+      },
       "VariantChainBody": {
         "description": "One chain of the story: its first turn and variant, its membership (``active``,\n``dormant``, or ``discarded`` for a rewound tail no turn was written over yet), its tip,\nhow many turns it holds, when its membership last changed, and the chain it diverges from\n(``null`` for a chain starting at turn 1).",
         "properties": {
@@ -14256,6 +14448,7 @@
                           "timer_lag_alert",
                           "turn_queue_max",
                           "uncertain_below",
+                          "validation_model_calls",
                           "worker_heartbeat_timeout"
                         ],
                         "type": "string"
@@ -16732,7 +16925,7 @@
         ]
       },
       "put": {
-        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `max_model_calls_per_turn` accepts `null` (the Lite formula `9 + G`), and so do `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` (unset: no hook, no base URL, no ceiling); no other key does. A list replaces the stored one. `listing_status_values` lists the catalog's listing status values in order (a new entry takes the first; distinct, case-sensitive, 1 to 40 characters each); removing a value a catalog entry still holds is 409 `listing_status_in_use` (`details.value`, `details.count`).",
+        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `max_model_calls_per_turn` accepts `null` (the Lite formula `9 + G`), and so do `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` (unset: no hook, no base URL, no ceiling); no other key does. A list replaces the stored one. `listing_status_values` lists the catalog's listing status values in order (a new entry takes the first; distinct, case-sensitive, 1 to 40 characters each); removing a value a catalog entry still holds is 409 `listing_status_in_use` (`details.value`, `details.count`). `validation_model_calls` (0 to 1000, default 0) is how many model calls one catalog validation (a publish, or a dry run) may spend on model-assisted input policies; those it does not reach are listed `unavailable` in the report.",
         "operationId": "update_deployment_settings",
         "parameters": [
           {
@@ -20604,7 +20797,7 @@
     },
     "/catalog/scenarios/{scenario_id}/publish": {
       "post": {
-        "description": "Publish the draft as the next immutable version (FR-SCN-1): `draft_revision` is compared like a save's (409 `draft_stale`). The draft must be publishable (422 `publish_invalid` with `details.report`: it needs `public_card.name`, and every seed its `holder`, `audience` and `disclosure`); its content rating must still be assignable (422 `rating_retired`). The draft stays equal to what was published, at the next revision. Publishing an unchanged draft still makes a new version.",
+        "description": "Publish the draft as the next immutable version (FR-SCN-1): `draft_revision` is compared like a save's (409 `draft_stale`). The draft is validated first (FR-SCN-5): any error is 422 `publish_invalid` with `details.report` (a `ValidationReport`) and nothing is written. Errors include a missing name, content rating, role, world description or opening narration; a role limit exceeded (`cast_limit_exceeded`); a `locked` or `default` role's character missing, unpublished, archived or failing the role's eligibility; a seed without its holder, audience or disclosure (`seed_missing_holder`, `seed_missing_audience`, `seed_missing_disclosure`); a media asset missing, retired, of a kind, type or size not allowed; and an undeclared provider. Warnings never block: a looser-rated character or asset (`rating_looser`), text that fails an input policy (`input_policy`), and role text that asserts personality (`personality_in_role`). The 201 answer carries the report, with the checks this deployment cannot run listed in `unavailable`, and the version keeps it. The draft stays equal to what was published, at the next revision. Publishing an unchanged draft still makes a new version.",
         "operationId": "publish_scenario",
         "parameters": [
           {
@@ -21391,6 +21584,174 @@
         "tags": [
           "catalog"
         ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/validate": {
+      "post": {
+        "description": "Validate the scenario's draft, or with `version` one of its published versions, as the catalog and this deployment stand now (FR-SCN-5): the same checks and the same report a publish runs, answered 200 `{valid, report}` (`valid`: the report has no error). Every check this deployment can run is run; the others are listed in `report.unavailable` (in M3 `seed_normalization`, `fact_consistency` and `state_schema`). The body's optional `draft_revision` names the draft revision the caller holds: when the draft has moved on it is 409 `draft_stale` (not with `version`: 422). Archived scenarios validate too. Nothing is written: no version, no operation, and the call takes no `Idempotency-Key`.",
+        "operationId": "validate_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A published version to validate instead.",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A published version to validate instead.",
+              "title": "Version"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ValidateRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `draft_stale`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Validate a scenario (a dry run)",
+        "tags": [
+          "catalog"
+        ],
+        "x-epistrel-mutating": false
       }
     },
     "/catalog/scenarios/{scenario_id}/versions": {

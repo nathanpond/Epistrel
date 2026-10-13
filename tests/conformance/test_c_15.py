@@ -19,6 +19,10 @@ Every C-15 (M3) part lives in this file (traceability counts a test ID per miles
   deployment's values. The details are in ``tests/integration/test_catalog_search.py``; the
   filters' behavioural matrix is I-21's (``tests/integration/test_i_21.py``). Using a
   ``private`` entry to create a story is #119's ``test_i_22__creation``.
+- #111's part, ``test_c_15__validate``: ``POST /catalog/scenarios/{id}/validate`` reports errors
+  and warnings without side effects (FR-API-6), in the report a publish answers. The checks
+  themselves are I-20's (``tests/integration/test_i_20.py``) and U-26's; the details are in
+  ``tests/integration/test_scenario_validation.py``.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ from epistrel.core.catalog.scenario_models import (
     classification_problems,
     scenario_schema_classes,
 )
+from epistrel.core.ids import new_ulid
 from tests import scenario_support as scenarios
 from tests.catalog_support import (
     BASE,
@@ -72,6 +77,7 @@ from tests.media_support import (
     upload,
 )
 from tests.story_support import rest
+from tests.validation_support import counts, validate
 
 PLANTED = "counts the silver twice before the harbour wakes"
 """A phrase only the private definition holds."""
@@ -266,8 +272,8 @@ async def test_c_15__scenario_lifecycle(settings: Settings, engine: AsyncEngine)
     Complement asserted: each planted phrase is present in ``full``, so its absence from every
     card is the projection's doing."""
     base = scenarios.BASE
-    sent = scenarios.complete()
     async with rest(settings, engine) as client:
+        sent = scenarios.complete_with(*await scenarios.cast_characters(client))
         created = await scenarios.create(client, sent)
         sid = created["id"]
         assert (created["status"], created["draft_revision"], created["version"]) == (
@@ -662,3 +668,106 @@ async def test_c_15__listing_status(pg_url: str) -> None:
         gone = await client.get(CHARACTERS, params={"listing_status": "public"}, headers=READ)
         assert (gone.status_code, gone.json()["error"]["code"]) == (422, "invalid_listing_status")
         assert await ids(client, CHARACTERS, listing_status="live") == [ivo["id"], mara["id"]]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-API-6")
+async def test_c_15__validate(settings: Settings, engine: AsyncEngine) -> None:
+    """``POST /catalog/scenarios/{id}/validate`` reports errors and warnings without side
+    effects. On a draft whose ``locked`` role names no catalog character and whose ``open`` role
+    text asserts personality it answers 200 ``{valid: false, report}``: the error
+    ``character_missing`` (``rejected``) at the role's character, the warning
+    ``personality_in_role`` (``ignored``) quoting the sentence with the rule ``personality:
+    character over scenario``, and the checks this deployment cannot run listed in
+    ``unavailable``. It writes nothing (no operation, version, idempotency key, audit row or
+    configuration change) and answers no ``Idempotency-Key``. A publish of that draft is 422
+    ``publish_invalid`` carrying the same report. A ``draft_revision`` the draft has moved on
+    from is 409 ``draft_stale``; naming it with ``version`` is 422; an unknown version or
+    scenario is 404. Once the role names a published character, the draft validates (``valid``
+    true, the warning kept), publishes (201, the warning on the answer), and ``version=1``
+    validates the published version; an archived scenario still validates.
+
+    Complement asserted: the same counts are found after every dry run as before the first."""
+    async with rest(settings, engine) as client:
+        ghost = new_ulid()
+        body = scenarios.scenario(
+            "Checked",
+            cast={
+                "roles": [
+                    scenarios.role("mother", setup_description="She is a habitual liar."),
+                    scenarios.role("brother", fill="locked", character={"catalog_id": ghost}),
+                    scenarios.role("player", kind="player"),
+                ]
+            },
+        )
+        created = await scenarios.create(client, body)
+        sid = created["id"]
+        before = await counts(engine)
+        checked = await validate(client, sid)
+        assert checked.status_code == 200, checked.text
+        assert "Idempotency-Key" not in checked.headers
+        assert checked.json()["valid"] is False
+        report = checked.json()["report"]
+        (missing,) = report["errors"]
+        assert (missing["code"], missing["outcome"], missing["source"]) == (
+            "character_missing",
+            "rejected",
+            ghost,
+        )
+        assert missing["location"] == {
+            "entry": sid,
+            "version": "draft",
+            "role": "brother",
+            "field": "cast.roles[1].character",
+            "seed_id": None,
+        }
+        (personality,) = report["warnings"]
+        assert (personality["code"], personality["outcome"], personality["text"]) == (
+            "personality_in_role",
+            "ignored",
+            "She is a habitual liar.",
+        )
+        assert (personality["rule"], personality["source"]) == (
+            "personality: character over scenario",
+            None,
+        )
+        assert set(report["unavailable"]) >= set(scenarios.M3_UNAVAILABLE)
+        assert await counts(engine) == before
+
+        refused = await scenarios.publish(client, sid, created["draft_revision"])
+        assert (refused.status_code, scenarios.error_of(refused)["code"]) == (
+            422,
+            "publish_invalid",
+        )
+        assert scenarios.error_of(refused)["details"]["report"] == report
+        assert await scenarios.version_rows(engine, sid) == []
+
+        stale = await validate(client, sid, {"draft_revision": 5})
+        assert (stale.status_code, scenarios.error_of(stale)["code"]) == (409, "draft_stale")
+        assert scenarios.error_of(stale)["details"]["current_draft_revision"] == 1
+        both = await validate(client, sid, {"draft_revision": 1}, version=1)
+        assert (both.status_code, scenarios.error_of(both)["details"]["field"]) == (
+            422,
+            "query.version",
+        )
+        assert (await validate(client, sid, version=1)).status_code == 404
+        assert (await validate(client, new_ulid())).status_code == 404
+        assert await counts(engine) == before
+
+        brother = await scenarios.published_character(client, "Tom Harrow")
+        cast = body["cast"]
+        cast["roles"][1]["character"] = {"catalog_id": brother}
+        fixed = await scenarios.save(client, sid, 1, cast=cast)
+        assert fixed.status_code == 200, fixed.text
+        valid = await validate(client, sid, {"draft_revision": 2})
+        assert valid.json()["valid"] is True, valid.text
+        assert [w["code"] for w in valid.json()["report"]["warnings"]] == ["personality_in_role"]
+        published = await scenarios.publish(client, sid, 2)
+        assert published.status_code == 201, published.text
+        assert published.json()["report"] == valid.json()["report"]
+        version = await validate(client, sid, version=1)
+        assert version.json()["valid"] is True, version.text
+        assert {w["location"]["version"] for w in version.json()["report"]["warnings"]} == {1}
+        archived = await client.post(f"{scenarios.BASE}/{sid}/archive", headers=WRITE)
+        assert archived.status_code == 200, archived.text
+        assert (await validate(client, sid)).json()["valid"] is True

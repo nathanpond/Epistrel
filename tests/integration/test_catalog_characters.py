@@ -749,8 +749,8 @@ async def test_publish_refuses_an_unpublishable_draft(
     client: httpx.AsyncClient, engine: AsyncEngine
 ) -> None:
     """A draft without a name, or one the draft schema no longer accepts, is 422
-    ``publish_invalid`` with the report, and nothing is written. Complement: a named draft
-    publishes."""
+    ``publish_invalid`` with the validation report (#111's shape: each error ``rejected`` at
+    its location in the draft), and nothing is written. Complement: a named draft publishes."""
     created = await client.post(BASE, json={"public_description": "No name yet."}, headers=WRITE)
     assert created.status_code == 201, created.text
     cid = created.json()["id"]
@@ -762,8 +762,17 @@ async def test_publish_refuses_an_unpublishable_draft(
         "errors": [
             {
                 "code": "field_required",
-                "field": "name",
-                "message": "a published character needs a name",
+                "location": {
+                    "entry": cid,
+                    "version": "draft",
+                    "role": None,
+                    "field": "name",
+                    "seed_id": None,
+                },
+                "text": None,
+                "outcome": "rejected",
+                "source": None,
+                "rule": "a published entry is named",
             }
         ],
         "warnings": [],
@@ -784,8 +793,9 @@ async def test_publish_refuses_an_unpublishable_draft(
     )
     refused = await publish(client, cid, 1)
     assert (refused.status_code, _error(refused)["code"]) == (422, "publish_invalid")
-    assert [(e["code"], e["field"]) for e in _error(refused)["details"]["report"]["errors"]] == [
-        ("extra_forbidden", "retired_field")
+    errors = _error(refused)["details"]["report"]["errors"]
+    assert [(e["code"], e["location"]["field"], e["outcome"]) for e in errors] == [
+        ("extra_forbidden", "retired_field", "rejected")
     ]
     assert await version_rows(engine, cid) == []
     # A save validates the whole merged draft, so the stored field is refused at its place.

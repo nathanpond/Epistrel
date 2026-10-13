@@ -6,7 +6,10 @@ FR-API-6; #108). The same lifecycle as ``/catalog/characters``:
   default); 201 with the draft in ``full``.
 - ``PATCH /catalog/scenarios/{id}``: a JSON merge patch over the draft with the
   ``draft_revision`` it is based on; 409 ``draft_stale`` when another save or publish came first.
-- ``POST /catalog/scenarios/{id}/publish``: the draft becomes the next immutable version (201).
+- ``POST /catalog/scenarios/{id}/publish``: the draft becomes the next immutable version (201),
+  once it validates (422 ``publish_invalid`` with ``details.report`` otherwise; #111).
+- ``POST /catalog/scenarios/{id}/validate``: the same validation as a dry run, of the draft or a
+  published version; ``{valid, report}``, nothing written, no ``Idempotency-Key`` (#111).
 - ``GET /catalog/scenarios/{id}``: the latest published version (``?version=n`` another one,
   ``?draft=true`` the draft) as its public ``card`` (the default) or in ``full``.
 - ``GET /catalog/scenarios/{id}/versions``: every published version, oldest first.
@@ -31,14 +34,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Body, Query, Response
 from fastapi import status as http_status
 from pydantic import BaseModel
 
-from epistrel.api.deps import ContextDep, EngineDep, ScenarioId
+from epistrel.api.deps import ContextDep, EngineDep, ScenarioId, route_flags
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse
-from epistrel.api.routes.catalog_characters import PublishReportBody
 from epistrel.api.routes.catalog_listing import (
     SET_LISTING_STATUS,
     ContentRatingParam,
@@ -57,6 +59,7 @@ from epistrel.api.routes.catalog_listing import (
 )
 from epistrel.api.routes.ownership import mount_ownership_routes
 from epistrel.core.catalog.listing import ListingStatusRequest
+from epistrel.core.catalog.report import ValidationReport, ValidationResult
 from epistrel.core.catalog.scenario_models import (
     ScenarioCard,
     ScenarioCreate,
@@ -72,6 +75,7 @@ from epistrel.core.catalog.service import (
     Projection,
     Published,
     PublishRequest,
+    ValidateRequest,
     VersionSummary,
 )
 from epistrel.core.enums import EntryStatus
@@ -95,14 +99,15 @@ class ScenarioDraftBody(ScenarioFull, DeploymentMutationResponse):
 class ScenarioPublishedBody(DeploymentMutationResponse):
     """The version a scenario's publish made: its number, the draft's new ``draft_revision``
     (the draft still equals what was published), the scenario's ``status``, when it was
-    published, and the validation ``report``."""
+    published, and the validation ``report`` (no errors; its warnings and the checks this
+    deployment cannot run), which the version keeps."""
 
     id: str
     version: int
     draft_revision: int
     status: EntryStatus
     published_at: datetime
-    report: PublishReportBody
+    report: ValidationReport
 
     @classmethod
     def of(cls, published: Published) -> ScenarioPublishedBody:
@@ -112,7 +117,7 @@ class ScenarioPublishedBody(DeploymentMutationResponse):
             draft_revision=published.draft_revision,
             status=published.status,
             published_at=published.published_at,
-            report=PublishReportBody.of(published.report),
+            report=published.report,
             config_revision=published.config_revision,
         )
 
@@ -292,11 +297,20 @@ async def save_scenario_draft(
     summary="Publish the scenario's draft as a new version",
     description=(
         "Publish the draft as the next immutable version (FR-SCN-1): `draft_revision` is "
-        "compared like a save's (409 `draft_stale`). The draft must be publishable (422 "
-        "`publish_invalid` with `details.report`: it needs `public_card.name`, and every seed "
-        "its `holder`, `audience` and `disclosure`); its content rating must still be "
-        "assignable (422 `rating_retired`). The draft stays equal to what was published, at "
-        "the next revision. Publishing an unchanged draft still makes a new version."
+        "compared like a save's (409 `draft_stale`). The draft is validated first (FR-SCN-5): "
+        "any error is 422 `publish_invalid` with `details.report` (a `ValidationReport`) and "
+        "nothing is written. Errors include a missing name, content rating, role, world "
+        "description or opening narration; a role limit exceeded (`cast_limit_exceeded`); a "
+        "`locked` or `default` role's character missing, unpublished, archived or failing the "
+        "role's eligibility; a seed without its holder, audience or disclosure "
+        "(`seed_missing_holder`, `seed_missing_audience`, `seed_missing_disclosure`); a media "
+        "asset missing, retired, of a kind, type or size not "
+        "allowed; and an undeclared provider. Warnings never block: a looser-rated character "
+        "or asset (`rating_looser`), text that fails an input policy (`input_policy`), and role "
+        "text that asserts personality (`personality_in_role`). The 201 answer carries the "
+        "report, with the checks this deployment cannot run listed in `unavailable`, and the "
+        "version keeps it. The draft stays equal to what was published, at the next revision. "
+        "Publishing an unchanged draft still makes a new version."
     ),
 )
 async def publish_scenario(
@@ -308,6 +322,37 @@ async def publish_scenario(
 ) -> ScenarioPublishedBody:
     published = await engine.publish_scenario(ctx, scenario_id, body)
     return answered(ScenarioPublishedBody.of(published), ctx, response, replayed=published.replayed)
+
+
+@router.post(
+    "/{scenario_id}/validate",
+    response_model=ValidationResult,
+    operation_id="validate_scenario",
+    summary="Validate a scenario (a dry run)",
+    description=(
+        "Validate the scenario's draft, or with `version` one of its published versions, as "
+        "the catalog and this deployment stand now (FR-SCN-5): the same checks and the same "
+        "report a publish runs, answered 200 `{valid, report}` (`valid`: the report has no "
+        "error). Every check this deployment can run is run; the others are listed in "
+        "`report.unavailable` (in M3 `seed_normalization`, `fact_consistency` and "
+        "`state_schema`). The body's optional `draft_revision` names the draft revision the "
+        "caller holds: when the draft has moved on it is 409 `draft_stale` (not with "
+        "`version`: 422). Archived scenarios validate too. Nothing is written: no version, no "
+        "operation, and the call takes no `Idempotency-Key`."
+    ),
+    **route_flags(mutating=False),
+)
+async def validate_scenario(
+    scenario_id: ScenarioId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    body: Annotated[ValidateRequest | None, Body()] = None,
+    version: Annotated[
+        int | None,
+        Query(ge=1, le=REVISION_MAX, description="A published version to validate instead."),
+    ] = None,
+) -> ValidationResult:
+    return await engine.validate_scenario(ctx, scenario_id, body, version=version)
 
 
 @router.get(

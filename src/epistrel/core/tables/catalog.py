@@ -23,13 +23,15 @@ UPDATE, DELETE and TRUNCATE with SQLSTATE ``EPI01``, except an UPDATE or DELETE 
 transaction that set ``epistrel.erasure`` to ``on`` (catalog delete, and #124's erasure). The
 foreign key cascades a deleted entry's versions.
 
-Each version also has ``search``, a generated ``tsvector`` of its public card (#110), GIN
-indexed: ``q`` searches an entry's latest published version, so drafts are never searchable. It
-is computed by ``catalog.epistrel_character_search`` and ``catalog.epistrel_scenario_search``
-(``IMMUTABLE`` SQL functions over the content, ``CHARACTER_SEARCH``/``SCENARIO_SEARCH``): the
-name (weight A), the labels and aliases, or a scenario's labels and role public labels
-(weight B), and the public description (weight C), parsed with the ``simple`` configuration (no
-stemming, no stop words), never a private field. A version rewritten by erasure (#124) gets its
+A scenario version also keeps ``report``, the validation report its publish produced (#111;
+``NULL`` for versions published before). Each version also has ``search``, a generated
+``tsvector`` of its public card (#110), GIN indexed: ``q`` searches an entry's latest published
+version, so drafts are never searchable. It is computed by
+``catalog.epistrel_character_search`` and ``catalog.epistrel_scenario_search`` (``IMMUTABLE``
+SQL functions over the content, ``CHARACTER_SEARCH``/``SCENARIO_SEARCH``): the name (weight A),
+the labels and aliases, or a scenario's labels and role public labels (weight B), and the public
+description (weight C), parsed with the ``simple`` configuration (no stemming, no stop words),
+never a private field. A version rewritten by erasure (#124) gets its
 vector recomputed with it.
 
 Catalog tables live outside story data: no story table references them, and they reference no
@@ -172,6 +174,7 @@ scenario_versions = Table(
     Column("published_at", TIMESTAMP(timezone=True), nullable=False),
     Column("published_by", Text, nullable=False),
     Column("search", TSVECTOR, Computed(SCENARIO_SEARCH, persisted=True)),
+    Column("report", JSONB, nullable=True),
     ForeignKeyConstraint(
         ["pinned_character_id", "pinned_character_version"],
         [character_versions.c.catalog_id, character_versions.c.version],

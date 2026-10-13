@@ -69,6 +69,7 @@ from epistrel.core.db import make_engine
 from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.media.sweep import sweep
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
+from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import stories
 from epistrel.core.tables.ownership import EntityType
@@ -869,7 +870,9 @@ async def test_i_21__listing_filters(pg_url: str) -> None:
         )
 
         def scenario(name: str, *labels: str) -> dict[str, Any]:
-            return catalog_scenario(name, metadata={"labels": list(labels)})
+            return catalog_scenario(
+                name, metadata={"labels": list(labels), "content_rating_id": EVERYONE_ID}
+            )
 
         s1 = await _entry(
             client,

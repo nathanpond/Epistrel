@@ -44,6 +44,7 @@ from epistrel.core.settings_schema import (
     DEFAULT_LISTING_STATUS_VALUES,
     DEFAULT_MAX_CHARACTERS_AT_START,
     DEPLOYMENT_COLUMNS,
+    CatalogValidationSettings,
     ConfigClass,
     DeploymentSettings,
     GuardrailSettings,
@@ -186,9 +187,10 @@ SECTIONS: tuple[type[BaseModel], ...] = (
     StructuredSettings,
     GuardrailSettings,
     MediaSettings,
+    CatalogValidationSettings,
 )
 """The views of ``deployment_state.settings`` earlier stories read
-(#53/#57/#60/#61/#63/#68/#69), and the media settings (#105)."""
+(#53/#57/#60/#61/#63/#68/#69), the media settings (#105) and the catalog validation's (#111)."""
 
 
 def section[M: BaseModel](view: type[M], document: Mapping[str, Any] | None) -> M:

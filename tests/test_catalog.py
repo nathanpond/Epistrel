@@ -1,5 +1,7 @@
 """The catalog's pure parts (#103): RFC 7386 merge patches, the draft document and its
-validation, the publish report, the owner rule, the pause points and the ports' defaults."""
+validation, the owner rule, the pause points and the ports' defaults. The publish validation is
+#111's (``tests/integration/test_scenario_validation.py``, ``tests/test_catalog_validation.py``).
+"""
 
 from __future__ import annotations
 
@@ -13,16 +15,15 @@ from epistrel.core.catalog.characters import (
     CharacterCreate,
     CharacterDraft,
     CharacterPatch,
-    PublishReport,
-    ReportEntry,
     merge_patch,
-    publish_report,
 )
 from epistrel.core.ports import (
+    POLICIES_UNAVAILABLE,
     NoJobs,
     NoModel,
     NoPolicies,
     PassingGate,
+    PolicyEvaluation,
     Ports,
     PortText,
 )
@@ -80,21 +81,6 @@ def test_patch_document_keeps_nulls_and_drops_the_revision() -> None:
             CharacterPatch(draft_revision=revision)
 
 
-def test_publish_report() -> None:
-    """A valid, named draft has no errors; a nameless one names ``name``; an invalid one names
-    each failing field."""
-    assert publish_report({"name": "Mara", "definition": {}}) == PublishReport()
-    assert publish_report({"definition": {}}).errors == (
-        ReportEntry("field_required", "name", "a published character needs a name"),
-    )
-    report = publish_report({"name": "Mara", "definition": {"personality": 7}, "mood": "x"})
-    assert sorted((e.code, e.field) for e in report.errors) == [
-        ("extra_forbidden", "mood"),
-        ("string_type", "definition.personality"),
-    ]
-    assert report.as_json()["warnings"] == []
-
-
 async def test_pause_points_hold_and_release() -> None:
     """A held point stops every call that reaches it until the release; an unheld point is a
     no-op; unknown and doubly held points are refused."""
@@ -130,13 +116,17 @@ async def test_pause_points_hold_and_release() -> None:
 
 async def test_ports_default_to_no_ops() -> None:
     """Until a story wires the Orchestrator's implementation, every port does nothing: the
-    gate passes, no policy hits, no model answers and no job starts."""
+    gate passes, no model answers and no job starts. The policy evaluator evaluates nothing
+    and says so: it lists ``input_policy`` as unavailable, so a validation run without the
+    Orchestrator never passes the check silently (#111)."""
     ports = Ports()
     texts = [PortText("definition.personality", "anything at all")]
     assert isinstance(ports.input_gate, PassingGate)
     await ports.input_gate.enforce(texts, entry_point="publish", principal="p")  # passes
     assert isinstance(ports.policy_evaluator, NoPolicies)
-    assert await ports.policy_evaluator.evaluate(texts) == ()
+    found = await ports.policy_evaluator.evaluate(None, texts)  # type: ignore[arg-type]
+    assert found == PolicyEvaluation(unavailable=(POLICIES_UNAVAILABLE,))
+    assert (found.hits, found.model_calls) == ((), 0)
     assert isinstance(ports.model_caller, NoModel)
     assert await ports.model_caller.complete("generation", "prompt") is None
     assert isinstance(ports.job_starter, NoJobs)

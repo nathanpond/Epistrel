@@ -6,10 +6,12 @@ a policy evaluation, a model call or a background job takes it as one of these p
 supplies them at construction (``Ports``), and the Orchestrator implements them.
 
 Until the story that first needs a port wires the Orchestrator's implementation into ``Engine``
-(#111, #118, #119, #120, #121, #122, #124), the defaults do nothing: the input gate passes every
-text, the policy evaluator reports no hit, the model caller answers ``None`` (no model) and the
-job starter starts nothing (``None``). Nothing in Core calls a port yet, so no default decides
-anything today; the story that adds a caller wires the real port and proves a refusal with it.
+(#118, #119, #120, #121, #122, #124), the defaults do nothing: the input gate passes every
+text, the model caller answers ``None`` (no model) and the job starter starts nothing
+(``None``). The policy evaluator is the first port wired (#111: the catalog validation's input
+policies; the Orchestrator's ``CatalogPolicyCheck``); its default evaluates nothing and says so
+(``unavailable``), so a validation run without the Engine lists the check rather than passing
+it silently.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,12 +34,30 @@ class PortText:
 
 @dataclass(frozen=True, slots=True)
 class PolicyHit:
-    """One text that breaks one policy: the text's locator and the policy."""
+    """One text that breaks one policy: the text's locator, the policy, and the span of the text
+    that matched (a deterministic word or name list's match; ``None`` when no span can be
+    located: a pattern or a model-assisted policy)."""
 
     locator: str
     policy_id: str
     name: str
     message: str
+    span: str | None = None
+
+
+POLICIES_UNAVAILABLE = "input_policy"
+"""What ``NoPolicies`` lists as unavailable: no policy could be evaluated."""
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyEvaluation:
+    """What a policy evaluation found: every (text, policy) hit, the names of what it could not
+    evaluate (``age_conditioned_policies``, ``input_policy_model_assisted``, or ``input_policy``
+    when nothing could be), and the model calls it made."""
+
+    hits: tuple[PolicyHit, ...] = ()
+    unavailable: tuple[str, ...] = ()
+    model_calls: int = 0
 
 
 class InputGate(Protocol):
@@ -60,9 +80,16 @@ class PolicyEvaluator(Protocol):
     """Policy evaluation without refusal or audit (a publish-time report, a re-check)."""
 
     async def evaluate(
-        self, texts: Sequence[PortText], *, rating_id: str | None = None
-    ) -> Sequence[PolicyHit]:
-        """Every (text, policy) hit."""
+        self,
+        db: AsyncEngine,
+        texts: Sequence[PortText],
+        *,
+        rating_id: str | None = None,
+        max_model_calls: int = 0,
+    ) -> PolicyEvaluation:
+        """Every (text, policy) hit of the live global input policies and ``rating_id``'s
+        input policies, with model-assisted policies checked within ``max_model_calls``; what
+        could not be evaluated is listed, never passed. Writes nothing."""
         ...
 
 
@@ -104,12 +131,18 @@ class PassingGate:
 
 
 class NoPolicies:
-    """The default policy evaluator: no policy, so no hit."""
+    """The default policy evaluator: nothing is evaluated, and the evaluation says so (it lists
+    ``input_policy`` as unavailable; a check never passes silently)."""
 
     async def evaluate(
-        self, texts: Sequence[PortText], *, rating_id: str | None = None
-    ) -> Sequence[PolicyHit]:
-        return ()
+        self,
+        db: AsyncEngine,
+        texts: Sequence[PortText],
+        *,
+        rating_id: str | None = None,
+        max_model_calls: int = 0,
+    ) -> PolicyEvaluation:
+        return PolicyEvaluation(unavailable=(POLICIES_UNAVAILABLE,))
 
 
 class NoModel:
@@ -144,6 +177,7 @@ class Ports:
 
 
 __all__ = [
+    "POLICIES_UNAVAILABLE",
     "InputGate",
     "JobStarter",
     "ModelCaller",
@@ -151,6 +185,7 @@ __all__ = [
     "NoModel",
     "NoPolicies",
     "PassingGate",
+    "PolicyEvaluation",
     "PolicyEvaluator",
     "PolicyHit",
     "PortText",

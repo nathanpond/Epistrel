@@ -517,6 +517,28 @@ name. A settings write moves the task's ``recurring_tasks`` row, and every worke
 reconcile reads the setting (``orchestrator.jobs.timers.reconcile``)."""
 
 
+# -- catalog validation (FR-SCN-5, FR-GUARD-10; #111) ------------------------------------------
+
+DEFAULT_VALIDATION_MODEL_CALLS = 0
+MAX_VALIDATION_MODEL_CALLS = 1_000
+
+
+class CatalogValidationSettings(BaseModel):
+    """How many model calls one catalog validation (a publish, or a dry run) may spend on
+    model-assisted input policies, stored under ``deployment_state.settings`` (#111):
+    ``validation_model_calls``, one call per policy and text, default 0. Deterministic policies
+    always run; model-assisted ones the budget does not reach are listed ``unavailable``
+    (``input_policy_model_assisted``) and run when a story is created from the scenario, inside
+    its creation budget (#119). Prospective: a validation uses the value in force when it
+    starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    validation_model_calls: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_VALIDATION_MODEL_CALLS, ge=0, le=MAX_VALIDATION_MODEL_CALLS
+    )
+
+
 # -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
 
 DEFAULT_MINOR_AGE_THRESHOLD = 18
@@ -575,6 +597,7 @@ class DeploymentSettings(
     RetentionSettings,
     WorkerHealthSettings,
     MediaSettings,
+    CatalogValidationSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

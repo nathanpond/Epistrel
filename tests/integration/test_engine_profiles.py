@@ -136,6 +136,7 @@ from tests.profile_support import (
 )
 from tests.respond_support import body as respond_body
 from tests.respond_support import respond_client
+from tests.scenario_support import scenario as catalog_scenario
 from tests.story_support import story_body
 
 READ = bearer()
@@ -1486,10 +1487,9 @@ async def test_deleting_warns_of_recommending_scenarios(
         )["id"]
 
         async def scenario(recommended: str) -> str:
-            body = {
-                "public_card": {"name": "Gull Rock"},
-                "recommendation": {"engine_profile_id": recommended},
-            }
+            body = catalog_scenario(
+                "Gull Rock", recommendation={"engine_profile_id": recommended}
+            )  # publishable as it is (#111's validation)
             created = await client.post("/catalog/scenarios", json=body, headers=headers(A))
             return str((await ok(created, 201))["id"])
 

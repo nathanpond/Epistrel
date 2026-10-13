@@ -335,6 +335,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "create_scenario_draft": _SCENARIO_SAVE,
     "save_scenario_draft": ("draft_stale", "entry_archived", *_SCENARIO_SAVE),
     "publish_scenario": ("draft_stale", "entry_archived", "publish_invalid", "rating_retired"),
+    # The dry run (#111): a draft revision the draft has moved on from.
+    "validate_scenario": ("draft_stale",),
     "get_scenario": ("not_published",),
     # Listing status and listings (#110): a value outside the deployment's set, a companion's
     # status (it follows its character's), a cursor given for other filters.

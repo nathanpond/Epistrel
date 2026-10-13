@@ -15,7 +15,7 @@ the checks a save makes against the database (``checked``), the version's extra 
 (``version_values``), what a write records beside the row (``recorded``/``forgotten``), the
 projections (``project``, ``envelope``, and the listings' ``list_item``), and the entries that
 follow one (``followers``: a character's companion scenarios). Publishing asks the kind's
-``Validator`` for a ``PublishReport`` (#111 replaces the validators with its full runner).
+``Validator`` (``core.catalog.validation``'s runner, #111) for a ``ValidationReport``.
 
 - **Create** stores the request's draft at draft revision 1, status ``draft``, at the first of
   the deployment's listing status values (read with the deployment row ``FOR SHARE``, so it
@@ -26,11 +26,14 @@ follow one (``followers``: a character's companion scenarios). Publishing asks t
   on an older revision is 409 ``draft_stale`` (``details.current_draft_revision``) and changes
   nothing, so of two saves from the same revision exactly one succeeds. Every save bumps the
   revision, even one that changes nothing.
-- **Publish** compares ``draft_revision`` the same way, under the entry's row lock, validates the
-  draft (422 ``publish_invalid`` with the report), inserts version ``current_version + 1`` with
-  the draft as its content, sets ``published`` and bumps the revision: the draft stays equal to
-  what was published, and the next save needs the new revision. Publishing an unchanged draft
-  still makes a version.
+- **Publish** compares ``draft_revision`` the same way, prepares the draft's validation outside
+  any transaction (the input policies may call a model, #111), then, under the entry's row lock,
+  compares the revision again and validates the draft: any error is 422 ``publish_invalid`` with
+  ``details.report`` and writes nothing. Otherwise it inserts version ``current_version + 1``
+  with the draft as its content, sets ``published`` and bumps the revision: the draft stays
+  equal to what was published, and the next save needs the new revision. The answer carries
+  the report (its warnings and unavailable checks), and an INFO line logs its codes and
+  locations. Publishing an unchanged draft still makes a version.
 - **Versions are immutable**: a trigger refuses any UPDATE or DELETE of a version (SQLSTATE
   ``EPI01``) unless the transaction set ``epistrel.erasure = on``, which only delete (and #124's
   erasure) does.
@@ -61,18 +64,20 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Table, func, insert, select, update
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import audit, clock, control, ownership
 from epistrel.core.catalog import listing
+from epistrel.core.catalog.checks.base import Preparation, Subject, ValidationContext
+from epistrel.core.catalog.report import DRAFT, ValidationReport, VersionLabel, log_report
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import EntryStatus
 from epistrel.core.errors import (
@@ -84,12 +89,10 @@ from epistrel.core.errors import (
     InvalidRequest,
     NotPublished,
     PublishInvalid,
-    field_path,
 )
 from epistrel.core.idempotency import canonical
 from epistrel.core.ids import new_ulid
 from epistrel.core.ports import Ports
-from epistrel.core.settings_schema import DeploymentSettings
 from epistrel.core.tables import deployment_state
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.core.tables.catalog import ERASURE_GUC
@@ -117,6 +120,22 @@ class PublishRequest(BaseModel):
     )
 
     draft_revision: Revision
+
+
+class ValidateRequest(BaseModel):
+    """``POST /catalog/scenarios/{id}/validate`` (#111): optionally the draft revision the
+    caller holds, so the report is known to be about that draft (a stale one is 409
+    ``draft_stale``). Without it, the current draft is validated; ``?version=n`` validates a
+    published version instead."""
+
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra={"examples": [{"draft_revision": 2}, {}]}
+    )
+
+    draft_revision: Revision | None = Field(
+        default=None,
+        description="The draft revision the caller holds; omit it to validate the current draft.",
+    )
 
 
 def merge_patch(target: Any, patch: Any) -> Any:
@@ -150,70 +169,15 @@ class CardRating(BaseModel):
     name: str
 
 
-@dataclass(frozen=True, slots=True)
-class ReportEntry:
-    """One finding of the publish validation: a stable ``code``, the draft ``field`` it concerns
-    (a dotted path) and a message."""
-
-    code: str
-    field: str
-    message: str
-
-
-@dataclass(frozen=True, slots=True)
-class PublishReport:
-    """What the publish validation found (#111 replaces the builders): ``errors`` stop a
-    publish; ``unavailable`` names checks that could not run."""
-
-    errors: tuple[ReportEntry, ...] = ()
-    warnings: tuple[ReportEntry, ...] = ()
-    unavailable: tuple[str, ...] = ()
-
-    def as_json(self) -> dict[str, Any]:
-        def entries(found: tuple[ReportEntry, ...]) -> list[dict[str, str]]:
-            return [{"code": e.code, "field": e.field, "message": e.message} for e in found]
-
-        return {
-            "errors": entries(self.errors),
-            "warnings": entries(self.warnings),
-            "unavailable": list(self.unavailable),
-        }
-
-
-def schema_report(model: type[BaseModel], document: Any) -> PublishReport | None:
-    """The report of ``document`` failing to validate as ``model``: one ``ReportEntry`` per
-    failure, at its dotted path; ``None`` when it validates."""
-    try:
-        model.model_validate(document)
-    except ValidationError as exc:
-        return PublishReport(
-            errors=tuple(
-                ReportEntry(
-                    code=str(error["type"]),
-                    field=field_path(error.get("loc", ())),
-                    message=str(error["msg"]),
-                )
-                for error in exc.errors()
-            )
-        )
-    return None
-
-
-@dataclass(frozen=True, slots=True)
-class ValidationContext:
-    """What a ``Validator`` may consult: the publish's connection (inside its transaction, the
-    entry locked), the deployment's settings, and the ports to the Orchestrator (#103)."""
-
-    conn: AsyncConnection
-    settings: DeploymentSettings
-    ports: Ports = field(default_factory=Ports)
-
-
 class Validator(Protocol):
-    """A kind's publish validation (#108's protocol; #111 supplies the full runner): the report
-    on the stored draft document. Errors refuse the publish (422 ``publish_invalid``)."""
+    """A kind's publish validation (#111: ``core.catalog.validation.Runner``). ``prepare`` runs
+    outside any transaction (it may call a model); ``validate`` runs inside the publish's, the
+    entry locked, and answers the report. Its errors refuse the publish (422
+    ``publish_invalid``)."""
 
-    async def validate(self, draft: Any, ctx: ValidationContext) -> PublishReport: ...
+    async def prepare(self, subject: Subject, env: Preparation) -> Mapping[str, Any]: ...
+
+    async def validate(self, subject: Subject, ctx: ValidationContext) -> ValidationReport: ...
 
 
 # -- results -----------------------------------------------------------------------------------
@@ -228,7 +192,7 @@ class Published:
     draft_revision: int
     status: EntryStatus
     published_at: datetime
-    report: PublishReport
+    report: ValidationReport
     config_revision: int
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
@@ -294,9 +258,22 @@ class CatalogService(ABC):
     list_item: ClassVar[type[BaseModel]]
     """A listing's item (#110): the kind's card plus ``owner_principal``, ``updated_at`` and,
     for a search, ``rank``."""
+    document_model: ClassVar[type[BaseModel]]
+    """The kind's draft document (``CharacterDraft``, ``ScenarioDraft``): what validation
+    checks a document against (#111)."""
 
     def __init__(self, validator: Validator) -> None:
         self.validator = validator
+
+    def subject(self, entry_id: str, version: VersionLabel, document: Mapping[str, Any]) -> Subject:
+        """What a validation of ``document`` (``version``, or the draft) checks (#111)."""
+        return Subject(
+            entity_type=self.entity_type,
+            entry_id=entry_id,
+            version=version,
+            document=document,
+            model=self.document_model,
+        )
 
     # -- hooks -------------------------------------------------------------------------------
 
@@ -317,9 +294,10 @@ class CatalogService(ABC):
         return None
 
     async def version_values(
-        self, conn: AsyncConnection, document: Mapping[str, Any]
+        self, conn: AsyncConnection, document: Mapping[str, Any], report: ValidationReport
     ) -> dict[str, Any]:
-        """The version row's columns besides its key, content and publisher."""
+        """The version row's columns besides its key, content and publisher (``report``: what
+        the publish's validation found)."""
         return {"content_rating_version_id": None}
 
     async def recorded(
@@ -410,14 +388,8 @@ class CatalogService(ABC):
                 {"size": size, "limit": limit},
             )
 
-    def conflict(self, entry: Any, entry_id: str, draft_revision: int) -> EpistrelError:
-        """Why a save or publish based on ``draft_revision`` cannot change ``entry``: 422
-        ``entry_archived`` for an archived entry, else 409 ``draft_stale``."""
-        if entry.status == EntryStatus.ARCHIVED.value:
-            return EntryArchived(
-                f"{self.noun} {entry_id} is archived; unarchive it to change it",
-                {self.id_key: entry_id},
-            )
+    def stale(self, entry: Any, entry_id: str, draft_revision: int) -> DraftStale:
+        """409 ``draft_stale``: ``entry``'s draft is no longer at ``draft_revision``."""
         return DraftStale(
             f"the draft of {self.noun} {entry_id} is at revision {entry.draft_revision}, not "
             f"{draft_revision}; read it again and retry",
@@ -427,6 +399,16 @@ class CatalogService(ABC):
                 "current_draft_revision": int(entry.draft_revision),
             },
         )
+
+    def conflict(self, entry: Any, entry_id: str, draft_revision: int) -> EpistrelError:
+        """Why a save or publish based on ``draft_revision`` cannot change ``entry``: 422
+        ``entry_archived`` for an archived entry, else 409 ``draft_stale``."""
+        if entry.status == EntryStatus.ARCHIVED.value:
+            return EntryArchived(
+                f"{self.noun} {entry_id} is archived; unarchive it to change it",
+                {self.id_key: entry_id},
+            )
+        return self.stale(entry, entry_id, draft_revision)
 
     def refuse(self, entry: Any, entry_id: str, draft_revision: int) -> None:
         """Raise ``conflict`` unless ``entry`` is editable at ``draft_revision``."""
@@ -537,14 +519,31 @@ class CatalogService(ABC):
         ports: Ports | None = None,
     ) -> Published:
         """Publish the draft as version ``current_version + 1`` (see the module docstring)."""
+        ports = ports or Ports()
+        async with db.connect() as conn:
+            read = await self.entry(conn, entry_id)
+        self.refuse(read, entry_id, request.draft_revision)
+        # Outside any transaction: the input policies may call a model (FR-CONC-2). The revision
+        # compared under the lock below proves the draft is the one prepared from.
+        settings = (await read_settings(db)).as_settings()
+        prepared = await self.validator.prepare(
+            self.subject(entry_id, DRAFT, read.draft), Preparation(db, settings, ports)
+        )
         async with db.begin() as conn:
             entry = await self.entry(conn, entry_id, lock=True)
             self.refuse(entry, entry_id, request.draft_revision)
             await pauses.pause(pauses.CATALOG_PUBLISH_LOCKED)
-            settings = (await read_settings(conn)).as_settings()
-            context = ValidationContext(conn=conn, settings=settings, ports=ports or Ports())
-            report = await self.validator.validate(entry.draft, context)
-            if report.errors:
+            context = ValidationContext(
+                conn=conn,
+                settings=(await read_settings(conn)).as_settings(),
+                ports=ports,
+                prepared=prepared,
+            )
+            report = await self.validator.validate(
+                self.subject(entry_id, DRAFT, entry.draft), context
+            )
+            log_report(report, entity_type=self.entity_type.value, entry_id=entry_id)
+            if not report.ok:
                 raise PublishInvalid(
                     f"the draft of {self.noun} {entry_id} cannot be published",
                     {self.id_key: entry_id, "report": report.as_json()},
@@ -552,7 +551,7 @@ class CatalogService(ABC):
             version = int(entry.current_version or 0) + 1
             draft_revision = int(entry.draft_revision) + 1
             now = clock.now()
-            extra = await self.version_values(conn, entry.draft)
+            extra = await self.version_values(conn, entry.draft, report)
             await conn.execute(
                 insert(self.versions).values(
                     catalog_id=entry_id,
@@ -792,16 +791,14 @@ __all__ = [
     "CatalogService",
     "Follower",
     "Projection",
-    "PublishReport",
     "PublishRequest",
     "Published",
-    "ReportEntry",
     "Revision",
     "Shown",
+    "ValidateRequest",
     "ValidationContext",
     "Validator",
     "VersionSummary",
     "config_revision",
     "merge_patch",
-    "schema_report",
 ]

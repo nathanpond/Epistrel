@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 import epistrel
 from epistrel.api.auth import TRUST_BOUNDARY_STATEMENT
@@ -19,6 +20,7 @@ from epistrel.core.ownership import (
     REGISTRY,
     SEGMENTS,
     RelationFilter,
+    RelationRequest,
     owner_filter,
     parse_relation_filter,
     path_principal,
@@ -132,13 +134,21 @@ def test_documentation_says_ownership_confers_nothing() -> None:
 
 
 def test_relation_names_and_filters() -> None:
-    """A relation name is 1 to 64 of ``A-Z a-z 0-9 _ -``, trimmed and case-sensitive. A filter
-    is ``name:principal``, or ``name:`` for any principal, split at the first colon (a principal
-    may hold colons and slashes); a bare word is refused. An ``owner`` filter may name
-    ``system``; a principal named in a path may not."""
-    assert relation_name_problem("co_author-2") is None
+    """A relation name is 1 to 64 of ``A-Z a-z 0-9 _ -``, trimmed and case-sensitive. Both
+    bounds hold wherever a name goes: names of exactly 1 and exactly 64 characters pass the name
+    rule, the request body, a path and a filter unchanged, and one character more passes none of
+    them. A filter is ``name:principal``, or ``name:`` for any principal, split at the first
+    colon (a principal may hold colons and slashes); a bare word is refused. An ``owner`` filter
+    may name ``system``; a principal named in a path may not."""
+    for good in ("q", "co_author-2", "x" * 64):
+        assert relation_name_problem(good) is None, good
+        assert RelationRequest(principal="p-1", relation=f" {good}\t").relation == good
+        assert path_relation(good) == good
+        assert parse_relation_filter(f"{good}:p-1") == RelationFilter(good, "p-1")
     for bad in ("", "co author", "a:b", "a/b", "x" * 65, "é"):
         assert relation_name_problem(bad) is not None, bad
+        with pytest.raises(ValidationError):
+            RelationRequest(principal="p-1", relation=bad)
     assert path_relation(" editor\t") == "editor"
     assert parse_relation_filter("editor:") == RelationFilter("editor")
     assert parse_relation_filter("editor: \t") == RelationFilter("editor")
@@ -152,8 +162,10 @@ def test_relation_names_and_filters() -> None:
         (lambda: parse_relation_filter("editor"), "query.relation"),
         (lambda: parse_relation_filter("true"), "query.relation"),
         (lambda: parse_relation_filter("editor:a\x01b"), "query.relation"),
+        (lambda: parse_relation_filter(f"{'x' * 65}:p-1"), "query.relation"),
         (lambda: owner_filter("\t"), "query.owner"),
         (lambda: path_relation("a b"), "path.relation"),
+        (lambda: path_relation("x" * 65), "path.relation"),
         (lambda: path_principal("system"), "path.principal"),
     ):
         with pytest.raises(InvalidRequest) as refused:

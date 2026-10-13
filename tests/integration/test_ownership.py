@@ -182,6 +182,79 @@ async def test_principals_and_names_are_validated(
         assert (await ok(own, 201))["principal"] == OWNER  # a relation may name the owner
 
 
+async def test_relation_names_at_the_length_bounds(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """Relation names of exactly 1 and exactly 64 characters are accepted wherever a name goes,
+    on every delivered owned type: the add answers 201 with the name unchanged, the entity's
+    relations list it, every list that filters by relation finds the entity by
+    ``name:principal``, and the removal answers 204. A name one character longer is 422 at the
+    body, the path and the filter, and nothing is written. The filtered lists are the ones whose
+    operation in the served OpenAPI document takes a ``relation`` query parameter, so a type
+    whose list gains the filter is covered without a change here."""
+    longest = f"{'r' * 52}{secrets.token_hex(6)}"  # 64 characters, and no other test's name
+    names = ("q", longest)
+    overlong = f"{longest}r"
+    related = f"p-bounds-{secrets.token_hex(4)}"
+    assert (len(names[0]), len(longest), len(overlong)) == (1, 64, 65)
+    filtered: set[EntityType] = set()
+    async with respond_client(stub_settings, engine) as (client, _):
+        paths = (await ok(await client.get("/openapi.json")))["paths"]
+        for kind in KINDS.values():
+            entity = await kind.create(client, OWNER, None)
+            relations = kind.path(entity.id, "/relations")
+            for name in names:
+                added = await client.post(
+                    relations,
+                    json={"principal": related, "relation": name},
+                    headers=headers(OWNER),
+                )
+                assert (await ok(added, 201))["relation"] == name, (kind.entity_type, name)
+            listing = await ok(await client.get(relations, headers=READ))
+            assert sorted((i["relation"], i["principal"]) for i in listing["items"]) == [
+                ("q", related),
+                (longest, related),
+            ], kind.entity_type
+
+            parameters = paths.get(kind.base, {}).get("get", {}).get("parameters", [])
+            if any(p["in"] == "query" and p["name"] == "relation" for p in parameters):
+                filtered.add(kind.entity_type)
+                for name in names:
+                    found = await client.get(
+                        kind.base, params={"relation": f"{name}:{related}"}, headers=READ
+                    )
+                    listed = [item["id"] for item in (await ok(found))["items"]]
+                    assert listed == [entity.id], (kind.entity_type, name)
+                refused = await client.get(
+                    kind.base, params={"relation": f"{overlong}:{related}"}, headers=READ
+                )
+                assert _code(refused) == (422, "validation_error", "query.relation[0]"), (
+                    kind.entity_type
+                )
+
+            before = await _counts(engine)
+            refused = await client.post(
+                relations,
+                json={"principal": related, "relation": overlong},
+                headers=headers(OWNER),
+            )
+            assert _code(refused) == (422, "validation_error", "body.relation"), kind.entity_type
+            refused = await client.delete(
+                f"{relations}/{overlong}/{related}", headers=headers(OWNER)
+            )
+            assert _code(refused) == (422, "validation_error", "path.relation"), kind.entity_type
+            assert await _counts(engine) == before, kind.entity_type
+
+            for name in names:
+                removed = await client.delete(
+                    f"{relations}/{name}/{related}", headers=headers(OWNER)
+                )
+                assert removed.status_code == 204, (kind.entity_type, name, removed.text)
+            assert (await ok(await client.get(relations, headers=READ)))["items"] == []
+    # The derivation found the lists known to filter (a type that gains the filter joins them).
+    assert {EntityType.STORY, EntityType.MEDIA, EntityType.ENGINE_PROFILE} <= filtered
+
+
 async def test_unknown_entities_and_types(stub_settings: Settings, engine: AsyncEngine) -> None:
     """Owner and relation calls on an entity that does not exist are 404 ``not_found`` on both
     surfaces, and so is a call on a type not delivered yet; an unknown type name is 422."""

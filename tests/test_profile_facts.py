@@ -357,7 +357,9 @@ async def test_a_lost_guarantee_is_reported_and_held() -> None:
     """A change that turns off the module holding a guarantee loses that guarantee: a one-story
     report names it in ``guarantees_lost`` and warns of it after the capability lost, so the
     change is held until it is confirmed. Raising the module's level, or turning it on, loses
-    none, and the report neither names nor warns of one."""
+    none, and the report neither names nor warns of one. Turning off a module that holds none
+    (the polish pass) loses the capability alone: the entry lists it, and the report names no
+    guarantee and warns only of the capability lost."""
     declared = Configuration(
         LITE_PRESET_ID, 1, parse_settings({"verification": {"level": "declared"}})
     )
@@ -386,6 +388,13 @@ async def test_a_lost_guarantee_is_reported_and_held() -> None:
     for kept in (delta(declared, entailment, FACTS), delta(lite, declared, FACTS)):
         same = single_report(affected("S", kept, history=False), kept)
         assert (same.guarantees_lost, same.warnings) == ([], ["capabilities_gained"])
+    unpolished = Configuration(
+        LITE_PRESET_ID, 3, parse_settings(nest("repair.polish.enabled", False))
+    )
+    plain = delta(lite, unpolished, FACTS)
+    quiet = single_report(affected("S", plain, history=False), plain)
+    assert quiet.affected_stories[0].capabilities_lost == ["polish"]
+    assert (quiet.guarantees_lost, quiet.warnings) == ([], ["capabilities_lost"])
 
 
 def test_the_effective_values_are_the_delivered_ones() -> None:

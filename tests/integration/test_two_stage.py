@@ -379,8 +379,9 @@ async def test_preview_refusals_write_nothing(scratch: Space) -> None:
     ``body.profile_id``; an override that names an undelivered module is 422 ``invalid_profile``,
     and one of the wrong shape (a group sent as ``null`` included: overrides are settings, not a
     merge patch) 422 ``validation_error`` at its field; an unknown story is 404.
-    A story's own profile is no reassignment, deleted or not: its preview is answered. Nothing
-    is ever written, and no key is echoed."""
+    A story's own profile is no reassignment, deleted or not: its preview is answered, and the
+    polish pass turned off there is a capability lost with no guarantee lost. Nothing is ever
+    written, and no key is echoed."""
     async with respond_client(scratch.settings, scratch.db) as (client, _):
         profile = (
             await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
@@ -427,6 +428,7 @@ async def test_preview_refusals_write_nothing(scratch: Space) -> None:
         report = await ok(own)
         assert "Idempotency-Key" not in own.headers
         assert report["affected_stories"][0]["capabilities_lost"] == ["polish"]
+        assert (report["guarantees_lost"], report["warnings"]) == ([], ["capabilities_lost"])
         assert (await _effective(client, story))["profile"]["deleted"] is True
         assert await configuration_rows(scratch.db) == before
 

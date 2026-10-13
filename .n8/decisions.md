@@ -3623,3 +3623,79 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** Filed #322 (`needs-triage`) and did not fix it. `PUT /admin/settings` coerces a JSON boolean, a numeric string or an integral float for every older integer setting. `SettingsPatch` and the settings sections use lax `int`, so `true` becomes `1` and `"7"` becomes `7`, while the documented schema says `integer`. #112's own new settings refuse these values: `feedback_text_max_chars` is a `StrictInt`, and `feedback_retention` has a validator. It is cross-referenced on #112.
   **Why:** The older settings are M2's and earlier M3 stories', outside #112's scope, and tightening them changes accepted input for every integer setting: a triage call. Cost if wrong: none.
   **Issue:** #112, #322
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** A published scenario version keeps the validation report its publish answered, in `catalog.scenario_versions.report` (jsonb, migration 0028; #111). That report is content.
+  - A warning's `text` quotes the version's own text. For `personality_in_role` it is the sentence from a role's setup description or seed. For `input_policy` it is the matched words, or the first 200 characters of the field when a pattern or model-assisted policy locates no span.
+  - A `personality_in_role` warning on a `default` role names that role's catalog character in `source`.
+  - The same report is part of the publish's stored idempotency result (`publish_scenario`, deployment scope) until its key expires.
+  - A refused publish leaves the report in neither place: its key is released and no version is written. So only `warnings[].text` and `warnings[].source` can hold content. A `rating_looser` source is an identifier (`catalog_id@version` or a media id), and `unavailable` holds only check names.
+  - No behaviour changed. `core/tables/catalog.py`'s docstring now states all this.
+  **Why:** #111's verifier (round 1, gap 1) found that this hand-off was never written.
+  - The pass-1 Discretion stores the report on the version and names the `default` character in `source`. #122 plans the same name for its creation report.
+  - #124's catalog pass names the scenario seeds it redacts "in every scenario version and draft", and it lists the content-bearing JSON columns it redacts (`operations.turn_report`, `attempts`, `read_set`). It does not name this column.
+  - An erasure that follows #124's plan would therefore leave the subject's name in a version's report. That breaks its truth that afterwards "no text anywhere in that scope names them".
+  **Affects:**
+  - **M3 #124 (erasure).**
+    - The catalog pass must redact `report` in every scenario version it rewrites, using the same span matcher on each warning's `text` and `source`. That holds however the version was found. A version found through a declared subject (a role filled with the subject, whose `character` the pass nulls) can name the subject only in its report's `source`, because its content holds just the catalog id.
+    - The catalog residue scan must cover the column. The planned enumeration of `jsonb` columns from `information_schema` already includes it. But its fixture must produce a report that names the subject, or the scan proves nothing. A `default` role filled with the subject, with a setup description that asserts personality, gives `source` = the subject's name.
+    - The purge of deployment-scoped stored idempotency results must reach `publish_scenario` results. It must also reach `publish_character` results once #116 nests the companion's report in them.
+  - **M3 #123 (subject index).**
+    - The `publish_scenario` stored result's declared text paths must include `report.warnings[].text` and `report.warnings[].source`.
+    - For `scenario_versions` `<id>@<n>`, #123 chooses one of two approaches:
+      - index the report's `warnings[i].text` and `warnings[i].source` as fields of that record;
+      - keep relying on the record's content fields and declared subjects, as #108 indexes it today. Then #124 rewrites the whole report of every version it touches, not only the fields that are indexed.
+    - A report can also quote strings the index never covers (#323).
+  - **Not affected:**
+    - #122 persists its creation report in `operations.turn_report`, which #124 already redacts.
+    - #116's companion versions write the column through the same publish.
+    - No other open plan names the column. I searched for `scenario_versions`, `redact`, `residue`, `erasure` and `validation report`.
+  - #123 and #124 are later M3 stories in this run. Their drift check should apply this, or `/n8-replan M3` should run before them.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after the `## Ad-hoc` entry from #111's round-1 verification fixes. Later stories append below.
+  **Why:** This keeps the drift ledger entry and keeps the run's section last, as #107 and #108 did. Cost if wrong: one heading.
+  **Issue:** #111
+- **Decision:** #111 verification fixes, round 1, gap 1 of 2: the report column's hand-off. The gap was real. The build logged hand-offs for #115, #116, #118, #119, #120 and #121, but none for #124 or #123. I recorded it as the `## Ad-hoc — 2026-10-13` entry above, and a paragraph in `core/tables/catalog.py`'s docstring now says the report is content that erasure redacts with the version. No behaviour changed.
+  - **`source` keeps the `default` character's name.** The verifier also offered an identifier (`catalog_id@version`), so that the stored report would hold no names. I kept the name for three reasons:
+    - the pass-1 Discretion names it;
+    - #122 plans the same name for its creation report, and the one report shape should mean one thing on every surface;
+    - an identifier would not remove the need for the hand-off, because `text` still quotes content.
+  - **#111 adds no index rows for the report.** #123 settles how records are indexed, and the version record is already found through the content and the role characters the report is derived from. The hand-off leaves that choice to #123.
+  **Why:** The fix hint, and the plan's own choices. Cost if wrong: #124 is replanned to redact one more column, or `source` becomes an identifier before #122 builds on it.
+  **Issue:** #111, #124, #123, #122
+- **Decision:** #111 verification fixes, round 1, gap 2 of 2: the must-have test file. The gap was real. This log's #111 entry says `tests/integration/test_scenario_validation.py` "holds every check with a failing and a passing fixture". At `c46a13a` it did not. The failing fixtures for `cast_limit`, `role_characters` and `providers`, and for the eligibility labels and age range, were only in the I-20 and U-26 parts, and nothing recorded the split. Rather than only correct the entry, I made the must-have true as written. The file gains four tests and two complements:
+  - `test_the_cast_limit_counts_every_role`: four roles, two of them optional, under the scenario's own limit of 3 give one error at `cast.roles` that names the limit and the count. They pass at 4.
+  - `test_role_characters_must_be_published_and_live`:
+    - an unknown id and a missing pinned version (each `character_missing`), a never-published character and an archived one are each refused;
+    - a live character beside them gives no entry;
+    - once the draft character is published, the archived one unarchived, and existing ids and versions named, the scenario validates.
+  - `test_eligibility_labels_and_age` (scratch database, planted characters):
+    - a missing label, an age above the range's upper end, and a character with no labels or no true age each fail with their rule;
+    - the ranges `[60, any]` and `[any, 60]` include 60;
+    - a label held as `Warm` satisfies `warm`.
+  - `test_providers_must_be_declared`: a scheduled item's provider and one nested in a starting value are each undeclared. Declaring one clears only its error, and declaring both validates.
+  - **Complements:** `test_the_document_check_gates_the_others` first validates the draft as saved, and `test_seeds_are_located` validates the same three seeds made complete.
+
+  Every check in `validation.CHECKS` that M3 can run now has a failing and a passing fixture in that file. The three that need a capability M3 lacks (`seed_normalization`, `fact_consistency`, `state_schema`) can only be listed, and the file asserts that they are. The parts stay where the drift note put them, in I-20, U-26, C-15, C-20 and U-29.
+  - **Mutation-checked.** A script applied each mutation, ran the new test and the earlier story tests (I-20, U-26, `tests/test_catalog_validation.py` and the file's other tests), then restored the sources (SHA-1 checked). Each mutation fails its new test:
+    - the limit off by one;
+    - archived characters unchecked;
+    - a missing pinned version unreported;
+    - an age that cannot be judged passing;
+    - an open upper end read as 0;
+    - an exclusive upper end;
+    - a character with no labels holding every label;
+    - starting values not read for providers.
+
+    Four of them passed every earlier story test: the age that cannot be judged, the open upper end, no labels, and starting values.
+  **Why:** The must-have is the plan's definition of done for that file, and the drift note moved only the parts, not the details. Correcting the entry alone would have left the artifact false. The four surviving mutations show that coverage was missing, not just a sentence. Cost if wrong: four tests that overlap the parts.
+  **Issue:** #111
+- **Decision:** Filed #323 (`needs-triage`). `scenarios.indexed_fields` (#108) does not list the strings inside the objects a scenario stores as given, or the scenario's own `story_settings_defaults.policies`. The objects are `starting_state.states`, `clock`, `scheduled_events`, `predicates`, `closed_sets` and `rules`, and a role's `state_initial_values`.
+  - A name written in any of these is never subject-indexed. #124's catalog-scope erasure finds records only through the index, so it would miss that name.
+  - #111's input-policy check sends these strings to the policies, so a version's report can quote them too.
+  - #323 is cross-referenced on #111.
+  **Why:** The field list belongs to #108 and the index to #123, both outside #111's scope. Cost if wrong: none.
+  **Issue:** #111, #323, #108, #123, #124

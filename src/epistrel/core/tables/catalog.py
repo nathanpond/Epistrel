@@ -24,7 +24,11 @@ transaction that set ``epistrel.erasure`` to ``on`` (catalog delete, and #124's 
 foreign key cascades a deleted entry's versions.
 
 A scenario version also keeps ``report``, the validation report its publish produced (#111;
-``NULL`` for versions published before). Each version also has ``search``, a generated
+``NULL`` for versions published before). The report is content, not metadata: a warning's
+``text`` quotes the version's own prose (a ``personality_in_role`` sentence, an ``input_policy``
+span or the start of the field), and a ``personality_in_role`` warning on a ``default`` role
+names that role's catalog character in ``source``. Erasure (#124) redacts it with the version's
+content. Each version also has ``search``, a generated
 ``tsvector`` of its public card (#110), GIN indexed: ``q`` searches an entry's latest published
 version, so drafts are never searchable. It is computed by
 ``catalog.epistrel_character_search`` and ``catalog.epistrel_scenario_search`` (``IMMUTABLE``

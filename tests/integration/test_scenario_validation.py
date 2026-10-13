@@ -35,6 +35,8 @@ from tests.media_support import media_client, png, scratch, set_media, uploaded
 from tests.policy_support import global_policy
 from tests.story_support import rest
 from tests.validation_support import (
+    PROVIDER,
+    PROVIDER_FIELD,
     codes,
     counts,
     entries,
@@ -44,6 +46,7 @@ from tests.validation_support import (
     list_policy,
     rated_character,
     validate,
+    with_provider,
 )
 
 CTX = RequestContext(principal="p-validation")
@@ -321,9 +324,12 @@ async def test_a_publish_without_the_orchestrator_lists_the_policies(
 async def test_the_document_check_gates_the_others(settings: Any, engine: Any) -> None:
     """A stored draft the scenario model no longer accepts (planted past the save) is refused at
     the field, and no other check runs on it (its emptied cast is not reported); the checks this
-    deployment cannot run are still listed."""
+    deployment cannot run are still listed.
+
+    Complement asserted: the draft as it was saved validates."""
     async with rest(settings, engine) as client:
         created = await scenarios.create(client, scenarios.scenario("Planted"))
+        assert (await validate(client, created["id"])).json()["valid"] is True
         async with engine.begin() as conn:
             await conn.execute(
                 text(
@@ -358,11 +364,195 @@ async def test_a_retired_rating_is_an_error(settings: Any, engine: Any) -> None:
         ]
 
 
+async def test_the_cast_limit_counts_every_role(settings: Any, engine: Any) -> None:
+    """Every role counts toward the starting-cast limit, the player's and the optional ones
+    included: four roles, two of them optional, under the scenario's own limit of 3 are one
+    ``cast_limit_exceeded`` error at ``cast.roles``, naming the limit and the count.
+
+    Complement asserted: with the limit raised to 4, the same roles validate."""
+    async with rest(settings, engine) as client:
+        cast = {
+            "roles": [
+                scenarios.role("mother"),
+                scenarios.role("uncle", required=False),
+                scenarios.role("cousin", required=False),
+                scenarios.role("player", kind="player"),
+            ],
+            "max_characters_at_start": 3,
+        }
+        created = await scenarios.create(client, scenarios.scenario("Counted", cast=cast))
+        errors = (await validate(client, created["id"])).json()["report"]["errors"]
+        assert [
+            (e["code"], e["location"]["field"], e["location"]["role"], e["outcome"], e["rule"])
+            for e in errors
+        ] == [
+            (
+                "cast_limit_exceeded",
+                "cast.roles",
+                None,
+                "rejected",
+                "a story starts with at most 3 characters, player and optional roles included "
+                "(FR-SCN-4); this scenario has 4 roles",
+            )
+        ]
+        raised = await scenarios.save(
+            client, created["id"], created["draft_revision"], cast={"max_characters_at_start": 4}
+        )
+        assert raised.status_code == 200, raised.text
+        assert (await validate(client, created["id"])).json()["valid"] is True
+
+
+async def test_role_characters_must_be_published_and_live(settings: Any, engine: Any) -> None:
+    """Each ``locked`` and ``default`` role's catalog character must exist (at its pinned
+    version, when the role pins one), be published and not be archived. Each failure is an
+    error at the role's ``cast.roles[i].character`` naming the character: an id no character
+    has (``character_missing``, the id), a pinned version that does not exist
+    (``character_missing``, ``id@version``), a character never published
+    (``character_not_published``) and an archived one (``character_archived``, the version
+    used).
+
+    Complements asserted: a published, live character gives no entry; once the drafted
+    character is published, the archived one unarchived, and the other two roles name a
+    character and a version that exist, the scenario validates."""
+    async with rest(settings, engine) as client:
+        live = await scenarios.published_character(client, "Lina Live")
+        shelved = await scenarios.published_character(client, "Saul Shelved")
+        archived = await client.post(
+            f"/catalog/characters/{shelved}/archive", headers=scenarios.WRITE
+        )
+        assert archived.status_code == 200, archived.text
+        made = await client.post(
+            "/catalog/characters", json={"name": "Dora Draft"}, headers=scenarios.WRITE
+        )
+        assert made.status_code == 201, made.text
+        drafted = made.json()["id"]
+        ghost = new_ulid()
+        roles = [
+            filled("ghost", "locked", ghost),
+            scenarios.role("pinned", fill="default", character={"catalog_id": live, "version": 9}),
+            filled("drafted", "default", drafted),
+            filled("shelf", "locked", shelved),
+            filled("kept", "default", live),
+            scenarios.role("player", kind="player"),
+        ]
+        created = await scenarios.create(
+            client, scenarios.scenario("Filled", cast={"roles": roles})
+        )
+        report = (await validate(client, created["id"])).json()["report"]
+        assert [
+            (e["code"], e["location"]["role"], e["location"]["field"], e["source"])
+            for e in report["errors"]
+        ] == [
+            ("character_not_published", "drafted", "cast.roles[2].character", drafted),
+            ("character_missing", "ghost", "cast.roles[0].character", ghost),
+            ("character_missing", "pinned", "cast.roles[1].character", f"{live}@9"),
+            ("character_archived", "shelf", "cast.roles[3].character", f"{shelved}@1"),
+        ]
+        assert {e["outcome"] for e in report["errors"]} == {"rejected"}
+
+        published = await client.post(
+            f"/catalog/characters/{drafted}/publish",
+            json={"draft_revision": 1},
+            headers=scenarios.WRITE,
+        )
+        assert published.status_code == 201, published.text
+        unarchived = await client.post(
+            f"/catalog/characters/{shelved}/unarchive", headers=scenarios.WRITE
+        )
+        assert unarchived.status_code == 200, unarchived.text
+        roles[0] = filled("ghost", "locked", live)
+        roles[1] = scenarios.role(
+            "pinned", fill="default", character={"catalog_id": live, "version": 1}
+        )
+        saved = await scenarios.save(
+            client, created["id"], created["draft_revision"], cast={"roles": roles}
+        )
+        assert saved.status_code == 200, saved.text
+        assert (await validate(client, created["id"])).json()["valid"] is True
+
+
+async def test_eligibility_labels_and_age(pg_url: str) -> None:
+    """A role's labels and age range hold its character to them, with one ``eligibility_failed``
+    error per failing filter, at the filter's field, naming the character's version: a
+    character that lacks a label the role lists, or is older than the range's upper end, fails;
+    so does one that cannot be judged, with no labels or no true age. The rule names what is
+    missing, or the range with an open end as ``any``.
+
+    Complements asserted: either end of an age range may be open and both are inclusive, so a
+    character at the lower end of ``[60, any]`` or the upper end of ``[any, 60]`` passes, and so
+    does one holding every listed label (``Warm`` holds ``warm``)."""
+    async with scratch_catalog(pg_url) as (settings, db), rest(settings, db) as client:
+        aged, aged_version = await rated_character(
+            client, db, "Ola Aged", rating_id=EVERYONE_ID, labels=["Warm", "patient"], true_age=60
+        )
+        blank, blank_version = await rated_character(client, db, "Bea Blank", rating_id=EVERYONE_ID)
+        roles = [
+            filled(
+                "blank", "default", blank, eligibility={"labels": ["warm"], "age_range": [18, None]}
+            ),
+            filled(
+                "old",
+                "default",
+                aged,
+                eligibility={"labels": ["warm", "stern"], "age_range": [None, 59]},
+            ),
+            filled(
+                "fit",
+                "default",
+                aged,
+                eligibility={"labels": ["warm", "patient"], "age_range": [60, None]},
+            ),
+            filled("edge", "locked", aged, eligibility={"age_range": [None, 60]}),
+            scenarios.role("player", kind="player"),
+        ]
+        created = await scenarios.create(
+            client, scenarios.scenario("Filtered", cast={"roles": roles})
+        )
+        errors = (await validate(client, created["id"])).json()["report"]["errors"]
+        age_rule = "eligibility: the character's true age is within the role's age range"
+        label_rule = "eligibility: the character holds every label the role lists"
+        assert [
+            (e["code"], e["location"]["role"], e["location"]["field"], e["source"], e["rule"])
+            for e in errors
+        ] == [
+            (
+                "eligibility_failed",
+                "blank",
+                "cast.roles[0].eligibility.age_range",
+                f"{blank}@{blank_version}",
+                f"{age_rule} (18 to any, inclusive)",
+            ),
+            (
+                "eligibility_failed",
+                "blank",
+                "cast.roles[0].eligibility.labels",
+                f"{blank}@{blank_version}",
+                f"{label_rule} (missing: warm)",
+            ),
+            (
+                "eligibility_failed",
+                "old",
+                "cast.roles[1].eligibility.age_range",
+                f"{aged}@{aged_version}",
+                f"{age_rule} (any to 59, inclusive)",
+            ),
+            (
+                "eligibility_failed",
+                "old",
+                "cast.roles[1].eligibility.labels",
+                f"{aged}@{aged_version}",
+                f"{label_rule} (missing: stern)",
+            ),
+        ]
+
+
 async def test_seeds_are_located(settings: Any, engine: Any) -> None:
     """Each missing field of each seed is an error whose code names it
     (``seed_missing_holder``, ``seed_missing_audience``, ``seed_missing_disclosure``), at that
     field with the seed's id: a world seed and a planned reveal's truth with no role, a role's
-    seed with its role."""
+    seed with its role.
+
+    Complement asserted: the same three seeds, each declaring all three fields, validate."""
     async with rest(settings, engine) as client:
         body = scenarios.scenario(
             "Seeded",
@@ -413,6 +603,54 @@ async def test_seeds_are_located(settings: Any, engine: Any) -> None:
             ),
         ]
         assert {e["outcome"] for e in errors} == {"rejected"}
+
+        whole = scenarios.scenario(
+            "Seeded whole",
+            drivers={"planned_reveals": [{"truth": scenarios.seed("The deed is forged.")}]},
+        )
+        whole["starting_state"]["seeded_memories"] = [scenarios.seed("The farm is old.")]
+        whole["cast"]["roles"][0]["seeded_memories"] = [scenarios.seed("The roof leaks.")]
+        complete = await scenarios.create(client, whole)
+        assert (await validate(client, complete["id"])).json()["valid"] is True
+
+
+async def test_providers_must_be_declared(settings: Any, engine: Any) -> None:
+    """Every provider the content names, in a scheduled item or at any depth of a starting
+    value, must be declared in ``story_settings_defaults.required_providers``: each one that is
+    not is a ``provider_undeclared`` error at its ``provider`` key, quoting the name.
+
+    Complements asserted: declaring one name clears its error and leaves the other's; with
+    both declared, the scenario validates."""
+    async with rest(settings, engine) as client:
+        body = with_provider(scenarios.scenario("Feeds"))
+        body["starting_state"]["states"] = [{"name": "tide", "source": {"provider": "tide_table"}}]
+        created = await scenarios.create(client, body)
+        nested = "starting_state.states[0].source.provider"
+
+        async def errors() -> list[tuple[str, str | None, str | None, str]]:
+            report = (await validate(client, created["id"])).json()["report"]
+            return [
+                (e["code"], e["location"]["field"], e["text"], e["outcome"])
+                for e in report["errors"]
+            ]
+
+        assert await errors() == [
+            ("provider_undeclared", PROVIDER_FIELD, PROVIDER, "rejected"),
+            ("provider_undeclared", nested, "tide_table", "rejected"),
+        ]
+        one = await scenarios.save(
+            client, created["id"], 1, story_settings_defaults={"required_providers": [PROVIDER]}
+        )
+        assert one.status_code == 200, one.text
+        assert await errors() == [("provider_undeclared", nested, "tide_table", "rejected")]
+        both = await scenarios.save(
+            client,
+            created["id"],
+            2,
+            story_settings_defaults={"required_providers": [PROVIDER, "tide_table"]},
+        )
+        assert both.status_code == 200, both.text
+        assert await errors() == []
 
 
 async def test_personality_warnings(pg_url: str) -> None:

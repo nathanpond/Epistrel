@@ -8,8 +8,9 @@ Matroska/WebM. A type it does not recognise is ``None``, and such an upload is r
 decoded), and a video's width, height and duration with ``ffprobe``: the one beside
 ``EPISTREL_FFMPEG_PATH``, through the poster seam (``core.media.poster``, #107), or the one on
 ``PATH`` when no executable is given. ffmpeg and ffprobe are installed in the image and run as
-separate processes, never linked (invariant 2's exception). A probe that is missing, fails or
-times out leaves the values ``None``: it never fails an upload.
+separate processes, never linked (invariant 2's exception). A probe that is missing, cannot
+start, fails, times out or reports a value no column can hold leaves the values ``None``: it
+never fails an upload.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,8 +90,12 @@ class Dimensions:
 
 
 def _bounded(value: object) -> int | None:
-    """A positive int32, or ``None``: a probe's value never breaks an ``INTEGER`` column."""
+    """A positive int32, or ``None``: a probe's value never breaks an ``INTEGER`` column (nor
+    the probe: Infinity and NaN, which JSON parsing yields for ``1e400`` and ``NaN``, have no
+    ``int``)."""
     if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
         return None
     number = int(value)
     return number if 0 < number <= INT32_MAX else None
@@ -141,27 +147,32 @@ def _ffprobe_dimensions(report: object) -> Dimensions:
 
 async def video_dimensions(path: Path, *, executable: str | None = None) -> Dimensions:
     """Width, height and duration from ``ffprobe`` (``executable``, else the one on ``PATH``;
-    local files only, 10 s at most); nothing when it is not installed or fails."""
+    local files only, 10 s at most); nothing when it is not installed, cannot start or
+    fails."""
     executable = executable or shutil.which(FFPROBE)
     if executable is None:
         return Dimensions()
-    process = await asyncio.create_subprocess_exec(
-        executable,
-        "-v",
-        "error",
-        # No ``-nostdin``: ffprobe has no such option (it refuses to run with it, #107), and its
-        # stdin is closed below anyway.
-        "-protocol_whitelist",
-        "file",
-        "-print_format",
-        "json",
-        "-show_entries",
-        "stream=codec_type,width,height:format=duration",
-        f"file:{path}",
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            executable,
+            "-v",
+            "error",
+            # No ``-nostdin``: ffprobe has no such option (it refuses to run with it, #107), and
+            # its stdin is closed below anyway.
+            "-protocol_whitelist",
+            "file",
+            "-print_format",
+            "json",
+            "-show_entries",
+            "stream=codec_type,width,height:format=duration",
+            f"file:{path}",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError as exc:  # gone since it was found, not executable, no executable format, …
+        logger.warning("video probe could not start: %s", type(exc).__name__)
+        return Dimensions()
     try:
         async with asyncio.timeout(FFPROBE_TIMEOUT_S):
             output, _ = await process.communicate()

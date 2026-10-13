@@ -1,12 +1,14 @@
 """The media building blocks without a database (#105, #107): signed URLs and the hook
-signature, the moderation secret command, what a probe reads, the local blob store, byte ranges,
-ffmpeg's poster extraction, and a resumable session's parts on the local store."""
+signature, the moderation secret command, what a probe reads, the numbers generation metadata
+may hold, the local blob store, byte ranges, ffmpeg's poster extraction, and a resumable
+session's parts on the local store."""
 
 from __future__ import annotations
 
 import hashlib
 import hmac
 import io
+import json
 import os
 import stat
 import subprocess
@@ -16,9 +18,9 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
-from epistrel.core.errors import SigningKeyMissing
+from epistrel.core.errors import InvalidRequest, SigningKeyMissing
 from epistrel.core.media import probe
 from epistrel.core.media.poster import ToolStatus
 from epistrel.core.media.signing import (
@@ -152,8 +154,10 @@ def test_sniffing() -> None:
 
 async def test_dimensions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Images: Pillow reads the header. Videos: ``ffprobe`` from ``PATH`` gives width, height and
-    duration (a stand-in script here); a probe that is missing, fails, prints junk or reports
-    nonsense leaves the values ``None``."""
+    duration (a stand-in script here); a probe that is missing, cannot start (a file in no
+    executable format, or a named executable that is gone), fails, prints junk or reports
+    nonsense (a non-finite width or height among it) leaves the values ``None`` and never
+    raises: a probe never fails an upload."""
     image = tmp_path / "a.png"
     image.write_bytes(_image("PNG"))
     assert await probe.dimensions(image, MediaKind.IMAGE) == probe.Dimensions(6, 5, None)
@@ -172,6 +176,8 @@ async def test_dimensions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
         '"height": 360}], "format": {"duration": "2.5"}}': probe.Dimensions(640, 360, 2500),
         '{"streams": [{"codec_type": "video", "width": -1, "height": 99999999999}], '
         '"format": {"duration": "nan"}}': probe.Dimensions(),
+        '{"streams": [{"codec_type": "video", "width": 1e400, "height": NaN}], '
+        '"format": {"duration": "4"}}': probe.Dimensions(None, None, 4000),
         "not json": probe.Dimensions(),
         "[]": probe.Dimensions(),
     }
@@ -184,8 +190,79 @@ async def test_dimensions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(probe, "FFPROBE_TIMEOUT_S", 0.2)
     fake.write_text("#!/bin/sh\nexec /bin/sleep 5\n")
     assert await probe.dimensions(video, MediaKind.VIDEO) == probe.Dimensions()
+    fake.write_bytes(b"\x00\x01 no executable format")  # still mode 755: exec fails (ENOEXEC)
+    assert os.access(fake, os.X_OK)
+    assert await probe.dimensions(video, MediaKind.VIDEO) == probe.Dimensions()
     fake.unlink()
     assert await probe.dimensions(video, MediaKind.VIDEO) == probe.Dimensions()
+    gone = str(bin_dir / "ffprobe")  # named, as the poster seam names it, but no longer there
+    assert await probe.video_dimensions(video, executable=gone) == probe.Dimensions()
+
+
+# -- the metadata ----------------------------------------------------------------------------------
+
+
+def _with_parameters(parameters: str, **fields: object) -> bytes:
+    """Upload metadata whose ``generation_metadata.parameters`` is the JSON text given."""
+    document = {
+        "kind": "image",
+        "content_rating_id": "everyone",
+        "depicted_subjects": [],
+        **fields,
+        "generation_metadata": {"seed": 7, "parameters": "@"},
+    }
+    return json.dumps(document).replace('"@"', parameters).encode()
+
+
+def test_generation_parameters_must_be_finite() -> None:
+    """Generation metadata round-trips exactly (#317), so a number JSON cannot hold (``1e400``
+    parses as Infinity, and Python's and pydantic's parsers also take ``NaN`` and
+    ``Infinity``) is refused at ``generation_metadata.parameters`` wherever it sits in the
+    object, rather than stored as ``null``: 422 ``validation_error`` for ``POST /media``'s
+    metadata part, and the same rule for a resumable session's metadata (``UploadOpen``, as
+    its route validates it) and for the library's model (a tuple in a value included).
+
+    Complement asserted: finite numbers, the largest and the smallest a float holds among them,
+    are accepted and stored exactly as sent."""
+    from epistrel.core.media.assets import MediaUpload, parse_metadata
+    from epistrel.core.media.uploads import UploadOpen
+
+    session = {"size": 10, "mime_type": "image/png", "sha256": "0" * 64}
+    for parameters in (
+        '{"cfg_scale": 1e400}',
+        '{"cfg_scale": -1e400}',
+        '{"cfg_scale": NaN}',
+        '{"cfg_scale": Infinity}',
+        '{"cfg_scale": -Infinity}',
+        '{"hires": {"steps": [1, 2, {"scale": 1e400}]}}',
+    ):
+        with pytest.raises(InvalidRequest) as refused:
+            parse_metadata(_with_parameters(parameters))
+        assert refused.value.details["field"] == "body.metadata.generation_metadata.parameters"
+        with pytest.raises(ValidationError) as opened:
+            UploadOpen.model_validate_json(_with_parameters(parameters, **session), strict=True)
+        assert [e["loc"] for e in opened.value.errors()] == [("generation_metadata", "parameters")]
+    with pytest.raises(ValidationError) as library:
+        MediaUpload.model_validate(
+            {
+                "kind": "image",
+                "content_rating_id": "everyone",
+                "depicted_subjects": [],
+                "generation_metadata": {"parameters": {"size": (512, float("inf"))}},
+            }
+        )
+    assert [e["loc"] for e in library.value.errors()] == [("generation_metadata", "parameters")]
+
+    finite = (
+        '{"cfg_scale": 1e300, "floor": -1e300, "ceiling": 1.7976931348623157e308, '
+        '"denoise": 5e-324, "steps": 30, "hires": {"scale": [1.5, -2.5]}}'
+    )
+    kept = parse_metadata(_with_parameters(finite)).stored_generation_metadata()
+    assert kept == {"seed": 7, "parameters": json.loads(finite)}
+    opened_finite = UploadOpen.model_validate_json(_with_parameters(finite, **session), strict=True)
+    assert opened_finite.stored_metadata()["generation_metadata"]["parameters"] == json.loads(
+        finite
+    )
 
 
 # -- the store -------------------------------------------------------------------------------------

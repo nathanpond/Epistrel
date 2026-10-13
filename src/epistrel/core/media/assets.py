@@ -6,12 +6,13 @@ and its bytes:
 
 1. The metadata is validated first: ``kind``, ``content_rating_id`` (omitted: 422
    ``validation_error``), optional ``alt_text`` (≤ 500), ``caption`` (≤ 2000),
-   ``generation_metadata`` (FR-CAT-4's fields, stored exactly as sent), ``owner`` and, for a
-   video, ``poster`` (an image asset to show for it), and the ``depicted_subjects`` every upload
-   must declare (FR-MEDIA-1, FR-IMG-9): an omitted list is 422 ``subjects_required``, an
-   explicitly empty one is accepted. Subjects are ``{kind, id}`` (``character``,
-   ``catalog_character`` or ``persona``), stored unverified (the subject may be created later),
-   deduplicated, at most 50.
+   ``generation_metadata`` (FR-CAT-4's fields, stored exactly as sent, so a parameter number
+   JSON cannot hold, such as ``1e400``, is 422), ``owner`` and, for a video, ``poster`` (an
+   image asset to show for it), and the ``depicted_subjects`` every upload must declare
+   (FR-MEDIA-1, FR-IMG-9): an omitted list is 422 ``subjects_required``, an explicitly empty
+   one is accepted. Subjects are ``{kind, id}`` (``character``, ``catalog_character`` or
+   ``persona``), stored as declared with no check that they exist (a subject may be created
+   later), deduplicated, at most 50.
 2. The bytes stream into the staging area (``core.media.store``) while they are hashed and
    counted: a request whose declared length exceeds ``media_max_bytes`` plus the metadata's
    allowance is 413 ``media_too_large`` before the file is read, and so is a file that grows
@@ -120,6 +121,7 @@ from epistrel.core.errors import (
     refuse_nul,
 )
 from epistrel.core.ids import ULID_PATTERN, new_ulid
+from epistrel.core.json_numbers import require_finite
 from epistrel.core.media import moderation, probe
 from epistrel.core.media.poster import POSTER_MIME_TYPE, PosterExtractor
 from epistrel.core.media.signing import Signer
@@ -184,8 +186,9 @@ Ulid = Annotated[str, Field(pattern=ULID_PATTERN)]
 
 class DepictedSubject(BaseModel):
     """A subject an image or video depicts (FR-IMG-9): a story ``character``, a
-    ``catalog_character`` or a ``persona``, by id. Stored as declared, unverified (the subject
-    may be created later), and indexed so that erasure finds the asset (FR-ADMIN-6)."""
+    ``catalog_character`` or a ``persona``, by id. Stored as declared, with no check that the
+    subject exists (it may be created later), and indexed so that erasure finds the asset
+    (FR-ADMIN-6)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -203,9 +206,9 @@ def _parameters_bounded(value: dict[str, Any] | None) -> dict[str, Any] | None:
 
 class GenerationMetadata(BaseModel):
     """How an image was generated (FR-CAT-4): the adapter, the model, the prompt and negative
-    prompt, the seed, the parameters (a JSON object of at most 8 KiB) and the ids of the
-    reference images. Stored and returned exactly as sent: a key that was not sent is not
-    returned."""
+    prompt, the seed, the parameters (a JSON object of at most 8 KiB, every number in it finite:
+    ``1e400``, ``NaN`` or ``Infinity`` is 422) and the ids of the reference images. Stored and
+    returned exactly as sent: a key that was not sent is not returned."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -214,7 +217,11 @@ class GenerationMetadata(BaseModel):
     prompt: str | None = Field(default=None, max_length=PROMPT_MAX)
     negative_prompt: str | None = Field(default=None, max_length=PROMPT_MAX)
     seed: int | None = Field(default=None, ge=0, le=SEED_MAX)
-    parameters: Annotated[dict[str, Any] | None, AfterValidator(_parameters_bounded)] = None
+    parameters: Annotated[
+        dict[str, Any] | None,
+        AfterValidator(require_finite),  # a JSON dump would store a non-finite number as null
+        AfterValidator(_parameters_bounded),
+    ] = None
     reference_ids: list[Ulid] | None = Field(default=None, max_length=REFERENCE_IDS_MAX)
 
 

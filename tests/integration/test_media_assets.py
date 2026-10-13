@@ -1,4 +1,5 @@
-"""Media assets in detail (#105): uploads and their refusals, the moderation hook, reads,
+"""Media assets in detail (#105): uploads and their refusals (generation parameters JSON cannot
+hold among them), a video probe that cannot start, the moderation hook, reads,
 retirement, listing, the subject-reference index, the media settings, the schema, and the media
 sweep. The milestone parts are ``test_c_15__media_upload`` (C-15), ``test_i_17__media_sweep``
 (I-17) and ``test_i_21__media_retire`` (I-21); the building blocks without a database are in
@@ -21,19 +22,23 @@ import stat
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+import httpx2 as httpx
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel import MediaRetired, MediaUpload, RatingFields, RelationRequest, RequestContext
+from epistrel.api import create_app
 from epistrel.config import Settings
 from epistrel.core import clock
 from epistrel.core.ids import new_ulid
 from epistrel.core.media import assets as media
+from epistrel.core.media.poster import FfmpegTools, ToolStatus
 from epistrel.core.media.signing import CLOCK_SKEW_S, moderation_secret
 from epistrel.core.media.sweep import sweep
 from epistrel.core.seeds.ratings import EVERYONE_ID
@@ -457,6 +462,117 @@ async def test_the_library_uploads_bytes(settings: Settings, engine: AsyncEngine
             )
     finally:
         await lib.models.aclose()
+
+
+def _with_parameters(parameters: str, **fields: Any) -> str:
+    """Upload metadata (with ``fields``) whose ``generation_metadata.parameters`` is the JSON
+    text given."""
+    document = metadata(generation_metadata={"model": "sdxl", "parameters": "@"}, **fields)
+    return json.dumps(document).replace('"@"', parameters)
+
+
+def _exact(text: str) -> Any:
+    """A JSON text with every number read as the decimal it spells: ``jsonb`` writes ``1e300``
+    out in full, which is the same number."""
+    return json.loads(text, parse_float=Decimal, parse_int=Decimal)
+
+
+async def _upload_text(client: httpx.AsyncClient, data: bytes, meta: str) -> httpx.Response:
+    """``POST /media`` with the ``metadata`` part sent as the JSON text given."""
+    return await client.post("/media", files=files(data, meta), headers=WRITE)
+
+
+async def test_generation_parameters_must_be_finite(
+    settings: Settings, engine: AsyncEngine
+) -> None:
+    """Generation metadata round-trips exactly (#317): a number JSON cannot hold (``1e400``
+    parses as Infinity; ``NaN`` and ``Infinity`` are taken by the parsers too) is 422
+    ``validation_error`` at ``body.metadata.generation_metadata.parameters`` and stores nothing,
+    where it was stored as ``null`` before. Opening a resumable session refuses it the same way,
+    at ``body.generation_metadata.parameters``, and opens no session.
+
+    Complement asserted: finite numbers, ``1e300`` and the largest and smallest a float holds
+    among them, are stored (201) and read back as the numbers sent."""
+    session = {"size": 10, "mime_type": "image/png", "sha256": "0" * 64}
+    async with media_client(settings, engine) as client:
+        before = await count(engine, "SELECT count(*) FROM media_assets")
+        sessions = await count(engine, "SELECT count(*) FROM media_upload_sessions")
+        for literal in ("1e400", "-1e400", "NaN", "Infinity", "-Infinity"):
+            data = png()
+            refused = await _upload_text(
+                client, data, _with_parameters(f'{{"cfg_scale": {literal}}}')
+            )
+            assert _error(refused)[:2] == (422, "validation_error"), (literal, refused.text)
+            assert _error(refused)[2]["field"] == "body.metadata.generation_metadata.parameters"
+            await _nothing_stored(engine, before, data)
+            opened = await client.post(
+                "/media/uploads",
+                content=_with_parameters(f'{{"hires": [{{"scale": {literal}}}]}}', **session),
+                headers={**WRITE, "Content-Type": "application/json"},
+            )
+            assert _error(opened)[:2] == (422, "validation_error"), (literal, opened.text)
+            assert _error(opened)[2]["field"] == "body.generation_metadata.parameters"
+            assert await count(engine, "SELECT count(*) FROM media_upload_sessions") == sessions
+
+        finite = (
+            '{"cfg_scale": 1e300, "floor": -1e300, "ceiling": 1.7976931348623157e308, '
+            '"denoise": 5e-324, "steps": 30, "hires": {"scale": [1.5, -2.5]}}'
+        )
+        kept = await _upload_text(client, png(), _with_parameters(finite))
+        assert kept.status_code == 201, kept.text
+        read = await client.get(f"/media/{kept.json()['id']}", headers=READ)
+        for answer in (kept, read):
+            stored = _exact(answer.text)["generation_metadata"]
+            assert stored == {"model": "sdxl", "parameters": _exact(finite)}
+
+
+async def test_a_video_probe_that_cannot_start_fails_no_upload(
+    settings: Settings, engine: AsyncEngine, tmp_path: Path
+) -> None:
+    """A probe never fails an upload (the plan's probe rule): an ffprobe that answered
+    ``-version`` when the tools were first checked, but can no longer be executed (its file now
+    holds no executable format), leaves the video's width, height and duration ``null``, and the
+    upload is 201 with its bytes served.
+
+    Complement asserted: the same tools measure a video while their ffprobe still runs, so the
+    nulls are the failed start's doing."""
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    ffmpeg, ffprobe = tools / "ffmpeg", tools / "ffprobe"
+    ffmpeg.write_text("#!/bin/sh\nexit 0\n")
+    report = (
+        '{"streams": [{"codec_type": "video", "width": 320, "height": 240}], '
+        '"format": {"duration": "2.5"}}'
+    )
+    ffprobe.write_text(f"#!/bin/sh\nprintf '%s\\n' '{report}'\n")
+    for tool in (ffmpeg, ffprobe):
+        tool.chmod(0o755)
+    posters = FfmpegTools(str(ffmpeg))
+    assert await posters.status() == ToolStatus("ok", "ok")
+    app = create_app(settings)
+    app.state.epistrel.bind(engine)
+    app.state.epistrel.posters = posters
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        poster = await uploaded(client)
+        video: dict[str, Any] = {
+            "content_type": "video/mp4",
+            "kind": "video",
+            "poster": poster["id"],
+        }
+        measured = await uploaded(client, mp4(), **video)
+        assert (measured["width"], measured["height"], measured["duration_ms"]) == (320, 240, 2500)
+        ffprobe.write_bytes(b"\x00\x01 no executable format")
+        assert os.access(ffprobe, os.X_OK)
+        data = mp4()
+        unmeasured = await uploaded(client, data, **video)
+        assert (unmeasured["width"], unmeasured["height"], unmeasured["duration_ms"]) == (
+            None,
+            None,
+            None,
+        )
+        content = await client.get(f"/media/{unmeasured['id']}/content", headers=READ)
+        assert (content.status_code, content.content) == (200, data)
 
 
 # -- the moderation hook ---------------------------------------------------------------------------

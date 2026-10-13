@@ -1594,7 +1594,7 @@
       },
       "DepictedSubject": {
         "additionalProperties": false,
-        "description": "A subject an image or video depicts (FR-IMG-9): a story ``character``, a\n``catalog_character`` or a ``persona``, by id. Stored as declared, unverified (the subject\nmay be created later), and indexed so that erasure finds the asset (FR-ADMIN-6).",
+        "description": "A subject an image or video depicts (FR-IMG-9): a story ``character``, a\n``catalog_character`` or a ``persona``, by id. Stored as declared, with no check that the\nsubject exists (it may be created later), and indexed so that erasure finds the asset\n(FR-ADMIN-6).",
         "properties": {
           "id": {
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
@@ -2734,7 +2734,7 @@
       },
       "GenerationMetadata": {
         "additionalProperties": false,
-        "description": "How an image was generated (FR-CAT-4): the adapter, the model, the prompt and negative\nprompt, the seed, the parameters (a JSON object of at most 8 KiB) and the ids of the\nreference images. Stored and returned exactly as sent: a key that was not sent is not\nreturned.",
+        "description": "How an image was generated (FR-CAT-4): the adapter, the model, the prompt and negative\nprompt, the seed, the parameters (a JSON object of at most 8 KiB, every number in it finite:\n``1e400``, ``NaN`` or ``Infinity`` is 422) and the ids of the reference images. Stored and\nreturned exactly as sent: a key that was not sent is not returned.",
         "properties": {
           "adapter": {
             "anyOf": [

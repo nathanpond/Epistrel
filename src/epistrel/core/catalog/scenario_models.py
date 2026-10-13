@@ -40,7 +40,6 @@ field of the document.
 from __future__ import annotations
 
 import functools
-import math
 import types
 import typing
 from collections.abc import Iterator
@@ -55,6 +54,7 @@ from pydantic.fields import FieldInfo
 from epistrel.core.catalog.service import CardRating, Revision
 from epistrel.core.enums import EntryStatus
 from epistrel.core.ids import Ulid
+from epistrel.core.json_numbers import require_finite
 from epistrel.core.ownership import Owner
 from epistrel.core.policies.model import AgeCondition, Rule, Target
 from epistrel.core.settings_schema import (
@@ -160,21 +160,6 @@ def _unique[T](values: list[T]) -> list[T]:
     return values
 
 
-def _finite(value: dict[str, Any]) -> dict[str, Any]:
-    """``value`` when every number in it is finite: JSON has no Infinity or NaN (a number too
-    large for a float parses as one), and the stored document must round-trip."""
-    pending: list[Any] = [value]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, float) and not math.isfinite(item):
-            raise ValueError("numbers must be finite")
-        if isinstance(item, dict):
-            pending.extend(item.values())
-        elif isinstance(item, list):
-            pending.extend(item)
-    return value
-
-
 Name = Annotated[str, Field(min_length=1, max_length=NAME_MAX), AfterValidator(_non_blank)]
 """A name (a scenario's, a location's, a role's public label): trimmed, never blank."""
 Prose = Annotated[str, Field(min_length=1, max_length=TEXT_MAX), AfterValidator(_non_blank)]
@@ -189,10 +174,11 @@ Caption = Annotated[str, Field(max_length=CAPTION_MAX)]
 Prompt = Annotated[str, Field(max_length=PROMPT_MAX)]
 Age = Annotated[int, Field(ge=0, le=AGE_MAX)]
 CastLimit = Annotated[int, Field(ge=CAST_LIMIT_MIN, le=CAST_LIMIT_MAX)]
-Structure = Annotated[dict[str, Any], AfterValidator(_finite)]
+Structure = Annotated[dict[str, Any], AfterValidator(require_finite)]
 """A State, the clock, a scheduled event, a predicate, a closed set or a rule (and a seed's
 valid time, a role's State values, the creation bounds): stored as given (a JSON object) in M3;
-M4 to M6 give them their semantics."""
+M4 to M6 give them their semantics. Every number in it must be finite, so the stored document
+round-trips (``core.json_numbers``)."""
 
 RoleKind = Literal["npc", "player"]
 FillMode = Literal["open", "default", "locked"]

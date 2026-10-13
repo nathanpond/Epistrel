@@ -4368,7 +4368,7 @@
       },
       "ImpactPreviewRequest": {
         "additionalProperties": false,
-        "description": "``POST /stories/{id}/impact-preview``: the change to preview, a profile to assign\n(``profile_id``), overrides to apply (``overrides``: settings, as a profile names them, that\nreplace the profile's), or both at once. Nothing is written.",
+        "description": "``POST /stories/{id}/impact-preview``: the change to preview, a profile to assign\n(``profile_id``), a change of the story's overrides (``overrides``: a JSON merge patch over\nthem, as ``PATCH /stories/{id}/profile-overrides`` takes its ``settings``, so ``null``\nremoves an override), or both at once. Nothing is written.",
         "examples": [
           {
             "overrides": {
@@ -4389,175 +4389,171 @@
                 "description": "An engine profile's settings, by capability module (FR-PROF-2).",
                 "properties": {
                   "budgets": {
-                    "additionalProperties": false,
-                    "description": "The per-turn model-call budget and deadline (NFR-PERF-6).",
-                    "properties": {
-                      "deadline_ms": {
-                        "default": 45000,
-                        "description": "A turn's wall-clock deadline, in milliseconds (M2's ``turn_deadline``, in seconds, which\n#113 moved here); the turn slot's lease and a queued request's wait follow it.",
-                        "maximum": 600000.0,
-                        "minimum": 1.0,
-                        "title": "Deadline Ms",
-                        "type": "integer"
-                      },
-                      "model_calls": {
-                        "anyOf": [
-                          {
-                            "maximum": 50.0,
-                            "minimum": 1.0,
-                            "type": "integer"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ],
-                        "description": "The most model calls one turn may make, the reserved guardrail calls included (M2's\n``max_model_calls_per_turn``, which #113 moved here): a cap below one generation plus those\ncalls refuses every turn. ``null``: NFR-PERF-6's formula (9 + the guardrail calls in M3).",
-                        "title": "Model Calls"
-                      }
-                    },
-                    "title": "Budgets",
-                    "type": "object"
-                  },
-                  "memory": {
-                    "additionalProperties": false,
-                    "description": "The memory modules (FR-PROF-2).",
-                    "properties": {
-                      "rolling_summary": {
+                    "anyOf": [
+                      {
                         "additionalProperties": false,
-                        "description": "The rolling auto-summary (FR-LITE-2).",
+                        "description": "The per-turn model-call budget and deadline (NFR-PERF-6).",
                         "properties": {
-                          "compress_threshold_tokens": {
-                            "default": 6000,
-                            "description": "The summary's size, in tokens, above which its segments are compressed further.",
-                            "maximum": 100000.0,
-                            "minimum": 100.0,
-                            "title": "Compress Threshold Tokens",
-                            "type": "integer"
-                          },
-                          "enabled": {
-                            "default": true,
-                            "description": "Fold messages older than the window into summary segments, and show the summary in the\nprompt.",
-                            "title": "Enabled",
-                            "type": "boolean"
-                          },
-                          "window_messages": {
-                            "default": 30,
-                            "description": "How many of the latest messages the prompt keeps verbatim.",
-                            "maximum": 500.0,
-                            "minimum": 1.0,
-                            "title": "Window Messages",
-                            "type": "integer"
-                          }
-                        },
-                        "title": "RollingSummary",
-                        "type": "object"
-                      }
-                    },
-                    "title": "Memory",
-                    "type": "object"
-                  },
-                  "models": {
-                    "additionalProperties": false,
-                    "description": "Per-purpose model routing (FR-MODEL) and the generation defaults.",
-                    "properties": {
-                      "generation": {
-                        "additionalProperties": false,
-                        "description": "The generation defaults (FR-LITE-4): temperature, top_p and response length.",
-                        "properties": {
-                          "response_length": {
+                          "deadline_ms": {
                             "anyOf": [
                               {
-                                "enum": [
-                                  "short",
-                                  "medium",
-                                  "long"
-                                ],
-                                "type": "string"
-                              },
-                              {
-                                "maximum": 4000.0,
+                                "default": 45000,
+                                "description": "A turn's wall-clock deadline, in milliseconds (M2's ``turn_deadline``, in seconds, which\n#113 moved here); the turn slot's lease and a queued request's wait follow it.",
+                                "maximum": 600000.0,
                                 "minimum": 1.0,
+                                "title": "Deadline Ms",
                                 "type": "integer"
-                              }
-                            ],
-                            "default": "medium",
-                            "description": "``short``, ``medium``, ``long``, or a token cap.",
-                            "title": "Response Length"
-                          },
-                          "temperature": {
-                            "anyOf": [
-                              {
-                                "maximum": 2.0,
-                                "minimum": 0.0,
-                                "type": "number"
                               },
                               {
                                 "type": "null"
                               }
-                            ],
-                            "default": 0.8,
-                            "title": "Temperature"
+                            ]
                           },
-                          "top_p": {
+                          "model_calls": {
                             "anyOf": [
                               {
-                                "maximum": 1.0,
-                                "minimum": 0.0,
-                                "type": "number"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": 0.95,
-                            "title": "Top P"
-                          }
-                        },
-                        "title": "Generation",
-                        "type": "object"
-                      },
-                      "purposes": {
-                        "additionalProperties": false,
-                        "description": "Routing by purpose; a purpose left out inherits the deployment's configuration.",
-                        "maxProperties": 50,
-                        "patternProperties": {
-                          "^[a-z][a-z0-9_]{0,63}$": {
-                            "additionalProperties": false,
-                            "description": "One model purpose's routing: its model and parameters; ``null`` inherits from the\ndeployment's model configuration (``/admin/model-config``). Endpoints and keys are never\npart of a profile.",
-                            "properties": {
-                              "model": {
                                 "anyOf": [
                                   {
-                                    "maxLength": 200,
-                                    "minLength": 1,
-                                    "type": "string"
+                                    "maximum": 50.0,
+                                    "minimum": 1.0,
+                                    "type": "integer"
                                   },
                                   {
                                     "type": "null"
                                   }
                                 ],
-                                "title": "Model"
+                                "description": "The most model calls one turn may make, the reserved guardrail calls included (M2's\n``max_model_calls_per_turn``, which #113 moved here): a cap below one generation plus those\ncalls refuses every turn. ``null``: NFR-PERF-6's formula (9 + the guardrail calls in M3).",
+                                "title": "Model Calls"
                               },
-                              "params": {
-                                "anyOf": [
-                                  {
-                                    "additionalProperties": false,
-                                    "description": "Generation parameters for one purpose's calls; ``null`` inherits.",
-                                    "properties": {
-                                      "max_tokens": {
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "Budgets",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "memory": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "The memory modules (FR-PROF-2).",
+                        "properties": {
+                          "rolling_summary": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "The rolling auto-summary (FR-LITE-2).",
+                                "properties": {
+                                  "compress_threshold_tokens": {
+                                    "anyOf": [
+                                      {
+                                        "default": 6000,
+                                        "description": "The summary's size, in tokens, above which its segments are compressed further.",
+                                        "maximum": 100000.0,
+                                        "minimum": 100.0,
+                                        "title": "Compress Threshold Tokens",
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "enabled": {
+                                    "anyOf": [
+                                      {
+                                        "default": true,
+                                        "description": "Fold messages older than the window into summary segments, and show the summary in the\nprompt.",
+                                        "title": "Enabled",
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "window_messages": {
+                                    "anyOf": [
+                                      {
+                                        "default": 30,
+                                        "description": "How many of the latest messages the prompt keeps verbatim.",
+                                        "maximum": 500.0,
+                                        "minimum": 1.0,
+                                        "title": "Window Messages",
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "title": "RollingSummary",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "Memory",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "models": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "Per-purpose model routing (FR-MODEL) and the generation defaults.",
+                        "properties": {
+                          "generation": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "The generation defaults (FR-LITE-4): temperature, top_p and response length.",
+                                "properties": {
+                                  "response_length": {
+                                    "anyOf": [
+                                      {
                                         "anyOf": [
+                                          {
+                                            "enum": [
+                                              "short",
+                                              "medium",
+                                              "long"
+                                            ],
+                                            "type": "string"
+                                          },
                                           {
                                             "maximum": 4000.0,
                                             "minimum": 1.0,
                                             "type": "integer"
-                                          },
-                                          {
-                                            "type": "null"
                                           }
                                         ],
-                                        "title": "Max Tokens"
+                                        "default": "medium",
+                                        "description": "``short``, ``medium``, ``long``, or a token cap.",
+                                        "title": "Response Length"
                                       },
-                                      "temperature": {
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "temperature": {
+                                    "anyOf": [
+                                      {
                                         "anyOf": [
                                           {
                                             "maximum": 2.0,
@@ -4568,9 +4564,17 @@
                                             "type": "null"
                                           }
                                         ],
+                                        "default": 0.8,
                                         "title": "Temperature"
                                       },
-                                      "top_p": {
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "top_p": {
+                                    "anyOf": [
+                                      {
                                         "anyOf": [
                                           {
                                             "maximum": 1.0,
@@ -4581,88 +4585,259 @@
                                             "type": "null"
                                           }
                                         ],
+                                        "default": 0.95,
                                         "title": "Top P"
+                                      },
+                                      {
+                                        "type": "null"
                                       }
-                                    },
-                                    "title": "RouteParams",
-                                    "type": "object"
-                                  },
-                                  {
-                                    "type": "null"
+                                    ]
                                   }
-                                ]
+                                },
+                                "title": "Generation",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
                               }
-                            },
-                            "title": "PurposeRoute",
-                            "type": "object"
+                            ]
+                          },
+                          "purposes": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "Routing by purpose; a purpose left out inherits the deployment's configuration.",
+                                "maxProperties": 50,
+                                "patternProperties": {
+                                  "^[a-z][a-z0-9_]{0,63}$": {
+                                    "anyOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "description": "One model purpose's routing: its model and parameters; ``null`` inherits from the\ndeployment's model configuration (``/admin/model-config``). Endpoints and keys are never\npart of a profile.",
+                                        "properties": {
+                                          "model": {
+                                            "anyOf": [
+                                              {
+                                                "anyOf": [
+                                                  {
+                                                    "maxLength": 200,
+                                                    "minLength": 1,
+                                                    "type": "string"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ],
+                                                "title": "Model"
+                                              },
+                                              {
+                                                "type": "null"
+                                              }
+                                            ]
+                                          },
+                                          "params": {
+                                            "anyOf": [
+                                              {
+                                                "anyOf": [
+                                                  {
+                                                    "additionalProperties": false,
+                                                    "description": "Generation parameters for one purpose's calls; ``null`` inherits.",
+                                                    "properties": {
+                                                      "max_tokens": {
+                                                        "anyOf": [
+                                                          {
+                                                            "maximum": 4000.0,
+                                                            "minimum": 1.0,
+                                                            "type": "integer"
+                                                          },
+                                                          {
+                                                            "type": "null"
+                                                          }
+                                                        ],
+                                                        "title": "Max Tokens"
+                                                      },
+                                                      "temperature": {
+                                                        "anyOf": [
+                                                          {
+                                                            "maximum": 2.0,
+                                                            "minimum": 0.0,
+                                                            "type": "number"
+                                                          },
+                                                          {
+                                                            "type": "null"
+                                                          }
+                                                        ],
+                                                        "title": "Temperature"
+                                                      },
+                                                      "top_p": {
+                                                        "anyOf": [
+                                                          {
+                                                            "maximum": 1.0,
+                                                            "minimum": 0.0,
+                                                            "type": "number"
+                                                          },
+                                                          {
+                                                            "type": "null"
+                                                          }
+                                                        ],
+                                                        "title": "Top P"
+                                                      }
+                                                    },
+                                                    "title": "RouteParams",
+                                                    "type": "object"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
+                                              {
+                                                "type": "null"
+                                              }
+                                            ]
+                                          }
+                                        },
+                                        "title": "PurposeRoute",
+                                        "type": "object"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "title": "Purposes",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
-                        "title": "Purposes",
+                        "title": "Models",
                         "type": "object"
+                      },
+                      {
+                        "type": "null"
                       }
-                    },
-                    "title": "Models",
-                    "type": "object"
+                    ]
                   },
                   "pins": {
-                    "additionalProperties": false,
-                    "description": "Pinned memories (FR-LITE-3): the story's author-pinned texts, always in the prompt.",
-                    "properties": {
-                      "enabled": {
-                        "default": true,
-                        "description": "Include the story's pinned memories in the prompt.",
-                        "title": "Enabled",
-                        "type": "boolean"
-                      },
-                      "max_pinned": {
-                        "default": 50,
-                        "description": "The most pinned memories a story may hold.",
-                        "maximum": 500.0,
-                        "minimum": 1.0,
-                        "title": "Max Pinned",
-                        "type": "integer"
-                      }
-                    },
-                    "title": "Pins",
-                    "type": "object"
-                  },
-                  "pipeline": {
-                    "default": "lite",
-                    "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
-                    "enum": [
-                      "lite"
-                    ],
-                    "title": "Pipeline",
-                    "type": "string"
-                  },
-                  "repair": {
-                    "additionalProperties": false,
-                    "description": "Repair and polish (FR-PROF-2).",
-                    "properties": {
-                      "polish": {
+                    "anyOf": [
+                      {
                         "additionalProperties": false,
-                        "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                        "description": "Pinned memories (FR-LITE-3): the story's author-pinned texts, always in the prompt.",
                         "properties": {
                           "enabled": {
-                            "default": true,
-                            "title": "Enabled",
-                            "type": "boolean"
+                            "anyOf": [
+                              {
+                                "default": true,
+                                "description": "Include the story's pinned memories in the prompt.",
+                                "title": "Enabled",
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
-                          "max_regenerations": {
-                            "default": 2,
-                            "description": "How many times such a reply is generated again.",
-                            "maximum": 5.0,
-                            "minimum": 0.0,
-                            "title": "Max Regenerations",
-                            "type": "integer"
+                          "max_pinned": {
+                            "anyOf": [
+                              {
+                                "default": 50,
+                                "description": "The most pinned memories a story may hold.",
+                                "maximum": 500.0,
+                                "minimum": 1.0,
+                                "title": "Max Pinned",
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
-                        "title": "Polish",
+                        "title": "Pins",
                         "type": "object"
+                      },
+                      {
+                        "type": "null"
                       }
-                    },
-                    "title": "Repair",
-                    "type": "object"
+                    ]
+                  },
+                  "pipeline": {
+                    "anyOf": [
+                      {
+                        "default": "lite",
+                        "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                        "enum": [
+                          "lite"
+                        ],
+                        "title": "Pipeline",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "repair": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "Repair and polish (FR-PROF-2).",
+                        "properties": {
+                          "polish": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                                "properties": {
+                                  "enabled": {
+                                    "anyOf": [
+                                      {
+                                        "default": true,
+                                        "title": "Enabled",
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "max_regenerations": {
+                                    "anyOf": [
+                                      {
+                                        "default": 2,
+                                        "description": "How many times such a reply is generated again.",
+                                        "maximum": 5.0,
+                                        "minimum": 0.0,
+                                        "title": "Max Regenerations",
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "title": "Polish",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "Repair",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "title": "ProfileSettings",
@@ -8003,7 +8178,7 @@
         "type": "object"
       },
       "ProfileBody": {
-        "description": "The profile after a create, an edit or a copy, at its latest version, with the\ndeployment's ``config_revision`` (unchanged).",
+        "description": "The profile after a create or a copy, at its latest version, with the deployment's\n``config_revision`` (which a create or a copy leaves as it is).",
         "properties": {
           "config_revision": {
             "title": "Config Revision",
@@ -8789,7 +8964,7 @@
         "type": "object"
       },
       "ProfileEditBody": {
-        "description": "An edit's two stages (FR-PROF-7): ``applied``; the ``impact`` report over every story\nfollowing the profile; and ``result``, the profile at its latest version once the edit\napplied (``null`` when the report held it back and nothing was written). ``config_revision``\nis the deployment's (unchanged).",
+        "description": "An edit's two stages (FR-PROF-7): ``applied``; the ``impact`` report over every story\nfollowing the profile, each with the change it sees through its own overrides; and\n``result``, the profile at its latest version once the edit applied (``null`` when the\nreport held it back and nothing was written). ``config_revision`` is the deployment's: one\nmore than before when the applied edit made a new version (a configuration change every\nfollowing story runs under from its next turn, #113), unchanged otherwise.",
         "properties": {
           "applied": {
             "title": "Applied",
@@ -9133,79 +9308,100 @@
                             "maxProperties": 50,
                             "patternProperties": {
                               "^[a-z][a-z0-9_]{0,63}$": {
-                                "additionalProperties": false,
-                                "description": "One model purpose's routing: its model and parameters; ``null`` inherits from the\ndeployment's model configuration (``/admin/model-config``). Endpoints and keys are never\npart of a profile.",
-                                "properties": {
-                                  "model": {
-                                    "anyOf": [
-                                      {
-                                        "maxLength": 200,
-                                        "minLength": 1,
-                                        "type": "string"
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ],
-                                    "title": "Model"
-                                  },
-                                  "params": {
-                                    "anyOf": [
-                                      {
-                                        "additionalProperties": false,
-                                        "description": "Generation parameters for one purpose's calls; ``null`` inherits.",
-                                        "properties": {
-                                          "max_tokens": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "description": "One model purpose's routing: its model and parameters; ``null`` inherits from the\ndeployment's model configuration (``/admin/model-config``). Endpoints and keys are never\npart of a profile.",
+                                    "properties": {
+                                      "model": {
+                                        "anyOf": [
+                                          {
                                             "anyOf": [
                                               {
-                                                "maximum": 4000.0,
-                                                "minimum": 1.0,
-                                                "type": "integer"
+                                                "maxLength": 200,
+                                                "minLength": 1,
+                                                "type": "string"
                                               },
                                               {
                                                 "type": "null"
                                               }
                                             ],
-                                            "title": "Max Tokens"
+                                            "title": "Model"
                                           },
-                                          "temperature": {
-                                            "anyOf": [
-                                              {
-                                                "maximum": 2.0,
-                                                "minimum": 0.0,
-                                                "type": "number"
-                                              },
-                                              {
-                                                "type": "null"
-                                              }
-                                            ],
-                                            "title": "Temperature"
-                                          },
-                                          "top_p": {
-                                            "anyOf": [
-                                              {
-                                                "maximum": 1.0,
-                                                "minimum": 0.0,
-                                                "type": "number"
-                                              },
-                                              {
-                                                "type": "null"
-                                              }
-                                            ],
-                                            "title": "Top P"
+                                          {
+                                            "type": "null"
                                           }
-                                        },
-                                        "title": "RouteParams",
-                                        "type": "object"
+                                        ]
                                       },
-                                      {
-                                        "type": "null"
+                                      "params": {
+                                        "anyOf": [
+                                          {
+                                            "anyOf": [
+                                              {
+                                                "additionalProperties": false,
+                                                "description": "Generation parameters for one purpose's calls; ``null`` inherits.",
+                                                "properties": {
+                                                  "max_tokens": {
+                                                    "anyOf": [
+                                                      {
+                                                        "maximum": 4000.0,
+                                                        "minimum": 1.0,
+                                                        "type": "integer"
+                                                      },
+                                                      {
+                                                        "type": "null"
+                                                      }
+                                                    ],
+                                                    "title": "Max Tokens"
+                                                  },
+                                                  "temperature": {
+                                                    "anyOf": [
+                                                      {
+                                                        "maximum": 2.0,
+                                                        "minimum": 0.0,
+                                                        "type": "number"
+                                                      },
+                                                      {
+                                                        "type": "null"
+                                                      }
+                                                    ],
+                                                    "title": "Temperature"
+                                                  },
+                                                  "top_p": {
+                                                    "anyOf": [
+                                                      {
+                                                        "maximum": 1.0,
+                                                        "minimum": 0.0,
+                                                        "type": "number"
+                                                      },
+                                                      {
+                                                        "type": "null"
+                                                      }
+                                                    ],
+                                                    "title": "Top P"
+                                                  }
+                                                },
+                                                "title": "RouteParams",
+                                                "type": "object"
+                                              },
+                                              {
+                                                "type": "null"
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
                                       }
-                                    ]
+                                    },
+                                    "title": "PurposeRoute",
+                                    "type": "object"
+                                  },
+                                  {
+                                    "type": "null"
                                   }
-                                },
-                                "title": "PurposeRoute",
-                                "type": "object"
+                                ]
                               }
                             },
                             "title": "Purposes",
@@ -25295,7 +25491,7 @@
         ]
       },
       "put": {
-        "description": "Replace the profile's name and settings. A new version is made only when the settings differ from the latest version's; a name-only edit makes none, and an edit that changes nothing records nothing. A preset is edited like any profile (FR-PROF-3). A deleted profile cannot be edited (422 `profile_deleted`; copy it instead). The settings may name any delivered module and level (`GET /engine-profiles/schema`); what they leave out takes the default. A shape error is 422 `validation_error` at the field; a module or level this deployment has not delivered, or a module whose dependencies are off (FR-PROF-4), is 422 `invalid_profile` naming each (`details.undelivered`, `details.missing_dependencies`), and nothing is written.\n\nAn edit runs in two stages (FR-PROF-7). Its `impact` report lists every story that follows the profile's latest version: the capabilities each gains and loses, its fingerprint before and after with the capabilities enabled and the quality status after (FR-PROF-16), whether a backfill would be needed and whether its upgrade is unavailable. The report's own `fingerprint_before`, `fingerprint_after`, `capabilities_after` and `quality_status_after` are null, since each entry states its story's, unless no story follows the profile: then they state the profile's own, before and after the edit. When the report has `warnings` and the body does not set `ignore_warnings` (`ignoreWarnings`), nothing is written and the answer is 200 with `applied: false` and the report; the `Idempotency-Key` is not kept, so the confirmation may reuse it. With `ignore_warnings`, or a report without warnings, the edit applies: `applied: true`, the report, and the profile in `result`. A data-producing increase (none is delivered in M3) cannot apply to a following story with history (a committed turn still on its timeline): that story keeps the version it ran on, and every other story moves to the new one. Settings that cannot run are refused whatever `ignore_warnings` says.",
+        "description": "Replace the profile's name and settings. A new version is made only when the settings differ from the latest version's; a name-only edit makes none, and an edit that changes nothing records nothing. A preset is edited like any profile (FR-PROF-3). A deleted profile cannot be edited (422 `profile_deleted`; copy it instead). The settings may name any delivered module and level (`GET /engine-profiles/schema`); what they leave out takes the default. A shape error is 422 `validation_error` at the field; a module or level this deployment has not delivered, or a module whose dependencies are off (FR-PROF-4), is 422 `invalid_profile` naming each (`details.undelivered`, `details.missing_dependencies`), and nothing is written.\n\nAn edit runs in two stages (FR-PROF-7). Its `impact` report lists every story that follows the profile's latest version: the capabilities each gains and loses, its fingerprint before and after with the capabilities enabled and the quality status after (FR-PROF-16), whether a backfill would be needed and whether its upgrade is unavailable. The report's own `fingerprint_before`, `fingerprint_after`, `capabilities_after` and `quality_status_after` are null, since each entry states its story's, unless no story follows the profile: then they state the profile's own, before and after the edit. When the report has `warnings` and the body does not set `ignore_warnings` (`ignoreWarnings`), nothing is written and the answer is 200 with `applied: false` and the report; the `Idempotency-Key` is not kept, so the confirmation may reuse it. With `ignore_warnings`, or a report without warnings, the edit applies: `applied: true`, the report, and the profile in `result`. A data-producing increase (none is delivered in M3) cannot apply to a following story with history (a committed turn still on its timeline): that story keeps the version it ran on, and every other story moves to the new one. Each story's entry is the change it sees through its own overrides (`PATCH /stories/{id}/profile-overrides`): a setting a story overrides keeps the story's value. Settings that cannot run are refused whatever `ignore_warnings` says, and so is an edit under which a following story's overrides could not run: 422 `invalid_profile` naming those stories in `details.stories` (at most 1,000; `details.count` counts them all), with nothing written.\n\nA new version is a configuration change (FR-PROF-6): every story that follows the profile runs under it from its next turn, and a turn already running finishes under the configuration it started with. The answer's `config_revision`, the deployment's, moves by one, and `GET /admin/config-changes` lists, at that revision, an `engine_profile:<id>` row (the old and new version numbers, with the strongest class among the changed settings) and one `engine_profile:<id>.<setting>` row per setting whose value over the deployment's `profile_defaults` changed, each with its class. A name-only edit changes no configuration and leaves `config_revision` as it is.",
         "operationId": "update_profile",
         "parameters": [
           {
@@ -32839,7 +33035,7 @@
     },
     "/stories/{story_id}/impact-preview": {
       "post": {
-        "description": "What assigning `profile_id` (its latest version) and/or applying `overrides` (settings, as a profile names them, laid over the story's own overrides) would do to the story (FR-PROF-7), without changing anything: the capabilities it would gain and lose, whether a backfill would be needed (with its estimated model calls, tokens and duration), whether the upgrade is unavailable (a data-producing increase for a story with history, a committed turn still on its timeline: M3 has no backfill), the guarantees it would lose, the fingerprint before and after with the capabilities enabled and the quality status after (FR-PROF-16), and `warnings`: the reasons the change itself would need `ignore_warnings`. A request naming neither is 422. A profile that cannot be assigned is 422 `profile_deleted`; a result that cannot run is 422 `validation_error` at its field or `invalid_profile` (FR-PROF-4). Nothing is written: the call takes no `Idempotency-Key`.",
+        "description": "What assigning `profile_id` (its latest version) and/or applying `overrides` would do to the story (FR-PROF-7), without changing anything. `overrides` is a JSON merge patch over the story's overrides, exactly as `PATCH /stories/{id}/profile-overrides` takes its `settings` (`null` removes an override), so the report is the one that write would answer; an assigned profile keeps the story's overrides, as an assignment does. The report states the capabilities the change would gain and lose, whether a backfill would be needed (with its estimated model calls, tokens and duration), whether the upgrade is unavailable (a data-producing increase for a story with history, a committed turn still on its timeline: M3 has no backfill), the guarantees it would lose, the fingerprint before and after with the capabilities enabled and the quality status after (FR-PROF-16), and `warnings`: the reasons the change itself would need `ignore_warnings`. A request naming neither is 422. A profile that cannot be assigned is 422 `profile_deleted`; a patch or a result that cannot run is 422 `validation_error` at its field or `invalid_profile` (FR-PROF-4), as the write would be. Nothing is written: the call takes no `Idempotency-Key`.",
         "operationId": "impact_preview",
         "parameters": [
           {
@@ -34073,7 +34269,7 @@
     },
     "/stories/{story_id}/profile-overrides": {
       "patch": {
-        "description": "Change the story's overrides of its profile's dials (FR-PROF-5) with a JSON merge patch (RFC 7396) in `settings`: a key present sets that dial (an object merges into an object), and `null` removes the override, so the dial follows the profile again. The overrides persist across the profile's versions. The overrides that result must be a settings document naming only delivered settings (422 `validation_error` at `body.settings.<path>`, or `invalid_profile`), and the whole configuration must run (422 `invalid_profile`); nothing is stored otherwise. `expected_revision` (optional) is the overrides' revision the patch was made against: another is 409 `revision_conflict` (`details.reason: overrides_revision`). A patch that changes nothing writes nothing. Recorded as one setting per dial, `profile_overrides.<path>`. Two stages (FR-PROF-7): the impact report (`impact`, one story) is always answered; a change it warns of (a capability gained or lost, an upgrade unavailable) is applied only with `ignore_warnings` (`ignoreWarnings`), and otherwise nothing is written (`applied: false`, `result: null`) and the `Idempotency-Key` is not kept, so the confirmation may reuse it. A configuration that cannot run is refused all the same (422 `invalid_profile`). Applied, `result` is the story's effective configuration after the write. The write is a story-scoped configuration change: it moves the story's `config_revision` and is listed in `GET /stories/{id}/config-changes`; the story's next turn runs under it, and a turn already running finishes under the configuration it started with. An archived story is 409 `story_archived`.",
+        "description": "Change the story's overrides of its profile's dials (FR-PROF-5) with a JSON merge patch (RFC 7396) in `settings`: a key present sets that dial (an object merges into an object), and `null` removes the override, so the dial follows the profile again. The overrides persist across the profile's versions. A `null` must name a setting or group of the published schema (422 `validation_error` at its field; `invalid_profile` for one this deployment has not delivered). The overrides that result must be a settings document naming only delivered settings (422 `validation_error` at `body.settings.<path>`, or `invalid_profile`), and the whole configuration must run (422 `invalid_profile`); nothing is stored otherwise. They are stored without empty objects. `expected_revision` (optional) is the overrides' revision the patch was made against: another is 409 `revision_conflict` (`details.reason: overrides_revision`). A patch that changes no setting (one that removes an override the story does not have, or names an empty group) writes nothing: neither revision moves. `POST /stories/{id}/impact-preview` with the same patch in `overrides` answers this call's report without writing. Recorded as one setting per dial, `profile_overrides.<path>`. Two stages (FR-PROF-7): the impact report (`impact`, one story) is always answered; a change it warns of (a capability gained or lost, an upgrade unavailable) is applied only with `ignore_warnings` (`ignoreWarnings`), and otherwise nothing is written (`applied: false`, `result: null`) and the `Idempotency-Key` is not kept, so the confirmation may reuse it. A configuration that cannot run is refused all the same (422 `invalid_profile`). Applied, `result` is the story's effective configuration after the write. The write is a story-scoped configuration change: it moves the story's `config_revision` and is listed in `GET /stories/{id}/config-changes`; the story's next turn runs under it, and a turn already running finishes under the configuration it started with. An archived story is 409 `story_archived`.",
         "operationId": "set_profile_overrides",
         "parameters": [
           {

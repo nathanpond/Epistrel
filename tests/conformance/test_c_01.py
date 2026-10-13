@@ -20,10 +20,14 @@ API-key routes (they need ``EPISTREL_CONFIG_KEY``) and ``upload_media``
 (#105: a streamed multipart body whose ``metadata`` part is JSON, which generation cannot
 encode; ``test_c_01__malformed`` sends its malformed cases by hand); all are covered by C-03 and
 their own tests. ``replace_model_config`` is generated, and each successful write is undone so
-that later examples still reach the stub model. The fixture media asset may be retired by a
-generated ``delete_media``: a retired asset still reads, so later examples still reach it. The
-fixture upload session (#107) may be completed or aborted by a generated call: a closed session
-still reads, and its parts and completion answer 409 ``upload_closed``, a documented answer.
+that later examples still reach the stub model. So is ``set_profile_overrides`` (#113): a
+generated ``budgets.deadline_ms`` of a few milliseconds, or a call cap below what a turn needs,
+is a valid write on the fixture story, after which its later turns would answer a documented
+503 or 422, so each successful one is followed by a patch removing every override. The fixture
+media asset may be retired by a generated ``delete_media``: a retired asset still reads, so
+later examples still reach it. The fixture upload session (#107) may be completed or aborted by
+a generated call: a closed session still reads, and its parts and completion answer 409
+``upload_closed``, a documented answer.
 ``PUT /media/uploads/{id}/parts/{n}`` takes a raw ``application/octet-stream`` body, which no
 component describes (``_body_problems`` checks only that it is binary). ``GET /media/{id}/url``
 signs with the app's ``EPISTREL_CONFIG_KEY`` under the seeded ``public_base_url``, which is put
@@ -132,6 +136,8 @@ REFUSED = frozenset({400, 401, 404, 409, 422})
 RESTORED = "replace_model_config"
 """Generated, then undone after each success (``_restore_model_config``)."""
 SETTINGS_WRITE = "update_deployment_settings"
+OVERRIDES_WRITE = "set_profile_overrides"
+"""Generated, then undone after each success (``_restore_overrides``, #113)."""
 PUBLIC_BASE_URL = "https://media.example.test"
 """Seeded, and put back after each generated settings write (``_restore_public_base``)."""
 EXAMPLES = 100
@@ -314,6 +320,29 @@ def exercise(case: Case[Any], live: Live) -> None:
         _restore_model_config(live)
     if operation_id == SETTINGS_WRITE and response.status_code == 200:
         _restore_public_base(live)
+    if operation_id == OVERRIDES_WRITE and response.status_code == 200:
+        _restore_overrides(live)
+
+
+def _restore_overrides(live: Live) -> None:
+    """Remove every override of the fixture story after a generated ``PATCH
+    /stories/{id}/profile-overrides`` succeeded (#113): ``null`` for each group the published
+    schema names, confirmed. A generated deadline of a few milliseconds is a valid write, but
+    every later example that plays a turn on the story would answer a documented 503
+    ``model_unavailable``, so the write is undone through the API, as
+    ``replace_model_config``'s is."""
+    groups = COMMITTED["components"]["schemas"]["ProfileOverridesPatch"]["properties"]
+    restore = SCHEMA["/stories/{story_id}/profile-overrides"]["PATCH"].Case(
+        path_parameters={"story_id": live.story_id},
+        body={
+            "settings": dict.fromkeys(groups["settings"]["properties"]),
+            "ignore_warnings": True,
+        },
+        headers={"X-Epistrel-Principal": "c01-restore"},
+    )
+    restored = restore.call(app=live.app, headers=bearer())
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["result"]["overrides"]["settings"] == {}, restored.text
 
 
 def _restore_public_base(live: Live) -> None:

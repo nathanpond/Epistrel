@@ -1149,7 +1149,9 @@ async def test_u_28__effective(scratch: Space) -> None:
 async def test_c_16__follow_latest(scratch: Space) -> None:
     """A story follows its profile's latest version (FR-PROF-6). Two stories are assigned a
     profile through the API (FR-PROF-1, FR-API-6) and a third stays on Lite; each plays, and
-    every respond response reports the profile and the version the turn ran under. A
+    every respond response reports the profile and the version the turn ran under, and the
+    story's configuration revision at its start (which the edit below, a deployment-scope
+    change, leaves as it is: the deployment's moves). A
     behavioral edit of the profile (the temperature and the summary window) applies at once:
     its impact report lists both followers with no capability gained or lost and no backfill,
     and warns of nothing. It is a configuration change: one deployment revision, a row for the
@@ -1180,6 +1182,8 @@ async def test_c_16__follow_latest(scratch: Space) -> None:
                 f"/stories/{story}/settings", json={"lite_summary_chunk": 2}, headers=headers(A)
             )
             await ok(chunked)
+        story_revision = "SELECT config_revision FROM stories WHERE id = :s"
+        revisions: dict[str, int] = {}
         for story, actor in followers:
             for _ in range(3):
                 stub.reset()
@@ -1187,6 +1191,8 @@ async def test_c_16__follow_latest(scratch: Space) -> None:
                 assert played["profile"] == {"id": profile, "version": 1}
                 assert _sent(stub)[0] == 0.6
             assert await summary_jobs(scratch.db, story) == []  # 6 rows: within the window
+            revisions[story] = await scalar(scratch.db, story_revision, s=story)
+            assert played["config_revision"] == revisions[story]
         stub.reset()
         lite = await _play(client, bystander, bystander_actor)
         assert lite["profile"] == {"id": LITE_PRESET_ID, "version": 1}
@@ -1246,6 +1252,8 @@ async def test_c_16__follow_latest(scratch: Space) -> None:
             stub.reset()
             played = await _play(client, story, actor)
             assert played["profile"] == {"id": profile, "version": 2}
+            assert played["config_revision"] == revisions[story]
+            assert await scalar(scratch.db, story_revision, s=story) == revisions[story]
             assert _sent(stub)[0] == 0.3
             recorded = await _turn_configuration(scratch.db, story)
             assert (recorded["profile"], recorded["profile_version"]) == (profile, 2)

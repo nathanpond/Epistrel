@@ -7,14 +7,19 @@
   story keeps the version it runs on. A profile that is deleted or unknown is 422
   ``profile_deleted`` at ``body.profile_id``, as the impact preview says.
 - **Override** (``PATCH /stories/{id}/profile-overrides {settings, expected_revision?}``):
-  ``settings`` is a JSON merge patch (RFC 7396) over the story's overrides: a key present sets
-  that dial (an object merges into an object), and ``null`` removes the override, so the dial
-  follows the profile again. The overrides that result are checked as a settings document
-  (strictly: 422 ``validation_error`` at ``body.settings.<path>``; every name delivered: 422
-  ``invalid_profile``) and the whole configuration as one (422 ``invalid_profile``); nothing is
-  stored otherwise. ``expected_revision``, when sent, must be the overrides' current revision
-  (409 ``revision_conflict``, ``reason: overrides_revision``). A patch that changes nothing
-  writes nothing.
+  ``settings`` is a JSON merge patch (RFC 7396) over the story's overrides
+  (``effective.patched``): a key present sets that dial (an object merges into an object), and
+  ``null`` removes the override, so the dial follows the profile again. A removal must name a
+  setting or group the published schema has (422 ``validation_error`` at its field, or
+  ``invalid_profile`` for an undelivered one). The overrides that result are checked as a
+  settings document (strictly: 422 ``validation_error`` at ``body.settings.<path>``; every name
+  delivered: 422 ``invalid_profile``) and the whole configuration as one (422
+  ``invalid_profile``); nothing is stored otherwise. They are stored without empty objects,
+  which name no setting. ``expected_revision``, when sent, must be the overrides' current
+  revision (409 ``revision_conflict``, ``reason: overrides_revision``). A patch that changes no
+  setting (one that removes an override the story does not have, or names an empty group)
+  writes nothing: no revision moves and no row is recorded. The impact preview applies its
+  ``overrides`` the same way (``effective.resolve``), so it answers what this write would do.
 
 Both run through #109's two stages (``impact.two_stage``) with a one-story impact report from
 the story's configuration now to the one it would run under: a change the report warns of (a
@@ -43,9 +48,9 @@ stories.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated, Any
+from typing import Any
 
-from pydantic import ConfigDict, Field, WithJsonSchema
+from pydantic import ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -57,9 +62,8 @@ from epistrel.core.profiles import effective, impact, schema
 from epistrel.core.profiles.effective import Configuration, EffectiveConfig
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactReport, TwoStageRequest, TwoStageResult
-from epistrel.core.profiles.schema import SETTINGS_SCHEMA, ProfileSettings, Purposes
-from epistrel.core.profiles.validate import canonical
-from epistrel.core.settings_schema import ConfigClass, merge_patch
+from epistrel.core.profiles.schema import PATCH_SCHEMA, ProfileSettings, Purposes, SettingsPatch
+from epistrel.core.settings_schema import ConfigClass
 from epistrel.core.tables import deployment_state, engine_profiles, stories
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
@@ -70,25 +74,10 @@ OVERRIDES_SETTING = "profile_overrides"
 ``profile_overrides.<dotted path>``."""
 REVISION_REASON = "overrides_revision"
 
-
-def _nullable(node: Any) -> Any:
-    """A JSON Schema whose every property also takes ``null`` (a merge patch removes it)."""
-    if not isinstance(node, dict):
-        return node
-    found = dict(node)
-    properties = found.get("properties")
-    if isinstance(properties, dict):
-        found["properties"] = {
-            name: {"anyOf": [_nullable(child), {"type": "null"}]}
-            for name, child in properties.items()
-        }
-    return found
-
-
-PATCH_SCHEMA: dict[str, Any] = _nullable(SETTINGS_SCHEMA)
-OverridesPatchDocument = Annotated[dict[str, Any], WithJsonSchema(PATCH_SCHEMA)]
-"""A JSON merge patch over a story's overrides: the delivered settings schema, with ``null``
-allowed at every key (it removes that override)."""
+OverridesPatchDocument = SettingsPatch
+"""A JSON merge patch over a story's overrides (``schema.SettingsPatch``): the delivered
+settings schema (``PATCH_SCHEMA``), with ``null`` allowed for every member (it removes that
+override)."""
 
 EXAMPLE_PATCH: dict[str, Any] = {
     "memory": {"rolling_summary": {"window_messages": 12}},
@@ -307,6 +296,15 @@ def leaf_values(document: Mapping[str, Any]) -> dict[str, Any]:
     return {path: value for path, value in schema.walk(document) if path in schema.LEAF_PATHS}
 
 
+def changed_settings(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
+    """The settings two overrides documents name differently (set, changed or removed), by
+    dotted path in order: what a write records, one row each. An empty list means the patch
+    changes nothing a turn reads, whatever empty groups either document holds, and nothing is
+    written."""
+    before, after = leaf_values(old), leaf_values(new)
+    return sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p))
+
+
 def _change_class(path: str) -> ConfigClass:
     return schema.setting_tags()[path].change_class
 
@@ -337,14 +335,15 @@ async def set_overrides(
                     "field": "body.expected_revision",
                 },
             )
-        wanted = effective.check_document(
-            merge_patch(current.overrides, request.settings), purposes=purposes, field=field
+        wanted = effective.patched(
+            current.overrides, request.settings, purposes=purposes, field=field
         )
         settings: ProfileSettings = effective.resolve_layers(
             current.defaults, current.document, wanted, purposes=purposes, field=field
         )
         before = current.configuration()
-        if canonical(wanted) == canonical(current.overrides):
+        changed = changed_settings(current.overrides, wanted)
+        if not changed:  # no setting set, changed or removed: nothing is written
             report, _ = await _report(conn, story_id, before, before, facts)
             return _applied(row, report, effective.view(current, facts))
         _refuse_archived(row, story_id)
@@ -358,7 +357,7 @@ async def set_overrides(
         await effective.store_overrides(conn, story_id, wanted, current.overrides_revision + 1)
         await _bump(conn, story_id, revision)
         old, new = leaf_values(current.overrides), leaf_values(wanted)
-        for path in sorted(k for k in old.keys() | new.keys() if old.get(k) != new.get(k)):
+        for path in changed:
             await record_config_change(
                 conn,
                 config_revision=revision,
@@ -388,6 +387,7 @@ __all__ = [
     "ProfileAssignment",
     "ProfileOverridesPatch",
     "assign_profile",
+    "changed_settings",
     "leaf_values",
     "set_overrides",
 ]

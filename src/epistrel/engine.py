@@ -2787,6 +2787,8 @@ class Engine:
     ) -> ImpactReport:
         """The impact report of assigning ``request.profile_id`` to the story and/or applying
         ``request.overrides`` (FR-PROF-7), with the fingerprints before and after (FR-PROF-16).
+        ``request.overrides`` is a JSON merge patch over the story's overrides, applied as
+        ``set_profile_overrides`` applies one, so the report is the one that write would answer.
         Writes nothing, so it takes no ``Idempotency-Key``. 404 for an unknown story, 422
         ``profile_deleted`` for a profile that cannot be assigned, 422 ``validation_error`` or
         ``invalid_profile`` for a configuration that cannot run."""

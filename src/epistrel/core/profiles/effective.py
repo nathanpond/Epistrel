@@ -25,9 +25,16 @@ with nothing to re-derive, while each story keeps its overrides.
 identities in one query: the profile and version, the overrides' revision and the deployment's
 ``config_revision`` (which every ``profile_defaults`` write and every new profile version
 moves). The parsed, validated settings are cached per process by story, and the cached entry
-is used only while those four identities are unchanged, so resolution costs one query. The
-cache is off until the Engine turns it on (``Settings.effective_config_cache``); tests run
-without it.
+is used only while those four identities and the documents themselves (a digest of the three)
+are unchanged, so resolution costs one query. The digest is what keeps a write that rolls back
+out of the cache: a write reads its own configuration inside its transaction to answer it, and
+another write may later take the same revisions with other settings. The cache is off until
+the Engine turns it on (``Settings.effective_config_cache``); tests run without it.
+
+**A story's overrides change by a JSON merge patch** (``patched``, RFC 7396): ``null`` removes
+an override, an object merges into an object. The result is stored without empty objects (they
+name no setting). ``PATCH /stories/{id}/profile-overrides`` and the impact preview's
+``overrides`` apply a patch the same way, so a preview answers what the write would do.
 
 **Who reads it.** The Lite turn captures its configuration once, at turn start, and runs under
 it to the end (prospective, FR-CONC-15): the generation settings, the budgets, the verbatim
@@ -48,9 +55,11 @@ the stamp. Nothing here writes but ``store_overrides``, which ``core.profiles.st
 
 from __future__ import annotations
 
+import hashlib
+import re
 import threading
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -59,18 +68,26 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.errors import InvalidProfile, ProfileDeleted, StoryNotFound
+from epistrel.core.errors import InvalidProfile, InvalidRequest, ProfileDeleted, StoryNotFound
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.fingerprint import QualityStatus, RuntimeFacts, Stamp, stamp
-from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsDocument
+from epistrel.core.profiles.schema import (
+    PATCH_SCHEMA,
+    ProfileSettings,
+    Purposes,
+    SettingsDocument,
+)
 from epistrel.core.profiles.validate import (
     ProfileValidation,
+    UndeliveredSetting,
+    canonical,
     normalised,
     parse_settings,
     refusal,
     require_valid,
     undelivered_settings,
 )
+from epistrel.core.settings_schema import merge_patch
 from epistrel.core.tables import (
     deployment_state,
     engine_profile_versions,
@@ -175,15 +192,152 @@ def check_document(
     return normalised(settings)
 
 
+# -- a merge patch over a story's overrides -----------------------------------------------------
+
+SETTING_PATHS: frozenset[str] = frozenset(
+    ".".join(parts[:end])
+    for parts in (path.split(".") for path in schema.LEAF_PATHS)
+    for end in range(1, len(parts) + 1)
+)
+"""Every setting and group of ``ProfileSettings`` by dotted path, delivered or not."""
+
+
+def _objects(node: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:
+    """The object schemas a JSON Schema node admits: itself, or its ``anyOf`` branches."""
+    branches = node.get("anyOf")
+    if isinstance(branches, list):
+        for branch in branches:
+            yield from _objects(branch)
+    elif "properties" in node or "patternProperties" in node:
+        yield node
+
+
+def _member(node: Mapping[str, Any], key: str) -> Mapping[str, Any] | None:
+    """The schema of the member ``key`` of the objects ``node`` admits; ``None`` when none has
+    a place for it."""
+    for found in _objects(node):
+        properties: Mapping[str, Mapping[str, Any]] = found.get("properties", {})
+        if key in properties:
+            return properties[key]
+        patterns: Mapping[str, Mapping[str, Any]] = found.get("patternProperties", {})
+        for pattern, child in patterns.items():
+            if re.search(pattern, key):
+                return child
+    return None
+
+
+def _admits_null(node: Mapping[str, Any]) -> bool:
+    branches = node.get("anyOf")
+    return node.get("type") == "null" or (
+        isinstance(branches, list) and any(_admits_null(branch) for branch in branches)
+    )
+
+
+EXTRA = "extra_forbidden"
+TOO_MANY = "too_long"
+EXTRA_MESSAGE = "Extra inputs are not permitted"
+
+
+def _unpublished(
+    patch: Mapping[str, Any], node: Mapping[str, Any], prefix: tuple[str, ...]
+) -> Iterator[tuple[tuple[str, ...], str, str]]:
+    """``(path, kind, message)`` for what ``patch`` holds that the schema ``node`` has no place
+    for and its merged document would not show: each removal (``null``) of a member ``node``
+    does not name, and each object under a key no setting has (``EXTRA``: inside a group that is
+    not delivered, each removal is named on its own), and each object with more members than
+    ``node`` allows (``TOO_MANY``). Other values are left to the check of the document they
+    make."""
+    for key, value in patch.items():
+        path = (*prefix, key)
+        child = _member(node, key)
+        if value is None:
+            if child is None or not _admits_null(child):
+                yield path, EXTRA, EXTRA_MESSAGE
+        elif isinstance(value, Mapping):
+            if child is None:
+                if ".".join(path) not in SETTING_PATHS:
+                    yield path, EXTRA, EXTRA_MESSAGE
+                    continue
+                child = {}  # a group this deployment has not delivered
+            limits = [int(o["maxProperties"]) for o in _objects(child) if "maxProperties" in o]
+            if limits and len(value) > max(limits):
+                message = f"Object should have at most {max(limits)} members, not {len(value)}"
+                yield path, TOO_MANY, message
+            yield from _unpublished(value, child, path)
+
+
+def check_patch(patch: Mapping[str, Any], *, field: tuple[str, ...] = ("body", "settings")) -> None:
+    """422 when ``patch`` (a JSON merge patch over a story's overrides) holds what the published
+    patch schema (``schema.PATCH_SCHEMA``) has no place for and the document it makes would not
+    show (``null`` leaves no trace in it): a removal of a setting or group this deployment has
+    not delivered is ``invalid_profile`` (``details.undelivered``), as setting it is; a removal
+    of any other key, an object under a key no setting has, or an object with more members than
+    the schema allows is ``validation_error`` at its field."""
+    undelivered: list[UndeliveredSetting] = []
+    for path, kind, message in _unpublished(patch, PATCH_SCHEMA, ()):
+        dotted = ".".join(path)
+        owner = schema.owner_of(dotted) if kind == EXTRA and dotted in SETTING_PATHS else None
+        if owner is not None:
+            module, level = owner
+            undelivered.append(UndeliveredSetting(module=module, level=level, setting=dotted))
+            continue
+        raise InvalidRequest.from_errors(
+            [{"type": kind, "loc": path, "msg": message}], prefix=field
+        )
+    if undelivered:
+        raise refusal(
+            ProfileValidation(valid=False, missing_dependencies=[], undelivered=undelivered)
+        )
+
+
+def pruned(document: Mapping[str, Any]) -> dict[str, Any]:
+    """``document`` without its empty objects, at any depth (an object that held only empty
+    ones goes too). In a story's overrides an empty object names no setting, and laid over
+    another layer it changes nothing."""
+    found: dict[str, Any] = {}
+    for key, value in document.items():
+        if isinstance(value, Mapping):
+            value = pruned(value)
+            if not value:
+                continue
+        found[key] = value
+    return found
+
+
+def patched(
+    overrides: Mapping[str, Any],
+    patch: Mapping[str, Any],
+    *,
+    purposes: Purposes | None = None,
+    field: tuple[str, ...] = ("body", "settings"),
+) -> dict[str, Any]:
+    """A story's ``overrides`` after the JSON merge patch ``patch`` (RFC 7396: ``null`` removes
+    an override, an object merges into an object, any other value replaces), as a write stores
+    them: the patch is checked (``check_patch``), the result is checked as a settings document
+    (``check_document``: strictly, every name delivered) and pruned of empty objects. Its
+    dependencies are checked with the whole configuration (``resolve_layers``)."""
+    check_patch(patch, field=field)
+    return pruned(check_document(merge_patch(overrides, patch), purposes=purposes, field=field))
+
+
 # -- the cache ----------------------------------------------------------------------------------
 
-Key = tuple[str, int, int, int]
-"""``(profile_id, version, overrides_revision, deployment_revision)``."""
+Key = tuple[str, int, int, int, str]
+"""``(profile_id, version, overrides_revision, deployment_revision, digest)``: the identities
+the three documents were read with, and a digest of the documents themselves."""
+
+
+def digest(*documents: Mapping[str, Any]) -> str:
+    """A SHA-256 digest of a sequence of settings documents, the same whatever their key
+    order."""
+    joined = "\n".join(canonical(document) for document in documents)
+    return hashlib.sha256(joined.encode()).hexdigest()
 
 
 class ResolutionCache:
-    """Each story's resolved settings, used while the identities they were resolved from hold
-    (see the module docstring). Bounded: the story read longest ago goes first."""
+    """Each story's resolved settings, used while the identities and the documents they were
+    resolved from hold (see the module docstring). Bounded: the story read longest ago goes
+    first."""
 
     def __init__(self, max_entries: int = CACHE_MAX) -> None:
         self.enabled = False
@@ -341,17 +495,22 @@ async def effective_configuration(
     if row is None:
         raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
     profile_id, version = str(row.engine_profile_id), int(row.version)
+    defaults, document = dict(row.profile_defaults), dict(row.settings)
     overrides = dict(row.overrides or {})
     overrides_revision = int(row.overrides_revision or 0)
     deployment_revision = int(row.deployment_revision)
-    key: Key = (profile_id, version, overrides_revision, deployment_revision)
+    key: Key = (
+        profile_id,
+        version,
+        overrides_revision,
+        deployment_revision,
+        digest(defaults, document, overrides),
+    )
     settings = CACHE.get(story_id, key)
     if settings is None and not validate:
-        settings = merged_settings(row.profile_defaults, row.settings, overrides)
+        settings = merged_settings(defaults, document, overrides)
     elif settings is None:
-        settings = resolve_layers(
-            row.profile_defaults, row.settings, overrides, purposes=purposes, field=STORED
-        )
+        settings = resolve_layers(defaults, document, overrides, purposes=purposes, field=STORED)
         CACHE.put(story_id, key, settings)
     return StoryProfile(
         story_id=story_id,
@@ -360,8 +519,8 @@ async def effective_configuration(
         latest_version=int(row.current_version),
         pinned=row.engine_profile_version_pin is not None,
         deleted=row.deleted_at is not None,
-        defaults=dict(row.profile_defaults),
-        document=dict(row.settings),
+        defaults=defaults,
+        document=document,
         overrides=overrides,
         overrides_revision=overrides_revision,
         deployment_revision=deployment_revision,
@@ -428,13 +587,15 @@ def resolve(
     field: tuple[str, ...] = ("body", "overrides"),
 ) -> ProfileSettings:
     """A preview's configuration (#109): the deployment's defaults, ``document`` (a profile
-    version's settings), the story's own overrides, and ``overrides`` laid on top of those (a
-    sparse settings document, checked on its own first: 422 ``validation_error`` at ``field``),
-    validated as a whole (422 ``invalid_profile``, FR-PROF-4)."""
-    stacked = dict(current.overrides)
-    if overrides:
-        parse_settings(overrides, field=field)
-        stacked = layered(stacked, overrides)
+    version's settings) and the story's own overrides, after ``overrides``: a JSON merge patch
+    over them, applied as ``PATCH /stories/{id}/profile-overrides`` applies one (``patched``:
+    ``null`` removes an override). Validated as a whole: 422 ``validation_error`` at ``field``,
+    or ``invalid_profile`` (FR-PROF-4)."""
+    stacked = (
+        dict(current.overrides)
+        if overrides is None
+        else patched(current.overrides, overrides, purposes=purposes, field=field)
+    )
     return resolve_layers(current.defaults, document, stacked, purposes=purposes, field=field)
 
 
@@ -680,6 +841,7 @@ __all__ = [
     "CACHE",
     "CACHE_MAX",
     "INVALID_MAX",
+    "SETTING_PATHS",
     "AssignableProfile",
     "Configuration",
     "EffectiveConfig",
@@ -692,14 +854,18 @@ __all__ = [
     "StoryProfile",
     "assignable",
     "check_document",
+    "check_patch",
     "configure_cache",
+    "digest",
     "effective_configuration",
     "first_refusal",
     "following_overrides",
     "layered",
     "merged_settings",
     "named",
+    "patched",
     "profile_defaults",
+    "pruned",
     "read",
     "refusals",
     "resolve",

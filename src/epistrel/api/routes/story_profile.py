@@ -1,8 +1,9 @@
 """A story's engine configuration (FR-PROF-1,5,7,16; FR-API-6; #109, #113).
 
 - ``POST /stories/{id}/impact-preview``: the impact report of assigning a profile
-  (``profile_id``) and/or applying overrides (``overrides``) to the story, without changing
-  anything (``mutating=False``: no ``Idempotency-Key``, no expected revision).
+  (``profile_id``) and/or changing the story's overrides (``overrides``, a JSON merge patch as
+  ``PATCH .../profile-overrides`` takes) to the story, without changing anything
+  (``mutating=False``: no ``Idempotency-Key``, no expected revision).
 - ``GET /stories/{id}/effective-config``: the deployment's defaults, the profile and version the
   story runs on, its overrides, every delivered setting at its effective value, and the
   configuration's fingerprint, capabilities and quality status.
@@ -31,17 +32,21 @@ from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatc
 router = APIRouter(tags=[PROFILES_TAG])
 
 PREVIEW_DESCRIPTION = (
-    "What assigning `profile_id` (its latest version) and/or applying `overrides` (settings, as "
-    "a profile names them, laid over the story's own overrides) would do to the story "
-    "(FR-PROF-7), without changing anything: the capabilities it would gain and lose, whether a "
+    "What assigning `profile_id` (its latest version) and/or applying `overrides` would do to "
+    "the story (FR-PROF-7), without changing anything. `overrides` is a JSON merge patch over "
+    "the story's overrides, exactly as `PATCH /stories/{id}/profile-overrides` takes its "
+    "`settings` (`null` removes an override), so the report is the one that write would answer; "
+    "an assigned profile keeps the story's overrides, as an assignment does. The report states "
+    "the capabilities the change would gain and lose, whether a "
     "backfill would be needed (with its estimated model calls, tokens and duration), whether the "
     "upgrade is unavailable (a data-producing increase for a story with history, a committed "
     "turn still on its timeline: M3 has no backfill), the guarantees it would lose, the "
     "fingerprint before and after with the capabilities enabled and the quality status after "
     "(FR-PROF-16), and `warnings`: the reasons the change itself would need `ignore_warnings`. A "
     "request naming neither is 422. A profile that cannot be assigned is 422 `profile_deleted`; "
-    "a result that cannot run is 422 `validation_error` at its field or `invalid_profile` "
-    "(FR-PROF-4). Nothing is written: the call takes no `Idempotency-Key`."
+    "a patch or a result that cannot run is 422 `validation_error` at its field or "
+    "`invalid_profile` (FR-PROF-4), as the write would be. Nothing is written: the call takes no "
+    "`Idempotency-Key`."
 )
 EFFECTIVE_DESCRIPTION = (
     "The story's effective configuration (FR-PROF-5,16): `deployment_defaults` (every delivered "
@@ -80,13 +85,18 @@ OVERRIDES_DESCRIPTION = (
     "Change the story's overrides of its profile's dials (FR-PROF-5) with a JSON merge patch "
     "(RFC 7396) in `settings`: a key present sets that dial (an object merges into an object), "
     "and `null` removes the override, so the dial follows the profile again. The overrides "
-    "persist across the profile's versions. The overrides that result must be a settings "
-    "document naming only delivered settings (422 `validation_error` at "
-    "`body.settings.<path>`, or `invalid_profile`), and the whole configuration must run (422 "
-    "`invalid_profile`); nothing is stored otherwise. `expected_revision` (optional) is the "
-    "overrides' revision the patch was made against: another is 409 `revision_conflict` "
-    "(`details.reason: overrides_revision`). A patch that changes nothing writes nothing. "
-    "Recorded as one setting per dial, `profile_overrides.<path>`." + TWO_STAGE
+    "persist across the profile's versions. A `null` must name a setting or group of the "
+    "published schema (422 `validation_error` at its field; `invalid_profile` for one this "
+    "deployment has not delivered). The overrides that result must be a settings document "
+    "naming only delivered settings (422 `validation_error` at `body.settings.<path>`, or "
+    "`invalid_profile`), and the whole configuration must run (422 `invalid_profile`); nothing "
+    "is stored otherwise. They are stored without empty objects. `expected_revision` "
+    "(optional) is the overrides' revision the patch was made against: another is 409 "
+    "`revision_conflict` (`details.reason: overrides_revision`). A patch that changes no setting "
+    "(one that removes an override the story does not have, or names an empty group) writes "
+    "nothing: neither revision moves. `POST /stories/{id}/impact-preview` with the same patch "
+    "in `overrides` answers this call's report without writing. Recorded as one setting per "
+    "dial, `profile_overrides.<path>`." + TWO_STAGE
 )
 
 

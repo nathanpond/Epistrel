@@ -27,9 +27,11 @@ dials (FR-PROF-1..4, FR-API-6; #106).
   #104). Nothing gates on them (FR-AUTH-8).
 
 Every handler makes one ``Engine`` call. Writes are deployment-scoped: idempotent under
-``Idempotency-Key``, answering the deployment's ``config_revision`` (which they leave as it
-is). Presets are ordinary profiles (FR-PROF-3): the only refusal is deleting the deployment's
-default (409, ``reason: is_default``).
+``Idempotency-Key``, answering the deployment's ``config_revision``. An edit that makes a new
+version moves it by one, because every story that follows the profile runs under the new
+version from its next turn (a configuration change, FR-PROF-6; #113); every other write leaves
+it as it is. Presets are ordinary profiles (FR-PROF-3): the only refusal is deleting the
+deployment's default (409, ``reason: is_default``).
 """
 
 from __future__ import annotations
@@ -84,8 +86,8 @@ VersionQuery = Annotated[
 
 
 class ProfileBody(EngineProfile, DeploymentMutationResponse):
-    """The profile after a create, an edit or a copy, at its latest version, with the
-    deployment's ``config_revision`` (unchanged)."""
+    """The profile after a create or a copy, at its latest version, with the deployment's
+    ``config_revision`` (which a create or a copy leaves as it is)."""
 
     model_config = ConfigDict(frozen=False)
 
@@ -96,9 +98,11 @@ class ProfileBody(EngineProfile, DeploymentMutationResponse):
 
 class ProfileEditBody(DeploymentMutationResponse):
     """An edit's two stages (FR-PROF-7): ``applied``; the ``impact`` report over every story
-    following the profile; and ``result``, the profile at its latest version once the edit
-    applied (``null`` when the report held it back and nothing was written). ``config_revision``
-    is the deployment's (unchanged)."""
+    following the profile, each with the change it sees through its own overrides; and
+    ``result``, the profile at its latest version once the edit applied (``null`` when the
+    report held it back and nothing was written). ``config_revision`` is the deployment's: one
+    more than before when the applied edit made a new version (a configuration change every
+    following story runs under from its next turn, #113), unchanged otherwise."""
 
     applied: bool
     impact: ImpactReport
@@ -326,8 +330,22 @@ async def get_profile(
         "edit applies: `applied: true`, the report, and the profile in `result`. A "
         "data-producing increase (none is delivered in M3) cannot apply to a following story "
         "with history (a committed turn still on its timeline): that story keeps the version "
-        "it ran on, and every other story moves to the new one. Settings that cannot run are "
-        "refused whatever `ignore_warnings` says."
+        "it ran on, and every other story moves to the new one. Each story's entry is the "
+        "change it sees through its own overrides (`PATCH /stories/{id}/profile-overrides`): a "
+        "setting a story overrides keeps the story's value. Settings that cannot run are "
+        "refused whatever `ignore_warnings` says, and so is an edit under which a following "
+        "story's overrides could not run: 422 `invalid_profile` naming those stories in "
+        "`details.stories` (at most 1,000; `details.count` counts them all), with nothing "
+        "written."
+        "\n\nA new version is a configuration change (FR-PROF-6): every story that follows "
+        "the profile runs under it from its next turn, and a turn already running finishes "
+        "under the configuration it started with. The answer's `config_revision`, the "
+        "deployment's, moves by one, and `GET /admin/config-changes` lists, at that revision, "
+        "an `engine_profile:<id>` row (the old and new version numbers, with the strongest "
+        "class among the changed settings) and one `engine_profile:<id>.<setting>` row per "
+        "setting whose value over the deployment's `profile_defaults` changed, each with its "
+        "class. A name-only edit changes no configuration and leaves `config_revision` as it "
+        "is."
     ),
 )
 async def update_profile(

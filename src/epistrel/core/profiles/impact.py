@@ -79,7 +79,7 @@ from epistrel.core.profiles.fingerprint import (
     capabilities,
     guarantees,
 )
-from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsDocument
+from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsPatch
 from epistrel.core.tables import operations, stories, transcript_messages
 from epistrel.observability.logging import get_logger
 
@@ -548,8 +548,9 @@ async def two_stage[T](
 
 class ImpactPreviewRequest(BaseModel):
     """``POST /stories/{id}/impact-preview``: the change to preview, a profile to assign
-    (``profile_id``), overrides to apply (``overrides``: settings, as a profile names them, that
-    replace the profile's), or both at once. Nothing is written."""
+    (``profile_id``), a change of the story's overrides (``overrides``: a JSON merge patch over
+    them, as ``PATCH /stories/{id}/profile-overrides`` takes its ``settings``, so ``null``
+    removes an override), or both at once. Nothing is written."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -564,7 +565,7 @@ class ImpactPreviewRequest(BaseModel):
     )
 
     profile_id: Ulid | None = None
-    overrides: SettingsDocument | None = None
+    overrides: SettingsPatch | None = None
 
     @model_validator(mode="after")
     def _something(self) -> Self:
@@ -582,10 +583,12 @@ async def preview(
     purposes: Purposes | None = None,
 ) -> ImpactReport:
     """What assigning ``request.profile_id`` and/or applying ``request.overrides`` would do to
-    ``story_id``. ``overrides`` are laid over the story's own (#113: each setting they name
-    replaces the story's override of it, and the rest are kept); a profile assigned keeps them
-    too. 404 for an unknown story; 422 ``profile_deleted`` for a profile that cannot be
-    assigned; 422 ``validation_error`` or ``invalid_profile`` for a result that cannot run. The
+    ``story_id``. ``overrides`` is a JSON merge patch over the story's own overrides, applied as
+    the overrides write applies one (#113, ``effective.resolve``): a setting it names replaces
+    the story's override of it, ``null`` removes one, and the rest are kept, so the report is the
+    one the write would answer. A profile assigned keeps the story's overrides too. 404 for an
+    unknown story; 422 ``profile_deleted`` for a profile that cannot be assigned; 422
+    ``validation_error`` or ``invalid_profile`` for a patch or a result that cannot run. The
     story's own profile is no reassignment: it keeps the version it runs on."""
     async with db.connect() as conn:
         current = await effective.effective_configuration(conn, story_id, validate=False)

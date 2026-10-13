@@ -36,6 +36,8 @@ has delivered to its delivered levels; in M3 that is the ``lite`` pipeline, the 
 pinned memories, the polish pass, budgets and models. M4 to M6 flip entries here and nothing
 else. ``delivered_schema`` derives, from the full model, the JSON Schema of only the delivered
 modules and levels: the OpenAPI document and ``GET /engine-profiles/schema`` publish that one.
+``PATCH_SCHEMA`` is the same with ``null`` allowed for every member: a JSON merge patch over a
+story's overrides (#113).
 
 **The dependency graph (FR-PROF-4).** ``DEPENDENCIES`` declares, as data, every rule FR-PROF-4
 states, delivered or not. ``FR_PROF_4`` holds each clause of the requirement verbatim, and each
@@ -931,6 +933,31 @@ leaves out takes the default). Documented as the delivered schema; validated by
 ``validate.require_valid``."""
 
 
+def nullable(node: Any) -> Any:
+    """``node`` (a JSON Schema) with ``null`` allowed for every member it names, at any depth:
+    each property, and each value its pattern properties take (a model purpose's route). It is
+    the schema of a JSON merge patch (RFC 7396) over the documents ``node`` describes, in which
+    ``null`` removes a key."""
+    if not isinstance(node, dict):
+        return node
+    found = dict(node)
+    for keyword in ("properties", "patternProperties"):
+        members = found.get(keyword)
+        if isinstance(members, dict):
+            found[keyword] = {
+                name: {"anyOf": [nullable(child), {"type": "null"}]}
+                for name, child in members.items()
+            }
+    return found
+
+
+PATCH_SCHEMA: dict[str, Any] = nullable(SETTINGS_SCHEMA)
+SettingsPatch = Annotated[dict[str, Any], WithJsonSchema(PATCH_SCHEMA)]
+"""A JSON merge patch over a story's overrides (``PATCH /stories/{id}/profile-overrides``, and
+the impact preview's ``overrides``): the delivered settings schema with ``null`` allowed for
+every member, which removes that override. Applied and checked by ``effective.patched``."""
+
+
 def delivered_values(settings: ProfileSettings) -> dict[str, Any]:
     """``settings`` as JSON with every delivered setting at its value and nothing undelivered:
     what an effective-configuration read shows (#109)."""
@@ -1003,6 +1030,7 @@ __all__ = [
     "MODULE",
     "MODULES",
     "ON",
+    "PATCH_SCHEMA",
     "PROSPECTIVE",
     "PURPOSE_PATTERN",
     "RELEVANT",
@@ -1022,6 +1050,7 @@ __all__ = [
     "RouteParams",
     "SettingTags",
     "SettingsDocument",
+    "SettingsPatch",
     "Tag",
     "allowed_values",
     "data_increases",
@@ -1035,6 +1064,7 @@ __all__ = [
     "level_of",
     "level_rank",
     "missing_tags",
+    "nullable",
     "owner_of",
     "setting_tags",
     "tags_of",

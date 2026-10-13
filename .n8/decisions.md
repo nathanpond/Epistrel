@@ -4134,3 +4134,87 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** The M3 section continues here, after #114's `## Ad-hoc` entry. Later stories append below.
   **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111 and #113 did. Cost if wrong: one heading.
   **Issue:** #114
+- **Decision (Rule 1):** #113 verification fixes, round 1, gap 1 of 8: a merge patch that changes no setting now writes nothing. The gap was real. On a story with no overrides, `PATCH /stories/{id}/profile-overrides` with `{budgets: {model_calls: null}}` moved the story's `config_revision` and the overrides' revision and stored `{budgets: {}}`. It recorded no `config_changes` row, no `config_changed` event and no control operation. Naming an empty group (`{memory: {}}`) or removing a group the story does not override (`{budgets: null}`) did the same. The cause: RFC 7396 leaves empty objects, `normalised` keeps them, and the no-op test compared the documents' text.
+  - **The fix.**
+    - A merge patch is now applied by `effective.patched`. It checks the patch (gap 5's removal check), checks the result as a settings document, and prunes empty objects at any depth (`effective.pruned`). Stored overrides never hold an empty group.
+    - `set_overrides` decides a no-op from the settings the two documents name (`story.changed_settings`, over `leaf_values`). The same list decides the rows, so a write moves the revisions exactly when it records at least one row (#64's rule).
+    - Pruning reaches inside `models.purposes` too: an empty route laid over the profile's changes nothing.
+  - **Test:** `test_a_patch_that_changes_no_setting_writes_nothing` (`tests/integration/test_effective_config.py`).
+    - The verifier's three patches leave both revisions as they were, with no operation, row or event; the overrides read back as `{}`. Each call keeps only its own `Idempotency-Key` record, as every applied call does (#61).
+    - Empty groups beside a stored override change nothing.
+    - Removing the last override stores `{}` (the table, not just the read).
+    - A planted row holding an empty group, as the old build could leave one, pins the rule that the settings named decide, not the text.
+  - **Mutation-checked:** with pruning disabled, or the no-op decided from the documents' text again, the test fails.
+  **Why:** The module docstring and the route description promised that a patch that changes nothing writes nothing, and #64 records every revision move. This follows the verifier's fix hint. Cost if wrong: none. An empty group names no setting, and laid over another layer it changes nothing. Migration 0030 never writes one.
+  **Issue:** #113
+- **Decision (Rule 1):** Gap 2 of 8: the resolution cache is now keyed on the documents as well. The gap was real. `set_overrides` reads the story's configuration inside its transaction to answer it (as `assign_profile` does), and that read put a cache entry keyed by the new, uncommitted overrides revision. If the transaction then rolled back, the next committed write that took the same revision with other settings was answered from the stale entry, and its turns ran under it, until some key part moved. The cache is on by default (`Settings.effective_config_cache`), and the suite runs with it off.
+  - **The fix.** The key is now `(profile_id, version, overrides_revision, deployment_revision, digest)`. `digest` is a SHA-256 over the canonical JSON of the three documents (`effective.digest`). An entry is used only for the documents it was resolved from, so an entry a rolled-back write left is never served, whatever path put it there.
+  - **Not taken:** the hint's `cache=False` argument at the two in-transaction reads. It fixes today's two call sites but leaves a rule every later caller must remember. The digest costs one hash of a few KB of JSON per resolution, small beside the query.
+  - **Test:** `test_the_cache_keeps_nothing_a_rolled_back_write_read`. With the cache on, `effective.view` fails once, after the write's final read; that write had read its own overrides at revision 1, and it rolls back. The next write (window 9) answers window 9, and so does the read. With the digest taken out of the key it answers 5.
+  **Why:** The verifier's fix hint offered both. The revisions stay in the key, as the Discretion names them. Cost if wrong: none observable; a miss costs one resolution.
+  **Issue:** #113
+- **Decision:** Gap 3 of 8: the overrides-aware data-producing branch now has a test. The gap was real; it was a test gap only, and no source changed for it.
+  - **Test:** `test_a_data_producing_edit_keeps_only_the_followers_it_raises`, under `data_producing("polish")`. Two followers have history, and one of them overrides the polish pass on. The edit that turns the polish pass on reports only the plain story `upgrade_unavailable`. Confirmed, it pins only that story to version 1, and the other moves to version 2, unpinned.
+  - **Mutation re-check:** the verifier's mutant (`impact.following_report`'s `if overridden.get(story, change).increases` → `if True`) now fails that test. `test_an_edit_reaches_each_follower_through_its_overrides` and `test_c_16__upgrade_unavailable` still pass it, as before.
+  **Why:** AC3's last clause, as #113 refined it. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Gap 4 of 8: the respond response's `config_revision` is now asserted by value. The gap was real; it was a test gap only.
+  - `test_assignment_runs_in_two_stages`: the turn after the assignment reports the assignment's `config_revision`. After an overrides write moves it by one, the next turn reports that.
+  - `test_c_16__follow_latest`: each follower's turns report the story's own revision. The profile edit is deployment-scoped, so it leaves that revision as it is while the deployment's moves.
+  - **Mutation re-check:** the verifier's mutant (`"config_revision": 0` in `orchestrator/lite/pipeline.py`) now fails both tests. So does a mutant that reports the deployment's revision.
+  **Why:** The pass-1 Discretion ("respond responses gain ... config_revision"). Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Gap 5 of 8: the impact preview's `overrides` is now the JSON merge patch that `PATCH /stories/{id}/profile-overrides` takes in `settings`. This is the hint's first option. Both apply it through one function (`effective.patched`, called by `effective.resolve`). Before, the preview read a `null` as a value: `budgets.model_calls: null` previewed the formula, while the write removed the override and fell back to the profile's cap. A `null` where a setting takes none (`rolling_summary.enabled: null`) was 422 for the preview but applied by the write. Now the preview of any patch is the report the write answers, and the earlier #113 entry ("This makes the preview answer what the write would do") holds for removals too.
+  - **Published schema:** `ImpactPreviewRequest.overrides` is now the null-allowing patch schema. `PATCH_SCHEMA` moved from `story.py` into `schema.py` as `nullable(SETTINGS_SCHEMA)`; `story.PATCH_SCHEMA` and `OverridesPatchDocument` still resolve. #109's hand-off required this if the preview became a patch.
+  - **What a preview can no longer express:** overriding a dial to `null` (the formula, or "inherit"). The write cannot do that either; the profile or the defaults can.
+  - **#109's test changed:** `test_preview_refusals_write_nothing` asserted that `{"overrides": {"repair": null}}` is 422 at `body.overrides.repair` ("overrides are settings, not a merge patch"). That behaviour is gone by this decision. The test now asserts that the removal is answered and changes nothing (the story overrides nothing there), and that a `null` under a key no setting has (`repairs`) is 422 at `body.overrides.repairs`.
+  - **Test:** `test_a_preview_answers_what_the_overrides_write_would` runs the verifier's two probes:
+    - removing the cap: the write's `impact` equals the preview, and so does the fingerprint after;
+    - removing the summary override: the held write's report equals the preview, and the confirmed write runs under the preview's fingerprint.
+    - Both refusals of gap 5's removal check are answered alike by the preview and the write.
+  - **Mutation-checked:** with the preview's overrides laid over again, that test and #109's fail.
+  - **Not a doc-only fix:** docs/02 says the preview "computes the same report for one story" as the write. A removal can add data-producing capability, so a client must be able to preview it.
+  - **Not Rule 4:** #109's entry left this to #113 ("#113 decides how its PATCH … is previewed"). M3 is unreleased, and no later plan names the preview's `overrides`: the search found only #128, which lists the route.
+  - **Console:** a preview screen that sent `null` as a value now removes the override instead.
+  **Why:** The verifier's fix hint, docs/02's two-stage flow, and #109's hand-off. Cost if wrong: the preview's `overrides` returns to a settings document, and the docs say removals cannot be previewed.
+  **Issue:** #113, #109
+- **Decision (Rule 2):** A merge patch's `null`s are now checked against the published schema, on both routes (`effective.check_patch`, inside `patched`). Before, `merge_patch` dropped a `null` before anything validated it, so `{"settings": {"zzz": null}}` was a 200 no-op although the published schema forbids the key. So was a `null` under an undelivered group (`memory.episodic.enabled`). C-01's negative-data check could flake on either, and gap 5 would have brought the same hole to the preview.
+  - A removal of a key no setting has is 422 `validation_error` at its field. This covers an unknown member of a purpose's route, and a purpose name that breaks the pattern.
+  - A removal of a setting or group this deployment has not delivered is 422 `invalid_profile` with `details.undelivered`, as setting it is.
+  - An object with more members than the schema allows (`models.purposes`: 50) is 422 `validation_error`.
+  - `PATCH_SCHEMA` now also allows `null` for a purpose's route (`models.purposes.<name>: null`), because the merge patch removes it. Before, that was published as invalid but accepted.
+  **Why:** This is input validation of the story's own routes: the server accepts what it publishes, and the document a patch makes cannot show its `null`s. Cost if wrong: a removal that was quietly ignored is now refused.
+  **Issue:** #113
+- **Decision:** Gap 6 of 8: the profile-edit docs are corrected and `docs/openapi.json` is regenerated.
+  - `ProfileBody` is described as answering a create or a copy, which leaves `config_revision` as it is.
+  - `ProfileEditBody`: the deployment's `config_revision` is one more when the edit made a new version, unchanged otherwise, and each report entry is the change seen through that story's overrides.
+  - The `update_profile` description now says that a new version is a configuration change. It lists the `engine_profile:<id>` row, which carries the strongest class of the changed settings, and one `engine_profile:<id>.<setting>` row per setting changed, each with its class. It also documents the 422 `invalid_profile` with `details.stories` and `count` when a follower's overrides could not run.
+  - The module docstring now says which writes move `config_revision`.
+  **Why:** The gap was real: the docs said "(unchanged)" since #113 made a new version move the revision. Cost if wrong: none.
+  **Issue:** #113
+- **Decision (deviation, recorded late):** Gap 7 of 8. The summary job reads `memory.rolling_summary.window_messages`, `compress_threshold_tokens` and `enabled` from the effective configuration when it runs. It reads them in `summary.summary_state`, through `read_summary_settings`, both when the job starts and whenever a turn or the scheduler decides whether to enqueue it. The planner's pass-1 Discretion said the job reads them "from the effective config at enqueue". #113's build did this but did not record the choice; this entry records it. No code changed.
+  - **Why it stays this way:** M2's rule for these settings is that they are prospective and read when a job or a turn starts (#72).
+  - A story's job is coalesced into one queued row (`lite_summary:<story>`) with no payload, so a value captured at enqueue would be the first trigger's, possibly several turns stale.
+  - Reading at the start lets turning the rolling summary off stop a job that is already queued: "one already queued finds nothing to do", which `test_the_configuration_shapes_the_turn` asserts.
+  **Why:** The verifier's gap. This follows the hint's first option and keeps M2's behaviour. Cost if wrong: the job gains a payload holding the three values, captured when it is enqueued.
+  **Issue:** #113
+- **Decision:** Gap 8 of 8 (hygiene). `tests/integration/test_effective_config.py`'s `_shared` helper now types `beside` as `collections.abc.Set[str]` (default `frozenset()`), and its `type: ignore[assignment]` is gone. mypy passes without it.
+  **Why:** The gap was real: the ignore silenced a wrong annotation instead of fixing it. Cost if wrong: none.
+  **Issue:** #113
+- **Decision (Rule 1, tests):** C-01 now undoes each successful generated `PATCH /stories/{id}/profile-overrides` (`_restore_overrides`, a confirmed patch with `null` for every published group), as it already undoes `replace_model_config`.
+  - **What happened.** In this round's gate, C-01's generated `POST /stories/{id}/regenerate` answered 503 `model_unavailable` (`reason: deadline`, no model call, 46 ms elapsed) on the fixture story. An earlier generated overrides write had set that story's `budgets.deadline_ms` to a few milliseconds. That is a valid write: the floor is 1 ms, and NFR-PERF-6 sets no minimum. Every later generated turn on the story then fails, and `not_a_server_error` rejects any 503, documented or not.
+  - **Confirmed by a throwaway probe** (not committed): overriding `deadline_ms: 1` and regenerating gives that exact answer.
+  - **Whose hazard:** #113's. M2's float `turn_deadline` (`gt=0`) existed, but small integers are far more often generated than tiny floats. The hazard is not a product bug, so nothing was filed.
+  - **After the fix:** the C-01 rerun passed (119 passed), the failing `regenerate` case included.
+  **Why:** A generated valid write must not break later examples on the shared fixture. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** #113's round-1 gate, per the M3 rule (the full suite is the orchestrator's, once per group).
+  - **Tests run:**
+    - `tests/integration` (all of it): 562 passed.
+    - `tests/conformance`, `tests/test_route_guard.py`, `tests/test_responses.py` and `test_respond.py::test_openapi_calls_the_message_finished_never_verified`: 166 passed, 1 failed (the C-01 `regenerate` case above). After the C-01 fix, `tests/conformance/test_c_01.py` was rerun: 119 passed.
+    - The non-integration modules that exercise the changed code, under CI's marker expression: 154 passed. These were X-03/04/06/07, the determinism script, P-04/05/09, S-AUDIT-CATEGORY, S-DOUBLE-SUBMIT, S-SELFPOLICE, S-TURN-CONCURRENCY, S-CONSOLIDATION-RACE, and the unit modules for catalog validation, idempotency, the Lite prompt, model adapters, profile facts, the trust boundary, U-13, U-18, the Lite summary, projections, the registry and the event registry.
+    - The story's own modules once more, after the last edits: 60 passed.
+  - **Static checks:** ruff check and format, mypy (498 files), lint-imports (3 kept), check-assignment (438/438), check-parts (193 parts), check-lexicon (0 violations), check-traceability, check-deps (0 denied), `openapi --check` (regenerated) and `model_guide --check` all pass. No dependency changed, so check-licenses was not run.
+  - **Mutation re-checks:** 8 mutations, all killed; each file's SHA-1 matched after restore. The two the verifier named are among them: gap 3's `if True` and gap 4's `"config_revision": 0`.
+  **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #113

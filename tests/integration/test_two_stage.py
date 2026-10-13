@@ -377,8 +377,11 @@ async def test_preview_refusals_write_nothing(scratch: Space) -> None:
     """A preview names a profile, overrides or both: neither is 422 at ``body``. A profile that
     does not exist or is deleted is 422 ``profile_deleted`` (``unknown``, ``deleted``) at
     ``body.profile_id``; an override that names an undelivered module is 422 ``invalid_profile``,
-    and one of the wrong shape (a group sent as ``null`` included: overrides are settings, not a
-    merge patch) 422 ``validation_error`` at its field; an unknown story is 404.
+    and one of the wrong shape 422 ``validation_error`` at its field. ``overrides`` is a merge
+    patch over the story's overrides (#113), as ``PATCH /stories/{id}/profile-overrides`` takes:
+    ``null`` removes an override, so a group sent as ``null`` is answered (the story overrides
+    nothing there, so nothing changes), while a ``null`` under a key no setting has is 422
+    ``validation_error`` at its field. An unknown story is 404.
     A story's own profile is no reassignment, deleted or not: its preview is answered, and the
     polish pass turned off there is a capability lost with no guarantee lost. Nothing is ever
     written, and no key is echoed."""
@@ -418,9 +421,14 @@ async def test_preview_refusals_write_nothing(scratch: Space) -> None:
         )
         assert shape["details"]["field"] == "body.overrides.pins.max_pinned"
         nulled = refused(
-            await _preview(client, story, {"overrides": {"repair": None}}), 422, "validation_error"
+            await _preview(client, story, {"overrides": {"repairs": None}}), 422, "validation_error"
         )
-        assert nulled["details"]["field"] == "body.overrides.repair"
+        assert nulled["details"]["field"] == "body.overrides.repairs"
+        removed = await ok(await _preview(client, story, {"overrides": {"repair": None}}))
+        assert (removed["warnings"], removed["affected_stories"][0]["capabilities_lost"]) == (
+            [],
+            [],
+        )
         refused(await _preview(client, "0" * 26, {"profile_id": LITE_PRESET_ID}), 404, "not_found")
         own = await _preview(
             client, story, {"profile_id": profile, "overrides": nest(POLISH, False)}

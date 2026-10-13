@@ -1628,6 +1628,355 @@
         "title": "EffectivePolicyBody",
         "type": "object"
       },
+      "EngineProfile": {
+        "description": "An engine profile at one version: ``version`` is the one read (the latest unless a read\nnames another), ``current_version`` the latest. ``settings`` is what that version sets; a\nsetting it leaves out takes the default. ``preset`` is true for a profile shipped with\nEpistrel (owned by ``system``); a preset is edited, copied and deleted like any profile. A\ndeleted profile (``deleted_at``) still reads and serves the stories that use it.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version": {
+            "title": "Current Version",
+            "type": "integer"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "preset": {
+            "title": "Preset",
+            "type": "boolean"
+          },
+          "settings": {
+            "additionalProperties": false,
+            "description": "An engine profile's settings, by capability module (FR-PROF-2).",
+            "properties": {
+              "budgets": {
+                "additionalProperties": false,
+                "description": "The per-turn model-call budget and deadline (NFR-PERF-6).",
+                "properties": {
+                  "deadline_ms": {
+                    "default": 45000,
+                    "description": "A turn's wall-clock deadline, in milliseconds (M2's ``turn_deadline``).",
+                    "maximum": 600000.0,
+                    "minimum": 1.0,
+                    "title": "Deadline Ms",
+                    "type": "integer"
+                  },
+                  "model_calls": {
+                    "anyOf": [
+                      {
+                        "maximum": 50.0,
+                        "minimum": 1.0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The most model calls one turn may make, the reserved guardrail calls included, as M2's\n``max_model_calls_per_turn``: a cap below one generation plus those calls refuses every\nturn. ``null``: NFR-PERF-6's formula (9 + the guardrail calls in M3).",
+                    "title": "Model Calls"
+                  }
+                },
+                "title": "Budgets",
+                "type": "object"
+              },
+              "memory": {
+                "additionalProperties": false,
+                "description": "The memory modules (FR-PROF-2).",
+                "properties": {
+                  "rolling_summary": {
+                    "additionalProperties": false,
+                    "description": "The rolling auto-summary (FR-LITE-2).",
+                    "properties": {
+                      "compress_threshold_tokens": {
+                        "default": 6000,
+                        "description": "The summary's size, in tokens, above which its segments are compressed further.",
+                        "maximum": 100000.0,
+                        "minimum": 100.0,
+                        "title": "Compress Threshold Tokens",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": true,
+                        "description": "Fold messages older than the window into summary segments, and show the summary in the\nprompt.",
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "window_messages": {
+                        "default": 30,
+                        "description": "How many of the latest messages the prompt keeps verbatim.",
+                        "maximum": 500.0,
+                        "minimum": 1.0,
+                        "title": "Window Messages",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "RollingSummary",
+                    "type": "object"
+                  }
+                },
+                "title": "Memory",
+                "type": "object"
+              },
+              "models": {
+                "additionalProperties": false,
+                "description": "Per-purpose model routing (FR-MODEL) and the generation defaults.",
+                "properties": {
+                  "generation": {
+                    "additionalProperties": false,
+                    "description": "The generation defaults (FR-LITE-4): temperature, top_p and response length.",
+                    "properties": {
+                      "response_length": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "short",
+                              "medium",
+                              "long"
+                            ],
+                            "type": "string"
+                          },
+                          {
+                            "maximum": 4000.0,
+                            "minimum": 1.0,
+                            "type": "integer"
+                          }
+                        ],
+                        "default": "medium",
+                        "description": "``short``, ``medium``, ``long``, or a token cap.",
+                        "title": "Response Length"
+                      },
+                      "temperature": {
+                        "anyOf": [
+                          {
+                            "maximum": 2.0,
+                            "minimum": 0.0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": 0.8,
+                        "title": "Temperature"
+                      },
+                      "top_p": {
+                        "anyOf": [
+                          {
+                            "maximum": 1.0,
+                            "minimum": 0.0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": 0.95,
+                        "title": "Top P"
+                      }
+                    },
+                    "title": "Generation",
+                    "type": "object"
+                  },
+                  "purposes": {
+                    "additionalProperties": false,
+                    "description": "Routing by purpose; a purpose left out inherits the deployment's configuration.",
+                    "maxProperties": 50,
+                    "patternProperties": {
+                      "^[a-z][a-z0-9_]{0,63}$": {
+                        "additionalProperties": false,
+                        "description": "One model purpose's routing: its model and parameters; ``null`` inherits from the\ndeployment's model configuration (``/admin/model-config``). Endpoints and keys are never\npart of a profile.",
+                        "properties": {
+                          "model": {
+                            "anyOf": [
+                              {
+                                "maxLength": 200,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "title": "Model"
+                          },
+                          "params": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "Generation parameters for one purpose's calls; ``null`` inherits.",
+                                "properties": {
+                                  "max_tokens": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 4000.0,
+                                        "minimum": 1.0,
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Max Tokens"
+                                  },
+                                  "temperature": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 2.0,
+                                        "minimum": 0.0,
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Temperature"
+                                  },
+                                  "top_p": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 1.0,
+                                        "minimum": 0.0,
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Top P"
+                                  }
+                                },
+                                "title": "RouteParams",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "PurposeRoute",
+                        "type": "object"
+                      }
+                    },
+                    "title": "Purposes",
+                    "type": "object"
+                  }
+                },
+                "title": "Models",
+                "type": "object"
+              },
+              "pins": {
+                "additionalProperties": false,
+                "description": "Pinned memories (FR-LITE-3): the story's author-pinned texts, always in the prompt.",
+                "properties": {
+                  "enabled": {
+                    "default": true,
+                    "description": "Include the story's pinned memories in the prompt.",
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "max_pinned": {
+                    "default": 50,
+                    "description": "The most pinned memories a story may hold.",
+                    "maximum": 500.0,
+                    "minimum": 1.0,
+                    "title": "Max Pinned",
+                    "type": "integer"
+                  }
+                },
+                "title": "Pins",
+                "type": "object"
+              },
+              "pipeline": {
+                "default": "lite",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "enum": [
+                  "lite"
+                ],
+                "title": "Pipeline",
+                "type": "string"
+              },
+              "repair": {
+                "additionalProperties": false,
+                "description": "Repair and polish (FR-PROF-2).",
+                "properties": {
+                  "polish": {
+                    "additionalProperties": false,
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; the story setting\n``guardrail_retry_budget`` until profiles drive the Lite turn).",
+                    "properties": {
+                      "enabled": {
+                        "default": true,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "max_regenerations": {
+                        "default": 2,
+                        "description": "How many times such a reply is generated again.",
+                        "maximum": 5.0,
+                        "minimum": 0.0,
+                        "title": "Max Regenerations",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "Polish",
+                    "type": "object"
+                  }
+                },
+                "title": "Repair",
+                "type": "object"
+              }
+            },
+            "title": "ProfileSettings",
+            "type": "object"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "owner_principal",
+          "preset",
+          "version",
+          "current_version",
+          "settings",
+          "created_at",
+          "updated_at",
+          "deleted_at"
+        ],
+        "title": "EngineProfile",
+        "type": "object"
+      },
       "EntityListRule": {
         "additionalProperties": false,
         "description": "Named entities; any whole-word mention matches, under the wordlist rules.\n\nAt story and character scope an empty ``names`` means \"the story's characters\": the names\nare frozen into the rule when it is saved (the whole cast for a story policy, the character\nitself for a character policy, #50). Every stored rule has names.",
@@ -3227,6 +3576,33 @@
           "text"
         ],
         "title": "MessageBody",
+        "type": "object"
+      },
+      "MissingDependency": {
+        "description": "A module that is on (at ``level``) without what it requires (FR-PROF-4).",
+        "properties": {
+          "level": {
+            "title": "Level",
+            "type": "string"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "requires": {
+            "items": {
+              "$ref": "#/components/schemas/RequiredModule"
+            },
+            "title": "Requires",
+            "type": "array"
+          }
+        },
+        "required": [
+          "module",
+          "level",
+          "requires"
+        ],
+        "title": "MissingDependency",
         "type": "object"
       },
       "ModelAssistedRule": {
@@ -4922,6 +5298,1616 @@
         "title": "PolicyReplacement",
         "type": "object"
       },
+      "ProfileBody": {
+        "description": "The profile after a create, an edit or a copy, at its latest version, with the\ndeployment's ``config_revision`` (unchanged).",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version": {
+            "title": "Current Version",
+            "type": "integer"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "preset": {
+            "title": "Preset",
+            "type": "boolean"
+          },
+          "settings": {
+            "additionalProperties": false,
+            "description": "An engine profile's settings, by capability module (FR-PROF-2).",
+            "properties": {
+              "budgets": {
+                "additionalProperties": false,
+                "description": "The per-turn model-call budget and deadline (NFR-PERF-6).",
+                "properties": {
+                  "deadline_ms": {
+                    "default": 45000,
+                    "description": "A turn's wall-clock deadline, in milliseconds (M2's ``turn_deadline``).",
+                    "maximum": 600000.0,
+                    "minimum": 1.0,
+                    "title": "Deadline Ms",
+                    "type": "integer"
+                  },
+                  "model_calls": {
+                    "anyOf": [
+                      {
+                        "maximum": 50.0,
+                        "minimum": 1.0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The most model calls one turn may make, the reserved guardrail calls included, as M2's\n``max_model_calls_per_turn``: a cap below one generation plus those calls refuses every\nturn. ``null``: NFR-PERF-6's formula (9 + the guardrail calls in M3).",
+                    "title": "Model Calls"
+                  }
+                },
+                "title": "Budgets",
+                "type": "object"
+              },
+              "memory": {
+                "additionalProperties": false,
+                "description": "The memory modules (FR-PROF-2).",
+                "properties": {
+                  "rolling_summary": {
+                    "additionalProperties": false,
+                    "description": "The rolling auto-summary (FR-LITE-2).",
+                    "properties": {
+                      "compress_threshold_tokens": {
+                        "default": 6000,
+                        "description": "The summary's size, in tokens, above which its segments are compressed further.",
+                        "maximum": 100000.0,
+                        "minimum": 100.0,
+                        "title": "Compress Threshold Tokens",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": true,
+                        "description": "Fold messages older than the window into summary segments, and show the summary in the\nprompt.",
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "window_messages": {
+                        "default": 30,
+                        "description": "How many of the latest messages the prompt keeps verbatim.",
+                        "maximum": 500.0,
+                        "minimum": 1.0,
+                        "title": "Window Messages",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "RollingSummary",
+                    "type": "object"
+                  }
+                },
+                "title": "Memory",
+                "type": "object"
+              },
+              "models": {
+                "additionalProperties": false,
+                "description": "Per-purpose model routing (FR-MODEL) and the generation defaults.",
+                "properties": {
+                  "generation": {
+                    "additionalProperties": false,
+                    "description": "The generation defaults (FR-LITE-4): temperature, top_p and response length.",
+                    "properties": {
+                      "response_length": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "short",
+                              "medium",
+                              "long"
+                            ],
+                            "type": "string"
+                          },
+                          {
+                            "maximum": 4000.0,
+                            "minimum": 1.0,
+                            "type": "integer"
+                          }
+                        ],
+                        "default": "medium",
+                        "description": "``short``, ``medium``, ``long``, or a token cap.",
+                        "title": "Response Length"
+                      },
+                      "temperature": {
+                        "anyOf": [
+                          {
+                            "maximum": 2.0,
+                            "minimum": 0.0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": 0.8,
+                        "title": "Temperature"
+                      },
+                      "top_p": {
+                        "anyOf": [
+                          {
+                            "maximum": 1.0,
+                            "minimum": 0.0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": 0.95,
+                        "title": "Top P"
+                      }
+                    },
+                    "title": "Generation",
+                    "type": "object"
+                  },
+                  "purposes": {
+                    "additionalProperties": false,
+                    "description": "Routing by purpose; a purpose left out inherits the deployment's configuration.",
+                    "maxProperties": 50,
+                    "patternProperties": {
+                      "^[a-z][a-z0-9_]{0,63}$": {
+                        "additionalProperties": false,
+                        "description": "One model purpose's routing: its model and parameters; ``null`` inherits from the\ndeployment's model configuration (``/admin/model-config``). Endpoints and keys are never\npart of a profile.",
+                        "properties": {
+                          "model": {
+                            "anyOf": [
+                              {
+                                "maxLength": 200,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "title": "Model"
+                          },
+                          "params": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "Generation parameters for one purpose's calls; ``null`` inherits.",
+                                "properties": {
+                                  "max_tokens": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 4000.0,
+                                        "minimum": 1.0,
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Max Tokens"
+                                  },
+                                  "temperature": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 2.0,
+                                        "minimum": 0.0,
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Temperature"
+                                  },
+                                  "top_p": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 1.0,
+                                        "minimum": 0.0,
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Top P"
+                                  }
+                                },
+                                "title": "RouteParams",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "PurposeRoute",
+                        "type": "object"
+                      }
+                    },
+                    "title": "Purposes",
+                    "type": "object"
+                  }
+                },
+                "title": "Models",
+                "type": "object"
+              },
+              "pins": {
+                "additionalProperties": false,
+                "description": "Pinned memories (FR-LITE-3): the story's author-pinned texts, always in the prompt.",
+                "properties": {
+                  "enabled": {
+                    "default": true,
+                    "description": "Include the story's pinned memories in the prompt.",
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "max_pinned": {
+                    "default": 50,
+                    "description": "The most pinned memories a story may hold.",
+                    "maximum": 500.0,
+                    "minimum": 1.0,
+                    "title": "Max Pinned",
+                    "type": "integer"
+                  }
+                },
+                "title": "Pins",
+                "type": "object"
+              },
+              "pipeline": {
+                "default": "lite",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "enum": [
+                  "lite"
+                ],
+                "title": "Pipeline",
+                "type": "string"
+              },
+              "repair": {
+                "additionalProperties": false,
+                "description": "Repair and polish (FR-PROF-2).",
+                "properties": {
+                  "polish": {
+                    "additionalProperties": false,
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; the story setting\n``guardrail_retry_budget`` until profiles drive the Lite turn).",
+                    "properties": {
+                      "enabled": {
+                        "default": true,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "max_regenerations": {
+                        "default": 2,
+                        "description": "How many times such a reply is generated again.",
+                        "maximum": 5.0,
+                        "minimum": 0.0,
+                        "title": "Max Regenerations",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "Polish",
+                    "type": "object"
+                  }
+                },
+                "title": "Repair",
+                "type": "object"
+              }
+            },
+            "title": "ProfileSettings",
+            "type": "object"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "config_revision",
+          "id",
+          "name",
+          "owner_principal",
+          "preset",
+          "version",
+          "current_version",
+          "settings",
+          "created_at",
+          "updated_at",
+          "deleted_at"
+        ],
+        "title": "ProfileBody",
+        "type": "object"
+      },
+      "ProfileCopy": {
+        "additionalProperties": false,
+        "description": "``POST /engine-profiles/{id}/copy``: the copy's name and, optionally, its ``owner``\n(default: the requesting principal; never ``system``).",
+        "examples": [
+          {
+            "name": "My Lite"
+          }
+        ],
+        "properties": {
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ProfileCopy",
+        "type": "object"
+      },
+      "ProfileCreate": {
+        "additionalProperties": false,
+        "description": "``POST /engine-profiles``: the new profile's name, its settings (any delivered module;\nwhat it leaves out takes the default) and, optionally, its ``owner`` (an opaque principal,\nby default the requesting one, never ``system``; FR-AUTH-5). Ownership confers no\npermission (FR-AUTH-8).",
+        "examples": [
+          {
+            "name": "Brisk Lite",
+            "settings": {
+              "budgets": {
+                "deadline_ms": 30000
+              },
+              "memory": {
+                "rolling_summary": {
+                  "window_messages": 20
+                }
+              },
+              "models": {
+                "generation": {
+                  "temperature": 0.7
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "settings": {
+            "additionalProperties": false,
+            "description": "An engine profile's settings, by capability module (FR-PROF-2).",
+            "properties": {
+              "budgets": {
+                "additionalProperties": false,
+                "description": "The per-turn model-call budget and deadline (NFR-PERF-6).",
+                "properties": {
+                  "deadline_ms": {
+                    "default": 45000,
+                    "description": "A turn's wall-clock deadline, in milliseconds (M2's ``turn_deadline``).",
+                    "maximum": 600000.0,
+                    "minimum": 1.0,
+                    "title": "Deadline Ms",
+                    "type": "integer"
+                  },
+                  "model_calls": {
+                    "anyOf": [
+                      {
+                        "maximum": 50.0,
+                        "minimum": 1.0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The most model calls one turn may make, the reserved guardrail calls included, as M2's\n``max_model_calls_per_turn``: a cap below one generation plus those calls refuses every\nturn. ``null``: NFR-PERF-6's formula (9 + the guardrail calls in M3).",
+                    "title": "Model Calls"
+                  }
+                },
+                "title": "Budgets",
+                "type": "object"
+              },
+              "memory": {
+                "additionalProperties": false,
+                "description": "The memory modules (FR-PROF-2).",
+                "properties": {
+                  "rolling_summary": {
+                    "additionalProperties": false,
+                    "description": "The rolling auto-summary (FR-LITE-2).",
+                    "properties": {
+                      "compress_threshold_tokens": {
+                        "default": 6000,
+                        "description": "The summary's size, in tokens, above which its segments are compressed further.",
+                        "maximum": 100000.0,
+                        "minimum": 100.0,
+                        "title": "Compress Threshold Tokens",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": true,
+                        "description": "Fold messages older than the window into summary segments, and show the summary in the\nprompt.",
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "window_messages": {
+                        "default": 30,
+                        "description": "How many of the latest messages the prompt keeps verbatim.",
+                        "maximum": 500.0,
+                        "minimum": 1.0,
+                        "title": "Window Messages",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "RollingSummary",
+                    "type": "object"
+                  }
+                },
+                "title": "Memory",
+                "type": "object"
+              },
+              "models": {
+                "additionalProperties": false,
+                "description": "Per-purpose model routing (FR-MODEL) and the generation defaults.",
+                "properties": {
+                  "generation": {
+                    "additionalProperties": false,
+                    "description": "The generation defaults (FR-LITE-4): temperature, top_p and response length.",
+                    "properties": {
+                      "response_length": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "short",
+                              "medium",
+                              "long"
+                            ],
+                            "type": "string"
+                          },
+                          {
+                            "maximum": 4000.0,
+                            "minimum": 1.0,
+                            "type": "integer"
+                          }
+                        ],
+                        "default": "medium",
+                        "description": "``short``, ``medium``, ``long``, or a token cap.",
+                        "title": "Response Length"
+                      },
+                      "temperature": {
+                        "anyOf": [
+                          {
+                            "maximum": 2.0,
+                            "minimum": 0.0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": 0.8,
+                        "title": "Temperature"
+                      },
+                      "top_p": {
+                        "anyOf": [
+                          {
+                            "maximum": 1.0,
+                            "minimum": 0.0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": 0.95,
+                        "title": "Top P"
+                      }
+                    },
+                    "title": "Generation",
+                    "type": "object"
+                  },
+                  "purposes": {
+                    "additionalProperties": false,
+                    "description": "Routing by purpose; a purpose left out inherits the deployment's configuration.",
+                    "maxProperties": 50,
+                    "patternProperties": {
+                      "^[a-z][a-z0-9_]{0,63}$": {
+                        "additionalProperties": false,
+                        "description": "One model purpose's routing: its model and parameters; ``null`` inherits from the\ndeployment's model configuration (``/admin/model-config``). Endpoints and keys are never\npart of a profile.",
+                        "properties": {
+                          "model": {
+                            "anyOf": [
+                              {
+                                "maxLength": 200,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "title": "Model"
+                          },
+                          "params": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "Generation parameters for one purpose's calls; ``null`` inherits.",
+                                "properties": {
+                                  "max_tokens": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 4000.0,
+                                        "minimum": 1.0,
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Max Tokens"
+                                  },
+                                  "temperature": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 2.0,
+                                        "minimum": 0.0,
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Temperature"
+                                  },
+                                  "top_p": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 1.0,
+                                        "minimum": 0.0,
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Top P"
+                                  }
+                                },
+                                "title": "RouteParams",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "PurposeRoute",
+                        "type": "object"
+                      }
+                    },
+                    "title": "Purposes",
+                    "type": "object"
+                  }
+                },
+                "title": "Models",
+                "type": "object"
+              },
+              "pins": {
+                "additionalProperties": false,
+                "description": "Pinned memories (FR-LITE-3): the story's author-pinned texts, always in the prompt.",
+                "properties": {
+                  "enabled": {
+                    "default": true,
+                    "description": "Include the story's pinned memories in the prompt.",
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "max_pinned": {
+                    "default": 50,
+                    "description": "The most pinned memories a story may hold.",
+                    "maximum": 500.0,
+                    "minimum": 1.0,
+                    "title": "Max Pinned",
+                    "type": "integer"
+                  }
+                },
+                "title": "Pins",
+                "type": "object"
+              },
+              "pipeline": {
+                "default": "lite",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "enum": [
+                  "lite"
+                ],
+                "title": "Pipeline",
+                "type": "string"
+              },
+              "repair": {
+                "additionalProperties": false,
+                "description": "Repair and polish (FR-PROF-2).",
+                "properties": {
+                  "polish": {
+                    "additionalProperties": false,
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; the story setting\n``guardrail_retry_budget`` until profiles drive the Lite turn).",
+                    "properties": {
+                      "enabled": {
+                        "default": true,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "max_regenerations": {
+                        "default": 2,
+                        "description": "How many times such a reply is generated again.",
+                        "maximum": 5.0,
+                        "minimum": 0.0,
+                        "title": "Max Regenerations",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "Polish",
+                    "type": "object"
+                  }
+                },
+                "title": "Repair",
+                "type": "object"
+              }
+            },
+            "title": "ProfileSettings",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ProfileCreate",
+        "type": "object"
+      },
+      "ProfileDeletedBody": {
+        "description": "A deleted profile: when it was deleted, and the warnings: every story that still runs\nunder it (``profile_in_use``) and every scenario that recommends it\n(``profile_recommended``), at most 1,000 of each; the two counts name them all. Those\nstories keep running on its last version until it is purged, once no story uses it.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "title": "Deleted At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "scenarios_recommending": {
+            "title": "Scenarios Recommending",
+            "type": "integer"
+          },
+          "stories_using": {
+            "title": "Stories Using",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "config_revision",
+          "id",
+          "deleted_at",
+          "warnings",
+          "stories_using",
+          "scenarios_recommending"
+        ],
+        "title": "ProfileDeletedBody",
+        "type": "object"
+      },
+      "ProfileListBody": {
+        "description": "A page of profiles at their latest version, newest first; ``next_cursor`` fetches the\nnext page (``null`` on the last).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EngineProfile"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ProfileListBody",
+        "type": "object"
+      },
+      "ProfileSchemaBody": {
+        "description": "What a profile may set on this deployment: ``schema`` is the JSON Schema of the\ndelivered modules and levels (a setting it leaves out is refused, 422 ``invalid_profile``),\n``tags`` each delivered setting's tags by dotted path, ``delivered`` each delivered module\nwith its levels, and ``purposes`` the model purposes ``models.purposes`` may route.",
+        "properties": {
+          "delivered": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Delivered",
+            "type": "object"
+          },
+          "purposes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Purposes",
+            "type": "array"
+          },
+          "schema": {
+            "additionalProperties": true,
+            "title": "Schema",
+            "type": "object"
+          },
+          "tags": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SettingTagsBody"
+            },
+            "title": "Tags",
+            "type": "object"
+          }
+        },
+        "required": [
+          "schema",
+          "tags",
+          "delivered",
+          "purposes"
+        ],
+        "title": "ProfileSchemaBody",
+        "type": "object"
+      },
+      "ProfileUpdate": {
+        "additionalProperties": false,
+        "description": "``PUT /engine-profiles/{id}``: the profile's name and settings, replaced in full. A new\nversion is made only when the settings differ from the latest version's.",
+        "examples": [
+          {
+            "name": "Brisk Lite",
+            "settings": {
+              "budgets": {
+                "deadline_ms": 30000
+              },
+              "memory": {
+                "rolling_summary": {
+                  "window_messages": 20
+                }
+              },
+              "models": {
+                "generation": {
+                  "temperature": 0.7
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "settings": {
+            "additionalProperties": false,
+            "description": "An engine profile's settings, by capability module (FR-PROF-2).",
+            "properties": {
+              "budgets": {
+                "additionalProperties": false,
+                "description": "The per-turn model-call budget and deadline (NFR-PERF-6).",
+                "properties": {
+                  "deadline_ms": {
+                    "default": 45000,
+                    "description": "A turn's wall-clock deadline, in milliseconds (M2's ``turn_deadline``).",
+                    "maximum": 600000.0,
+                    "minimum": 1.0,
+                    "title": "Deadline Ms",
+                    "type": "integer"
+                  },
+                  "model_calls": {
+                    "anyOf": [
+                      {
+                        "maximum": 50.0,
+                        "minimum": 1.0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The most model calls one turn may make, the reserved guardrail calls included, as M2's\n``max_model_calls_per_turn``: a cap below one generation plus those calls refuses every\nturn. ``null``: NFR-PERF-6's formula (9 + the guardrail calls in M3).",
+                    "title": "Model Calls"
+                  }
+                },
+                "title": "Budgets",
+                "type": "object"
+              },
+              "memory": {
+                "additionalProperties": false,
+                "description": "The memory modules (FR-PROF-2).",
+                "properties": {
+                  "rolling_summary": {
+                    "additionalProperties": false,
+                    "description": "The rolling auto-summary (FR-LITE-2).",
+                    "properties": {
+                      "compress_threshold_tokens": {
+                        "default": 6000,
+                        "description": "The summary's size, in tokens, above which its segments are compressed further.",
+                        "maximum": 100000.0,
+                        "minimum": 100.0,
+                        "title": "Compress Threshold Tokens",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": true,
+                        "description": "Fold messages older than the window into summary segments, and show the summary in the\nprompt.",
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "window_messages": {
+                        "default": 30,
+                        "description": "How many of the latest messages the prompt keeps verbatim.",
+                        "maximum": 500.0,
+                        "minimum": 1.0,
+                        "title": "Window Messages",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "RollingSummary",
+                    "type": "object"
+                  }
+                },
+                "title": "Memory",
+                "type": "object"
+              },
+              "models": {
+                "additionalProperties": false,
+                "description": "Per-purpose model routing (FR-MODEL) and the generation defaults.",
+                "properties": {
+                  "generation": {
+                    "additionalProperties": false,
+                    "description": "The generation defaults (FR-LITE-4): temperature, top_p and response length.",
+                    "properties": {
+                      "response_length": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "short",
+                              "medium",
+                              "long"
+                            ],
+                            "type": "string"
+                          },
+                          {
+                            "maximum": 4000.0,
+                            "minimum": 1.0,
+                            "type": "integer"
+                          }
+                        ],
+                        "default": "medium",
+                        "description": "``short``, ``medium``, ``long``, or a token cap.",
+                        "title": "Response Length"
+                      },
+                      "temperature": {
+                        "anyOf": [
+                          {
+                            "maximum": 2.0,
+                            "minimum": 0.0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": 0.8,
+                        "title": "Temperature"
+                      },
+                      "top_p": {
+                        "anyOf": [
+                          {
+                            "maximum": 1.0,
+                            "minimum": 0.0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": 0.95,
+                        "title": "Top P"
+                      }
+                    },
+                    "title": "Generation",
+                    "type": "object"
+                  },
+                  "purposes": {
+                    "additionalProperties": false,
+                    "description": "Routing by purpose; a purpose left out inherits the deployment's configuration.",
+                    "maxProperties": 50,
+                    "patternProperties": {
+                      "^[a-z][a-z0-9_]{0,63}$": {
+                        "additionalProperties": false,
+                        "description": "One model purpose's routing: its model and parameters; ``null`` inherits from the\ndeployment's model configuration (``/admin/model-config``). Endpoints and keys are never\npart of a profile.",
+                        "properties": {
+                          "model": {
+                            "anyOf": [
+                              {
+                                "maxLength": 200,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "title": "Model"
+                          },
+                          "params": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "Generation parameters for one purpose's calls; ``null`` inherits.",
+                                "properties": {
+                                  "max_tokens": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 4000.0,
+                                        "minimum": 1.0,
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Max Tokens"
+                                  },
+                                  "temperature": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 2.0,
+                                        "minimum": 0.0,
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Temperature"
+                                  },
+                                  "top_p": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 1.0,
+                                        "minimum": 0.0,
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Top P"
+                                  }
+                                },
+                                "title": "RouteParams",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "PurposeRoute",
+                        "type": "object"
+                      }
+                    },
+                    "title": "Purposes",
+                    "type": "object"
+                  }
+                },
+                "title": "Models",
+                "type": "object"
+              },
+              "pins": {
+                "additionalProperties": false,
+                "description": "Pinned memories (FR-LITE-3): the story's author-pinned texts, always in the prompt.",
+                "properties": {
+                  "enabled": {
+                    "default": true,
+                    "description": "Include the story's pinned memories in the prompt.",
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "max_pinned": {
+                    "default": 50,
+                    "description": "The most pinned memories a story may hold.",
+                    "maximum": 500.0,
+                    "minimum": 1.0,
+                    "title": "Max Pinned",
+                    "type": "integer"
+                  }
+                },
+                "title": "Pins",
+                "type": "object"
+              },
+              "pipeline": {
+                "default": "lite",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "enum": [
+                  "lite"
+                ],
+                "title": "Pipeline",
+                "type": "string"
+              },
+              "repair": {
+                "additionalProperties": false,
+                "description": "Repair and polish (FR-PROF-2).",
+                "properties": {
+                  "polish": {
+                    "additionalProperties": false,
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; the story setting\n``guardrail_retry_budget`` until profiles drive the Lite turn).",
+                    "properties": {
+                      "enabled": {
+                        "default": true,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "max_regenerations": {
+                        "default": 2,
+                        "description": "How many times such a reply is generated again.",
+                        "maximum": 5.0,
+                        "minimum": 0.0,
+                        "title": "Max Regenerations",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "Polish",
+                    "type": "object"
+                  }
+                },
+                "title": "Repair",
+                "type": "object"
+              }
+            },
+            "title": "ProfileSettings",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "settings"
+        ],
+        "title": "ProfileUpdate",
+        "type": "object"
+      },
+      "ProfileValidate": {
+        "additionalProperties": false,
+        "description": "``POST /engine-profiles/{id}/validate``: settings to validate (a dry run of an edit);\nwithout them, the profile's latest version is validated.",
+        "examples": [
+          {
+            "settings": {
+              "budgets": {
+                "deadline_ms": 30000
+              },
+              "memory": {
+                "rolling_summary": {
+                  "window_messages": 20
+                }
+              },
+              "models": {
+                "generation": {
+                  "temperature": 0.7
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "settings": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "description": "An engine profile's settings, by capability module (FR-PROF-2).",
+                "properties": {
+                  "budgets": {
+                    "additionalProperties": false,
+                    "description": "The per-turn model-call budget and deadline (NFR-PERF-6).",
+                    "properties": {
+                      "deadline_ms": {
+                        "default": 45000,
+                        "description": "A turn's wall-clock deadline, in milliseconds (M2's ``turn_deadline``).",
+                        "maximum": 600000.0,
+                        "minimum": 1.0,
+                        "title": "Deadline Ms",
+                        "type": "integer"
+                      },
+                      "model_calls": {
+                        "anyOf": [
+                          {
+                            "maximum": 50.0,
+                            "minimum": 1.0,
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "The most model calls one turn may make, the reserved guardrail calls included, as M2's\n``max_model_calls_per_turn``: a cap below one generation plus those calls refuses every\nturn. ``null``: NFR-PERF-6's formula (9 + the guardrail calls in M3).",
+                        "title": "Model Calls"
+                      }
+                    },
+                    "title": "Budgets",
+                    "type": "object"
+                  },
+                  "memory": {
+                    "additionalProperties": false,
+                    "description": "The memory modules (FR-PROF-2).",
+                    "properties": {
+                      "rolling_summary": {
+                        "additionalProperties": false,
+                        "description": "The rolling auto-summary (FR-LITE-2).",
+                        "properties": {
+                          "compress_threshold_tokens": {
+                            "default": 6000,
+                            "description": "The summary's size, in tokens, above which its segments are compressed further.",
+                            "maximum": 100000.0,
+                            "minimum": 100.0,
+                            "title": "Compress Threshold Tokens",
+                            "type": "integer"
+                          },
+                          "enabled": {
+                            "default": true,
+                            "description": "Fold messages older than the window into summary segments, and show the summary in the\nprompt.",
+                            "title": "Enabled",
+                            "type": "boolean"
+                          },
+                          "window_messages": {
+                            "default": 30,
+                            "description": "How many of the latest messages the prompt keeps verbatim.",
+                            "maximum": 500.0,
+                            "minimum": 1.0,
+                            "title": "Window Messages",
+                            "type": "integer"
+                          }
+                        },
+                        "title": "RollingSummary",
+                        "type": "object"
+                      }
+                    },
+                    "title": "Memory",
+                    "type": "object"
+                  },
+                  "models": {
+                    "additionalProperties": false,
+                    "description": "Per-purpose model routing (FR-MODEL) and the generation defaults.",
+                    "properties": {
+                      "generation": {
+                        "additionalProperties": false,
+                        "description": "The generation defaults (FR-LITE-4): temperature, top_p and response length.",
+                        "properties": {
+                          "response_length": {
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "short",
+                                  "medium",
+                                  "long"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "maximum": 4000.0,
+                                "minimum": 1.0,
+                                "type": "integer"
+                              }
+                            ],
+                            "default": "medium",
+                            "description": "``short``, ``medium``, ``long``, or a token cap.",
+                            "title": "Response Length"
+                          },
+                          "temperature": {
+                            "anyOf": [
+                              {
+                                "maximum": 2.0,
+                                "minimum": 0.0,
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": 0.8,
+                            "title": "Temperature"
+                          },
+                          "top_p": {
+                            "anyOf": [
+                              {
+                                "maximum": 1.0,
+                                "minimum": 0.0,
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": 0.95,
+                            "title": "Top P"
+                          }
+                        },
+                        "title": "Generation",
+                        "type": "object"
+                      },
+                      "purposes": {
+                        "additionalProperties": false,
+                        "description": "Routing by purpose; a purpose left out inherits the deployment's configuration.",
+                        "maxProperties": 50,
+                        "patternProperties": {
+                          "^[a-z][a-z0-9_]{0,63}$": {
+                            "additionalProperties": false,
+                            "description": "One model purpose's routing: its model and parameters; ``null`` inherits from the\ndeployment's model configuration (``/admin/model-config``). Endpoints and keys are never\npart of a profile.",
+                            "properties": {
+                              "model": {
+                                "anyOf": [
+                                  {
+                                    "maxLength": 200,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "title": "Model"
+                              },
+                              "params": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "description": "Generation parameters for one purpose's calls; ``null`` inherits.",
+                                    "properties": {
+                                      "max_tokens": {
+                                        "anyOf": [
+                                          {
+                                            "maximum": 4000.0,
+                                            "minimum": 1.0,
+                                            "type": "integer"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ],
+                                        "title": "Max Tokens"
+                                      },
+                                      "temperature": {
+                                        "anyOf": [
+                                          {
+                                            "maximum": 2.0,
+                                            "minimum": 0.0,
+                                            "type": "number"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ],
+                                        "title": "Temperature"
+                                      },
+                                      "top_p": {
+                                        "anyOf": [
+                                          {
+                                            "maximum": 1.0,
+                                            "minimum": 0.0,
+                                            "type": "number"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ],
+                                        "title": "Top P"
+                                      }
+                                    },
+                                    "title": "RouteParams",
+                                    "type": "object"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "title": "PurposeRoute",
+                            "type": "object"
+                          }
+                        },
+                        "title": "Purposes",
+                        "type": "object"
+                      }
+                    },
+                    "title": "Models",
+                    "type": "object"
+                  },
+                  "pins": {
+                    "additionalProperties": false,
+                    "description": "Pinned memories (FR-LITE-3): the story's author-pinned texts, always in the prompt.",
+                    "properties": {
+                      "enabled": {
+                        "default": true,
+                        "description": "Include the story's pinned memories in the prompt.",
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "max_pinned": {
+                        "default": 50,
+                        "description": "The most pinned memories a story may hold.",
+                        "maximum": 500.0,
+                        "minimum": 1.0,
+                        "title": "Max Pinned",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "Pins",
+                    "type": "object"
+                  },
+                  "pipeline": {
+                    "default": "lite",
+                    "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                    "enum": [
+                      "lite"
+                    ],
+                    "title": "Pipeline",
+                    "type": "string"
+                  },
+                  "repair": {
+                    "additionalProperties": false,
+                    "description": "Repair and polish (FR-PROF-2).",
+                    "properties": {
+                      "polish": {
+                        "additionalProperties": false,
+                        "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; the story setting\n``guardrail_retry_budget`` until profiles drive the Lite turn).",
+                        "properties": {
+                          "enabled": {
+                            "default": true,
+                            "title": "Enabled",
+                            "type": "boolean"
+                          },
+                          "max_regenerations": {
+                            "default": 2,
+                            "description": "How many times such a reply is generated again.",
+                            "maximum": 5.0,
+                            "minimum": 0.0,
+                            "title": "Max Regenerations",
+                            "type": "integer"
+                          }
+                        },
+                        "title": "Polish",
+                        "type": "object"
+                      }
+                    },
+                    "title": "Repair",
+                    "type": "object"
+                  }
+                },
+                "title": "ProfileSettings",
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settings"
+          }
+        },
+        "title": "ProfileValidate",
+        "type": "object"
+      },
+      "ProfileValidation": {
+        "description": "The outcome of validating a profile's settings: ``valid`` exactly when both lists are\nempty.",
+        "properties": {
+          "missing_dependencies": {
+            "items": {
+              "$ref": "#/components/schemas/MissingDependency"
+            },
+            "title": "Missing Dependencies",
+            "type": "array"
+          },
+          "undelivered": {
+            "items": {
+              "$ref": "#/components/schemas/UndeliveredSetting"
+            },
+            "title": "Undelivered",
+            "type": "array"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "valid",
+          "missing_dependencies",
+          "undelivered"
+        ],
+        "title": "ProfileValidation",
+        "type": "object"
+      },
+      "ProfileVersion": {
+        "description": "One version of a profile: its number, when it was made and by which principal.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "created_at",
+          "created_by"
+        ],
+        "title": "ProfileVersion",
+        "type": "object"
+      },
+      "ProfileVersionsBody": {
+        "description": "Every version of a profile, oldest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileVersion"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ProfileVersionsBody",
+        "type": "object"
+      },
+      "ProfileWarning": {
+        "description": "What a delete warns of: a story that still runs under the profile (``profile_in_use``),\nor a scenario whose draft or latest version recommends it (``profile_recommended``).",
+        "properties": {
+          "kind": {
+            "enum": [
+              "profile_in_use",
+              "profile_recommended"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "scenario_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Id"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "ProfileWarning",
+        "type": "object"
+      },
       "Projection": {
         "description": "A catalog read's projection (FR-SCN-10): ``card`` (the default) or ``full``.",
         "enum": [
@@ -4985,6 +6971,15 @@
         ],
         "title": "PublishRequest",
         "type": "object"
+      },
+      "Quality": {
+        "description": "FR-PROF-16: whether a setting is part of a configuration's fingerprint.",
+        "enum": [
+          "relevant",
+          "irrelevant"
+        ],
+        "title": "Quality",
+        "type": "string"
       },
       "QueuedTurn": {
         "description": "A turn that waits in the story's queue (FR-CONC-5): its operation and its place in the\nqueue. ``GET /operations/{id}`` (the ``Location``) reports it once it has played.",
@@ -5986,6 +7981,28 @@
           "message"
         ],
         "title": "ReportEntryBody",
+        "type": "object"
+      },
+      "RequiredModule": {
+        "description": "A module a rule requires, at one of ``levels`` (any level that is on when empty).",
+        "properties": {
+          "levels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Levels",
+            "type": "array"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "levels"
+        ],
+        "title": "RequiredModule",
         "type": "object"
       },
       "RespondRequest": {
@@ -8200,6 +10217,27 @@
         "title": "Seed",
         "type": "object"
       },
+      "SettingTagsBody": {
+        "description": "One setting's three tags: ``behavioral`` or ``data_producing`` (FR-PROF-6),\n``interpretive`` or ``prospective`` (FR-CONC-15), and quality ``relevant`` or ``irrelevant``\n(FR-PROF-16).",
+        "properties": {
+          "class": {
+            "$ref": "#/components/schemas/ConfigClass"
+          },
+          "quality": {
+            "$ref": "#/components/schemas/Quality"
+          },
+          "tag": {
+            "$ref": "#/components/schemas/Tag"
+          }
+        },
+        "required": [
+          "tag",
+          "class",
+          "quality"
+        ],
+        "title": "SettingTagsBody",
+        "type": "object"
+      },
       "SettingsBody": {
         "additionalProperties": false,
         "description": "Every deployment setting, flat, with the deployment's ``config_revision``.",
@@ -8219,6 +10257,13 @@
             "maxLength": 64,
             "minLength": 1,
             "title": "Default Content Rating Id",
+            "type": "string"
+          },
+          "default_engine_profile_id": {
+            "default": "00000000000000000000PRF001",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Default Engine Profile Id",
             "type": "string"
           },
           "default_safe_fallback": {
@@ -8486,6 +10531,17 @@
               }
             ],
             "title": "Default Content Rating Id"
+          },
+          "default_engine_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Engine Profile Id"
           },
           "default_safe_fallback": {
             "anyOf": [
@@ -10024,6 +12080,15 @@
         "title": "SwappedBody",
         "type": "object"
       },
+      "Tag": {
+        "description": "FR-PROF-6: whether changing a setting changes what is stored.",
+        "enum": [
+          "behavioral",
+          "data_producing"
+        ],
+        "title": "Tag",
+        "type": "string"
+      },
       "Target": {
         "description": "What a policy applies to (FR-GUARD-8, FR-GUARD-10, FR-IMG-3).",
         "enum": [
@@ -10155,6 +12220,37 @@
           "message"
         ],
         "title": "TurnSummaryModel",
+        "type": "object"
+      },
+      "UndeliveredSetting": {
+        "description": "A setting naming a module, or a level of one, this deployment has not delivered:\n``setting`` is its dotted path in the settings, ``level`` the level its value picks.",
+        "properties": {
+          "level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          },
+          "setting": {
+            "title": "Setting",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "level",
+          "setting"
+        ],
+        "title": "UndeliveredSetting",
         "type": "object"
       },
       "UntruncateRequest": {
@@ -10697,6 +12793,7 @@
                         "enum": [
                           "audit_retention_days",
                           "default_content_rating_id",
+                          "default_engine_profile_id",
                           "default_safe_fallback",
                           "idempotency_result_window",
                           "job_retention_days",
@@ -13309,7 +15406,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `rating_retired`, `validation_error`."
+            "description": "Invalid request; nothing was written: `profile_deleted`, `rating_retired`, `validation_error`."
           },
           "503": {
             "content": {
@@ -17220,6 +19317,1851 @@
         "summary": "List a scenario's published versions",
         "tags": [
           "catalog"
+        ]
+      }
+    },
+    "/engine-profiles": {
+      "get": {
+        "description": "Profiles at their latest version, newest first, presets included, `limit` at a time; `cursor` (a page's `next_cursor`) continues. Deleted profiles are listed only with `include_deleted=true`. `owner` and `relation` (`name:principal`, or `name:` for any principal; repeatable, all must hold) narrow the list only when a request asks: they gate nothing (FR-AUTH-8).",
+        "operationId": "list_profiles",
+        "parameters": [
+          {
+            "description": "Only the profiles this principal owns.",
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Owner",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the profiles with this relation: `name:principal`, or `name:` for any principal (repeatable; all must hold).",
+            "in": "query",
+            "name": "relation",
+            "required": false,
+            "schema": {
+              "items": {
+                "pattern": "^[A-Za-z0-9_-]{1,64}:[\\t ]*([^\\x00-\\x1f\\x7f]{1,256}[\\t ]*)?$",
+                "type": "string"
+              },
+              "title": "Relation",
+              "type": "array"
+            }
+          },
+          {
+            "description": "List deleted profiles too.",
+            "in": "query",
+            "name": "include_deleted",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "List deleted profiles too.",
+              "title": "Include Deleted",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's `next_cursor`.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileListBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List engine profiles",
+        "tags": [
+          "profiles"
+        ]
+      },
+      "post": {
+        "description": "Create an engine profile at version 1, owned by `owner` (default: the requesting principal; never `system`). The settings may name any delivered module and level (`GET /engine-profiles/schema`); what they leave out takes the default. A shape error is 422 `validation_error` at the field; a module or level this deployment has not delivered, or a module whose dependencies are off (FR-PROF-4), is 422 `invalid_profile` naming each (`details.undelivered`, `details.missing_dependencies`), and nothing is written.",
+        "operationId": "create_profile",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_profile`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create an engine profile",
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/engine-profiles/schema": {
+      "get": {
+        "description": "The JSON Schema of the modules and levels this deployment has delivered (FR-PROF-2), every delivered setting's tags (`behavioral`/`data_producing`, `interpretive`/`prospective`, quality `relevant`/`irrelevant`), the delivered modules with their levels, and the model purposes `models.purposes` may route.",
+        "operationId": "profile_schema",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileSchemaBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read what an engine profile may set",
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/engine-profiles/{profile_id}": {
+      "delete": {
+        "description": "Delete the profile (FR-PROF-1): it leaves listings (`include_deleted` lists it) and can no longer be made the default (422 `profile_deleted`), while every story that uses it keeps running on its last version. The answer warns of those stories and of the scenarios that recommend the profile. The retention sweep purges it, with its versions, once no story uses it. The deployment's default profile cannot be deleted (409 `validation_error`, `reason: is_default`); a preset is deleted like any profile once it is not the default (FR-PROF-3). Deleting a deleted profile changes nothing.",
+        "operationId": "delete_profile",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "00000000000000000000PRF001"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileDeletedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `config_conflict`, `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete an engine profile",
+        "tags": [
+          "profiles"
+        ]
+      },
+      "get": {
+        "description": "The profile at its latest version; `version` reads another one (404 when it does not exist). A deleted profile still reads, with its `deleted_at`.",
+        "operationId": "get_profile",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "00000000000000000000PRF001"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A version's number (default: the latest).",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A version's number (default: the latest).",
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineProfile"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read an engine profile",
+        "tags": [
+          "profiles"
+        ]
+      },
+      "put": {
+        "description": "Replace the profile's name and settings. A new version is made only when the settings differ from the latest version's; a name-only edit makes none, and an edit that changes nothing records nothing. A preset is edited like any profile (FR-PROF-3). A deleted profile cannot be edited (422 `profile_deleted`; copy it instead). The settings may name any delivered module and level (`GET /engine-profiles/schema`); what they leave out takes the default. A shape error is 422 `validation_error` at the field; a module or level this deployment has not delivered, or a module whose dependencies are off (FR-PROF-4), is 422 `invalid_profile` naming each (`details.undelivered`, `details.missing_dependencies`), and nothing is written.",
+        "operationId": "update_profile",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "00000000000000000000PRF001"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_profile`, `profile_deleted`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Edit an engine profile (a new version)",
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/engine-profiles/{profile_id}/copy": {
+      "post": {
+        "description": "A new profile at version 1 with the settings of this profile's latest version (`version`: that one's), owned by `owner` (default: the requesting principal; never `system`). A preset or a deleted profile is copied like any other; the copy is an ordinary, live profile.",
+        "operationId": "copy_profile",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "00000000000000000000PRF001"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A version's number (default: the latest).",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A version's number (default: the latest).",
+              "title": "Version"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileCopy"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Copy an engine profile",
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/engine-profiles/{profile_id}/owner": {
+      "put": {
+        "description": "Make `principal` the owner of an engine profile (FR-AUTH-5): it answers the owner now and the one before, with the deployment's `config_revision` (unchanged). The transfer is recorded with the acting principal and time. A transfer to the current owner changes nothing and records nothing. `system` is refused (422). Allowed whatever the entity's status. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "transfer_owner_engine_profile",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerTransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Transfer an engine profile's ownership",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/engine-profiles/{profile_id}/relations": {
+      "get": {
+        "description": "An engine profile's owner and its relations, by relation name, then principal. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "list_relations_engine_profile",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List an engine profile's owner and relations",
+        "tags": [
+          "ownership"
+        ]
+      },
+      "post": {
+        "description": "Add the relation `relation` (consumer-defined, e.g. `editor`, `co_author`, `player`: 1 to 64 of `A-Z a-z 0-9 _ -`, case-sensitive) between `principal` and an engine profile (FR-AUTH-6): 201 with the relation, recorded with the acting principal; 200 when it already exists (nothing recorded). Relations are list filters (`?relation=name:principal`), and Epistrel never interprets a name. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "add_relation_engine_profile",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationBody"
+                }
+              }
+            },
+            "description": "The relation already existed; nothing was recorded.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelationBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Relate a principal to an engine profile",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/engine-profiles/{profile_id}/relations/{relation}/{principal}": {
+      "delete": {
+        "description": "Remove an engine profile's relation `relation` to `principal` (204), recorded with the acting principal; 404 `not_found` when there is no such relation. The principal is the rest of the path and may contain `/`. A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
+        "operationId": "remove_relation_engine_profile",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The relation's name.",
+            "in": "path",
+            "name": "relation",
+            "required": true,
+            "schema": {
+              "description": "The relation's name.",
+              "examples": [
+                "editor"
+              ],
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Relation",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The related principal: the rest of the path, so it may contain `/`.",
+            "in": "path",
+            "name": "principal",
+            "required": true,
+            "schema": {
+              "description": "The related principal: the rest of the path, so it may contain `/`.",
+              "examples": [
+                "p-7f3a9c"
+              ],
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Principal",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove a relation from an engine profile",
+        "tags": [
+          "ownership"
+        ]
+      }
+    },
+    "/engine-profiles/{profile_id}/validate": {
+      "post": {
+        "description": "Validate the body's `settings` (a dry run of an edit), or without them the profile's latest version, against the delivered modules and the dependency graph (FR-PROF-2,4). A valid profile is answered 200; an invalid one is 422 `invalid_profile` naming the missing dependencies and the undelivered settings. Nothing is written: the call takes no `Idempotency-Key`.",
+        "operationId": "validate_profile",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "00000000000000000000PRF001"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileValidate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileValidation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_profile`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Validate an engine profile's settings",
+        "tags": [
+          "profiles"
+        ],
+        "x-epistrel-mutating": false
+      }
+    },
+    "/engine-profiles/{profile_id}/versions": {
+      "get": {
+        "description": "Every version of the profile, oldest first: its number, time and author.",
+        "operationId": "list_profile_versions",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "00000000000000000000PRF001"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileVersionsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List an engine profile's versions",
+        "tags": [
+          "profiles"
         ]
       }
     },
@@ -24306,6 +28248,10 @@
     {
       "description": "Media assets: immutable, content-addressed images and videos with their declared depicted subjects, an optional moderation hook, and delete-as-retire (FR-MEDIA-1,2); byte ranges, short-lived signed URLs, resumable uploads and a poster for every video (FR-MEDIA-3).",
       "name": "media"
+    },
+    {
+      "description": "Engine profiles: named, versioned sets of capability modules and dials that set how hard the engine works for a story (FR-PROF-1..4). The schema exposes only the modules and levels this deployment has delivered; presets are ordinary profiles.",
+      "name": "profiles"
     },
     {
       "description": "Each owned entity's one owner and its relations (FR-AUTH-5,6): transfers and relation changes, recorded with the acting principal. Ownership and relations exist for listing, attribution and offboarding only; nothing gates on them (FR-AUTH-8).",

@@ -1,0 +1,1127 @@
+"""U-28, C-16 and C-17 (docs/04), their M3 parts for engine profiles (#106), and the detailed
+tests behind them.
+
+Every U-28 (M3) and C-16 (M3) part lives in this file, because traceability counts a test ID per
+milestone in one file: #109's and #113's U-28 and C-16 parts join it. The C-17 (M3) parts are
+here too. The I-21 part (profiles' owners) is ``test_i_21__profiles`` in
+``tests/integration/test_i_21.py``.
+
+- ``test_u_28__schema``: the schema's three tags on every setting, the published schema holding
+  only what is delivered, the Lite preset validating, undelivered names refused, and the
+  dependency graph declared for every clause of the requirement.
+- ``test_c_16__crud``: create, list, read, edit (a new version), copy, validate and delete over
+  REST; presets edited and copied like any profile; the default cannot be deleted; a story is
+  created under the default; deleting a profile a story uses warns, hides it and keeps the
+  story running; the retention sweep purges it once no story uses it.
+- ``test_c_17__profiles``: a pairwise covering array over the delivered modules' settings; each
+  configuration is accepted and a story runs a turn under it, or it is refused by validation.
+- ``test_c_17__dependencies``: ``missing_dependencies`` end to end: the undelivered path for
+  real, and the delivered path through a test-only rule (``epistrel.testing.profiles``).
+
+The C-16 and C-17 parts change the deployment's default and the Lite preset, so they run on a
+scratch database of their own. Module and level names come from the schema's registry
+(``tests/profile_support.py``): a part may not name a later milestone's capability.
+"""
+
+from __future__ import annotations
+
+import secrets
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import Annotated, Any
+
+import httpx2 as httpx
+import pytest
+from alembic import command
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from epistrel import (
+    InvalidProfile,
+    ProfileCopy,
+    ProfileCreate,
+    ProfileUpdate,
+    ProfileValidate,
+    RequestContext,
+)
+from epistrel.config import Settings
+from epistrel.core.db import make_engine, make_sync_engine
+from epistrel.core.errors import InvalidRequest
+from epistrel.core.profiles.schema import (
+    BEHAVIORAL,
+    DATA_PRODUCING,
+    DEPENDENCIES,
+    FR_PROF_4,
+    LEAF_PATHS,
+    PROSPECTIVE,
+    RELEVANT,
+    DependencyRule,
+    ProfileSettings,
+    Purposes,
+    Quality,
+    Requirement,
+    Tag,
+    delivered_schema,
+    delivered_tags,
+    exposed,
+    missing_tags,
+    setting_tags,
+)
+from epistrel.core.profiles.validate import (
+    ProfileValidation,
+    RequiredModule,
+    UndeliveredSetting,
+    missing_dependencies,
+    normalised,
+    parse_settings,
+    require_valid,
+    validate_profile,
+)
+from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
+from epistrel.core.settings_schema import ConfigClass
+from epistrel.orchestrator.jobs.handlers import retention
+from epistrel.orchestrator.models.registry import DELIVERED as DELIVERED_PURPOSES
+from epistrel.orchestrator.models.registry import RESERVED as RESERVED_PURPOSES
+from epistrel.testing.profiles import TEST_CLAUSE, extra_rule
+from tests.auth_support import auth_settings, bearer
+from tests.conformance.conftest import migrated_database
+from tests.conftest import alembic_config
+from tests.event_support import rows, scalar
+from tests.profile_support import (
+    EDITED,
+    PROFILES,
+    SETTINGS,
+    covered_pairs,
+    covering_array,
+    documented_rules,
+    merged,
+    naming,
+    nest,
+    profile_body,
+    requirement_text,
+    satisfying,
+    undelivered_levels,
+    undelivered_modules,
+    violating,
+)
+from tests.respond_support import body as respond_body
+from tests.respond_support import respond_client
+from tests.story_support import story_body
+
+READ = bearer()
+A = "p-profiles-a"
+B = "p-profiles-b"
+PURPOSES = Purposes.of(list(DELIVERED_PURPOSES), list(RESERVED_PURPOSES))
+
+
+def headers(principal: str, key: str | None = None) -> dict[str, str]:
+    found = {**bearer(), "X-Epistrel-Principal": principal}
+    if key is not None:
+        found["Idempotency-Key"] = key
+    return found
+
+
+async def ok(response: httpx.Response, status: int = 200) -> dict[str, Any]:
+    assert response.status_code == status, (response.status_code, response.text)
+    found: dict[str, Any] = response.json() if response.content else {}
+    return found
+
+
+def refused(response: httpx.Response, status: int, code: str) -> dict[str, Any]:
+    assert response.status_code == status, (response.status_code, response.text)
+    error: dict[str, Any] = response.json()["error"]
+    assert error["code"] == code, error
+    return error
+
+
+@dataclass
+class Space:
+    """An app's settings and its database: the shared one, or a scratch one."""
+
+    settings: Settings
+    db: AsyncEngine
+
+
+@pytest.fixture
+def stub_settings(pg_url: str) -> Settings:
+    return auth_settings(pg_url, model_adapter="stub")
+
+
+@pytest.fixture
+async def scratch(pg_url: str) -> AsyncIterator[Space]:
+    """A database of the test's own, migrated to head (the default profile and the Lite preset
+    change there, never in the shared database)."""
+    with migrated_database(pg_url, f"epistrel_profiles_{secrets.token_hex(4)}") as url:
+        settings = auth_settings(url, model_adapter="stub")
+        db = make_engine(settings)
+        try:
+            yield Space(settings, db)
+        finally:
+            await db.dispose()
+
+
+async def _story(client: httpx.AsyncClient, principal: str = A) -> tuple[str, str]:
+    """A new two-character story: its id and its player character's id."""
+    created = await ok(
+        await client.post("/stories", json=story_body("Wren", "Ada"), headers=headers(principal)),
+        201,
+    )
+    return created["story_id"], created["characters"][0]["id"]
+
+
+async def _profile_of(db: AsyncEngine, story_id: str) -> str:
+    found = await scalar(db, "SELECT engine_profile_id FROM stories WHERE id = :s", s=story_id)
+    return str(found)
+
+
+async def _default(client: httpx.AsyncClient, profile_id: str) -> dict[str, Any]:
+    response = await client.put(
+        "/admin/settings",
+        json={"default_engine_profile_id": profile_id},
+        headers=headers(A),
+    )
+    return await ok(response)
+
+
+def _schema_leaves(node: dict[str, Any], prefix: str = "") -> set[str]:
+    """Every setting a published JSON Schema holds, by dotted path."""
+    found: set[str] = set()
+    for name, child in node.get("properties", {}).items():
+        path = f"{prefix}{name}"
+        if "properties" in child:
+            found |= _schema_leaves(child, f"{path}.")
+        else:
+            found.add(path)
+    return found
+
+
+class _Half(BaseModel):
+    whole: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = 1
+    half: Annotated[int, BEHAVIORAL, PROSPECTIVE] = 2
+
+
+class _Untagged(BaseModel):
+    """A fixture schema: one leaf with no tag at all, one with two of a kind, and one inside an
+    inner model without its quality tag."""
+
+    bare: int = 0
+    doubled: Annotated[bool, BEHAVIORAL, DATA_PRODUCING, PROSPECTIVE, RELEVANT] = False
+    inner: _Half = Field(default_factory=_Half)
+
+
+# -- U-28 --------------------------------------------------------------------------------------
+
+
+@pytest.mark.part("M3", "FR-PROF-2,3,4")
+async def test_u_28__schema(engine: AsyncEngine) -> None:
+    """Every setting of the profile schema carries its three tags: behavioral or
+    data-producing, interpretive or prospective, quality-relevant or not (complement: a fixture
+    schema's settings that lack a tag, or carry two of a kind, are each reported). Every setting
+    delivered in M3 is prospective, and pinned memories are the quality-irrelevant ones.
+
+    The published schema holds only what is delivered: its settings are exactly the delivered
+    ones, the pipeline offers only ``lite``, and no undelivered module's setting is in it.
+
+    The Lite preset validates, as shipped and as stored: owned by ``system``, a preset, the
+    deployment's default, at version 1 with the shipped settings: the ``lite`` pipeline, a
+    30-message window, a 6,000-token threshold, and budgets of no call cap of its own (the
+    NFR-PERF-6 formula) and 45 s.
+
+    A document that switches on any undelivered module, or picks the undelivered level of a
+    delivered one, is refused naming it (422 ``invalid_profile``); the rolling summary switched
+    off under ``lite`` is allowed.
+
+    The dependency graph is declared for every clause of the requirement, each quoted verbatim
+    from docs/03; the documented rule list equals the declared rules, one by one. Each rule
+    fires on settings that switch its module on without what it requires, and does not once
+    those are on (complement), whether its modules are delivered or not."""
+    # -- three tags on every setting
+    assert missing_tags() == {}
+    assert missing_tags(_Untagged) == {
+        "bare": ("Tag", "ConfigClass", "Quality"),
+        "doubled": ("Tag",),
+        "inner.half": ("Quality",),
+    }
+    assert set(setting_tags()) == set(LEAF_PATHS)
+    tags = delivered_tags()
+    assert {t.change_class for t in tags.values()} == {ConfigClass.prospective}
+    irrelevant = sorted(path for path, t in tags.items() if t.quality is Quality.irrelevant)
+    assert irrelevant == ["pins.enabled", "pins.max_pinned"]
+    assert tags["pipeline"].tag is Tag.data_producing
+    assert tags["budgets.model_calls"].tag is Tag.behavioral
+
+    # -- the published schema: delivered modules and levels only
+    published = delivered_schema()
+    assert _schema_leaves(published) == {path for path in LEAF_PATHS if exposed(path)}
+    assert published["properties"]["pipeline"]["enum"] == ["lite"]
+    for module in undelivered_modules():
+        assert module.switch not in _schema_leaves(published), module.name
+
+    # -- the Lite preset validates, as shipped and as stored
+    shipped = lite_settings()
+    clean = ProfileValidation(valid=True, missing_dependencies=[], undelivered=[])
+    assert validate_profile(shipped, purposes=PURPOSES) == clean
+    assert normalised(parse_settings(shipped)) == shipped
+    assert shipped["pipeline"] == "lite"
+    assert shipped["memory"]["rolling_summary"] == {
+        "enabled": True,
+        "window_messages": 30,
+        "compress_threshold_tokens": 6_000,
+    }
+    assert shipped["budgets"] == {"model_calls": None, "deadline_ms": 45_000}
+    assert set(shipped["models"]["purposes"]) == set(DELIVERED_PURPOSES)
+    (stored,) = await rows(
+        engine,
+        "SELECT p.name, p.owner_principal, p.preset, v.settings, v.created_by, "
+        "d.default_engine_profile_id FROM engine_profiles p "
+        "JOIN engine_profile_versions v ON v.profile_id = p.id AND v.version = 1 "
+        "CROSS JOIN deployment_state d WHERE p.id = :p",
+        p=LITE_PRESET_ID,
+    )
+    assert tuple(stored) == ("Lite", "system", True, shipped, "system", LITE_PRESET_ID)
+
+    # -- an undelivered module, or level, is refused naming it
+    for module in undelivered_modules():
+        found = validate_profile(naming(module), purposes=PURPOSES)
+        assert [(u.module, u.setting) for u in found.undelivered] == [(module.name, module.switch)]
+        with pytest.raises(InvalidProfile) as caught:
+            require_valid(naming(module), purposes=PURPOSES)
+        assert caught.value.http_status == 422
+        assert module.name in {u["module"] for u in caught.value.details["undelivered"]}
+    for module, level in undelivered_levels():
+        found = validate_profile(naming(module, level), purposes=PURPOSES)
+        assert found.undelivered == [
+            UndeliveredSetting(module=module.name, level=level, setting=module.switch or "")
+        ]
+    summary_off = nest("memory.rolling_summary.enabled", False)
+    assert validate_profile(merged(shipped, summary_off), purposes=PURPOSES) == clean
+
+    # -- the dependency graph: every clause, the documented list, each rule firing
+    spec = requirement_text()
+    assert [clause.text for clause in FR_PROF_4 if clause.text not in spec] == []
+    assert {rule.clause for rule in DEPENDENCIES} == {clause.key for clause in FR_PROF_4}
+    assert documented_rules() == [rule.describe() for rule in DEPENDENCIES]
+    assert len(DEPENDENCIES) == 26
+    for rule in DEPENDENCIES:
+        expected = [RequiredModule(module=r.module, levels=list(r.levels)) for r in rule.requires]
+        fired = missing_dependencies(parse_settings(violating(rule)))
+        assert any(f.module == rule.module and f.requires == expected for f in fired), (
+            rule.describe()
+        )
+        met = missing_dependencies(parse_settings(satisfying(rule)))
+        assert not any(f.module == rule.module and f.requires == expected for f in met), (
+            rule.describe()
+        )
+
+
+# -- C-16 --------------------------------------------------------------------------------------
+
+
+@pytest.mark.part("M3", "FR-PROF-1; FR-API-6")
+async def test_c_16__crud(scratch: Space) -> None:
+    """Over REST: a profile is created at version 1 (owned by its creator), read, listed
+    (newest first, the Lite preset included, narrowed by owner only when asked), edited into
+    version 2 (a name-only edit makes no version), read at version 1, listed by version, copied
+    (by another principal, who owns the copy; at a named version too) and validated (its latest
+    version, and a dry run that names an undelivered level: 422 ``invalid_profile``). Presets are
+    ordinary profiles: Lite is edited into its version 2, still a preset owned by ``system``,
+    and copied into a plain profile. Deleting the deployment's default is 409 (``is_default``)
+    and changes nothing.
+
+    A story created without a profile runs under the deployment's default: under the user
+    profile once that is the default, and under a copy of Lite once that is (complement). Lite,
+    no longer the default, is deleted like any profile. Deleting the user profile while that
+    story uses it answers 200 with a warning naming the story; the profile leaves the listing
+    (``include_deleted`` shows it), still reads and copies, cannot be edited or made the default
+    (422 ``profile_deleted``), and the story still runs under it: a turn is played. The
+    retention sweep purges Lite, which no story uses, and keeps the user profile while the story
+    uses it; once the story is deleted, the sweep purges it with its versions, recording its
+    deletion by ``system``.
+
+    Complement asserted: a valid edit to a user profile succeeds, so the validator does not
+    refuse everything."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        revision = int(await scalar(scratch.db, "SELECT config_revision FROM deployment_state"))
+
+        # -- create, read, list
+        created = await ok(
+            await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201
+        )
+        profile = created["id"]
+        assert (created["owner_principal"], created["preset"], created["deleted_at"]) == (
+            A,
+            False,
+            None,
+        )
+        assert (created["version"], created["current_version"]) == (1, 1)
+        assert (created["settings"], created["config_revision"]) == (SETTINGS, revision)
+        read = await ok(await client.get(f"{PROFILES}/{profile}", headers=READ))
+        assert read == {
+            k: v for k, v in created.items() if k not in ("config_revision", "idempotency_key")
+        }
+        listed = await ok(await client.get(PROFILES, headers=READ))
+        assert [item["id"] for item in listed["items"]] == [profile, LITE_PRESET_ID]
+        assert listed["items"][1]["preset"] is True
+        mine = await ok(await client.get(PROFILES, params={"owner": A}, headers=READ))
+        assert [item["id"] for item in mine["items"]] == [profile]
+        shipped = await ok(await client.get(PROFILES, params={"owner": "system"}, headers=READ))
+        assert [item["id"] for item in shipped["items"]] == [LITE_PRESET_ID]
+
+        # -- edit into version 2; a name-only edit makes none
+        edited = await ok(
+            await client.put(
+                f"{PROFILES}/{profile}",
+                json={"name": "Brisk Lite", "settings": EDITED},
+                headers=headers(B),
+            )
+        )
+        assert (edited["version"], edited["current_version"], edited["settings"]) == (2, 2, EDITED)
+        renamed = await ok(
+            await client.put(
+                f"{PROFILES}/{profile}",
+                json={"name": "Renamed", "settings": EDITED},
+                headers=headers(A),
+            )
+        )
+        assert (renamed["name"], renamed["version"]) == ("Renamed", 2)
+        first = await ok(
+            await client.get(f"{PROFILES}/{profile}", params={"version": 1}, headers=READ)
+        )
+        assert (first["version"], first["current_version"], first["settings"]) == (1, 2, SETTINGS)
+        versions = await ok(await client.get(f"{PROFILES}/{profile}/versions", headers=READ))
+        assert [(v["version"], v["created_by"]) for v in versions["items"]] == [(1, A), (2, B)]
+
+        # -- copy, at the latest version and at version 1
+        copied = await ok(
+            await client.post(
+                f"{PROFILES}/{profile}/copy", json={"name": "Mine"}, headers=headers(B)
+            ),
+            201,
+        )
+        assert (copied["owner_principal"], copied["version"], copied["preset"]) == (B, 1, False)
+        assert (copied["name"], copied["settings"]) == ("Mine", EDITED)
+        older = await ok(
+            await client.post(
+                f"{PROFILES}/{profile}/copy",
+                params={"version": 1},
+                json={"name": "Old"},
+                headers=headers(B),
+            ),
+            201,
+        )
+        assert older["settings"] == SETTINGS
+
+        # -- validate: the latest version, and a dry run naming an undelivered level
+        valid = await ok(
+            await client.post(f"{PROFILES}/{profile}/validate", json={}, headers=headers(A))
+        )
+        assert valid == {"valid": True, "missing_dependencies": [], "undelivered": []}
+        dry = await client.post(
+            f"{PROFILES}/{profile}/validate",
+            json={"settings": {"pipeline": "structured"}},
+            headers=headers(A),
+        )
+        error = refused(dry, 422, "invalid_profile")
+        assert error["details"]["undelivered"] == [
+            {"module": "pipeline", "level": "structured", "setting": "pipeline"}
+        ]
+
+        # -- presets are ordinary profiles: edited and copied like any other
+        lite = merged(lite_settings(), nest("memory.rolling_summary.window_messages", 40))
+        lite_v2 = await ok(
+            await client.put(
+                f"{PROFILES}/{LITE_PRESET_ID}",
+                json={"name": "Lite", "settings": lite},
+                headers=headers(A),
+            )
+        )
+        assert (lite_v2["version"], lite_v2["preset"], lite_v2["owner_principal"]) == (
+            2,
+            True,
+            "system",
+        )
+        lite_copy = await ok(
+            await client.post(
+                f"{PROFILES}/{LITE_PRESET_ID}/copy", json={"name": "My Lite"}, headers=headers(A)
+            ),
+            201,
+        )
+        assert (lite_copy["preset"], lite_copy["owner_principal"], lite_copy["settings"]) == (
+            False,
+            A,
+            lite,
+        )
+        default_refused = refused(
+            await client.delete(f"{PROFILES}/{LITE_PRESET_ID}", headers=headers(A)),
+            409,
+            "validation_error",
+        )
+        assert default_refused["details"] == {"id": LITE_PRESET_ID, "reason": "is_default"}
+        still = await ok(await client.get(f"{PROFILES}/{LITE_PRESET_ID}", headers=READ))
+        assert still["deleted_at"] is None
+
+        # -- a story created without a profile runs under the deployment's default
+        assert (await _default(client, profile))["default_engine_profile_id"] == profile
+        story, actor = await _story(client)
+        assert await _profile_of(scratch.db, story) == profile
+        refused(
+            await client.delete(f"{PROFILES}/{profile}", headers=headers(A)),
+            409,
+            "validation_error",
+        )
+        await _default(client, lite_copy["id"])
+        other, _ = await _story(client)
+        assert await _profile_of(scratch.db, other) == lite_copy["id"]
+        # Lite is no longer the default: a preset is then deleted like any other profile.
+        lite_gone = await ok(
+            await client.delete(f"{PROFILES}/{LITE_PRESET_ID}", headers=headers(A))
+        )
+        assert (lite_gone["warnings"], lite_gone["stories_using"]) == ([], 0)
+
+        # -- delete while the story uses it: warned, hidden, unassignable, still serving
+        deleted = await ok(await client.delete(f"{PROFILES}/{profile}", headers=headers(B)))
+        assert deleted["id"] == profile
+        assert deleted["deleted_at"] is not None
+        assert deleted["warnings"] == [
+            {"kind": "profile_in_use", "story_id": story, "scenario_id": None}
+        ]
+        assert (deleted["stories_using"], deleted["scenarios_recommending"]) == (1, 0)
+        listed = await ok(await client.get(PROFILES, headers=READ))
+        assert profile not in [item["id"] for item in listed["items"]]
+        everything = await ok(
+            await client.get(PROFILES, params={"include_deleted": "true"}, headers=READ)
+        )
+        assert profile in [item["id"] for item in everything["items"]]
+        gone = await ok(await client.get(f"{PROFILES}/{profile}", headers=READ))
+        assert (gone["deleted_at"], gone["version"]) == (deleted["deleted_at"], 2)
+        edit = await client.put(
+            f"{PROFILES}/{profile}", json={"name": "Again", "settings": {}}, headers=headers(A)
+        )
+        assert refused(edit, 422, "profile_deleted")["details"]["reason"] == "deleted"
+        rescued = await ok(
+            await client.post(
+                f"{PROFILES}/{profile}/copy", json={"name": "Rescued"}, headers=headers(A)
+            ),
+            201,
+        )
+        assert (rescued["deleted_at"], rescued["settings"]) == (None, EDITED)
+        assign = await client.put(
+            "/admin/settings", json={"default_engine_profile_id": profile}, headers=headers(A)
+        )
+        assert refused(assign, 422, "profile_deleted")["details"]["field"] == (
+            "body.default_engine_profile_id"
+        )
+        played = await client.post(
+            f"/stories/{story}/respond", json=respond_body(actor), headers=headers(A)
+        )
+        assert (await ok(played))["message"]["text"]
+        assert await _profile_of(scratch.db, story) == profile
+
+        # -- the sweep purges a deleted profile once no story uses it
+        kept = await retention.sweep_retention(scratch.db)
+        assert kept["engine_profiles"] == 1  # Lite: deleted, and no story uses it
+        refused(await client.get(f"{PROFILES}/{LITE_PRESET_ID}", headers=READ), 404, "not_found")
+        await ok(await client.get(f"{PROFILES}/{profile}", headers=READ))
+        removed = await client.delete(f"/stories/{story}", headers=headers(A))
+        assert removed.status_code == 204, removed.text
+        purged = await retention.sweep_retention(scratch.db)
+        assert purged["engine_profiles"] == 1
+        refused(await client.get(f"{PROFILES}/{profile}", headers=READ), 404, "not_found")
+        left = await scalar(
+            scratch.db,
+            "SELECT count(*) FROM engine_profile_versions WHERE profile_id = :p",
+            p=profile,
+        )
+        assert left == 0
+        events = await rows(
+            scratch.db,
+            "SELECT kind, acting_principal FROM ownership_events WHERE entity_id = :p",
+            p=profile,
+        )
+        assert [tuple(e) for e in events] == [("deleted", "system")]
+
+
+# -- C-17 --------------------------------------------------------------------------------------
+
+FACTORS: dict[str, list[Any]] = {
+    "memory.rolling_summary.enabled": [True, False],
+    "pins.enabled": [True, False],
+    "repair.polish.enabled": [True, False],
+    "budgets.model_calls": [None, 12],
+    "models.generation.response_length": ["short", 600],
+}
+"""The delivered modules' settings C-17 combines, each with two levels."""
+
+
+@pytest.mark.part("M3", "FR-PROF-2,4")
+async def test_c_17__profiles(scratch: Space) -> None:
+    """A pairwise covering array over the delivered modules' settings (the rolling summary,
+    pinned memories and the polish pass on or off, a call budget or the formula, a named length
+    or a token cap): every pair of levels appears in at least one configuration. Each
+    configuration is validated, then created; it becomes the default, a story is created under
+    it and plays a turn, which succeeds. A configuration that picks an undelivered level is
+    refused by validation and never runs: no valid configuration fails at run time, and every
+    configuration either runs cleanly or was refused."""
+    rows_ = covering_array(FACTORS)
+    every_pair = {
+        (a, va, b, vb)
+        for a in FACTORS
+        for b in FACTORS
+        if a < b
+        for va in FACTORS[a]
+        for vb in FACTORS[b]
+    }
+    seen = {(a, va, b, vb) if a < b else (b, vb, a, va) for a, va, b, vb in covered_pairs(rows_)}
+    assert seen >= every_pair
+    assert len(rows_) < 2 ** len(FACTORS)
+    configurations = [merged(*(nest(path, value) for path, value in row.items())) for row in rows_]
+    rejected = merged(configurations[0], {"pipeline": "structured"})
+
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        ran = 0
+        for settings in [*configurations, rejected]:
+            checked = await client.post(
+                f"{PROFILES}/{LITE_PRESET_ID}/validate",
+                json={"settings": settings},
+                headers=headers(A),
+            )
+            if checked.status_code == 422:
+                assert checked.json()["error"]["code"] == "invalid_profile"
+                refusal = await client.post(
+                    PROFILES, json=profile_body(settings=settings), headers=headers(A)
+                )
+                refused(refusal, 422, "invalid_profile")
+                continue
+            assert checked.json()["valid"] is True
+            created = await ok(
+                await client.post(
+                    PROFILES, json=profile_body(settings=settings), headers=headers(A)
+                ),
+                201,
+            )
+            await _default(client, created["id"])
+            story, actor = await _story(client)
+            assert await _profile_of(scratch.db, story) == created["id"]
+            played = await client.post(
+                f"/stories/{story}/respond", json=respond_body(actor), headers=headers(A)
+            )
+            assert (await ok(played))["message"]["text"], settings
+            ran += 1
+        await _default(client, LITE_PRESET_ID)
+    assert ran == len(configurations)
+
+
+@pytest.mark.part("M3", "FR-PROF-4")
+async def test_c_17__dependencies(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """``missing_dependencies`` end to end. The declared graph holds a rule for each clause of
+    the requirement (counted against the documented list). An undelivered module switched on is
+    refused for real, naming it, on create, edit and validate. No two delivered modules depend
+    on each other, so a test-only rule makes pinned memories require the rolling summary: a
+    profile with pins on and the summary off is refused 422 ``invalid_profile`` naming the
+    missing module, on create, edit and validate, and nothing is written; the same profile with
+    the summary on is accepted (complement). Without the rule, the first profile is accepted
+    too: the refusal was the rule's."""
+    assert len(DEPENDENCIES) == len(documented_rules()) == 26
+    rule = DependencyRule(TEST_CLAUSE, "pins", (Requirement("rolling_summary"),))
+    lacking = merged(nest("pins.enabled", True), nest("memory.rolling_summary.enabled", False))
+    having = merged(lacking, nest("memory.rolling_summary.enabled", True))
+    expected = [
+        {"module": "pins", "level": "on", "requires": [{"module": "rolling_summary", "levels": []}]}
+    ]
+    async with respond_client(stub_settings, engine) as (client, _):
+        base = await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
+        path = f"{PROFILES}/{base['id']}"
+        for module in undelivered_modules():
+            for method, url, body in (
+                ("POST", PROFILES, profile_body(settings=naming(module))),
+                ("PUT", path, {"name": "Brisk Lite", "settings": naming(module)}),
+                ("POST", f"{path}/validate", {"settings": naming(module)}),
+            ):
+                found = refused(
+                    await client.request(method, url, json=body, headers=headers(A)),
+                    422,
+                    "invalid_profile",
+                )
+                assert module.name in {u["module"] for u in found["details"]["undelivered"]}
+        before = await scalar(engine, "SELECT count(*) FROM engine_profile_versions")
+        with extra_rule(rule):
+            for method, url, body in (
+                ("POST", PROFILES, profile_body(settings=lacking)),
+                ("PUT", path, {"name": "Brisk Lite", "settings": lacking}),
+                ("POST", f"{path}/validate", {"settings": lacking}),
+            ):
+                found = refused(
+                    await client.request(method, url, json=body, headers=headers(A)),
+                    422,
+                    "invalid_profile",
+                )
+                assert found["details"] == {"missing_dependencies": expected, "undelivered": []}
+            assert await scalar(engine, "SELECT count(*) FROM engine_profile_versions") == before
+            accepted = await client.post(
+                PROFILES, json=profile_body(settings=having), headers=headers(A)
+            )
+            assert (await ok(accepted, 201))["settings"] == having
+        without = await client.post(
+            PROFILES, json=profile_body(settings=lacking), headers=headers(A)
+        )
+        assert (await ok(without, 201))["settings"] == lacking
+
+
+# -- the detailed tests ------------------------------------------------------------------------
+
+
+async def test_settings_are_checked_at_the_boundary(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """A settings document is validated strictly: a value only coercion would accept, an
+    unknown key, a bound crossed, an unknown model purpose, or an endpoint in a route is 422
+    ``validation_error`` at its field; a purpose reserved for a later milestone is 422
+    ``invalid_profile``; a NUL character is 422; nothing is written for any of them. The
+    library refuses the same way. Complement: a delivered purpose with its own model and
+    parameters is accepted and stored as sent."""
+    cases: list[tuple[dict[str, Any], str, str]] = [
+        (
+            nest("memory.rolling_summary.window_messages", True),
+            "validation_error",
+            "body.settings.memory.rolling_summary.window_messages",
+        ),
+        (nest("pins.max_pinned", "20"), "validation_error", "body.settings.pins.max_pinned"),
+        (
+            nest("memory.rolling_summary.window_messages", 501),
+            "validation_error",
+            "body.settings.memory.rolling_summary.window_messages",
+        ),
+        ({"pins": {"maximum": 3}}, "validation_error", "body.settings.pins.maximum"),
+        ({"surprise": {}}, "validation_error", "body.settings.surprise"),
+        (nest("budgets.model_calls", 0), "validation_error", "body.settings.budgets.model_calls"),
+        (
+            nest("budgets.deadline_ms", 600_001),
+            "validation_error",
+            "body.settings.budgets.deadline_ms",
+        ),
+        (
+            {"models": {"purposes": {"nonesuch": {"model": "m"}}}},
+            "validation_error",
+            "body.settings.models.purposes.nonesuch",
+        ),
+        (
+            {"models": {"purposes": {"generation": {"base_url": "http://x"}}}},
+            "validation_error",
+            "body.settings.models.purposes.generation.base_url",
+        ),
+        ({"models": {"purposes": {"entailment": {"model": "m"}}}}, "invalid_profile", ""),
+        (
+            nest("models.purposes.generation.model", "a\x00b"),
+            "validation_error",
+            "body.settings.models.purposes.generation.model",
+        ),
+    ]
+    async with respond_client(stub_settings, engine) as (client, lib):
+        before = await scalar(engine, "SELECT count(*) FROM engine_profiles")
+        for settings, code, field in cases:
+            error = refused(
+                await client.post(
+                    PROFILES, json=profile_body(settings=settings), headers=headers(A)
+                ),
+                422,
+                code,
+            )
+            if field:
+                assert error["details"]["field"] == field, (settings, error)
+            else:
+                assert error["details"]["undelivered"] == [
+                    {"module": "models", "level": None, "setting": "models.purposes.entailment"}
+                ]
+            with pytest.raises((InvalidRequest, InvalidProfile)):
+                await lib.create_profile(
+                    RequestContext(principal=A),
+                    _library_body(profile_body(settings=settings)),
+                )
+        assert await scalar(engine, "SELECT count(*) FROM engine_profiles") == before
+
+        routed = {
+            "models": {
+                "purposes": {"generation": {"model": "house-model", "params": {"temperature": 0.4}}}
+            }
+        }
+        stored = await ok(
+            await client.post(PROFILES, json=profile_body(settings=routed), headers=headers(A)), 201
+        )
+        assert stored["settings"] == routed
+
+
+def _library_body(body: dict[str, Any]) -> ProfileCreate:
+    return ProfileCreate.model_validate(body)
+
+
+async def test_edits_record_their_requester_and_replay(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """Every profile write records one committed ``control`` operation by its requester and
+    moves no configuration revision; an edit that changes nothing records nothing and makes no
+    version. A retry under the same ``Idempotency-Key`` replays the answer
+    (``Idempotent-Replay: true``) and records nothing more; the key with another body is 409
+    ``idempotency_conflict``. Validation writes nothing and takes no key."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        revision = await scalar(engine, "SELECT config_revision FROM deployment_state")
+        key = f"prof-{secrets.token_hex(6)}"
+        created = await client.post(PROFILES, json=profile_body(), headers=headers(A, key))
+        profile = (await ok(created, 201))["id"]
+        again = await client.post(PROFILES, json=profile_body(), headers=headers(A, key))
+        assert (again.status_code, again.headers.get("Idempotent-Replay")) == (201, "true")
+        assert again.json()["id"] == profile
+        conflict = await client.post(PROFILES, json=profile_body("Other"), headers=headers(A, key))
+        refused(conflict, 409, "idempotency_conflict")
+        for method, suffix, body, status, principal in (
+            ("PUT", "", {"name": "Brisk Lite", "settings": EDITED}, 200, B),
+            ("POST", "/copy", {"name": "Copy"}, 201, A),
+            ("DELETE", "", None, 200, B),
+        ):
+            write_key = f"prof-{secrets.token_hex(6)}"
+            response = await client.request(
+                method,
+                f"{PROFILES}/{profile}{suffix}",
+                json=body,
+                headers=headers(principal, write_key),
+            )
+            await ok(response, status)
+            (operation,) = await rows(
+                engine,
+                "SELECT kind, principal, story_id FROM operations WHERE idempotency_key = :k",
+                k=write_key,
+            )
+            assert tuple(operation) == ("control", principal, None)
+        noop_key = f"prof-{secrets.token_hex(6)}"
+        fresh = (
+            await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
+        )["id"]
+        noop = await client.put(
+            f"{PROFILES}/{fresh}",
+            json={"name": "Brisk Lite", "settings": SETTINGS},
+            headers=headers(A, noop_key),
+        )
+        assert (await ok(noop))["version"] == 1
+        recorded = await scalar(
+            engine, "SELECT count(*) FROM operations WHERE idempotency_key = :k", k=noop_key
+        )
+        assert recorded == 0
+        checked = await client.post(f"{PROFILES}/{fresh}/validate", json={}, headers=headers(A))
+        assert "Idempotency-Key" not in checked.headers
+        assert await scalar(engine, "SELECT config_revision FROM deployment_state") == revision
+
+
+async def test_lists_page_and_filter(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """The list pages newest first through ``next_cursor`` without repeating or skipping a
+    profile; ``owner`` and ``relation`` narrow it only when asked; deleted profiles appear only
+    with ``include_deleted``; a malformed cursor is 422 at ``query.cursor``."""
+    owner = f"p-pages-{secrets.token_hex(4)}"
+    async with respond_client(stub_settings, engine) as (client, _):
+        made = [
+            (
+                await ok(
+                    await client.post(PROFILES, json=profile_body(owner=owner), headers=headers(A)),
+                    201,
+                )
+            )["id"]
+            for _ in range(5)
+        ]
+        seen: list[str] = []
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"owner": owner, "limit": 2}
+            if cursor is not None:
+                params["cursor"] = cursor
+            page = await ok(await client.get(PROFILES, params=params, headers=READ))
+            seen += [item["id"] for item in page["items"]]
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+        assert seen == list(reversed(made))
+        related = f"editor_{secrets.token_hex(3)}"
+        await ok(
+            await client.post(
+                f"{PROFILES}/{made[0]}/relations",
+                json={"principal": B, "relation": related},
+                headers=headers(A),
+            ),
+            201,
+        )
+        filtered = await ok(
+            await client.get(PROFILES, params={"relation": f"{related}:{B}"}, headers=READ)
+        )
+        assert [item["id"] for item in filtered["items"]] == [made[0]]
+        await ok(await client.delete(f"{PROFILES}/{made[1]}", headers=headers(A)))
+        live = await ok(await client.get(PROFILES, params={"owner": owner}, headers=READ))
+        assert made[1] not in [item["id"] for item in live["items"]]
+        every = await ok(
+            await client.get(
+                PROFILES, params={"owner": owner, "include_deleted": "true"}, headers=READ
+            )
+        )
+        assert [item["id"] for item in every["items"]] == list(reversed(made))
+        bad = await client.get(PROFILES, params={"cursor": "not-a-cursor"}, headers=READ)
+        assert refused(bad, 422, "validation_error")["details"]["field"] == "query.cursor"
+
+
+async def test_the_default_is_a_configuration_change(scratch: Space) -> None:
+    """Making a profile the default is a prospective configuration change: one
+    ``config_changes`` row with the old and new ids and the actor, and the revision moves by
+    one. An unknown profile is 422 ``profile_deleted`` (``unknown``) and changes nothing; so is
+    ``null``. A fork keeps its source's profile whatever the default is now."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        created = await ok(
+            await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201
+        )
+        profile = created["id"]
+        story, _ = await _story(client)
+        before = await ok(await client.get("/admin/settings", headers=READ))
+        assert before["default_engine_profile_id"] == LITE_PRESET_ID
+        after = await _default(client, profile)
+        assert after["config_revision"] == before["config_revision"] + 1
+        (change,) = await rows(
+            scratch.db,
+            "SELECT setting, old, new, class, actor FROM config_changes "
+            "WHERE setting = 'default_engine_profile_id'",
+        )
+        assert tuple(change) == (
+            "default_engine_profile_id",
+            LITE_PRESET_ID,
+            profile,
+            "prospective",
+            A,
+        )
+        unknown = await client.put(
+            "/admin/settings",
+            json={"default_engine_profile_id": "0" * 26},
+            headers=headers(A),
+        )
+        assert refused(unknown, 422, "profile_deleted")["details"]["reason"] == "unknown"
+        nulled = await client.put(
+            "/admin/settings", json={"default_engine_profile_id": None}, headers=headers(A)
+        )
+        refused(nulled, 422, "validation_error")
+        current = await ok(await client.get("/admin/settings", headers=READ))
+        assert current["config_revision"] == after["config_revision"]
+        forked = await ok(
+            await client.post(f"/stories/{story}/fork", json={"at_turn": 0}, headers=headers(A)),
+            201,
+        )
+        assert await _profile_of(scratch.db, forked["story_id"]) == LITE_PRESET_ID
+
+
+async def test_the_sweep_purges_only_unused_deleted_profiles(scratch: Space) -> None:
+    """The retention sweep purges a deleted profile only once no story uses it: with two stories
+    on it, deleting one keeps it; deleting both purges it. A live profile no story uses is
+    never purged, and neither is a deleted one whose stories remain."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        used = (
+            await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
+        )["id"]
+        idle = (
+            await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
+        )["id"]
+        await _default(client, used)
+        first, _ = await _story(client)
+        second, _ = await _story(client)
+        await _default(client, LITE_PRESET_ID)
+        await ok(await client.delete(f"{PROFILES}/{used}", headers=headers(A)))
+        assert (await retention.sweep_retention(scratch.db))["engine_profiles"] == 0
+        assert (await client.delete(f"/stories/{first}", headers=headers(A))).status_code == 204
+        assert (await retention.sweep_retention(scratch.db))["engine_profiles"] == 0
+        assert (await client.delete(f"/stories/{second}", headers=headers(A))).status_code == 204
+        assert (await retention.sweep_retention(scratch.db))["engine_profiles"] == 1
+        refused(await client.get(f"{PROFILES}/{used}", headers=READ), 404, "not_found")
+        await ok(await client.get(f"{PROFILES}/{idle}", headers=READ))
+
+
+async def test_deleting_warns_of_recommending_scenarios(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """A delete also names every scenario whose draft or latest published version recommends
+    the profile (``profile_recommended``): one recommending it in its draft, and one whose
+    draft now recommends another profile while its published version still recommends this
+    one. A scenario recommending another profile is not named."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        profile = (
+            await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
+        )["id"]
+        other = (
+            await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
+        )["id"]
+
+        async def scenario(recommended: str) -> str:
+            body = {
+                "public_card": {"name": "Gull Rock"},
+                "recommendation": {"engine_profile_id": recommended},
+            }
+            created = await client.post("/catalog/scenarios", json=body, headers=headers(A))
+            return str((await ok(created, 201))["id"])
+
+        drafted = await scenario(profile)
+        published = await scenario(profile)
+        await ok(
+            await client.post(
+                f"/catalog/scenarios/{published}/publish",
+                json={"draft_revision": 1},
+                headers=headers(A),
+            ),
+            201,
+        )
+        await ok(
+            await client.patch(
+                f"/catalog/scenarios/{published}",
+                json={"draft_revision": 2, "recommendation": {"engine_profile_id": other}},
+                headers=headers(A),
+            )
+        )
+        await scenario(other)
+        deleted = await ok(await client.delete(f"{PROFILES}/{profile}", headers=headers(A)))
+        assert deleted["warnings"] == [
+            {"kind": "profile_recommended", "story_id": None, "scenario_id": scenario_id}
+            for scenario_id in sorted([drafted, published])
+        ]
+        assert (deleted["stories_using"], deleted["scenarios_recommending"]) == (0, 2)
+
+
+async def test_the_schema_route_publishes_what_is_delivered(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """``GET /engine-profiles/schema`` answers the delivered schema, every delivered setting's
+    three tags, the delivered modules with their levels, and the delivered model purposes; the
+    library answers the same. The OpenAPI document's profile bodies carry the same schema."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        found = await ok(await client.get(f"{PROFILES}/schema", headers=READ))
+        assert found["schema"] == delivered_schema()
+        assert found["delivered"] == {
+            "pipeline": ["lite"],
+            "rolling_summary": ["on"],
+            "pins": ["on"],
+            "polish": ["on"],
+            "budgets": ["on"],
+            "models": ["on"],
+        }
+        assert found["purposes"] == sorted(DELIVERED_PURPOSES)
+        assert found["tags"]["pins.max_pinned"] == {
+            "tag": "behavioral",
+            "class": "prospective",
+            "quality": "irrelevant",
+        }
+        assert set(found["tags"]) == {path for path in LEAF_PATHS if exposed(path)}
+        library = await lib.profile_schema(RequestContext())
+        assert library.settings_schema == found["schema"]
+        document = (await client.get("/openapi.json")).json()
+        components = document["components"]["schemas"]
+        delivered = _schema_leaves(delivered_schema())
+        for name in ("ProfileCreate", "ProfileUpdate", "EngineProfile", "ProfileBody"):
+            published = components[name]["properties"]["settings"]
+            assert _schema_leaves(published) == delivered, name
+            assert published["properties"]["pipeline"]["enum"] == ["lite"], name
+        dry_run = components["ProfileValidate"]["properties"]["settings"]["anyOf"]
+        assert _schema_leaves(dry_run[0]) == delivered
+
+
+def test_lite_settings_validate_as_a_model() -> None:
+    """The shipped Lite settings parse into the full model with nothing left over, and the
+    model's defaults are Lite's for every delivered setting but the routing (Lite routes each
+    delivered purpose to the deployment's model configuration explicitly)."""
+    lite = parse_settings(lite_settings())
+    defaults = ProfileSettings()
+    assert lite.memory == defaults.memory
+    assert lite.pins == defaults.pins
+    assert lite.repair == defaults.repair
+    assert lite.budgets == defaults.budgets
+    assert lite.models.generation == defaults.models.generation
+    assert set(lite.models.purposes) == set(DELIVERED_PURPOSES)
+    assert all(route.model is None for route in lite.models.purposes.values())
+
+
+def test_engine_profiles_migration_backfills_stories(scratch_database: str) -> None:
+    """0025 seeds Lite, makes it the default and puts every existing story under it; the column
+    keeps no server default. Downgrading with a profile's relations in place drops both tables,
+    both columns and those relations; upgrading again restores Lite as the default."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0024")
+    sync = make_sync_engine(scratch_database)
+    story = "0000000000000000000000STR9"
+    try:
+        with sync.begin() as conn:
+            conn.execute(
+                text("INSERT INTO stories (id, owner_principal) VALUES (:s, 'p-1')"), {"s": story}
+            )
+        command.upgrade(cfg, "0025")
+        with sync.begin() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT engine_profile_id FROM stories WHERE id = :s"), {"s": story}
+                ).scalar_one()
+                == LITE_PRESET_ID
+            )
+            assert (
+                conn.execute(
+                    text("SELECT default_engine_profile_id FROM deployment_state")
+                ).scalar_one()
+                == LITE_PRESET_ID
+            )
+            default = conn.execute(
+                text(
+                    "SELECT column_default FROM information_schema.columns "
+                    "WHERE table_name = 'stories' AND column_name = 'engine_profile_id'"
+                )
+            ).scalar_one()
+            assert default is None
+            conn.execute(
+                text(
+                    "INSERT INTO entity_relations (entity_type, entity_id, principal, relation, "
+                    "created_by) VALUES ('engine_profile', :p, 'p-d', 'editor', 'p-1')"
+                ),
+                {"p": LITE_PRESET_ID},
+            )
+        command.downgrade(cfg, "0024")
+        with sync.connect() as conn:
+            assert conn.execute(text("SELECT to_regclass('engine_profiles')")).scalar() is None
+            relations = conn.execute(
+                text("SELECT count(*) FROM entity_relations WHERE entity_type = 'engine_profile'")
+            ).scalar_one()
+            assert relations == 0
+        command.upgrade(cfg, "0025")
+        with sync.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT default_engine_profile_id FROM deployment_state")
+                ).scalar_one()
+                == LITE_PRESET_ID
+            )
+    finally:
+        sync.dispose()
+
+
+async def test_library_matches_rest(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """The library's profile calls take the same requests and give the same answers as REST,
+    and refuse the same way."""
+    ctx = RequestContext(principal=A)
+    async with respond_client(stub_settings, engine) as (client, lib):
+        created = await lib.create_profile(ctx, _library_body(profile_body()))
+        profile = created.profile.id
+        rest = await ok(await client.get(f"{PROFILES}/{profile}", headers=READ))
+        assert rest == created.profile.model_dump(mode="json")
+        edited = await lib.update_profile(
+            ctx, profile, ProfileUpdate.model_validate({"name": "Brisk Lite", "settings": EDITED})
+        )
+        assert edited.profile.version == 2
+        copied = await lib.copy_profile(ctx, profile, ProfileCopy(name="Mine"), version=1)
+        assert copied.profile.settings == SETTINGS
+        checked = await lib.validate_profile(ctx, profile, ProfileValidate())
+        assert checked.valid
+        with pytest.raises(InvalidProfile):
+            await lib.validate_profile(
+                ctx, profile, ProfileValidate(settings={"pipeline": "structured"})
+            )
+        versions = await lib.list_profile_versions(ctx, profile)
+        assert [v.version for v in versions] == [1, 2]
+        deleted = await lib.delete_profile(ctx, profile)
+        assert (deleted.changed, deleted.warnings) == (True, ())
+        again = await lib.delete_profile(RequestContext(principal=B), profile)
+        assert (again.changed, again.deleted_at) == (False, deleted.deleted_at)
+        page = await lib.list_profiles(ctx, owner=A, include_deleted=True)
+        assert profile in [item.id for item in page.items]

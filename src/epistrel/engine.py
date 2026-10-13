@@ -66,6 +66,9 @@ from epistrel.core.media.store import BlobStore
 from epistrel.core.media.stores import make_store
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.ports import Ports
+from epistrel.core.profiles import store as profiles
+from epistrel.core.profiles.schema import Purposes
+from epistrel.core.profiles.validate import ProfileValidation
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
@@ -107,6 +110,7 @@ from epistrel.orchestrator.lite.schemas import (
 from epistrel.orchestrator.models import ModelAccessLayer
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models import metrics as model_metrics
+from epistrel.orchestrator.models import registry as model_registry
 from epistrel.orchestrator.policies import admin as policy_admin
 from epistrel.orchestrator.policies import input_gate, output_gate
 from epistrel.orchestrator.policies import store as policy_store
@@ -216,6 +220,11 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "open_upload": ResultCodec.of(media_uploads.UploadOpened, status=201, revision_field=_CONFIG),
     "complete_upload": ResultCodec.of(media.MediaWrite, status=201, revision_field=_CONFIG),
     "abort_upload": ResultCodec.of(media_uploads.UploadAborted, status=204, revision_field=_CONFIG),
+    # Engine profiles (#106): deployment-scoped like the catalog's writes.
+    "create_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
+    "update_profile": ResultCodec.of(profiles.ProfileWrite, revision_field=_CONFIG),
+    "copy_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
+    "delete_profile": ResultCodec.of(profiles.DeletedProfile, revision_field=_CONFIG),
 }
 """How each mutating method's result is stored under its ``Idempotency-Key`` and replayed: the
 result type, the REST status it answers with, and the revision a reference carries."""
@@ -2291,6 +2300,140 @@ class Engine:
             lambda _: media_uploads.abort(self.db, self.media, upload_id, principal=principal),
             material={"upload_id": upload_id},
         )
+
+    # -- engine profiles (FR-PROF-1..4; FR-API-6; #106) -------------------------------------------
+    # Deployment-scoped like the catalog: each write is one transaction recording a story-less
+    # ``control`` operation, keyed per deployment. Until #113 no turn reads a profile.
+
+    @property
+    def purposes(self) -> Purposes:
+        """The model purposes a profile may route: the Orchestrator's delivered purposes, and the
+        ones it reserves for later milestones (naming one is naming something undelivered)."""
+        return Purposes.of(list(model_registry.DELIVERED), list(model_registry.RESERVED))
+
+    async def create_profile(
+        self, ctx: RequestContext, request: profiles.ProfileCreate
+    ) -> profiles.ProfileWrite:
+        """Create an engine profile at version 1 (FR-PROF-1), owned by ``request.owner`` or
+        else the requesting principal (FR-AUTH-5). Its settings may name any delivered module;
+        what they leave out takes the default. 422 ``validation_error`` for their shape, 422
+        ``invalid_profile`` for an undelivered module or level or a missing dependency
+        (FR-PROF-2,4); nothing is written."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "create_profile",
+            lambda _: profiles.create(
+                self.db, request, principal=principal, purposes=self.purposes
+            ),
+            material={"body": _body(request)},
+        )
+
+    async def get_profile(
+        self, ctx: RequestContext, profile_id: str, *, version: int | None = None
+    ) -> profiles.EngineProfile:
+        """The profile at its latest version (``version``: that one), deleted or not; 404 for an
+        unknown profile or version."""
+        return await profiles.get_profile(self.db, profile_id, version=version)
+
+    async def list_profiles(
+        self,
+        ctx: RequestContext,
+        *,
+        owner: str | None = None,
+        relation: Sequence[str] = (),
+        include_deleted: bool = False,
+        limit: int = profiles.DEFAULT_PAGE,
+        cursor: str | None = None,
+    ) -> profiles.ProfilePage:
+        """Profiles at their latest version, newest first, presets included; deleted ones only
+        with ``include_deleted``. ``owner`` and ``relation`` (``name:principal``, or ``name:``
+        for any principal) narrow the list only when given (FR-AUTH-8)."""
+        return await profiles.list_profiles(
+            self.db,
+            owner=ownership.owner_filter(owner),
+            relations=[ownership.parse_relation_filter(value) for value in relation],
+            include_deleted=include_deleted,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    async def update_profile(
+        self, ctx: RequestContext, profile_id: str, request: profiles.ProfileUpdate
+    ) -> profiles.ProfileWrite:
+        """Replace the profile's name and settings; a new version is made only when the
+        settings differ from the latest version's (FR-PROF-1). Presets are edited like any
+        profile (FR-PROF-3). 404 for an unknown profile, 422 ``profile_deleted`` for a deleted
+        one, and the settings are refused as on creation."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "update_profile",
+            lambda _: profiles.update_profile(
+                self.db, profile_id, request, principal=principal, purposes=self.purposes
+            ),
+            material={"profile_id": profile_id, "body": _body(request)},
+        )
+
+    async def copy_profile(
+        self,
+        ctx: RequestContext,
+        profile_id: str,
+        request: profiles.ProfileCopy,
+        *,
+        version: int | None = None,
+    ) -> profiles.ProfileWrite:
+        """A new profile, owned by ``request.owner`` or else the requesting principal, at
+        version 1 with the settings of the profile's latest version (``version``: that one's).
+        A preset or a deleted profile copies like any other; 404 for an unknown profile or
+        version."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "copy_profile",
+            lambda _: profiles.copy_profile(
+                self.db, profile_id, request, principal=principal, version=version
+            ),
+            material={"profile_id": profile_id, "version": version, "body": _body(request)},
+        )
+
+    async def validate_profile(
+        self,
+        ctx: RequestContext,
+        profile_id: str,
+        request: profiles.ProfileValidate | None = None,
+    ) -> ProfileValidation:
+        """Validate ``request.settings`` (a dry run that writes nothing), or the profile's latest
+        version, against the delivered modules and the dependency graph (FR-PROF-2,4): the
+        result when valid, else 422 ``invalid_profile`` naming the missing dependencies and
+        undelivered settings. 404 for an unknown profile."""
+        return await profiles.validate_stored(self.db, profile_id, request, purposes=self.purposes)
+
+    async def delete_profile(self, ctx: RequestContext, profile_id: str) -> profiles.DeletedProfile:
+        """Delete the profile (FR-PROF-1): it leaves listings and new assignment, and every
+        story that uses it keeps running on its last version until the ``retention_sweep``
+        purges it, once no story does. The answer warns of those stories and of the scenarios
+        recommending it. The deployment's default cannot be deleted (409, ``reason:
+        is_default``); a deleted profile is answered as it is; 404 for an unknown one."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "delete_profile",
+            lambda _: profiles.delete_profile(self.db, profile_id, principal=principal),
+            material={"profile_id": profile_id},
+        )
+
+    async def list_profile_versions(
+        self, ctx: RequestContext, profile_id: str
+    ) -> list[profiles.ProfileVersion]:
+        """Every version of the profile, oldest first: number, time and author."""
+        return await profiles.list_versions(self.db, profile_id)
+
+    async def profile_schema(self, ctx: RequestContext) -> profiles.ProfileSchema:
+        """What a profile may set on this deployment (FR-PROF-2): the JSON Schema of the
+        delivered modules and levels, every delivered setting's three tags, the delivered
+        modules with their levels, and the model purposes a profile may route."""
+        return profiles.profile_schema(self.purposes)
 
 
 # One span, summary line and count per outermost call of every public coroutine method (#74).

@@ -154,6 +154,14 @@ MediaId = Annotated[
         examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C6"],
     ),
 ]
+ProfileId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The engine profile's id (a ULID).",
+        examples=["00000000000000000000PRF001"],
+    ),
+]
 PolicyIdPath = Annotated[
     str,
     Path(

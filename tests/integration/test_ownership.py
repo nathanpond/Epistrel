@@ -74,9 +74,9 @@ async def test_every_delivered_type_is_covered(dummy_dsn: str, engine: AsyncEngi
     """Every owned type whose table exists has its four routes mounted, a factory in
     ``ownership_fixtures.KINDS``, and a request in ``CALLS`` for every route under its entities.
     So the nothing-gates matrix and the creation checks cover every delivered type, and a
-    story that delivers a type must extend them. Complement: the persona and profile types are
-    in the registry, and neither has a table yet (media arrived with #105, scenarios with
-    #108)."""
+    story that delivers a type must extend them. Complement: the persona type is in the
+    registry and has no table yet (media arrived with #105, scenarios with #108, engine
+    profiles with #106)."""
     app = create_app(auth_settings(dummy_dsn))
     async with engine.connect() as conn:
         delivered = await ownership.delivered(conn)
@@ -91,10 +91,7 @@ async def test_every_delivered_type_is_covered(dummy_dsn: str, engine: AsyncEngi
     for entity_type in delivered:
         for method in ("transfer_owner", "add_relation", "remove_relation", "list_relations"):
             assert f"{method}_{entity_type.value}" in operation_ids
-    assert set(EntityType) - set(delivered) == {
-        EntityType.PERSONA,
-        EntityType.ENGINE_PROFILE,
-    }
+    assert set(EntityType) - set(delivered) == {EntityType.PERSONA}
 
 
 async def test_principals_and_names_are_validated(
@@ -354,10 +351,12 @@ async def test_deleting_an_entity_drops_its_relations(
 ) -> None:
     """Deleting a story or a catalog character removes its relations and records a ``deleted``
     event with the acting principal, the owner and the relations removed; the earlier ownership
-    events stay. Deleting a media asset retires it (#105): the entity stays, with
-    its owner and relations and no ``deleted`` event, until the media sweep purges it
-    (``tests/integration/test_media_assets.py`` covers that ``deleted`` event, by ``system``).
-    Complement: another entity's relation to the same principal stays."""
+    events stay. Deleting a media asset retires it (#105), and deleting an engine profile
+    (#106, answered 200 with its warnings) marks it deleted: the entity stays, with its owner and
+    relations and no ``deleted`` event, until the media sweep or the retention sweep purges it
+    (``tests/integration/test_media_assets.py`` and ``test_engine_profiles.py`` cover that
+    ``deleted`` event, by ``system``). Complement: another entity's relation to the same
+    principal stays."""
     async with respond_client(stub_settings, engine) as (client, _):
         kept = await create_story(client, OWNER, None)
         await ok(
@@ -380,7 +379,7 @@ async def test_deleting_an_entity_drops_its_relations(
                     201,
                 )
             deleted = await client.delete(kind.path(entity.id), headers=headers(STRANGER))
-            assert deleted.status_code == 204, deleted.text
+            assert deleted.status_code == kind.deleted_status, deleted.text
             if kind.retires:
                 assert await owner_of(engine, kind, entity.id) == NEW_OWNER
                 kept_relations = await scalar(

@@ -27,6 +27,11 @@ The detailed tests are in ``tests/integration/test_ownership.py``. The story-cre
   new references, and survives the media sweep until nothing references it; then the sweep
   purges it. Until #115 gives catalog versions image fields, the version that references it is
   planted with #115's ``public_card.images`` shape.
+- ``test_i_21__profiles`` (#106): every engine profile has one owner. The Lite preset is
+  ``system``'s; a created or copied profile is its creator's, or the owner the request names;
+  a transfer moves it with the acting principal recorded, a ``system``-owned profile's too; and
+  owning one grants nothing: another principal edits, copies, validates and deletes it. The
+  nothing-gates matrix covers every profile route (``ownership_fixtures.CALLS``).
 """
 
 from __future__ import annotations
@@ -58,6 +63,7 @@ from epistrel.config import Settings
 from epistrel.core.db import make_engine
 from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.media.sweep import sweep
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import stories
 from epistrel.core.tables.ownership import EntityType
@@ -82,6 +88,7 @@ from tests.integration.ownership_fixtures import (
 )
 from tests.media_support import blob_path, media_client, scratch, uploaded
 from tests.model_support import config_key
+from tests.profile_support import EDITED, PROFILES, profile_body
 from tests.respond_support import respond_client
 from tests.story_support import story_body
 
@@ -666,3 +673,93 @@ async def test_i_21__media_retire(pg_url: str, tmp_path: Path) -> None:
         assert (await sweep(space.db, space.lib.media))["assets_purged"] == 1
         assert (await client.get(f"/media/{shown['id']}/content", headers=READ)).status_code == 404
         assert not blob_path(space.root, shown["checksum"]).exists()
+
+
+# -- engine profiles (#106) ------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-PROF-1; FR-AUTH-5")
+async def test_i_21__profiles(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """Every engine profile has exactly one owner. The Lite preset, shipped with Epistrel, is
+    owned by ``system`` and listed under it. A profile A creates is A's, and B's when the
+    creation names B; ``system`` is refused as a named owner (422 at ``body.owner``). A copy is
+    owned by whoever copies it, or by the owner the copy names, whoever owns the source. A
+    transfer by a third principal moves the owner and records ``(transfer, old, new, acting
+    principal)``; a ``system``-owned profile transfers like any other. Owning a profile grants
+    nothing: a stranger edits A's profile into a new version, copies it, validates it and
+    deletes it, and the deleted profile keeps its owner until it is purged.
+
+    Complement asserted: the owner filter narrows the listing to A's profiles only when asked."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        lite = await ok(await client.get(f"{PROFILES}/{LITE_PRESET_ID}", headers=READ))
+        assert (lite["owner_principal"], lite["preset"]) == ("system", True)
+        listed = await ok(await client.get(PROFILES, params={"owner": "system"}, headers=READ))
+        assert LITE_PRESET_ID in [item["id"] for item in listed["items"]]
+        shown = await ok(await client.get(f"{PROFILES}/{LITE_PRESET_ID}/relations", headers=READ))
+        assert shown["owner_principal"] == "system"
+
+        a, b, c = _unique("p-a"), _unique("p-b"), _unique("p-c")
+        mine = await ok(await client.post(PROFILES, json=profile_body(), headers=headers(a)), 201)
+        named = await ok(
+            await client.post(PROFILES, json=profile_body(owner=b), headers=headers(a)), 201
+        )
+        assert (mine["owner_principal"], named["owner_principal"]) == (a, b)
+        system = await client.post(PROFILES, json=profile_body(owner="system"), headers=headers(a))
+        assert system.status_code == 422, system.text
+        assert system.json()["error"]["details"]["field"] == "body.owner"
+        copied = await ok(
+            await client.post(
+                f"{PROFILES}/{mine['id']}/copy", json={"name": "Copy"}, headers=headers(c)
+            ),
+            201,
+        )
+        given = await ok(
+            await client.post(
+                f"{PROFILES}/{LITE_PRESET_ID}/copy",
+                json={"name": "Given", "owner": b},
+                headers=headers(c),
+            ),
+            201,
+        )
+        assert (copied["owner_principal"], given["owner_principal"]) == (c, b)
+        by_owner = await ok(await client.get(PROFILES, params={"owner": a}, headers=READ))
+        assert [item["id"] for item in by_owner["items"]] == [mine["id"]]
+        everyone = await ok(await client.get(PROFILES, params={"limit": 200}, headers=READ))
+        assert {mine["id"], named["id"], copied["id"]} <= {i["id"] for i in everyone["items"]}
+
+        moved = await ok(
+            await client.put(
+                f"{PROFILES}/{named['id']}/owner", json={"principal": a}, headers=headers(c)
+            )
+        )
+        assert (moved["owner_principal"], moved["previous_owner"]) == (a, b)
+        assert await _events(engine, named["id"]) == [("transfer", b, a, c)]
+        kept = await ok(await client.post(PROFILES, json=profile_body(), headers=headers(a)), 201)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE engine_profiles SET owner_principal = 'system' WHERE id = :p"),
+                {"p": kept["id"]},
+            )
+        handed = await ok(
+            await client.put(
+                f"{PROFILES}/{kept['id']}/owner", json={"principal": b}, headers=headers(c)
+            )
+        )
+        assert handed["previous_owner"] == "system"
+        assert await _events(engine, kept["id"]) == [("transfer", "system", b, c)]
+
+        edited = await ok(
+            await client.put(
+                f"{PROFILES}/{mine['id']}",
+                json={"name": "Edited", "settings": EDITED},
+                headers=headers(c),
+            )
+        )
+        assert (edited["version"], edited["owner_principal"]) == (2, a)
+        await ok(
+            await client.post(f"{PROFILES}/{mine['id']}/validate", json={}, headers=headers(c))
+        )
+        deleted = await ok(await client.delete(f"{PROFILES}/{mine['id']}", headers=headers(c)))
+        assert deleted["deleted_at"] is not None
+        assert await owner_of(engine, KINDS[EntityType.ENGINE_PROFILE], mine["id"]) == a

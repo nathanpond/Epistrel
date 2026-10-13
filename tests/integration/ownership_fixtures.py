@@ -30,6 +30,7 @@ from epistrel.core.tables.ownership import EntityType
 from tests.auth_support import bearer
 from tests.catalog_support import character as catalog_character
 from tests.media_support import files, metadata, png
+from tests.profile_support import EDITED, PROFILES, profile_body
 from tests.scenario_support import scenario as catalog_scenario
 from tests.story_support import story_body
 
@@ -109,16 +110,25 @@ async def create_media(client: httpx.AsyncClient, principal: str, owner: str | N
     return Entity(created["id"])
 
 
+async def create_profile(client: httpx.AsyncClient, principal: str, owner: str | None) -> Entity:
+    body = profile_body(**({"owner": owner} if owner is not None else {}))
+    response = await client.post(PROFILES, json=body, headers=headers(principal))
+    created = await ok(response, 201)
+    return Entity(created["id"])
+
+
 @dataclass(frozen=True)
 class Kind:
     """A delivered owned type: where its entities live and how to make one. ``retires``: its
-    delete retires the entity instead of removing it (media, #105)."""
+    delete retires the entity instead of removing it (media, #105; engine profiles, #106, until
+    the sweep purges them). ``deleted_status``: what its delete answers."""
 
     entity_type: EntityType
     create: Create
     owner_sql: str
     """``SELECT owner_principal …`` of one entity (``:id``)."""
     retires: bool = False
+    deleted_status: int = 204
 
     @property
     def base(self) -> str:
@@ -152,6 +162,13 @@ KINDS: dict[EntityType, Kind] = {
         create_media,
         "SELECT owner_principal FROM media_assets WHERE id = :id",
         retires=True,
+    ),
+    EntityType.ENGINE_PROFILE: Kind(
+        EntityType.ENGINE_PROFILE,
+        create_profile,
+        "SELECT owner_principal FROM engine_profiles WHERE id = :id",
+        retires=True,
+        deleted_status=200,
     ),
 }
 
@@ -260,6 +277,11 @@ async def _unsignable(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> 
     return {}
 
 
+async def _edited(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    await _send(client, kind, entity, "PUT", "", {"name": "Brisk Lite", "settings": EDITED}, 200)
+    return {}
+
+
 async def _configured(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     await _send(client, kind, entity, "PATCH", "/settings", SETTINGS, 200)
     return {}
@@ -296,6 +318,7 @@ S = "/stories/{story_id}"
 C = "/catalog/characters/{character_id}"
 SC = "/catalog/scenarios/{scenario_id}"
 M = "/media/{media_id}"
+P = "/engine-profiles/{profile_id}"
 RELATION = "/relations/{relation}/{principal:path}"
 OMNISCIENT = {"viewpoint": "omniscient"}
 ENTRY_READS: tuple[dict[str, str], ...] = (
@@ -378,6 +401,19 @@ CALLS: dict[tuple[str, str], Call] = {
     ("HEAD", f"{M}/content"): Call(200),
     ("GET", f"{M}/url"): Call(200, prepare=_signable, cleanup=_unsignable),
     ("GET", f"{M}/relations"): Call(200, prepare=_related),
+    # -- engine profiles (#106): writes (a new version, a copy, a dry-run validation that
+    # writes nothing, a delete) and the ownership routes
+    ("PUT", P): Call(200, {"name": "Brisk Lite", "settings": EDITED}),
+    ("POST", f"{P}/copy"): Call(201, {"name": "My copy"}),
+    ("POST", f"{P}/validate"): Call(200, {"settings": EDITED}),
+    ("DELETE", P): Call(200),
+    ("PUT", f"{P}/owner"): Call(200, {"principal": NEW_OWNER}),
+    ("POST", f"{P}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
+    ("DELETE", f"{P}{RELATION}"): Call(204, prepare=_related),
+    # -- engine profiles: reads of an edited profile, at its latest version and at version 1
+    ("GET", P): Call(200, queries=({}, {"version": "1"}), prepare=_edited),
+    ("GET", f"{P}/versions"): Call(200, prepare=_edited),
+    ("GET", f"{P}/relations"): Call(200, prepare=_related),
 }
 """Every route under an owned entity's path, ``/admin`` excluded."""
 
@@ -416,6 +452,7 @@ __all__ = [
     "Kind",
     "create_character",
     "create_media",
+    "create_profile",
     "create_scenario",
     "create_story",
     "headers",

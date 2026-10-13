@@ -8,6 +8,9 @@ operation of the latest truncate, untruncate, swap or regenerate, so an in-fligh
 (``StoryStatus``: ``active``, ``archived``, ``paused``). #63 adds the turn-concurrency columns and
 the in-flight turn marker. #104 adds ``owner_principal`` (FR-AUTH-5): the story's one owner, set at
 creation and changed only by a transfer (``core.ownership``); it decides nothing (FR-AUTH-8).
+#106 adds ``engine_profile_id`` (FR-PROF-1): the engine profile the story runs under, the
+deployment's default when it was created (a fork keeps its source's). It references
+``engine_profiles``, so a profile is never purged while a story uses it.
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -20,6 +23,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     Column,
+    ForeignKey,
     Index,
     Integer,
     SmallInteger,
@@ -83,9 +87,14 @@ stories = Table(
         nullable=False,
         server_default=text("transaction_timestamp()"),
     ),
+    # FR-PROF-1 (#106): every story runs under exactly one profile. No server default: story
+    # creation names the deployment's default, and a fork copies its source's.
+    Column("engine_profile_id", ulid_type(), ForeignKey("engine_profiles.id"), nullable=False),
     CheckConstraint(STATUS_CHECK, name="status"),
     CheckConstraint(TURN_CONCURRENCY_CHECK, name="turn_concurrency"),
     CheckConstraint(TURN_QUEUE_MAX_CHECK, name="turn_queue_max"),
 )
 
 Index("ix_stories_owner_principal", stories.c.owner_principal)
+# A profile's delete warnings and its purge find the stories that use it (#106).
+Index("ix_stories_engine_profile_id", stories.c.engine_profile_id)

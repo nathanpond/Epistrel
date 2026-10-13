@@ -2500,3 +2500,196 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   M16 and M17 are why the fixture needs audiences with several tokens and a guarded seed. I did not re-run my own mutations against the pre-fix tests. The verifier's evidence covers M6, M9, M10 and M11 there.
   **Why:** Under the batched gate, the story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
   **Issue:** #108
+- **Decision:** I applied the owner's decision of 2026-10-12 on #106's AC-level drift (option A, "Amend #106 to the docs"; recorded on #106 and in the session's owner file).
+  - Presets are ordinary profiles (FR-PROF-3, ADR-084). An edit makes a new version, copy and delete follow the usual rules, and `preset` records provenance only. The only refusal is deleting the deployment's default (409).
+  - The Lite preset's budgets are `{model_calls: null, deadline_ms: 45000}`. `null` is NFR-PERF-6's formula (9 + G in M3). An explicit `budgets.model_calls` is the turn's total cap including the reserved guardrail calls G, as M2's `max_model_calls_per_turn` is, and it is refused below 1 + G; nothing is added on top of G. `deadline_ms` maps to `turn_deadline`. Both are documented on `Budgets`; #113 wires them into the turn.
+  - The pass-1 Discretion sentence "G added on top, so the Lite preset's 2 replaces #69's 4" is superseded, because its premise was wrong.
+  - No turn reads a profile before #113. P-09 and S-SELFPOLICE ran unchanged and pass (5 passed).
+  - No `## Ad-hoc` entry is written here; the orchestrator writes it.
+  **Why:** The owner decided. The AC text was amended in place to match FR-PROF-3 and NFR-PERF-6. Cost if wrong: none; this is the owner's call.
+  **Issue:** #106
+- **Decision (drift):** `stories.engine_profile_id` lands in #106's migration (`0025_engine_profiles`), not #113's.
+  - It is NOT NULL and indexed, with a foreign key to `engine_profiles`. Every existing story is backfilled to `LITE_PRESET_ID` through a temporary server default that the migration then drops.
+  - Story creation sets it to the deployment's default, read with the deployment row held `FOR SHARE`. A fork copies its source's (`_copy_story_row` copies every column).
+  - `deployment_state.default_engine_profile_id` is NOT NULL with a foreign key, as the pass-1 Discretion says.
+  **Why:**
+  - The column is needed by AC4's delete warnings, AC4's "purge once no story uses it", and AC5. The drift note found a single additive step that meets them as written.
+  - #113's AC1 will find the column in place.
+  - The two foreign keys mean the purge can never remove a profile that a story or the default names.
+  - Cost if wrong: #113 drops a foreign key or moves the backfill.
+  **Issue:** #106, #113
+- **Decision:** Shape of the module schema. `ProfileSettings` is one full model with every FR-PROF-2 module, every module off by default.
+  - **Levels instead of flags.** A module with more than two levels carries its level, not the Discretion's `{enabled: bool, ...}`:
+    - `perception.level`: `none`, `co_location` or `full`;
+    - `verification.level`: `off`, `declared`, `extraction` or `entailment`;
+    - `clock.level` and `states.level`: `off`, `prompt_only` or `on`;
+    - `multi_character.renders`: `combined` or `per_character`;
+    - `character_knowledge.testimony`: `off`, `model` or `defaulted`;
+    - `pipeline`: `lite` or `structured`.
+    On/off modules keep `enabled`.
+  - **Verification** is a ladder. FR-PROF-2 says "plus …" and FR-PROF-4 says "at least declared". `extraction_mode` and `entailment_gate` belong to its levels.
+  - **Contradiction checking** is a dial of the verification module, `verification.contradiction_checking`, with the capability name `contradiction_checking`.
+  - **Repair and polish:**
+    - `repair.max_attempts` is module `repair`, the structured repair ladder.
+    - The polish pass is `repair.polish {enabled, max_regenerations}`. Its Lite form is M2's `guardrail_retry_budget` (0–5, default 2), as the drift note maps it.
+  - **Hot-set budgets** (FR-MEM-8) belong to the `structured` level of the pipeline.
+  - **Models** is `{purposes: {<purpose>: {model, params?}}, generation: {temperature, top_p, response_length}}`. FR-PROF-2 puts the generation defaults under Models, and a `generation` key beside the purposes would collide with the `generation` purpose.
+  - **Capability names** are the Discretion's list plus `lite`, `contradiction_checking` and `repair`.
+  **Why:**
+  - A flag plus a level would accept contradictory pairs such as `enabled: false, level: full`.
+  - M4–M6 only flip `DELIVERED` entries, as the Discretion wants.
+  - Cost if wrong: these modules are undelivered, so their shape changes freely until M4.
+  **Issue:** #106, #109, #113, #122
+- **Decision (drift):** Profile bounds are widened to M2's:
+  - `window_messages` 1–500;
+  - `compress_threshold_tokens` 100–100,000;
+  - `model_calls` 1–50;
+  - `deadline_ms` 1–600,000. M2's `turn_deadline` is above 0 and at most 600 s, and the request floor of 0.5 s stays a request rule.
+
+  The Lite seed's `compress_threshold_tokens: 6000` is AC1's value. It is three times M2's `lite_summary_max_tokens` default (2,000), which #113 maps it onto as the merge cap. #113 must decide whether 6,000 becomes the effective merge cap for every Lite story.
+  **Why:** With the planned narrower bounds, #113's migration of stored M2 values would fail validation (drift note). Cost if wrong: a bound narrows later; nothing stored exceeds M2's.
+  **Issue:** #106, #113
+- **Decision:** How the settings are tagged.
+  - `Tag` follows FR-PROF-6's lists: the pipeline, partitions, nested beliefs, perception, the verification ladder and `extraction_mode`, commitment, the clock, States and consolidation are data-producing; everything else is behavioral.
+  - `ConfigClass` follows FR-CONC-15: verification, perception, partitions and the beliefs, commitment, the clock and States are interpretive; models, budgets, thresholds and memory are prospective. Every setting delivered in M3 is prospective, as the pass-1 Discretion says.
+  - `Quality` follows FR-PROF-16: every setting is relevant except pinned memories (the Discretion's "not pins"; #109's complement uses `pins.max_pinned`).
+  - No profile setting names a prompt-template version, because templates are files. #109 folds their hashes into the fingerprint (its own plan).
+  **Why:** These are the planner's sources. `missing_tags` (U-28) refuses a leaf without exactly one tag of each kind. Cost if wrong: a tag moves before anything reads it (#109, #113).
+  **Issue:** #106, #109
+- **Decision:** Naming an undelivered module is refused at any value, its off value included (422 `invalid_profile`, with `details.undelivered` naming each setting). The pass-1 Discretion says a module named at its off value is accepted.
+  - A level switch whose value picks an undelivered level is refused too (`pipeline: structured`).
+  - `validate_profile` reads the names in the document. So #113 must validate merged sparse documents, never a full model dump. `profile_defaults`, seeded from Lite, names no undelivered key.
+  **Why:**
+  - The published schema (`additionalProperties: false`) has no place for such a key. Accepting it would let a request the contract forbids succeed: C-01's `negative_data_rejection`, FR-API-4.
+  - AC2 reads "a profile naming an undelivered module or level is rejected".
+  - Cost if wrong: one condition in `undelivered_settings`.
+  **Issue:** #106, #113
+- **Decision:** `POST /engine-profiles/{id}/validate` answers 200 `{valid: true, missing_dependencies: [], undelivered: []}` for a valid profile and 422 `invalid_profile` for an invalid one. The pass-1 Discretion's 200 `{valid: false, …}` is not used.
+  - The body `{settings?}` is a dry run of an edit; without settings, the latest version is validated.
+  - The route is flagged `mutating=False` (#103's `route_flags`): no `Idempotency-Key` and no revision base. The principal is still required, by method.
+  **Why:** AC3 lists the validate route among those that "reject an invalid combination with 422 `invalid_profile`", and `/n8-verify` reads the AC. Cost if wrong: the 422 becomes a 200 body.
+  **Issue:** #106
+- **Decision:** `DEPENDENCIES` is a tuple of 26 rule objects, `DependencyRule {clause, module, levels, requires: (Requirement(module, levels), …), when}`. AC3 writes it as `{module: [requires...]}`, which cannot express:
+  - perception other than `none`;
+  - "in the structured pipeline";
+  - a requirement at a given level.
+
+  How the rules map to FR-PROF-4:
+  - `FR_PROF_4` quotes the requirement's nine clauses verbatim. U-28 checks that each is in docs/03 and that each has a rule.
+  - The module docstring lists the 26 rules. U-28 compares that list with `rule.describe()` one by one, and its count.
+  - The `structured` clause gives one rule for each of the 16 modules it constrains. It exempts what the clause exempts, and also pinned memories (FR-LITE-3: under every profile) and the polish pass's Lite form (the Discretion's "repair.polish under lite is allowed").
+  - Every rule is exercised on settings that switch its module on (`tests/profile_support.violating`), with a complement (`satisfying`).
+  - `epistrel.testing.profiles.extra_rule` rebinds `schema.DEPENDENCIES` for C-17's delivered path. Validation reads the tuple at call time, and Core never imports the helper.
+  **Why:** These are the pass-1 Discretion's rule objects, made checkable against the requirement's own text. Cost if wrong: renames only.
+  **Issue:** #106
+- **Decision (drift):** Core never imports the Orchestrator's purpose registry. `Engine.purposes` passes `Purposes(delivered, reserved)` from `orchestrator.models.registry` into every profile write and validation:
+  - a delivered purpose may be routed;
+  - a reserved purpose (or port) is reported in `undelivered` (`models.purposes.<name>`);
+  - an unknown name is 422 `validation_error` at its key.
+
+  The published schema documents the purpose key pattern, with `additionalProperties: false`. `GET /engine-profiles/schema` lists the delivered purpose names in `purposes`.
+  **Why:** The `core-does-not-import-orchestrator-or-api` contract (lint-imports); the drift note's first option. Cost if wrong: none.
+  **Issue:** #106
+- **Decision:** Profile names are not unique per owner. The pass-1 Discretion says "unique per owner case-insensitively".
+  **Why:**
+  - FR-AUTH-5 transfers, including #117's offboarding to a curator, always succeed. A per-owner unique name would make a transfer to an owner who already holds that name fail with a constraint error.
+  - Names are labels, as catalog names are; the id identifies a profile.
+  - Cost if wrong: a partial unique index plus a rule for transfers.
+  **Issue:** #106, #117
+- **Decision:** Delete semantics.
+  - A delete is always soft. The answer is 200 `{id, deleted_at, warnings, stories_using, scenarios_recommending, config_revision}`.
+  - Warnings are `{kind: profile_in_use, story_id}` for each story on the profile, and `{kind: profile_recommended, scenario_id}` for each scenario whose draft or latest published version recommends it (#108's `recommendation.engine_profile_id`). Each list is capped at 1,000, with counts.
+  - Deleting a deleted profile answers its `deleted_at` and records nothing.
+  - A deleted profile still reads, lists with `include_deleted=true`, and copies. The Discretion's later "PUT/copy on a deleted profile → 422" contradicts its own "copying a deleted profile allowed", and the copy rule is kept. Only an edit, or naming the profile as the default, is 422 `profile_deleted`.
+  - `profile_in_use` is a warning kind, never an error code (the Discretion drops it from the code list).
+  **Why:** AC4 and FR-PROF-1 say "removes it from listings and from new assignment, with a warning naming the stories". A copy assigns nothing and is the way to recover a deleted profile's settings. Cost if wrong: one refusal in `copy_profile`.
+  **Issue:** #106, #117, #119
+- **Decision:** #71's `retention_sweep` gains `engine_profiles` (its result's new key), from `core.profiles.store.purge_deleted`.
+  - It purges deleted profiles that no story uses and that are not the default, at most 1,000 per run.
+  - Each purge is one transaction under `FOR UPDATE SKIP LOCKED`, re-checks that no story uses the profile, records its ownership `deleted` event by `system` (`drop_entity`), and deletes the row; the versions cascade.
+  - Edits and deletes lock a profile `FOR NO KEY UPDATE`, which leaves free a story insert's foreign-key `FOR KEY SHARE` (#104's lesson).
+  **Why:** AC4 says "a sweep (#71) purges the profile once no story uses it". The re-check under the lock is defensive: no M3 path makes a deleted profile newly used, and the foreign key is the backstop. Mutation-checked, removing the re-check survives every test, as expected; it stays so that one profile cannot abort a whole sweep with a foreign-key error. Cost if wrong: none.
+  **Issue:** #106, #71
+- **Decision (drift):** Deleting the deployment's default reuses `ConfigConflict`: 409, code `validation_error`, `details {id, reason: is_default}`, documented as `config_conflict`. The Discretion's new `profile_is_default` code is not added.
+  **Why:** This is the drift note's option. The default rating (#48) and the default model configuration (#52) are refused the same way. Cost if wrong: one code added to `ERROR_STATUS`.
+  **Issue:** #106
+- **Decision (drift):** `default_engine_profile_id` is a column-backed deployment setting:
+  - in `DEPLOYMENT_COLUMNS`;
+  - prospective on `DeploymentSettings`;
+  - in `SettingsPatch`, where `null` is refused;
+  - pinned in U-18.
+
+  A change records one `config_changes` row through `apply_settings`. An unknown or deleted profile is 422 `profile_deleted` (`reason: unknown|deleted`, field `body.default_engine_profile_id`), held `FOR SHARE` until the write commits. This mirrors `rating_retired`'s one code for unknown and retired.
+  **Why:** This is the pass-1 Discretion's "changed via PUT /admin/settings (prospective, config_changes row)" and the drift note's pattern. Cost if wrong: a different code for unknown.
+  **Issue:** #106
+- **Decision:** Every profile write records one committed, story-less `control` operation by the requester (`core/control.py`): create, edit, copy and delete. An edit that changes nothing records nothing and makes no version.
+  - A version bump writes no `config_changes` row. That is #113's AC3 ("a new profile version is a configuration change"), with its class-per-setting design, and the Discretion credits it to #113.
+  - Bodies extend `DeploymentMutationResponse` with the unchanged `config_revision`. Codecs: create and copy 201, edit and delete 200.
+  **Why:** This is #103's pattern: a refused write leaves no operation row (C-01's zero-row check). No story follows a profile before #113, so a version is not yet configuration any operation runs under. Cost if wrong: #113 adds the change row, as planned.
+  **Issue:** #106, #113
+- **Decision:** A profile version stores its settings sparse: the document as sent, normalised (`exclude_unset`). It is validated strictly (JSON types, no coercion), with every omitted setting at the model's default. The model's defaults equal Lite's delivered values until #113's `profile_defaults`.
+  - Responses show what the version sets.
+  - The Lite seed names every delivered setting, and each delivered purpose routed explicitly to `/admin/model-config` (`null`).
+  - A `PUT` makes a version only when the canonical JSON of the settings differs.
+  - The response also carries `current_version` beside `version` (AC1's column).
+  **Why:** This is the drift note's interim merge base. Strict validation is needed because `strict_json_body` checks only that `settings` is an object; without it, `true` would pass for an integer (mutation-checked). Cost if wrong: responses can merge the defaults later.
+  **Issue:** #106, #113
+- **Decision (drift):** The parts follow docs/04 §15. All are in `tests/integration/test_engine_profiles.py` except the I-21 slice:
+  - `test_u_28__schema`, `part("M3", "FR-PROF-2,3,4")`;
+  - `test_c_16__crud`, `part("M3", "FR-PROF-1; FR-API-6")`;
+  - `test_c_17__profiles`, `part("M3", "FR-PROF-2,4")`;
+  - `test_c_17__dependencies`, `part("M3", "FR-PROF-4")`;
+  - `test_i_21__profiles`, `part("M3", "FR-PROF-1; FR-AUTH-5")`, in `tests/integration/test_i_21.py`.
+
+  #109's `test_c_16__two_stage`, `test_c_16__upgrade_unavailable` and #113's `test_u_28__effective` and `test_c_16__follow_latest` must join `tests/integration/test_engine_profiles.py`, not `test_two_stage.py` or `test_effective_config.py`, because traceability counts a test ID per milestone in one file.
+
+  Module names come from `tests/profile_support.py`, built from the schema's own registry, rather than a JSON fixture; the purpose is the same lexicon rule. C-16 and C-17 run on their own scratch databases, because they change the default and the Lite preset. check-parts counts 160 parts; check-lexicon reports 0 violations; check-traceability passes.
+  **Why:** The drift note: §15 maps FR-PROF-1 to I-21 and C-16, FR-PROF-3 to U-28 (M3), and C-17 (M3) to FR-PROF-2,4 only. Cost if wrong: renames only.
+  **Issue:** #106, #109, #113
+- **Decision:** C-17's M3 part is a pairwise covering array over the delivered modules' settings:
+  - the rolling summary, pinned memories and the polish pass, each on and off;
+  - a call cap or the formula;
+  - a named length or a token cap.
+
+  The array is greedy, and its pairwise coverage is asserted. Each configuration is validated and created, becomes the default, and a story created under it plays a turn. A configuration that picks an undelivered level is refused by validation and never runs.
+  **Why:** docs/04 C-17. Before #113 no turn reads the profile, so "runs cleanly" is trivially true for now. The structure is in place for #113, which makes it meaningful. Cost if wrong: none.
+  **Issue:** #106, #113
+- **Decision:** Existing tests changed because the story changes what they pin; no assertion was loosened.
+  - `test_every_delivered_type_is_covered`: personas are now the only undelivered type.
+  - `test_deleting_an_entity_drops_its_relations`: each kind's delete status (`Kind.deleted_status`), because a profile delete answers 200 with its warnings.
+  - `ownership_fixtures`: a profile `Kind` (`retires`, 200) and ten `CALLS`, so the nothing-gates matrix covers every profile route and compares read bodies.
+  - C-01: a seeded profile and its `profile_id` path id. C-01's full generated run passed in the gate run (117 passed across C-01, C-02, C-03, the route guard, the response bases, the route flags and U-18).
+  - C-03: 13 profile steps and `PROFILE_ANSWERS`.
+  - U-18: the new setting pinned as prospective.
+  **Why:** Each new behaviour needs these, and they are the smallest changes that hold it. Cost if wrong: none.
+  **Issue:** #106, #104
+- **Decision:** `GET /stories/{id}` does not show the story's profile yet. #113's pass-1 line adds `engine_profile: {id, version}`; the tests read `stories.engine_profile_id` directly, and the delete warnings prove the link through the API. The README gains an "Engine profiles" section and names the default in its Configuration section.
+  **Why:** Choosing the field's shape is #113's job. Cost if wrong: one additive field.
+  **Issue:** #106, #113
+- **Decision:** I mutation-checked the behaviour, applying each mutation with a script that restored the sources byte for byte (SHA-1 checked). Each of these fails at least one of the story's tests:
+  - undelivered names ignored;
+  - no dependency fires;
+  - the default deletable;
+  - no delete warnings;
+  - the deployment default ignored at story creation;
+  - a new version on every edit;
+  - the listing showing deleted profiles;
+  - a copy keeping its source's owner;
+  - a deleted profile assignable;
+  - a deleted profile editable;
+  - an edit storing the old settings;
+  - the owner filter ignored;
+  - the Quality tag optional;
+  - the schema unpruned;
+  - no `profile_recommended` warning;
+  - an edit skipping validation;
+  - validate made mutating;
+  - a reserved purpose allowed;
+  - lax (coercing) settings validation.
+
+  The purge's re-check under its lock survives, as described above.
+  **Why:** Under the batched gate, the story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
+  **Issue:** #106
+- **Decision:** Filed #318 (`needs-triage`) and did not fix it. `tests/chaos/test_x_07.py::test_x_07__recurring` fails when it runs on its own, because the seeded recurring tasks fire beside its own. It passes in module order and in the full suite, and it reproduces at 87ce58e, before #106.
+  **Why:** It is outside #106's scope; the discovered-work rule applies.
+  **Issue:** #106, #318

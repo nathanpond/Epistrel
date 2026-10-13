@@ -28,6 +28,8 @@ from urllib.parse import urlsplit
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
 from pydantic.fields import FieldInfo
 
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
+
 
 class ConfigClass(StrEnum):
     """FR-CONC-15: how a setting's change reaches work in flight (see the module docstring)."""
@@ -531,9 +533,10 @@ DEPLOYMENT_COLUMNS = (
     "minor_age_threshold",
     "max_characters_at_start_default",
     "max_characters_at_start_ceiling",
+    "default_engine_profile_id",
 )
 """Deployment settings kept in their own ``deployment_state`` columns (#48; the starting-cast
-limits, #108) rather than in its ``settings`` document."""
+limits, #108; the default engine profile, #106) rather than in its ``settings`` document."""
 
 
 class DeploymentSettings(
@@ -577,6 +580,14 @@ class DeploymentSettings(
     scenario saved above it is 422 ``cast_limit_exceeded``, and a story creation's override is
     capped by it (FR-SCN-4). Lowering it below a stored scenario's value is allowed; validation
     and story creation catch that scenario. Prospective."""
+
+    default_engine_profile_id: Annotated[str, PROSPECTIVE] = Field(
+        default=LITE_PRESET_ID, min_length=1, max_length=64
+    )
+    """The engine profile a story is created under when it names none (FR-PROF-1; #106; the
+    Lite preset until an operator chooses another). It must be a profile that exists and is not
+    deleted (422 ``profile_deleted``), and the default cannot be deleted. Prospective: a story
+    created after a change runs under the new default; existing stories keep theirs."""
 
     def document(self) -> dict[str, Any]:
         """The fields stored in ``deployment_state.settings`` (JSON)."""

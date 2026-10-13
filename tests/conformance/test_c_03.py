@@ -53,6 +53,13 @@ from epistrel.api.routes.catalog_scenarios import (
     ScenarioStatusBody,
     ScenarioVersionsBody,
 )
+from epistrel.api.routes.engine_profiles import (
+    ProfileBody,
+    ProfileDeletedBody,
+    ProfileListBody,
+    ProfileSchemaBody,
+    ProfileVersionsBody,
+)
 from epistrel.api.routes.history import HistoryResponse
 from epistrel.api.routes.media import (
     MediaListBody,
@@ -112,7 +119,9 @@ from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
+from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpdate, ProfileValidate
 from epistrel.core.ratings import RatingFields, RatingReplacement
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.stories import StorySpec
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
@@ -365,6 +374,37 @@ SESSION_ANSWERS = [
 """What the resumable-upload steps (#107) answer on both surfaces: a session opened, its one
 part sent, read back and completed into an asset, and a second session opened and aborted."""
 SESSION_OPERATIONS = frozenset(operation for operation, _ in SESSION_ANSWERS)
+PROFILE = {
+    "name": "Parity profile",
+    "settings": {
+        "memory": {"rolling_summary": {"window_messages": 24}},
+        "budgets": {"deadline_ms": 30_000},
+    },
+}
+PROFILE_EDIT = {"name": "Parity profile", "settings": {"pins": {"max_pinned": 10}}}
+PROFILE_COPY = {"name": "Parity copy"}
+PROFILE_DRY_RUN = {"settings": {"pipeline": "structured"}}
+PROFILE_ANSWERS = [
+    ("create_profile", 201),
+    ("get_profile", 200),
+    ("list_profiles", 200),
+    ("update_profile", 200),
+    ("get_profile", 200),
+    ("list_profile_versions", 200),
+    ("copy_profile", 201),
+    ("validate_profile", 200),
+    ("validate_profile", 422),
+    ("profile_schema", 200),
+    ("delete_profile", 409),
+    ("delete_profile", 200),
+    ("transfer_owner", 200),
+]
+"""What the engine-profile steps (#106) answer on both surfaces: a profile created, read, listed,
+edited into version 2, read at version 1, its versions listed, copied, validated (and refused for
+an undelivered level), the schema read, the default refused deletion, the copy deleted, and the
+profile transferred."""
+PROFILE_GROUP = "profiles"
+"""The ``Step.group`` of the engine-profile steps (#106)."""
 
 
 def _steps() -> list[Step]:
@@ -923,6 +963,98 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", "/media/{media}"),
             lambda e, ids: _media(e, ids["media"]),
         ),
+        # -- engine profiles (#106)
+        Step(
+            "create_profile",
+            lambda ids: Rest("POST", "/engine-profiles", PROFILE),
+            lambda e, ids: _profile_write(e.create_profile(CTX, ProfileCreate(**PROFILE))),
+            _keep("profile", "id"),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "get_profile",
+            lambda ids: Rest("GET", "/engine-profiles/{profile}"),
+            lambda e, ids: _profile(e, ids["profile"]),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "list_profiles",
+            lambda ids: Rest("GET", "/engine-profiles", params={"owner": PRINCIPAL}),
+            lambda e, ids: _profiles(e),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "update_profile",
+            lambda ids: Rest("PUT", "/engine-profiles/{profile}", PROFILE_EDIT),
+            lambda e, ids: _profile_write(
+                e.update_profile(CTX, ids["profile"], ProfileUpdate(**PROFILE_EDIT))
+            ),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "get_profile",
+            lambda ids: Rest("GET", "/engine-profiles/{profile}", params={"version": 1}),
+            lambda e, ids: _profile(e, ids["profile"], version=1),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "list_profile_versions",
+            lambda ids: Rest("GET", "/engine-profiles/{profile}/versions"),
+            lambda e, ids: _profile_versions(e, ids["profile"]),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "copy_profile",
+            lambda ids: Rest("POST", "/engine-profiles/{profile}/copy", PROFILE_COPY),
+            lambda e, ids: _profile_write(
+                e.copy_profile(CTX, ids["profile"], ProfileCopy(**PROFILE_COPY))
+            ),
+            _keep("profile_copy", "id"),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "validate_profile",
+            lambda ids: Rest("POST", "/engine-profiles/{profile}/validate", {}),
+            lambda e, ids: _profile_check(e, ids["profile"], {}),
+            group=PROFILE_GROUP,
+        ),
+        Step(  # an undelivered level: 422 invalid_profile on both
+            "validate_profile",
+            lambda ids: Rest("POST", "/engine-profiles/{profile}/validate", PROFILE_DRY_RUN),
+            lambda e, ids: _profile_check(e, ids["profile"], PROFILE_DRY_RUN),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "profile_schema",
+            lambda ids: Rest("GET", "/engine-profiles/schema"),
+            lambda e, ids: _profile_schema(e),
+            group=PROFILE_GROUP,
+        ),
+        Step(  # the deployment's default: 409 on both
+            "delete_profile",
+            lambda ids: Rest("DELETE", f"/engine-profiles/{LITE_PRESET_ID}"),
+            lambda e, ids: _profile_deleted(e.delete_profile(CTX, LITE_PRESET_ID)),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "delete_profile",
+            lambda ids: Rest("DELETE", "/engine-profiles/{profile_copy}"),
+            lambda e, ids: _profile_deleted(e.delete_profile(CTX, ids["profile_copy"])),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", "/engine-profiles/{profile}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX,
+                    EntityType.ENGINE_PROFILE,
+                    ids["profile"],
+                    OwnerTransferRequest(**NEW_OWNER),
+                )
+            ),
+            group=PROFILE_GROUP,
+        ),
         # -- the operator surface
         Step(
             "list_content_ratings",
@@ -1243,6 +1375,36 @@ async def _media_list(engine: Engine) -> dict[str, Any]:
     return dump(MediaListBody.of(await engine.list_media(CTX, kind=MediaKind.IMAGE)))
 
 
+async def _profile_write(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ProfileBody.of(await call))
+
+
+async def _profile(engine: Engine, profile_id: str, **params: Any) -> dict[str, Any]:
+    return dump(await engine.get_profile(CTX, profile_id, **params))
+
+
+async def _profiles(engine: Engine) -> dict[str, Any]:
+    return dump(ProfileListBody.of(await engine.list_profiles(CTX, owner=PRINCIPAL)))
+
+
+async def _profile_versions(engine: Engine, profile_id: str) -> dict[str, Any]:
+    found = await engine.list_profile_versions(CTX, profile_id)
+    return dump(ProfileVersionsBody(items=found))
+
+
+async def _profile_check(engine: Engine, profile_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    request = ProfileValidate.model_validate(body)
+    return dump(await engine.validate_profile(CTX, profile_id, request))
+
+
+async def _profile_schema(engine: Engine) -> dict[str, Any]:
+    return dump(ProfileSchemaBody.of(await engine.profile_schema(CTX)))
+
+
+async def _profile_deleted(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ProfileDeletedBody.of(await call))
+
+
 def _bytes(data: bytes, content_type: str) -> dict[str, Any]:
     """A content read as compared: the bytes' digest and type."""
     return {"content_sha256": hashlib.sha256(data).hexdigest(), "content_type": content_type}
@@ -1541,6 +1703,12 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         if step.group == ENTRY_GROUP
     ]
     assert entries == ENTRY_ANSWERS
+    profiles = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == PROFILE_GROUP
+    ]
+    assert profiles == PROFILE_ANSWERS
 
 
 def test_c_03_bites_on_a_method_without_a_route_or_step(dummy_dsn: str) -> None:

@@ -1,8 +1,9 @@
 """Deployment-wide settings: ``GET/PUT /admin/settings`` (#48; #64 covers every setting).
 
 The settings are ``DeploymentSettings`` (``core/settings_schema.py``): the
-``deployment_state`` columns (``default_content_rating_id``, ``minor_age_threshold``, and the
-starting-cast limits ``max_characters_at_start_default``/``_ceiling``, #108) and the sections of
+``deployment_state`` columns (``default_content_rating_id``, ``minor_age_threshold``, the
+starting-cast limits ``max_characters_at_start_default``/``_ceiling``, #108, and the default
+engine profile ``default_engine_profile_id``, #106) and the sections of
 its ``settings`` document — the Lite defaults (#57), the story-level text caps
 (#60), the idempotency result window (#61), the default ``turn_queue_max`` (#63), the
 structured-result settings (#53), the safe fallback (#68), the default
@@ -40,6 +41,7 @@ from epistrel.core.config_changes import (
 )
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.idempotency import read_idempotency_settings
+from epistrel.core.profiles import store as profiles
 from epistrel.core.ratings import require_assignable
 from epistrel.core.settings_schema import (
     DEPLOYMENT_COLUMNS,
@@ -106,6 +108,7 @@ class SettingsPatch(BaseModel):
     minor_age_threshold: int | None = None
     max_characters_at_start_default: int | None = None
     max_characters_at_start_ceiling: int | None = None
+    default_engine_profile_id: str | None = None
     lite_generation_defaults: GenerationSettings | None = None
     lite_window_messages: int | None = None
     lite_summary_chunk: int | None = None
@@ -160,7 +163,8 @@ async def apply_settings(
     db: AsyncEngine, changes: Mapping[str, Any], *, principal: str
 ) -> DeploymentState:
     """Merge ``changes`` into the deployment's settings; see the module docstring. A default
-    rating that is unknown or retired is 422 ``rating_retired``."""
+    rating that is unknown or retired is 422 ``rating_retired``; a default engine profile that is
+    unknown or deleted is 422 ``profile_deleted``."""
     async with db.begin() as conn:
         current = await lock_deployment(conn)
         before = current.as_settings()
@@ -174,6 +178,8 @@ async def apply_settings(
             await require_assignable(
                 conn, wanted.default_content_rating_id, field="default_content_rating_id"
             )
+        if "default_engine_profile_id" in changed:
+            await profiles.require_assignable(conn, wanted.default_engine_profile_id)
         revision = await bump_config_revision(conn, current)
         document = await raw_document(conn)
         await conn.execute(

@@ -12,11 +12,11 @@
   extra field, JSON syntax, path id, query, header), each refused at its field with zero rows.
 
 The app runs on a scratch database migrated to head, so generated writes (stories, policies,
-ratings, deployment settings, catalog characters and scenarios, media) never reach the session
-database. Excluded from generation: ``delete_story`` and ``archive_story`` (they would end the
-fixture story every later example needs), ``delete_character`` and ``delete_scenario`` (they
-would end the fixture catalog character and scenario, #103, #108), the API-key routes (they need
-``EPISTREL_CONFIG_KEY``) and ``upload_media``
+ratings, deployment settings, catalog characters and scenarios, media, engine profiles) never
+reach the session database. Excluded from generation: ``delete_story`` and ``archive_story``
+(they would end the fixture story every later example needs), ``delete_character`` and
+``delete_scenario`` (they would end the fixture catalog character and scenario, #103, #108), the
+API-key routes (they need ``EPISTREL_CONFIG_KEY``) and ``upload_media``
 (#105: a streamed multipart body whose ``metadata`` part is JSON, which generation cannot
 encode; ``test_c_01__malformed`` sends its malformed cases by hand); all are covered by C-03 and
 their own tests. ``replace_model_config`` is generated, and each successful write is undone so
@@ -28,7 +28,9 @@ still reads, and its parts and completion answer 409 ``upload_closed``, a docume
 component describes (``_body_problems`` checks only that it is binary). ``GET /media/{id}/url``
 signs with the app's ``EPISTREL_CONFIG_KEY`` under the seeded ``public_base_url``, which is put
 back after each generated settings write, since a valid write may unset it and the route would
-then answer a documented 503 ``config_missing``.
+then answer a documented 503 ``config_missing``. The fixture engine profile (#106) may be
+deleted by a generated ``delete_profile``: a deleted profile still reads and copies, and an
+edit of it answers a documented 422 ``profile_deleted``.
 """
 
 from __future__ import annotations
@@ -69,6 +71,7 @@ from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.core.deployment import SettingsPatch
 from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
+from epistrel.core.profiles.store import ProfileCreate
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.stories import StorySpec
@@ -144,6 +147,7 @@ class Live:
     media_id: str
     upload_id: str
     scenario_id: str
+    profile_id: str
 
     def counts(self) -> dict[str, int]:
         sync = make_sync_engine(self.url)
@@ -168,14 +172,15 @@ class Live:
             "media_id": self.media_id,
             "upload_id": self.upload_id,
             "scenario_id": self.scenario_id,
+            "profile_id": self.profile_id,
         }
 
 
-async def _seed(settings: Settings) -> tuple[str, str, str, str, str, str]:
+async def _seed(settings: Settings) -> tuple[str, str, str, str, str, str, str]:
     """A two-character story with one played turn, a published catalog character, an
-    uploaded image, an open upload session (#107) and a published scenario (#108): the story's
-    id, the turn's operation id, the character's id, the image's id, the session's id and the
-    scenario's id."""
+    uploaded image, an open upload session (#107), a published scenario (#108) and an engine
+    profile (#106): the story's id, the turn's operation id, the character's id, the image's id,
+    the session's id, the scenario's id and the profile's id."""
     db = make_engine(settings)
     engine = Engine.from_settings(settings)
     engine.bind(db)
@@ -212,6 +217,12 @@ async def _seed(settings: Settings) -> tuple[str, str, str, str, str, str]:
         )
         scenario_id = drafted.scenario.id
         await engine.publish_scenario(AUTHOR, scenario_id, PublishRequest(draft_revision=1))
+        profile = await engine.create_profile(
+            AUTHOR,
+            ProfileCreate.model_validate(
+                {"name": "C-01 profile", "settings": {"budgets": {"deadline_ms": 30_000}}}
+            ),
+        )
         return (
             created.story_id,
             played.beats[0].operation_id,
@@ -219,6 +230,7 @@ async def _seed(settings: Settings) -> tuple[str, str, str, str, str, str]:
             image.asset.id,
             session.upload_id,
             scenario_id,
+            profile.profile.id,
         )
     finally:
         await engine.models.aclose()

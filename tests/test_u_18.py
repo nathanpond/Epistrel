@@ -68,6 +68,7 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "default_safe_fallback": ConfigClass.prospective,
         "max_characters_at_start_default": ConfigClass.prospective,
         "max_characters_at_start_ceiling": ConfigClass.prospective,
+        "default_engine_profile_id": ConfigClass.prospective,
     },
 }
 

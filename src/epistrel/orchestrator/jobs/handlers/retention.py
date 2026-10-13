@@ -12,6 +12,10 @@ FR-CONC-6, NFR-REL-5; #71).
   marker. Discarded and dormant continuations are never touched: they are story history, kept
   until the story is deleted.
 - finished (``done``/``failed``) ``jobs`` rows not updated for ``job_retention_days`` (7).
+- deleted engine profiles that no story uses any more (FR-PROF-1; #106): each is purged with
+  its versions and its relations, its ownership ``deleted`` event recorded by ``system``
+  (``core.profiles.store.purge_deleted``). A deleted profile a story still uses is kept, and
+  the story keeps running on its last version.
 
 No M2 operation kind writes only audit events, so no operation row is deleted. Every delete
 runs in chunks of ``CHUNK`` rows, each its own transaction, at most ``MAX_CHUNKS`` per table and
@@ -53,6 +57,7 @@ from epistrel.core import clock
 from epistrel.core.config_changes import read_section
 from epistrel.core.enums import EventCategory, OperationStatus
 from epistrel.core.idempotency import KeyStatus, purge_expired, read_idempotency_settings
+from epistrel.core.profiles import store as profiles
 from epistrel.core.settings_schema import RetentionSettings
 from epistrel.core.tables import audit_log, events, idempotency_keys, jobs, operations, stories
 from epistrel.core.tables.events import ALLOW_AUDIT_EXPIRY_GUC
@@ -153,6 +158,7 @@ async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[
         "audit_events": await _chunked(db, events, expired_audit_events(moment, days), audit=True),
         "audit_log": await _chunked(db, audit_log, expired_audit_log(moment, days), audit=True),
         "jobs": await _chunked(db, jobs, finished_jobs, audit=False),
+        "engine_profiles": await profiles.purge_deleted(db),
     }
 
 

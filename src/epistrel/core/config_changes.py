@@ -39,6 +39,7 @@ from epistrel.core import control
 from epistrel.core.enums import Authority, EventCategory, Provenance
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.settings_schema import (
     DEFAULT_MAX_CHARACTERS_AT_START,
     DEPLOYMENT_COLUMNS,
@@ -211,6 +212,7 @@ class DeploymentState:
     minor_age_threshold: int
     max_characters_at_start_default: int = DEFAULT_MAX_CHARACTERS_AT_START
     max_characters_at_start_ceiling: int | None = None
+    default_engine_profile_id: str = LITE_PRESET_ID
     settings: dict[str, Any] = field(default_factory=dict)
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
@@ -224,6 +226,7 @@ class DeploymentState:
                 "minor_age_threshold": self.minor_age_threshold,
                 "max_characters_at_start_default": self.max_characters_at_start_default,
                 "max_characters_at_start_ceiling": self.max_characters_at_start_ceiling,
+                "default_engine_profile_id": self.default_engine_profile_id,
             }
         )
 
@@ -243,6 +246,7 @@ def _state(row: Any) -> DeploymentState:
         minor_age_threshold=int(row.minor_age_threshold),
         max_characters_at_start_default=int(row.max_characters_at_start_default),
         max_characters_at_start_ceiling=row.max_characters_at_start_ceiling,
+        default_engine_profile_id=row.default_engine_profile_id,
         settings=document_settings(row.settings),
     )
 
@@ -253,6 +257,7 @@ _COLUMNS = (
     deployment_state.c.minor_age_threshold,
     deployment_state.c.max_characters_at_start_default,
     deployment_state.c.max_characters_at_start_ceiling,
+    deployment_state.c.default_engine_profile_id,
     deployment_state.c.settings,
 )
 

@@ -25,8 +25,8 @@ What ``build`` adds or changes:
   ``StorySettingsPatch`` (``PATCH /stories/{id}/settings``'s body, which the Engine validates)
   and ``MediaUpload`` (the ``metadata`` part of ``POST /media``'s multipart body, which the
   route reads itself, #105; ``MULTIPART_BODIES``).
-- Tags: stories, timeline, history, operations, settings, catalog, media, ownership, admin, ops.
-  Every
+- Tags: stories, timeline, history, operations, settings, catalog, media, profiles, ownership,
+  admin, ops. Every
   owned type's owner and relation routes (``routes.ownership``, #104) are tagged ``ownership``,
   whichever router serves them.
 - A route flagged ``mutating=False`` (``deps.route_flags``) is documented as a read with a
@@ -83,6 +83,12 @@ TAGS: list[dict[str, str]] = [
         "declared depicted subjects, an optional moderation hook, and delete-as-retire "
         "(FR-MEDIA-1,2); byte ranges, short-lived signed URLs, resumable uploads and a poster "
         "for every video (FR-MEDIA-3).",
+    },
+    {
+        "name": "profiles",
+        "description": "Engine profiles: named, versioned sets of capability modules and dials "
+        "that set how hard the engine works for a story (FR-PROF-1..4). The schema exposes only "
+        "the modules and levels this deployment has delivered; presets are ordinary profiles.",
     },
     {
         "name": OWNERSHIP_TAG,
@@ -197,6 +203,7 @@ ERROR_STATUS: dict[str, int] = {
     "entry_archived": 422,
     "guardrail_violation": 422,
     "inheritance_cycle": 422,
+    "invalid_profile": 422,
     "media_retired": 422,
     "moderation_rejected": 422,
     "not_published": 422,
@@ -205,6 +212,7 @@ ERROR_STATUS: dict[str, int] = {
     "poster_extraction_failed": 422,
     "poster_invalid": 422,
     "poster_required": 422,
+    "profile_deleted": 422,
     "publish_invalid": 422,
     "rating_retired": 422,
     "subjects_required": 422,
@@ -304,7 +312,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "create_content_rating": (*_ADMIN_CONFIG, "inheritance_cycle", "rating_retired"),
     "update_content_rating": (*_ADMIN_CONFIG, "inheritance_cycle", "rating_retired"),
     "retire_content_rating": _ADMIN_CONFIG,
-    "update_deployment_settings": (*_ADMIN_CONFIG, "rating_retired"),
+    "update_deployment_settings": (*_ADMIN_CONFIG, "rating_retired", "profile_deleted"),
     "policies_create": (*_ADMIN_CONFIG, "cannot_relax"),
     "policies_update": (*_ADMIN_CONFIG, "cannot_relax"),
     "policies_retire": _ADMIN_CONFIG,
@@ -354,6 +362,11 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "upload_closed",
         "checksum_mismatch",
     ),
+    # Engine profiles (#106): settings that cannot run, a deleted profile, the default.
+    "create_profile": ("invalid_profile",),
+    "update_profile": ("invalid_profile", "profile_deleted"),
+    "validate_profile": ("invalid_profile",),
+    "delete_profile": _ADMIN_CONFIG,
     # A companion scenario's owner and relations follow its character (#104, #116).
     **{
         operation_id: ("companion_follows_character",)

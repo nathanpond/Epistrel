@@ -23,6 +23,10 @@ Every story has one owner (``owner_principal``, FR-AUTH-5): the requesting princ
 ``owner`` the creation names; ``core.ownership`` transfers it and keeps its relations. Deletion
 removes the story's relations and records the deletion there (``ownership.drop_entity``). The
 list filters by owner and relation only when a request asks for it (FR-AUTH-8).
+
+Every story runs under one engine profile (``engine_profile_id``, FR-PROF-1; #106): a story is
+created under the deployment's default profile, read with the deployment row held ``FOR SHARE``
+so the default cannot change underneath the insert, and a fork keeps its source's.
 """
 
 from __future__ import annotations
@@ -57,6 +61,7 @@ from epistrel.core.events.types import (
 from epistrel.core.idempotency import Scope
 from epistrel.core.ids import new_ulid
 from epistrel.core.ownership import Owner, RelationFilter
+from epistrel.core.profiles import store as profiles
 from epistrel.core.ratings import require_assignable
 from epistrel.core.settings_schema import (
     CHARACTER_VIEWPOINT_PREFIX,
@@ -344,6 +349,7 @@ async def create_story_from(
                 owner_principal=spec.owner or principal,
                 settings=document,
                 content_rating_id=rating.id,
+                engine_profile_id=await profiles.default_profile(conn),
                 **columns,
             )
         )

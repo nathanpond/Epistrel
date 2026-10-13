@@ -682,3 +682,35 @@ class UploadNotFound(EpistrelError):
 
     code = "not_found"
     http_status = 404
+
+
+# -- engine profiles (#106) -------------------------------------------------------------------
+
+
+class ProfileNotFound(EpistrelError):
+    """The engine profile a call names does not exist (or was purged), or has no such version.
+    ``details``: ``profile_id`` (and ``version``)."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class InvalidProfile(EpistrelError):
+    """A profile's settings (or a story's effective configuration, #113) cannot run: they name a
+    module or level this deployment has not delivered, or a module whose dependencies are off
+    (FR-PROF-2,4). Nothing is written, and ``ignore_warnings`` never overrides it (FR-PROF-7).
+    ``details``: ``missing_dependencies`` (``[{module, level, requires: [{module, levels}]}]``)
+    and ``undelivered`` (``[{module, level, setting}]``)."""
+
+    code = "invalid_profile"
+    http_status = 422
+
+
+class ProfileDeleted(EpistrelError):
+    """A deleted engine profile cannot be newly assigned (as the deployment default) or edited;
+    it still reads, copies, and serves the stories that use it (FR-PROF-1). An unknown profile
+    named as the default is refused the same way. ``details``: ``profile_id``, ``field`` and
+    ``reason`` (``deleted`` or ``unknown``)."""
+
+    code = "profile_deleted"
+    http_status = 422

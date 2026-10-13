@@ -19,6 +19,7 @@ from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.operations import operations
 from epistrel.core.tables.ownership import entity_relations, ownership_events
 from epistrel.core.tables.policies import policies
+from epistrel.core.tables.profiles import engine_profile_versions, engine_profiles
 from epistrel.core.tables.projections import (
     lite_summary_segments,
     story_heads,
@@ -41,6 +42,8 @@ __all__ = [
     "content_rating_versions",
     "content_ratings",
     "deployment_state",
+    "engine_profile_versions",
+    "engine_profiles",
     "entity_relations",
     "events",
     "idempotency_keys",

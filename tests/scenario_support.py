@@ -1,5 +1,5 @@
 """Helpers for the scenario catalog tests (#108): request bodies, REST calls on scenarios, row
-snapshots, and the fixture documents.
+snapshots, the fixture documents, and the form a ``full`` read shows a document in.
 
 The milestone parts (C-15, U-26) take their field names and documents from here: their bodies
 are checked against the capability lexicon (docs/04 §13), and a scenario's field names include
@@ -8,12 +8,20 @@ later milestones' terms (the starting State and its clock, predicates, participa
 from __future__ import annotations
 
 import copy
+import re
+import types
+import typing
+from collections.abc import Mapping
 from typing import Any
 
 import httpx2 as httpx
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.catalog.scenario_models import ScenarioDraft, ScenarioModel
+from epistrel.core.ids import ULID_PATTERN
+from epistrel.core.seeds.ratings import EVERYONE_ID
 from tests.auth_support import bearer
 
 BASE = "/catalog/scenarios"
@@ -76,6 +84,12 @@ ROLE_SECRET = "she burned the second deed before anyone woke"
 """A phrase only a role's seeded memory holds."""
 GUIDANCE_SECRET = "let the storm cut the power before dessert"
 """A phrase only the director guidance holds."""
+LOCKED_CHARACTER = "01J9Z8Q4N5V6W7X8Y9Z0A1B2D3"
+"""The catalog character ``COMPLETE``'s locked role names, at version 3. Neither a save nor a
+publish checks that a role's character exists in M3; #111's publish validation does."""
+DEFAULT_CHARACTER = "01J9Z8Q4N5V6W7X8Y9Z0A1B2D4"
+"""The catalog character ``COMPLETE``'s default role is pre-filled with (no version: the latest
+published at story creation)."""
 
 
 def role(
@@ -158,12 +172,16 @@ COMPLETE: dict[str, Any] = {
                 "kind": "npc",
                 "required": True,
                 "fill": "open",
-                "eligibility": {"labels": ["warm"], "age_range": [45, 75]},
+                "eligibility": {
+                    "labels": ["warm"],
+                    "content_ratings": [EVERYONE_ID],
+                    "age_range": [45, 75],
+                },
                 "seeded_memories": [
                     {
                         "text": f"Last winter {ROLE_SECRET}.",
                         "holder": "mother",
-                        "audience": ["self"],
+                        "audience": ["self", "family"],
                         "disclosure": "secret",
                         "kind": "canon",
                     }
@@ -180,8 +198,44 @@ COMPLETE: dict[str, Any] = {
                 "setup_description": "He arrived first and has already opened the wine.",
                 "kind": "npc",
                 "required": False,
-                "fill": "open",
+                "fill": "locked",
+                "character": {"catalog_id": LOCKED_CHARACTER, "version": 3},
+                "seeded_memories": [
+                    {
+                        "text": "A second buyer walked the orchard in the spring.",
+                        "holder": "brother",
+                        "audience": ["self", "acquaintances"],
+                        "disclosure": "guarded",
+                        "kind": "belief",
+                        "valid_time": {"from": "1987-04-01"},
+                    }
+                ],
+                "relationships": [
+                    {"to_role": "mother", "name": "son_of"},
+                    {"to_role": "player", "name": "sibling_of"},
+                ],
+                "starting_location": "orchard",
                 "participation": "reactive",
+                "name_overrides": {"canonical": "Tom Harrow", "aliases": ["Tommy"]},
+            },
+            {
+                "id": "aunt",
+                "public_label": "Aunt Ivy",
+                "setup_description": "She drove up from the city with a casserole.",
+                "kind": "npc",
+                "required": False,
+                "fill": "default",
+                "character": {"catalog_id": DEFAULT_CHARACTER},
+                "seeded_memories": [
+                    {
+                        "text": "She keeps the only key to the old barn.",
+                        "holder": "aunt",
+                        "audience": ["self", "perceivable"],
+                        "disclosure": "open",
+                    }
+                ],
+                "relationships": [{"to_role": "mother", "name": "sister_of"}],
+                "participation": "silent",
             },
             {
                 "id": "player",
@@ -223,7 +277,7 @@ COMPLETE: dict[str, Any] = {
                 "truth": {
                     "text": "The brother forged the second sale.",
                     "holder": "brother",
-                    "audience": ["self"],
+                    "audience": ["self", "aunt"],
                     "disclosure": "secret",
                 },
                 "allowed_roles": ["player"],
@@ -244,6 +298,7 @@ COMPLETE: dict[str, Any] = {
         "policies": [
             {
                 "name": "No real addresses",
+                "applies_to": ["text_output"],
                 "rule": {"type": "wordlist", "words": ["Elm Street"]},
                 "message": "Keep the farm's address vague.",
             }
@@ -257,7 +312,43 @@ COMPLETE: dict[str, Any] = {
         "bounds": {"audit_retention_days": {"min": 7}},
     },
 }
-"""A scenario that fills every group: what the lifecycle and projection parts publish."""
+"""A scenario that fills every group: what the lifecycle and projection parts publish. Its cast
+has a role of each fill mode (an open one, one locked to a pinned catalog character, one
+pre-filled by default) and the player's. Its seeds use every disclosure, and every seed but the
+world's names several audience tokens (levels, a role and a named group)."""
+
+CARD_ROLES: list[dict[str, Any]] = [
+    {
+        "id": "mother",
+        "public_label": "Mother",
+        "setup_description": "Her children are home for the weekend.",
+        "kind": "npc",
+        "fill": "open",
+    },
+    {
+        "id": "brother",
+        "public_label": "The younger brother",
+        "setup_description": "He arrived first and has already opened the wine.",
+        "kind": "npc",
+        "fill": "locked",
+    },
+    {
+        "id": "aunt",
+        "public_label": "Aunt Ivy",
+        "setup_description": "She drove up from the city with a casserole.",
+        "kind": "npc",
+        "fill": "default",
+    },
+    {
+        "id": "player",
+        "public_label": "The eldest",
+        "setup_description": "Back home for the first time in a year.",
+        "kind": "player",
+        "fill": "open",
+    },
+]
+"""What a card of ``COMPLETE`` shows of its roles, in order (#108 AC5): written out rather than
+derived from the fixture."""
 
 PRIVATE_PHRASES = (WORLD_SECRET, ROLE_SECRET, GUIDANCE_SECRET)
 
@@ -267,6 +358,87 @@ def complete(**changes: Any) -> dict[str, Any]:
     body = copy.deepcopy(COMPLETE)
     body.update(changes)
     return body
+
+
+# -- the document as a ``full`` read shows it -------------------------------------------------
+
+
+def seeds_of(document: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every seed of a document in its stored form (each list present): the world's seeded
+    memories, each role's, and each planned reveal's truth."""
+    found: list[dict[str, Any]] = list(document["starting_state"]["seeded_memories"])
+    for slot in document["cast"]["roles"]:
+        found.extend(slot["seeded_memories"])
+    found.extend(reveal["truth"] for reveal in document["drivers"]["planned_reveals"])
+    return found
+
+
+def _without_seed_ids(document: Mapping[str, Any]) -> list[Any]:
+    """Take each seed's ``id`` out of ``document`` (in place); the ids taken, in seed order."""
+    return [found.pop("id", None) for found in seeds_of(document)]
+
+
+def document_of(shown: Mapping[str, Any]) -> dict[str, Any]:
+    """The document a ``full`` read (or a create's or save's answer) shows: ``schema_version``
+    and every group, each seed without the ``id`` the server assigned it. Every seed has one, a
+    ULID, and no two seeds share one."""
+    document = copy.deepcopy({key: shown[key] for key in ("schema_version", *GROUPS)})
+    ids = _without_seed_ids(document)
+    assert all(isinstance(i, str) and re.fullmatch(ULID_PATTERN, i) for i in ids), ids
+    assert len(set(ids)) == len(ids), ids
+    return document
+
+
+def _held_model(annotation: Any) -> tuple[type[ScenarioModel], bool] | None:
+    """``(model, is_list)`` when a field holds an object of the scenario document (``M`` or
+    ``M | None``) or a list of them; ``None`` for a field holding a value."""
+    if isinstance(annotation, types.UnionType) or typing.get_origin(annotation) is typing.Union:
+        members = [arg for arg in typing.get_args(annotation) if arg is not type(None)]
+        if len(members) != 1:
+            return None
+        annotation = members[0]
+    if isinstance(annotation, type) and issubclass(annotation, ScenarioModel):
+        return annotation, False
+    if typing.get_origin(annotation) is list:
+        (item,) = typing.get_args(annotation)
+        if isinstance(item, type) and issubclass(item, ScenarioModel):
+            return item, True
+    return None
+
+
+def _filled(model: type[ScenarioModel], sent: Mapping[str, Any]) -> dict[str, Any]:
+    """``sent``, one object of the document, with each field it leaves out at ``model``'s
+    declared default: the values it sets are kept as sent (labels lower-cased)."""
+    unknown = set(sent) - set(model.model_fields)
+    assert not unknown, (model.__name__, unknown)
+    filled: dict[str, Any] = {}
+    for name, info in model.model_fields.items():
+        if name not in sent:
+            assert not info.is_required(), (model.__name__, name)
+            default = info.get_default(call_default_factory=True)
+            filled[name] = (
+                default.model_dump(mode="json") if isinstance(default, BaseModel) else default
+            )
+            continue
+        value = sent[name]
+        held = _held_model(info.annotation)
+        if held is not None and value is not None:
+            child, is_list = held
+            value = [_filled(child, item) for item in value] if is_list else _filled(child, value)
+        elif name == "labels":
+            value = [label.strip().lower() for label in value]
+        filled[name] = value
+    return filled
+
+
+def stored_form(body: Mapping[str, Any]) -> dict[str, Any]:
+    """What ``document_of`` gives for a scenario created from ``body`` (its groups): every
+    value the body sets, as sent, and every field it leaves out at its declared default; labels
+    are stored lower-cased. Only the defaults are read from the model, and none of its
+    validators run, so a save that changed a value sent cannot change this expectation too."""
+    document = _filled(ScenarioDraft, body)
+    _without_seed_ids(document)
+    return document
 
 
 def headers(key: str | None = None, principal: str = PRINCIPAL) -> dict[str, str]:
@@ -361,11 +533,14 @@ def fields_of(response: httpx.Response) -> list[str]:
 __all__ = [
     "BASE",
     "CARD_KEYS",
+    "CARD_ROLES",
     "CARD_ROLE_KEYS",
     "COMPLETE",
+    "DEFAULT_CHARACTER",
     "FULL_KEYS",
     "GROUPS",
     "GUIDANCE_SECRET",
+    "LOCKED_CHARACTER",
     "PRINCIPAL",
     "PRIVATE_PHRASES",
     "READ",
@@ -375,6 +550,7 @@ __all__ = [
     "WRITE",
     "complete",
     "create",
+    "document_of",
     "entry_row",
     "error_of",
     "fields_of",
@@ -386,6 +562,8 @@ __all__ = [
     "save",
     "scenario",
     "seed",
+    "seeds_of",
     "set_cast_limits",
+    "stored_form",
     "version_rows",
 ]

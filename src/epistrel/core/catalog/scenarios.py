@@ -55,11 +55,11 @@ from epistrel.core.catalog.scenario_models import (
     ScenarioCard,
     ScenarioCardMedia,
     ScenarioCardMediaSet,
-    ScenarioCardRole,
     ScenarioCreate,
     ScenarioDraft,
     ScenarioFull,
     ScenarioPatch,
+    card_roles,
 )
 from epistrel.core.catalog.service import (
     CardRating,
@@ -655,16 +655,7 @@ class ScenarioCatalog(CatalogService):
             media=await _card_media(conn, draft),
             labels=list(draft.metadata.labels),
             content_rating=await _card_rating(conn, draft, shown.version_row),
-            roles=[
-                ScenarioCardRole(
-                    id=role.id,
-                    public_label=role.public_label,
-                    setup_description=role.setup_description,
-                    kind=role.kind,
-                    fill=role.fill,
-                )
-                for role in draft.cast.roles
-            ],
+            roles=card_roles(draft),
         )
 
     async def envelope(self, conn: AsyncConnection, entry: Any) -> ScenarioEnvelope:

@@ -4,9 +4,9 @@ Every U-26 (M3) part lives in this file (traceability counts a test ID per miles
 file); #111 (validation) and #119 (story creation) add theirs here.
 
 - #108's part, ``test_u_26__roles_and_limit``: the role rules a scenario save enforces, a
-  role's eligibility as stored, a scenario with no predefined character, and the starting-cast
-  limit's resolution (from the deployment's stored settings) and ceiling (FR-SCN-3,4). The
-  details are in ``tests/integration/test_scenario_catalog.py``.
+  role's eligibility as stored, a scenario with no predefined character, a whole cast stored as
+  sent, and the starting-cast limit's resolution (from the deployment's stored settings) and
+  ceiling (FR-SCN-3,4). The details are in ``tests/integration/test_scenario_catalog.py``.
 """
 
 from __future__ import annotations
@@ -25,12 +25,15 @@ from tests.scenario_support import (
     BASE,
     READ,
     WRITE,
+    complete,
     create,
+    document_of,
     error_of,
     publish,
     role,
     scenario,
     set_cast_limits,
+    stored_form,
 )
 from tests.story_support import rest
 
@@ -53,8 +56,14 @@ async def test_u_26__roles_and_limit(settings: Settings, engine: AsyncEngine) ->
     """Role rules hold when a scenario is saved: a ``locked`` role without a character, an
     ``open`` role with one, and a second player role are each 422 ``validation_error`` at the
     field, and nothing is stored. A role's eligibility (labels, content ratings, and an
-    inclusive age range, here with an open end) is stored as sent. A scenario with no
-    predefined character, every role ``open``, saves and publishes.
+    inclusive age range, here with an open end) is stored as sent, and a role that leaves
+    ``required`` out is required. A scenario with no predefined character, every role
+    ``open``, saves and publishes. A whole cast is stored as sent: an open, a locked and a
+    default role (the last two naming their catalog character, one at a pinned version) and the
+    player's, with their eligibility, seeds, relationships, starting values and locations,
+    participation and name overrides, every seed naming several audience tokens and the three
+    disclosures all in use; each field a role leaves out holds its default, and each seed gets
+    an id from the server.
 
     The starting-cast limit: a scenario without its own value gets the deployment's default,
     16; a scenario's 20 and a creation's override of 24 stand; under a ceiling of 20 both are
@@ -105,8 +114,13 @@ async def test_u_26__roles_and_limit(settings: Settings, engine: AsyncEngine) ->
             ("open", None),
             ("open", None),
         ]
+        assert [r["required"] for r in stored["cast"]["roles"]] == [True, True]
         done = await publish(client, stored["id"], stored["draft_revision"])
         assert (done.status_code, done.json()["version"]) == (201, 1)
+
+        sent = complete()
+        whole = document_of(await create(client, sent))
+        assert whole["cast"] == stored_form(sent)["cast"]
 
         deployment = CastLimits()
         assert deployment.default == 16

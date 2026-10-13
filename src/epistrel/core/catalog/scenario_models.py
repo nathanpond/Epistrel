@@ -43,7 +43,7 @@ import functools
 import math
 import types
 import typing
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -988,9 +988,10 @@ class ScenarioFull(BaseModel):
     creation_rules: CreationRules
 
 
-def card_roles(document: Mapping[str, Any]) -> list[ScenarioCardRole]:
-    """Each role of ``document`` as the card shows it."""
-    draft = ScenarioDraft.model_validate(document)
+def card_roles(draft: ScenarioDraft) -> list[ScenarioCardRole]:
+    """Each role of ``draft`` as a scenario's card shows it, in the document's order: its id,
+    public label, setup description, kind and fill mode. The one builder of a card's roles
+    (``ScenarioCatalog.project`` calls it)."""
     return [
         ScenarioCardRole(
             id=role.id,

@@ -236,28 +236,33 @@ async def test_c_15__media_upload(settings: Settings, engine: AsyncEngine) -> No
 @pytest.mark.integration
 @pytest.mark.part("M3", "FR-SCN-1,2,10")
 async def test_c_15__scenario_lifecycle(settings: Settings, engine: AsyncEngine) -> None:
-    """A scenario that fills every group starts as an editable draft; a save based on an older
-    draft revision is 409 ``draft_stale`` and changes nothing. It is published as version 1,
-    edited (the edit shows only in a draft read until it is published) and published as
-    version 2; version 1 reads unchanged afterwards and its row cannot be updated; the version
-    list names both. A read with no projection is the public card of the ``published``
-    scenario: exactly the card's keys (the envelope, name, public description, media, labels,
-    content rating, and each role's id, public label, setup description, kind and fill), and
-    none of the phrases planted in the world description, a role's seeded memory and the
-    director guidance; ``full`` returns every group. An archived scenario still reads in both
-    projections.
+    """A scenario that fills every group starts as an editable draft that holds the document as
+    sent: every value it sets, each role's fields and each seed's holder, audience and
+    disclosure among them, and every field it leaves out at its default, with an id the server
+    assigned to each seed. A save based on an older draft revision is 409 ``draft_stale`` and
+    changes nothing. It is published as version 1, edited (the edit shows only in a draft read
+    until it is published) and published as version 2; version 1 reads unchanged afterwards
+    and its row cannot be updated; the version list names both. A read with no projection is
+    the public card of the ``published`` scenario: exactly the card's keys (the envelope, name,
+    public description, media, labels, content rating, and each role's id, public label, setup
+    description, kind and fill, shown as written for an open, a locked and a default role and
+    the player's), and none of the phrases planted in the world description, a role's seeded
+    memory and the director guidance; ``full`` returns version 2's whole document as sent, the
+    edit included. An archived scenario still reads in both projections.
 
     Complement asserted: each planted phrase is present in ``full``, so its absence from every
     card is the projection's doing."""
     base = scenarios.BASE
+    sent = scenarios.complete()
     async with rest(settings, engine) as client:
-        created = await scenarios.create(client, scenarios.complete())
+        created = await scenarios.create(client, sent)
         sid = created["id"]
         assert (created["status"], created["draft_revision"], created["version"]) == (
             "draft",
             1,
             None,
         )
+        assert scenarios.document_of(created) == scenarios.stored_form(sent)
         edited = await scenarios.save(client, sid, 1, public_card={"public_description": "One."})
         assert (edited.status_code, edited.json()["draft_revision"]) == (200, 2)
         stale = await scenarios.save(client, sid, 1, public_card={"public_description": "Lost."})
@@ -300,7 +305,7 @@ async def test_c_15__scenario_lifecycle(settings: Settings, engine: AsyncEngine)
         card = await scenarios.read(client, sid)
         assert card.status_code == 200
         assert set(card.json()) == scenarios.CARD_KEYS
-        assert [set(r) for r in card.json()["roles"]] == [scenarios.CARD_ROLE_KEYS] * 3
+        assert [set(r) for r in card.json()["roles"]] == [scenarios.CARD_ROLE_KEYS] * 4
         assert (card.json()["version"], card.json()["status"], card.json()["name"]) == (
             2,
             "published",
@@ -309,10 +314,14 @@ async def test_c_15__scenario_lifecycle(settings: Settings, engine: AsyncEngine)
         assert [r["public_label"] for r in card.json()["roles"]] == [
             "Mother",
             "The younger brother",
+            "Aunt Ivy",
             "The eldest",
         ]
+        assert card.json()["roles"] == scenarios.CARD_ROLES
         full = await scenarios.read(client, sid, projection="full")
         assert set(full.json()) == scenarios.FULL_KEYS
+        sent["public_card"]["public_description"] = "Two."
+        assert scenarios.document_of(full.json()) == scenarios.stored_form(sent)
         for phrase in scenarios.PRIVATE_PHRASES:
             assert phrase not in card.text, phrase
             assert phrase in full.text, phrase

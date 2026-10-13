@@ -42,6 +42,7 @@ from tests.scenario_support import (
     BASE,
     CARD_KEYS,
     CARD_ROLE_KEYS,
+    CARD_ROLES,
     FULL_KEYS,
     GROUPS,
     PRINCIPAL,
@@ -51,6 +52,7 @@ from tests.scenario_support import (
     WRITE,
     complete,
     create,
+    document_of,
     entry_row,
     error_of,
     fields_of,
@@ -63,6 +65,7 @@ from tests.scenario_support import (
     scenario,
     seed,
     set_cast_limits,
+    stored_form,
     version_rows,
 )
 from tests.story_support import rest
@@ -780,10 +783,13 @@ async def test_the_ceiling_refuses_a_larger_scenario(client: httpx.AsyncClient) 
 
 async def test_card_and_full_projections(client: httpx.AsyncClient) -> None:
     """Every card read (the default, ``projection=card``, a version, the draft) has exactly the
-    card's keys, each role exactly its five, and none of the phrases planted in the world
-    description, a role's seed and the director guidance; ``full`` has every group and every
-    phrase. Labels are stored lower-cased."""
-    sid, _ = await published(client, complete())
+    card's keys, each role exactly its five with the values written (an open, a locked and a
+    default role and the player's, each with its kind and fill mode), and none of the phrases
+    planted in the world description, a role's seed and the director guidance; ``full`` has
+    every group and every phrase, and the whole document as sent (the published version and the
+    draft alike). Labels are stored lower-cased."""
+    sent = complete()
+    sid, _ = await published(client, sent)
     card_reads: tuple[dict[str, Any], ...] = (
         {},
         {"projection": "card"},
@@ -794,7 +800,8 @@ async def test_card_and_full_projections(client: httpx.AsyncClient) -> None:
         card = await read(client, sid, **params)
         assert card.status_code == 200, (params, card.text)
         assert set(card.json()) == CARD_KEYS, params
-        assert [set(r) for r in card.json()["roles"]] == [CARD_ROLE_KEYS] * 3, params
+        assert [set(r) for r in card.json()["roles"]] == [CARD_ROLE_KEYS] * 4, params
+        assert card.json()["roles"] == CARD_ROLES, params
         for phrase in PRIVATE_PHRASES:
             assert phrase not in card.text, (params, phrase)
         assert card.json()["labels"] == ["family", "dark theme"]
@@ -809,6 +816,7 @@ async def test_card_and_full_projections(client: httpx.AsyncClient) -> None:
         assert set(full.json()) >= FULL_KEYS, params
         for phrase in PRIVATE_PHRASES:
             assert phrase in full.text, (params, phrase)
+        assert document_of(full.json()) == stored_form(sent), params
         mother = full.json()["cast"]["roles"][0]
         assert mother["eligibility"]["age_range"] == [45, 75]
         assert mother["seeded_memories"][0]["id"]

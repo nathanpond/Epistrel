@@ -48,7 +48,13 @@ from epistrel.api.routes.catalog_characters import (
     CharacterVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
-from epistrel.api.routes.media import MediaListBody, MediaUploadedBody
+from epistrel.api.routes.media import (
+    MediaListBody,
+    MediaUploadedBody,
+    MediaUrlBody,
+    PartStoredBody,
+    UploadOpenedBody,
+)
 from epistrel.api.routes.operations import OperationBody
 from epistrel.api.routes.ownership import (
     OwnerBody,
@@ -96,6 +102,7 @@ from epistrel.core.errors import EpistrelError
 from epistrel.core.fork import ForkRequest
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.media.assets import MediaUpload
+from epistrel.core.media.uploads import UploadOpen
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
 from epistrel.core.ratings import RatingFields, RatingReplacement
@@ -122,6 +129,8 @@ PRINCIPAL = "p-parity"
 CTX = RequestContext(principal=PRINCIPAL)
 REPLY = "The innkeeper sets down a mug and says nothing."
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+SIGNED = re.compile(r"([?&](?:exp|sig)=)[^&]*")
+"""A signed media URL's expiry and signature (#107): the signature covers the real asset id."""
 DROPPED = frozenset({"idempotency_key"})
 """Transport fields: the key REST echoes (generated per request)."""
 ZEROED = frozenset(
@@ -141,13 +150,15 @@ Rendered = tuple[int, dict[str, Any]]
 @dataclass(frozen=True)
 class Rest:
     """The REST form of a step: method, path (``{name}`` filled from the surface's ids), JSON
-    body, query parameters, and a multipart body (``files``, an upload's; #105)."""
+    body, query parameters, a multipart body (``files``, an upload's; #105), and a raw body
+    (``content``, an upload part's; #107)."""
 
     method: str
     path: str
     json: Any = None
     params: dict[str, Any] = field(default_factory=dict)
     files: dict[str, Any] | None = None
+    content: bytes | None = None
 
 
 Library = Callable[[Engine, Ids], Awaitable[Any]]
@@ -290,11 +301,32 @@ MEDIA_ANSWERS = [
     ("get_media", 200),
     ("get_media_content", 200),
     ("list_media", 200),
+    ("get_media_url", 200),
     ("delete_media", 204),
     ("get_media", 200),
 ]
 """What the media steps (#105) answer on both surfaces: an upload, one refused for its missing
-``depicted_subjects``, the reads, the delete (a retire) and a read of the retired asset."""
+``depicted_subjects``, the reads, a signed URL (#107), the delete (a retire) and a read of the
+retired asset."""
+SESSION_BYTES = png(nonce="c-03 session")
+SESSION = {
+    **metadata(caption="Sent in parts"),
+    "size": len(SESSION_BYTES),
+    "mime_type": "image/png",
+    "sha256": hashlib.sha256(SESSION_BYTES).hexdigest(),
+}
+PUBLIC_BASE = {"public_base_url": "https://media.example.test"}
+SESSION_ANSWERS = [
+    ("open_upload", 201),
+    ("put_upload_part", 200),
+    ("get_upload", 200),
+    ("complete_upload", 201),
+    ("open_upload", 201),
+    ("abort_upload", 204),
+]
+"""What the resumable-upload steps (#107) answer on both surfaces: a session opened, its one
+part sent, read back and completed into an asset, and a second session opened and aborted."""
+SESSION_OPERATIONS = frozenset(operation for operation, _ in SESSION_ANSWERS)
 
 
 def _steps() -> list[Step]:
@@ -660,6 +692,49 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", "/media", params={"kind": "image"}),
             lambda e, ids: _media_list(e),
         ),
+        # -- media delivery (#107): a signed URL (its base set first), and resumable uploads
+        Step(
+            "update_deployment_settings",
+            lambda ids: Rest("PUT", "/admin/settings", PUBLIC_BASE),
+            lambda e, ids: _deployment_write(e, PUBLIC_BASE),
+        ),
+        Step(
+            "get_media_url",
+            lambda ids: Rest("GET", "/media/{media}/url", params={"ttl": 60}),
+            lambda e, ids: _media_url(e, ids["media"]),
+        ),
+        Step(
+            "open_upload",
+            lambda ids: Rest("POST", "/media/uploads", SESSION),
+            lambda e, ids: _upload_opened(e),
+            _keep("upload", "upload_id"),
+        ),
+        Step(
+            "put_upload_part",
+            lambda ids: Rest("PUT", "/media/uploads/{upload}/parts/1", content=SESSION_BYTES),
+            lambda e, ids: _part_stored(e, ids["upload"]),
+        ),
+        Step(
+            "get_upload",
+            lambda ids: Rest("GET", "/media/uploads/{upload}"),
+            lambda e, ids: _upload(e, ids["upload"]),
+        ),
+        Step(
+            "complete_upload",
+            lambda ids: Rest("POST", "/media/uploads/{upload}/complete"),
+            lambda e, ids: _completed(e, ids["upload"]),
+        ),
+        Step(
+            "open_upload",
+            lambda ids: Rest("POST", "/media/uploads", SESSION),
+            lambda e, ids: _upload_opened(e),
+            _keep("dropped", "upload_id"),
+        ),
+        Step(
+            "abort_upload",
+            lambda ids: Rest("DELETE", "/media/uploads/{dropped}"),
+            lambda e, ids: _no_content(e.abort_upload(CTX, ids["dropped"])),
+        ),
         Step(
             "transfer_owner",
             lambda ids: Rest("PUT", "/media/{media}/owner", NEW_OWNER),
@@ -951,6 +1026,28 @@ async def _media_content(engine: Engine, media_id: str) -> dict[str, Any]:
     return _bytes(await content.read(), content.mime_type)
 
 
+async def _media_url(engine: Engine, media_id: str) -> dict[str, Any]:
+    return dump(MediaUrlBody.of(await engine.get_media_url(CTX, media_id, ttl=60)))
+
+
+async def _upload_opened(engine: Engine) -> dict[str, Any]:
+    opened = await engine.open_upload(CTX, UploadOpen.model_validate(SESSION))
+    return dump(UploadOpenedBody.of(opened))
+
+
+async def _part_stored(engine: Engine, upload_id: str) -> dict[str, Any]:
+    stored = await engine.put_upload_part(CTX, upload_id, 1, SESSION_BYTES)
+    return dump(PartStoredBody.of(stored))
+
+
+async def _upload(engine: Engine, upload_id: str) -> dict[str, Any]:
+    return dump(await engine.get_upload(CTX, upload_id))
+
+
+async def _completed(engine: Engine, upload_id: str) -> dict[str, Any]:
+    return dump(MediaUploadedBody.of(await engine.complete_upload(CTX, upload_id)))
+
+
 async def _media_list(engine: Engine) -> dict[str, Any]:
     from epistrel.core.tables.media import MediaKind
 
@@ -1061,6 +1158,8 @@ def normalise(value: Any, normalizer: Normalizer) -> Any:
         return [normalise(item, normalizer) for item in value]
     if isinstance(value, str) and TIMESTAMP.match(value):
         return "<time>"
+    if isinstance(value, str):
+        value = SIGNED.sub(r"\1<signed>", value)
     return normalizer(value)
 
 
@@ -1100,6 +1199,7 @@ async def run_rest(settings: Settings, steps: list[Step]) -> list[Rendered]:
                     json=call.json,
                     params=call.params,
                     files=call.files,
+                    content=call.content,
                     headers=headers,
                 )
                 kind = response.headers.get("content-type", "application/json")
@@ -1233,13 +1333,19 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         ("get_character", 422),
         ("delete_character", 204),
     ]
-    # The media steps (#105) too (``MEDIA_ANSWERS``).
+    # The media steps (#105) too (``MEDIA_ANSWERS``), and the session steps' (#107).
     media = [
         (step.operation, status)
         for step, (status, _) in zip(steps, rest, strict=True)
         if "media" in step.operation
     ]
     assert media == MEDIA_ANSWERS
+    sessions = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.operation in SESSION_OPERATIONS
+    ]
+    assert sessions == SESSION_ANSWERS
 
 
 def test_c_03_bites_on_a_method_without_a_route_or_step(dummy_dsn: str) -> None:

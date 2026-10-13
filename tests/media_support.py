@@ -1,5 +1,6 @@
-"""Helpers for the media tests (#105): unique image and video bytes, upload bodies and calls, a
-local moderation hook, a scratch database with its own media root, and blob-store checks."""
+"""Helpers for the media tests (#105, #107): unique image and video bytes (real MP4s made with
+ffmpeg at test time), upload bodies and calls, a local moderation hook, a scratch database with
+its own media root, blob-store checks, and a spy on the ffmpeg seam."""
 
 from __future__ import annotations
 
@@ -8,7 +9,10 @@ import hashlib
 import io
 import json
 import secrets
+import shutil
 import socket
+import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -26,6 +30,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.api import create_app
 from epistrel.config import Settings
 from epistrel.core.db import make_engine
+from epistrel.core.media import probe
+from epistrel.core.media.poster import PosterExtractor, ToolStatus
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.engine import Engine
 from tests.auth_support import auth_settings, bearer
@@ -54,8 +60,50 @@ def jpeg(width: int = 4, height: int = 4) -> bytes:
 
 
 def mp4() -> bytes:
-    """Bytes an ISO base media sniff reads as ``video/mp4`` (no probe can read a duration)."""
+    """Bytes an ISO base media sniff reads as ``video/mp4`` (no probe can read a duration, and
+    ffmpeg finds no frame in them)."""
     return b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + secrets.token_bytes(64)
+
+
+def video(width: int = 160, height: int = 120, *, seconds: float = 1.0) -> bytes:
+    """A real MP4 (MPEG-4 Part 2, ffmpeg's test pattern) of ``width`` by ``height``, unique by a
+    random comment. ffmpeg must be installed: the poster tests fail, never skip, without it
+    (#107; CI installs it on the runner)."""
+    ffmpeg = shutil.which("ffmpeg")
+    assert ffmpeg is not None, "ffmpeg is not installed: the video tests need it (#107)"
+    with tempfile.TemporaryDirectory() as directory:
+        out = Path(directory) / "video.mp4"
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-nostdin",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                f"testsrc=duration={seconds}:size={width}x{height}:rate=10",
+                "-c:v",
+                "mpeg4",
+                "-pix_fmt",
+                "yuv420p",
+                "-metadata",
+                f"comment={secrets.token_hex(8)}",
+                "-f",
+                "mp4",
+                str(out),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+        return out.read_bytes()
+
+
+def large_png(at_least: int) -> bytes:
+    """A real 2x2 PNG of at least ``at_least`` bytes: its nonce text chunk is the padding."""
+    return png(2, 2, nonce=secrets.token_hex(max(1, at_least // 2)))
 
 
 def sha256(data: bytes) -> str:
@@ -198,6 +246,29 @@ async def scratch(pg_url: str, root: Path, **overrides: Any) -> AsyncIterator[Sc
             await db.dispose()
 
 
+# -- the ffmpeg seam ------------------------------------------------------------------------------
+
+
+@dataclass
+class SpyPosters:
+    """A ``PosterExtractor`` that counts what it is asked, around the real one (#107)."""
+
+    real: PosterExtractor
+    extracted: list[Path] = field(default_factory=list)
+    probed: list[Path] = field(default_factory=list)
+
+    async def status(self) -> ToolStatus:
+        return await self.real.status()
+
+    async def probe_video(self, path: Path) -> probe.Dimensions:
+        self.probed.append(path)
+        return await self.real.probe_video(path)
+
+    async def extract(self, video: Path, out: Path) -> None:
+        self.extracted.append(video)
+        await self.real.extract(video, out)
+
+
 # -- a moderation hook -----------------------------------------------------------------------------
 
 
@@ -224,6 +295,8 @@ class Hook:
     delay_s: float = 0.0
     hold: bool = False
     location: str | None = None
+    answers: list[Any] = field(default_factory=list)
+    """Answers given in order before ``answer`` (one per request)."""
     received: list[Received] = field(default_factory=list)
     arrived: threading.Event = field(default_factory=threading.Event)
     release: threading.Event = field(default_factory=threading.Event)
@@ -247,9 +320,8 @@ def hook_server(**options: Any) -> Iterator[Hook]:
                 hook.release.wait(30)
             if hook.delay_s:
                 time.sleep(hook.delay_s)
-            raw = (
-                hook.answer if isinstance(hook.answer, bytes) else json.dumps(hook.answer).encode()
-            )
+            given = hook.answers.pop(0) if hook.answers else hook.answer
+            raw = given if isinstance(given, bytes) else json.dumps(given).encode()
             try:
                 self.send_response(hook.status)
                 if hook.location is not None:
@@ -299,12 +371,14 @@ __all__ = [
     "WRITE",
     "Hook",
     "Scratch",
+    "SpyPosters",
     "asset_row",
     "blob_path",
     "count",
     "files",
     "hook_server",
     "jpeg",
+    "large_png",
     "media_client",
     "metadata",
     "mp4",
@@ -316,5 +390,6 @@ __all__ = [
     "staged_files",
     "upload",
     "uploaded",
+    "video",
     "wait_for",
 ]

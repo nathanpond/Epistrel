@@ -16,7 +16,11 @@ What ``build`` adds or changes:
   every mutation), ``Idempotency-Key``, ``X-Epistrel-Expected-Revision`` (story-scoped
   mutations), ``Prefer: respond-async`` (respond and ingest) and the ``viewpoint`` query.
 - Response headers: ``Idempotency-Key`` and ``Idempotent-Replay`` on every mutation's success,
-  ``Location`` on creations and 202s, ``Retry-After`` on 423 and 503.
+  ``Location`` on creations and 202s, ``Retry-After`` on 423 and 503, ``Content-Range`` on 416.
+- ``GET /media/{media_id}/content`` (``auth.SIGNED_ROUTES``, #107) is documented as taking the
+  credential or nothing (``security: [{HTTPBearer: []}, {}]``): a valid signed URL's ``exp`` and
+  ``sig`` are its query parameters. ``PUT /media/uploads/{id}/parts/{n}`` takes raw bytes
+  (``RAW_BODIES``).
 - Components only the document needs: ``Error``, ``QueuedTurn`` (a queued turn's 202),
   ``StorySettingsPatch`` (``PATCH /stories/{id}/settings``'s body, which the Engine validates)
   and ``MediaUpload`` (the ``metadata`` part of ``POST /media``'s multipart body, which the
@@ -41,7 +45,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import models_json_schema
 
-from epistrel.api.auth import EXEMPT_ROUTES, MUTATING_METHODS, PRINCIPAL_HEADER
+from epistrel.api.auth import EXEMPT_ROUTES, MUTATING_METHODS, PRINCIPAL_HEADER, SIGNED_ROUTES
 from epistrel.api.deps import (
     EXPECTED_REVISION_HEADER,
     MUTATING_EXTRA,
@@ -53,7 +57,7 @@ from epistrel.api.routes.ownership import OWNERSHIP_TAG, ownership_operation_ids
 from epistrel.api.routes.stories import StorySettingsPatch
 from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
-from epistrel.core.media.assets import MediaUpload
+from epistrel.core.media.assets import POSTER_FILE_FIELD, MediaUpload
 from epistrel.core.ownership import REGISTRY
 
 SCHEMA_VERSION = "m2"
@@ -77,7 +81,8 @@ TAGS: list[dict[str, str]] = [
         "name": "media",
         "description": "Media assets: immutable, content-addressed images and videos with their "
         "declared depicted subjects, an optional moderation hook, and delete-as-retire "
-        "(FR-MEDIA-1,2).",
+        "(FR-MEDIA-1,2); byte ranges, short-lived signed URLs, resumable uploads and a poster "
+        "for every video (FR-MEDIA-3).",
     },
     {
         "name": OWNERSHIP_TAG,
@@ -164,6 +169,8 @@ ERROR_STATUS: dict[str, int] = {
     "principal_required": 400,
     "unauthenticated": 401,
     "omniscient_required": 403,
+    "signature_invalid": 403,
+    "url_expired": 403,
     "not_found": 404,
     "client_event_conflict": 409,
     "idempotency_conflict": 409,
@@ -174,11 +181,17 @@ ERROR_STATUS: dict[str, int] = {
     "unknown_chain": 409,
     "config_conflict": 409,
     "draft_stale": 409,
+    "upload_closed": 409,
+    "upload_incomplete": 409,
+    "length_required": 411,
     "draft_too_large": 413,
     "media_too_large": 413,
+    "use_multipart": 413,
     "media_type_not_allowed": 415,
+    "range_not_satisfiable": 416,
     "budget_below_safety_minimum": 422,
     "cannot_relax": 422,
+    "checksum_mismatch": 422,
     "companion_follows_character": 422,
     "entry_archived": 422,
     "guardrail_violation": 422,
@@ -187,6 +200,10 @@ ERROR_STATUS: dict[str, int] = {
     "moderation_rejected": 422,
     "not_published": 422,
     "nothing_to_regenerate": 422,
+    "part_invalid": 422,
+    "poster_extraction_failed": 422,
+    "poster_invalid": 422,
+    "poster_required": 422,
     "publish_invalid": 422,
     "rating_retired": 422,
     "subjects_required": 422,
@@ -196,7 +213,9 @@ ERROR_STATUS: dict[str, int] = {
     "story_busy": 423,
     "budget_exhausted": 503,
     "config_key_missing": 503,
+    "config_missing": 503,
     "database_unavailable": 503,
+    "media_store_unavailable": 503,
     "model_unavailable": 503,
     "moderation_unavailable": 503,
     "original_in_flight_timeout": 503,
@@ -209,17 +228,34 @@ a configuration write the current state refuses (its ``code`` is ``validation_er
 STATUS_TEXT = {
     400: "Bad request",
     401: "No valid service credential",
-    403: "Forbidden for the requested viewpoint",
+    403: "Forbidden",
     404: "Not found",
     409: "Conflict; nothing was written",
+    411: "The body's length is required; nothing was written",
     413: "Too large; nothing was written",
     415: "Unsupported media type; nothing was written",
+    416: "Range not satisfiable",
     422: "Invalid request; nothing was written",
     423: "The story is busy",
     503: "Unavailable; nothing was written",
 }
 
 _TURN = ("model_unavailable", "budget_exhausted", "turn_interrupted", "timeline_changed")
+_UPLOADED = (
+    "subjects_required",
+    "media_type_not_allowed",
+    "media_too_large",
+    "rating_retired",
+    "moderation_rejected",
+    "moderation_unavailable",
+    "config_key_missing",
+    "media_retired",
+    "poster_invalid",
+    "poster_required",
+    "poster_extraction_failed",
+    "media_store_unavailable",
+)
+"""What storing an upload can answer, directly or from a resumable session (#105, #107)."""
 _GATED = ("guardrail_violation", "budget_below_safety_minimum", "model_unavailable")
 _ADMIN_CONFIG = ("config_conflict",)
 
@@ -278,13 +314,38 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "publish_character": ("draft_stale", "entry_archived", "publish_invalid"),
     "get_character": ("not_published",),
     "upload_media": (
+        *_UPLOADED,
+        "use_multipart",
+    ),
+    "get_media_content": (
+        "url_expired",
+        "signature_invalid",
+        "range_not_satisfiable",
+        "media_store_unavailable",
+    ),
+    "get_media_url": ("config_missing", "config_key_missing", "media_store_unavailable"),
+    "open_upload": (
         "subjects_required",
         "media_type_not_allowed",
         "media_too_large",
         "rating_retired",
-        "moderation_rejected",
-        "moderation_unavailable",
-        "config_key_missing",
+        "media_retired",
+        "poster_invalid",
+        "poster_required",
+        "media_store_unavailable",
+    ),
+    "put_upload_part": (
+        "length_required",
+        "part_invalid",
+        "checksum_mismatch",
+        "upload_closed",
+        "media_store_unavailable",
+    ),
+    "complete_upload": (
+        *_UPLOADED,
+        "upload_incomplete",
+        "upload_closed",
+        "checksum_mismatch",
     ),
     # A companion scenario's owner and relations follow its character (#104, #116).
     **{
@@ -305,13 +366,20 @@ VIEWPOINT_OPERATIONS = frozenset({"respond", "regenerate", "history", "get_story
 CREATING_OPERATIONS = frozenset({"create_story", "fork"})
 """Operations that answer 201 with ``Location: /stories/{id}``."""
 
+MEDIA_CREATING_OPERATIONS = frozenset({"complete_upload"})
+"""Operations that answer 201 with ``Location: /media/{id}`` (#107)."""
+
 DOCUMENTED_BODIES = {"update_story_settings": "StorySettingsPatch"}
 """Operations whose handler takes a raw JSON object (validated by the Engine) and the component
 that documents it."""
 
 MULTIPART_BODIES = {"upload_media": "MediaUpload"}
 """Operations whose handler reads a ``multipart/form-data`` body itself (#105): a ``metadata``
-part (the component named here, as JSON) followed by a binary ``file`` part."""
+part (the component named here, as JSON) followed by a binary ``file`` part and, for a video,
+an optional binary ``poster_file`` part (#107)."""
+
+RAW_BODIES = frozenset({"put_upload_part"})
+"""Operations whose handler streams a raw ``application/octet-stream`` body itself (#107)."""
 
 
 def _multipart_body(component: str) -> dict[str, Any]:
@@ -329,6 +397,13 @@ def _multipart_body(component: str) -> dict[str, Any]:
                             "format": "binary",
                             "description": "The bytes, as the part's own `Content-Type` "
                             "declares them (or `application/octet-stream`).",
+                        },
+                        POSTER_FILE_FIELD: {
+                            "type": "string",
+                            "format": "binary",
+                            "description": "A video only, after `file`: its poster image "
+                            "(stored with the video's rating, owner and subjects), instead of "
+                            "`poster` or a frame ffmpeg extracts.",
                         },
                     },
                     "additionalProperties": False,
@@ -369,6 +444,8 @@ def _error_responses(codes: Iterable[str]) -> dict[str, Any]:
             response["headers"] = {"Retry-After": _header("Seconds to wait before retrying.")}
         if status == 401:
             response["headers"] = {"WWW-Authenticate": _header("`Bearer`.")}
+        if status == 416:
+            response["headers"] = {"Content-Range": _header("`bytes */<size>`.")}
         responses[str(status)] = response
     return responses
 
@@ -461,6 +538,8 @@ def _success_headers(
         )
     if status == "201" and operation_id in CREATING_OPERATIONS:
         headers["Location"] = _header("`/stories/{id}` of the new story.")
+    if status == "201" and operation_id in MEDIA_CREATING_OPERATIONS:
+        headers["Location"] = _header("`/media/{id}` of the new asset.")
     if status == "202" and operation_id in QUEUEING_OPERATIONS:
         headers["Location"] = _header("`/operations/{id}` of the queued turn.")
     return headers
@@ -529,6 +608,16 @@ def _finish_operation(operation: dict[str, Any], method: str, path: str) -> None
         }
     if operation_id in MULTIPART_BODIES:
         operation["requestBody"] = _multipart_body(MULTIPART_BODIES[operation_id])
+    if operation_id in RAW_BODIES:
+        operation["requestBody"] = {
+            "required": True,
+            "content": {
+                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+            },
+        }
+    if (method, path) in SIGNED_ROUTES:
+        # The credential, or nothing but a valid signed URL's ``exp`` and ``sig`` (#107).
+        operation["security"] = [*operation.get("security", []), {}]
     responses: dict[str, Any] = operation.setdefault("responses", {})
     exempt = (method, path) in EXEMPT_ROUTES or (
         method == "HEAD" and ("GET", path) in EXEMPT_ROUTES

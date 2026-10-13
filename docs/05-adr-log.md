@@ -34,13 +34,13 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144 |
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
-| FR-AUTH | §17.1 | 078, 091, 093, 144, 149 |
+| FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144 |
 | FR-LITE | §18.4 | 085, 086, 087 |
-| FR-MEDIA | §18.5 | 083, 097, 113, 116 |
+| FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145 |
 | FR-FB | §18.8 | 111 |
@@ -50,10 +50,10 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-SCALE | §20 | 070, 072, 075, 137 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115 |
 | NFR-REL | §20 | 045, 127 |
-| NFR-SEC | §20 | 138, 149 |
+| NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 077, 101 |
 | NFR-PORT | §20 | 150 |
-| NFR-OPS | §20 | 127, 148 |
+| NFR-OPS | §20 | 127, 148, 151 |
 | NFR-MAINT | §20 | 148 |
 
 ### By ADR
@@ -210,8 +210,10 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 146 | The concurrency gate is a fixed-schedule capacity test, staged by capability | Amended | 147 |
 | 147 | The concurrency gate's service criteria hold per story | Current | — |
 | 148 | Python 3.14 is the single supported version | Current | — |
-| 149 | The API schema and documentation routes are served without a service credential | Current | — |
+| 149 | The API schema and documentation routes are served without a service credential | Amended | 152 |
 | 150 | The model transport is the `openai` SDK against OpenAI-compatible endpoints | Current | — |
+| 151 | Video posters are taken with ffmpeg, a GPL program run as a separate process | Current | — |
+| 152 | A short-lived signed URL is enough to read media content | Current | — |
 
 ---
 
@@ -1419,8 +1421,9 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-149 — The API schema and documentation routes are served without a service credential
 **Status:** Accepted. Amends ADR-091.
+**Amended by:** ADR-152 — `GET /media/{id}/content` is also served to a request carrying a valid, unexpired signed URL
 **Context:** ADR-091 requires a service credential on every REST call (FR-AUTH-1), and project invariant 4 allowed one exception, `GET /health`. The OpenAPI schema and its rendered documentation are what a consumer's developers read to integrate, they carry no story data, and they are where the trust-boundary statement lives (FR-AUTH-2). Probes and scrapers need `/health` and `/metrics` the same way.
-**Decision:** Exactly five routes are served without a credential: `GET /health`, `GET /metrics`, `GET /openapi.json`, `GET /docs`, and `GET /redoc` (`HEAD` follows its `GET`). FastAPI's OAuth redirect page is disabled, because no OAuth flow exists. Every other route requires one of the deployment's service credentials, and every mutating call requires an opaque requesting principal. The exempt set is one constant in the code, and a route-table guard fails the build when any other route lacks the credential dependency. Project invariant 4 is reworded to name the five routes.
+**Decision:** Exactly five routes are served without a credential: `GET /health`, `GET /metrics`, `GET /openapi.json`, `GET /docs`, and `GET /redoc` (`HEAD` follows its `GET`). *[refined by ADR-152: `GET /media/{id}/content` is also served, without the credential, to a request whose `exp` and `sig` are a valid, unexpired signed URL for it]* FastAPI's OAuth redirect page is disabled, because no OAuth flow exists. Every other route requires one of the deployment's service credentials, and every mutating call requires an opaque requesting principal. The exempt set is one constant in the code, and a route-table guard fails the build when any other route lacks the credential dependency. Project invariant 4 is reworded to name the five routes.
 **Consequences:** The schema, including the trust-boundary statement, can be read without a credential; nothing that reads or changes story data can. A new public route needs a new ADR and an invariant change. Tests S-TRUST-BOUNDARY (M2 auth half) and the route-table guard (#44).
 
 ---
@@ -1430,6 +1433,22 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 **Context:** ADR-007 put the Model Access Layer's default adapter over LiteLLM for its per-call routing, retries, fallbacks and cost tracking. Each of those is already Epistrel's: routing is per purpose from `model_config` (FR-MODEL-1,3), every attempt is owned by the turn budget (NFR-PERF-6), and per-purpose call counts and cost are reported by the Model Access Layer (FR-MODEL-12). Every target the project names — hosted providers, enterprise gateways, LM Studio, vLLM, Ollama — speaks the OpenAI-compatible wire format. Measured on 2026-10-11 with `uv pip install --dry-run` into an empty Python 3.14 environment: `litellm` 1.104.2 installs **58** packages (including `openai` 2.54.0 itself, plus `tokenizers`, `huggingface-hub` and an HTTP stack of its own), while `openai` 3.28.0 installs **14**.
 **Decision:** The default adapter (`OpenAICompatibleAdapter`) calls Chat Completions through the `openai` SDK, one `AsyncOpenAI` client per distinct `base_url` and key, with the SDK's retries off (`max_retries=0`) and a per-call timeout from the purpose's params (default 60 s). `EPISTREL_MODEL_ADAPTER` selects `openai` (default) or `stub`, the deterministic test adapter (FR-MODEL-11). Prompts are Jinja2 templates checked against the purpose registry at import (ADR-136); stored API keys are Fernet-encrypted with `EPISTREL_CONFIG_KEY` (`cryptography`). LiteLLM moves to the architecture's alternatives.
 **Consequences:** A quarter of the dependency footprint, no second retry or routing layer underneath the turn budget, and one wire format to test (a local OpenAI-compatible server in CI). A provider that does not speak the format needs the bring-your-own-completion path (FR-MODEL-9) or a gateway in front of it. Tests C-04 and C-07 (M2 swap half).
+
+---
+
+### ADR-151 — Video posters are taken with ffmpeg, a GPL program run as a separate process
+**Status:** Accepted. Builds on ADR-097.
+**Context:** FR-MEDIA-3 requires a poster image for every video, uploaded with it or extracted from its first frame, and a video's duration should be probed. ffmpeg (with its ffprobe) is the standard tool for both, but it is GPL-licensed, and project invariant 2 keeps every runtime dependency on an Apache-2.0-compatible allowlist with no GPL. The owner was asked when M3 was planned (#107, round one).
+**Decision:** The image installs Debian's `ffmpeg` package in its runtime stage, and Epistrel runs `ffmpeg` and `ffprobe` as separate processes: never linked, never imported, and not a Python dependency, so the dependency graph `check-licenses` judges is unchanged. Invariant 2 states the exception: "ffmpeg is a GPL command-line tool invoked as a separate process for poster extraction; it is not linked and not a Python dependency". A video uploaded without a poster gets a PNG of at most 1280 pixels a side from its first frame (`ffmpeg -ss 0 -frames:v 1`, 30 s timeout, `-nostdin`, file and pipe protocols only); the poster is its own asset with the video's owner, rating and subjects, and goes to the moderation hook too. `EPISTREL_FFMPEG_PATH` names the binary; without it, such an upload is 422 `poster_required`, and `/health` reports `ffmpeg: missing` without failing (FR-MEDIA-3, NFR-OPS-1).
+**Consequences:** Every video has a poster with no consumer work, at the cost of a larger image (Debian's ffmpeg brings its codec libraries). A deployment that does not want ffmpeg supplies posters itself. CI installs ffmpeg on the runner, and the poster tests fail rather than skip without it. Tests C-23 and `tests/test_dockerfile.py`.
+
+---
+
+### ADR-152 — A short-lived signed URL is enough to read media content
+**Status:** Accepted. Amends ADR-149.
+**Context:** FR-MEDIA-3 serves large media to players and browsers, which fetch a URL and cannot send the service credential. On an S3-compatible store a presigned URL is served by the store itself, outside Epistrel's routes. The local store has no such server, so Epistrel must serve the bytes from a URL that carries its own authorization. Project invariant 4 required the credential on every route but five (ADR-149). The owner decided this when M3 was planned (#107, round two).
+**Decision:** `GET /media/{id}/url` (which needs the credential) returns a URL valid for `media_signed_url_ttl` seconds (default 300). On S3 it is the store's presigned `GET`. On the local store it is `/media/{id}/content?exp=&sig=` under `public_base_url`, with `sig` an HMAC-SHA256 of the method, path and expiry under an HKDF subkey of `EPISTREL_CONFIG_KEY`. A request to `GET /media/{id}/content` (and its `HEAD`) is served when it carries the credential *or* a valid, unexpired signature for that asset's path; an expired one is 403 `url_expired`, a forged one 403 `signature_invalid`, neither 401. With the credential, a bad signature is ignored. That route is the only one with this guard: it is listed in `SIGNED_ROUTES`, served from its own router (never in `worker` mode), and the route-table guard accepts the signed guard on that route and on no other. Invariant 4 is reworded to name it (FR-MEDIA-3, FR-AUTH-1, NFR-SEC-5).
+**Consequences:** Media play in a browser or a video element without exposing the credential, and only for as long as the URL lives; anyone holding such a URL can read that one asset's bytes until it expires, so the consumer hands it only to whoever may see the asset. Every other route still needs the credential. Tests C-23 and the route-table guard (#44).
 
 ---
 

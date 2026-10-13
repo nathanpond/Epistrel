@@ -5,10 +5,11 @@ declared: PNG, JPEG, WebP, GIF, the ISO base media family (MP4, QuickTime, 3GP, 
 Matroska/WebM. A type it does not recognise is ``None``, and such an upload is refused (415).
 
 ``dimensions`` reads an image's width and height with Pillow (headers only: nothing is
-decoded), and a video's width, height and duration with ``ffprobe`` when the executable is on
-``PATH`` (#107 points it at its ``ffmpeg_path`` and installs ffmpeg in the image; the owner
-allowed ffmpeg as a separate process, never linked). A probe that is missing, fails or times out
-leaves the values ``None``: it never fails an upload.
+decoded), and a video's width, height and duration with ``ffprobe``: the one beside
+``EPISTREL_FFMPEG_PATH``, through the poster seam (``core.media.poster``, #107), or the one on
+``PATH`` when no executable is given. ffmpeg and ffprobe are installed in the image and run as
+separate processes, never linked (invariant 2's exception). A probe that is missing, fails or
+times out leaves the values ``None``: it never fails an upload.
 """
 
 from __future__ import annotations
@@ -138,24 +139,25 @@ def _ffprobe_dimensions(report: object) -> Dimensions:
     )
 
 
-async def video_dimensions(path: Path) -> Dimensions:
-    """Width, height and duration from ``ffprobe`` (local files only, 10 s at most); nothing
-    when it is not installed or fails."""
-    executable = shutil.which(FFPROBE)
+async def video_dimensions(path: Path, *, executable: str | None = None) -> Dimensions:
+    """Width, height and duration from ``ffprobe`` (``executable``, else the one on ``PATH``;
+    local files only, 10 s at most); nothing when it is not installed or fails."""
+    executable = executable or shutil.which(FFPROBE)
     if executable is None:
         return Dimensions()
     process = await asyncio.create_subprocess_exec(
         executable,
         "-v",
         "error",
-        "-nostdin",
+        # No ``-nostdin``: ffprobe has no such option (it refuses to run with it, #107), and its
+        # stdin is closed below anyway.
         "-protocol_whitelist",
         "file",
         "-print_format",
         "json",
         "-show_entries",
         "stream=codec_type,width,height:format=duration",
-        str(path),
+        f"file:{path}",
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -178,11 +180,11 @@ async def video_dimensions(path: Path) -> Dimensions:
         return Dimensions()
 
 
-async def dimensions(path: Path, kind: MediaKind) -> Dimensions:
+async def dimensions(path: Path, kind: MediaKind, *, ffprobe: str | None = None) -> Dimensions:
     """The probe for ``kind`` (see the module docstring)."""
     if kind is MediaKind.IMAGE:
         return await asyncio.to_thread(image_dimensions, path)
-    return await video_dimensions(path)
+    return await video_dimensions(path, executable=ffprobe)
 
 
 __all__ = [

@@ -57,8 +57,11 @@ from epistrel.core.idempotency import (
 from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
 from epistrel.core.media import assets as media
+from epistrel.core.media import uploads as media_uploads
+from epistrel.core.media.poster import FfmpegTools, PosterExtractor
 from epistrel.core.media.signing import Signer
-from epistrel.core.media.store import LocalFilesystemStore
+from epistrel.core.media.store import BlobStore
+from epistrel.core.media.stores import make_store
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.ports import Ports
 from epistrel.core.settings_schema import ConfigClass, StorySettings
@@ -188,6 +191,11 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     "upload_media": ResultCodec.of(media.MediaWrite, status=201, revision_field=_CONFIG),
     "delete_media": ResultCodec.of(media.MediaRetirement, status=204, revision_field=_CONFIG),
+    # Resumable uploads (#107). A part PUT (``put_upload_part``) keeps no result: sending a part
+    # again replaces it, so the request is idempotent by itself.
+    "open_upload": ResultCodec.of(media_uploads.UploadOpened, status=201, revision_field=_CONFIG),
+    "complete_upload": ResultCodec.of(media.MediaWrite, status=201, revision_field=_CONFIG),
+    "abort_upload": ResultCodec.of(media_uploads.UploadAborted, status=204, revision_field=_CONFIG),
 }
 """How each mutating method's result is stored under its ``Idempotency-Key`` and replayed: the
 result type, the REST status it answers with, and the revision a reference carries."""
@@ -354,10 +362,13 @@ class Engine:
             lambda: self.db,
             {turn_gate.RESPOND: self._drain_respond, turn_gate.INGEST: self._drain_ingest},
         )
-        # Media bytes (#105): the local blob store under EPISTREL_MEDIA_ROOT (created at
-        # start-up by ``prepare_media``), and the signer of the moderation hook's URL and body.
-        self.media = LocalFilesystemStore(settings.media_root)
+        # Media bytes (#105, #107): the blob store EPISTREL_MEDIA_STORE names (local under
+        # EPISTREL_MEDIA_ROOT, or S3; prepared at start-up by ``prepare_media``), the signer of
+        # content URLs and of the moderation hook's requests, and the ffmpeg seam that takes a
+        # video's poster from its first frame and probes videos (tests replace it).
+        self.media: BlobStore = make_store(settings)
         self.signer = Signer(settings.config_key)
+        self.posters: PosterExtractor = FfmpegTools(settings.ffmpeg_path)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Engine:
@@ -430,8 +441,9 @@ class Engine:
         return self._db
 
     def prepare_media(self) -> None:
-        """Create the media root and its staging area and prove them writable (the app's and
-        ``epistrel serve``'s start-up; ``MediaRootUnwritable`` otherwise, exit 78)."""
+        """Create the media root and its staging area and prove them writable, and on S3 that
+        the bucket exists (the app's and ``epistrel serve``'s start-up; ``MediaRootUnwritable``
+        otherwise, exit 78)."""
         self.media.prepare()
 
     async def _keyed[T](
@@ -1865,18 +1877,24 @@ class Engine:
         *,
         content_type: str | None = None,
         body_size: int | None = None,
+        poster_file: media.PosterFileSource = None,
     ) -> media.MediaWrite:
         """Store an image or video as an immutable asset (FR-MEDIA-1): ``request`` is its
         metadata (``depicted_subjects`` required: 422 ``subjects_required``), ``content`` its
         bytes (or chunks), ``content_type`` the bytes' declared MIME type and ``body_size`` the
         whole request's declared length (REST's ``Content-Length``). 415
-        ``media_type_not_allowed``, 413 ``media_too_large``, 422 ``rating_retired``; with a
+        ``media_type_not_allowed``, 413 ``media_too_large``, 413 ``use_multipart`` (larger than
+        ``media_multipart_threshold``: use ``open_upload``), 422 ``rating_retired``; with a
         moderation hook configured, 422 ``moderation_rejected`` or 503
-        ``moderation_unavailable`` (nothing stored). The key's request hash covers the metadata
-        and the bytes' SHA-256 (``core.media.assets``)."""
+        ``moderation_unavailable`` (nothing stored). A video's poster (FR-MEDIA-3) is
+        ``request.poster``, the ``poster_file`` given, or extracted from its first frame with
+        ffmpeg (422 ``poster_required`` without it, ``poster_extraction_failed`` when it fails).
+        The key's request hash covers the metadata and the bytes' SHA-256
+        (``core.media.assets``)."""
         principal = self.require_principal(ctx)
-        request = media.require_subjects(request)
+        request = media.check_upload(request)
         settings = await media.read_media_settings(self.db)
+        threshold = settings.media_multipart_threshold
         staged = await media.stage(
             self.media,
             new_ulid(),
@@ -1885,8 +1903,39 @@ class Engine:
             kind=request.kind,
             content_type=content_type,
             body_size=body_size,
+            threshold=threshold,
         )
+        poster: media.Staged | None = None
         try:
+            extra = await media.poster_file_of(poster_file)
+            if extra is not None:
+                if request.kind is not MediaKind.VIDEO or request.poster is not None:
+                    raise InvalidRequest(
+                        "a `poster_file` is a video's poster, sent instead of `poster`",
+                        {"field": f"body.{media.POSTER_FILE_FIELD}"},
+                    )
+                poster = await media.stage(
+                    self.media,
+                    new_ulid(),
+                    media.content_of(extra.content),
+                    settings=settings,
+                    kind=MediaKind.IMAGE,
+                    content_type=extra.content_type,
+                    threshold=threshold,
+                    counted=staged.size,
+                )
+            material: dict[str, Any] = {
+                "body": _body(request),
+                "sha256": staged.sha256,
+                "size": staged.size,
+                "mime_type": staged.mime_type,
+            }
+            if poster is not None:
+                material["poster_file"] = {
+                    "sha256": poster.sha256,
+                    "size": poster.size,
+                    "mime_type": poster.mime_type,
+                }
             return await self._keyed(
                 ctx,
                 "upload_media",
@@ -1898,16 +1947,14 @@ class Engine:
                     principal=principal,
                     settings=settings,
                     signer=self.signer,
+                    posters=self.posters,
+                    poster_file=poster,
                 ),
-                material={
-                    "body": _body(request),
-                    "sha256": staged.sha256,
-                    "size": staged.size,
-                    "mime_type": staged.mime_type,
-                },
+                material=material,
             )
         finally:
             await media.discard(staged)
+            await media.discard(poster)
 
     async def get_media(self, ctx: RequestContext, media_id: str) -> media.MediaAsset:
         """An asset's metadata, ``live`` or ``retired``; 404 for an unknown asset."""
@@ -1920,18 +1967,49 @@ class Engine:
         *,
         exp: int | None = None,
         sig: str | None = None,
+        byte_range: media.ByteRange | None = None,
+        if_none_match: Sequence[str] = (),
+        if_range: str | None = None,
+        with_bytes: bool = True,
     ) -> media.MediaContent:
         """An asset's bytes, opened (read them with ``chunks()`` or ``read()``): served for a
         ``live`` or ``retired`` asset, so whatever references a deleted asset keeps showing it
-        (FR-MEDIA-2). ``exp`` and ``sig`` are a signed URL's (the moderation hook's
-        ``content_url``): when they verify, an upload still waiting for the hook is served too.
-        404 otherwise."""
+        (FR-MEDIA-2). ``byte_range`` selects one range (FR-MEDIA-3; 416
+        ``range_not_satisfiable`` when no byte of it exists), applied only when ``if_range``
+        is absent or names the current entity tag; ``if_none_match`` matching the entity tag
+        answers ``not_modified`` with no bytes; ``with_bytes`` false opens nothing (``HEAD``).
+        ``exp`` and ``sig`` are a signed URL's (``get_media_url``, or the moderation hook's
+        ``content_url``): when they verify, an upload still waiting for the hook is served
+        too. 404 otherwise."""
         signed = (
             exp is not None
             and sig is not None
             and self.signer.verify("GET", media.content_path(media_id), exp, sig)
         )
-        return await media.open_content(self.db, self.media, media_id, signed=signed)
+        return await media.open_content(
+            self.db,
+            self.media,
+            media_id,
+            signed=signed,
+            byte_range=byte_range,
+            if_none_match=if_none_match,
+            if_range=if_range,
+            with_bytes=with_bytes,
+        )
+
+    async def get_media_url(
+        self, ctx: RequestContext, media_id: str, *, ttl: int | None = None
+    ) -> media.MediaUrl:
+        """A short-lived URL that serves the asset's bytes without the service credential
+        (FR-MEDIA-3), valid ``ttl`` seconds (at most, and by default, the deployment's
+        ``media_signed_url_ttl``): on S3 the store's own presigned URL, so the store serves the
+        bytes; on the local store Epistrel's signed ``/media/{id}/content?exp=&sig=`` under
+        ``public_base_url`` (503 ``config_missing`` without it, 503 ``config_key_missing``
+        without ``EPISTREL_CONFIG_KEY``). 404 for an unknown asset."""
+        settings = await media.read_media_settings(self.db)
+        return await media.signed_url(
+            self.db, self.media, media_id, ttl_s=ttl, settings=settings, signer=self.signer
+        )
 
     async def list_media(
         self,
@@ -1960,14 +2038,113 @@ class Engine:
     async def delete_media(self, ctx: RequestContext, media_id: str) -> media.MediaRetirement:
         """Delete an asset by retiring it (FR-MEDIA-2): it leaves listings and refuses new
         references (422 ``media_retired``), while everything that already references it keeps
-        its content until the media sweep finds no reference and purges it. Deleting a retired
-        asset changes nothing; 404 for an unknown one."""
+        its content until the media sweep finds no reference and purges it. A video's poster is
+        retired with it. Deleting a retired asset changes nothing; 404 for an unknown one."""
         principal = self.require_principal(ctx)
         return await self._keyed(
             ctx,
             "delete_media",
             lambda _: media.retire(self.db, media_id, principal=principal),
             material={"media_id": media_id},
+        )
+
+    # -- resumable uploads (FR-MEDIA-3; #107) ---------------------------------------------------
+    # Deployment-scoped like every media write: open, complete and abort are keyed per
+    # deployment; a part is not keyed (sending it again replaces it).
+
+    async def open_upload(
+        self, ctx: RequestContext, request: media_uploads.UploadOpen
+    ) -> media_uploads.UploadOpened:
+        """Open a resumable upload session for a large asset (FR-MEDIA-3): the asset's metadata
+        and its declared ``size``, ``mime_type`` and ``sha256``. Answers the ``upload_id`` and
+        the ``part_size`` its parts must have (the last: the rest). 413 ``media_too_large``, 415
+        ``media_type_not_allowed``, 422 ``rating_retired``, ``subjects_required``,
+        ``media_retired``/``poster_invalid`` for a bad ``poster``, ``poster_required`` for a
+        video without one when ffmpeg is missing."""
+        principal = self.require_principal(ctx)
+        settings = await media.read_media_settings(self.db)
+        return await self._keyed(
+            ctx,
+            "open_upload",
+            lambda _: media_uploads.open_session(
+                self.db,
+                self.media,
+                request,
+                principal=principal,
+                settings=settings,
+                posters=self.posters,
+            ),
+            material={"body": _body(request)},
+        )
+
+    async def get_upload(self, ctx: RequestContext, upload_id: str) -> media_uploads.UploadSession:
+        """A session's state and the parts it has received, so an interrupted upload resumes
+        by sending the others. 404 for an unknown session."""
+        return await media_uploads.get_session(self.db, upload_id)
+
+    async def put_upload_part(
+        self,
+        ctx: RequestContext,
+        upload_id: str,
+        n: int,
+        content: bytes | AsyncIterable[bytes],
+        *,
+        size: int | None = None,
+        sha256: str | None = None,
+    ) -> media_uploads.PartStored:
+        """Store part ``n`` (from 1) of a session: exactly the session's ``part_size`` bytes,
+        or the rest for the last part (422 ``part_invalid``), with their ``size`` declared
+        (REST's ``Content-Length``; none: 411 ``length_required``) and, optionally, their
+        ``sha256`` checked (422 ``checksum_mismatch``). Sending a part again replaces it. 409
+        ``upload_closed`` once the session is completed, aborted or expired."""
+        self.require_principal(ctx)
+        if isinstance(content, bytes | bytearray | memoryview) and size is None:
+            size = len(content)
+        settings = await media.read_media_settings(self.db)
+        return await media_uploads.put_part(
+            self.db,
+            self.media,
+            upload_id,
+            n,
+            media.content_of(content),
+            size=size,
+            sha256=sha256,
+            settings=settings,
+        )
+
+    async def complete_upload(self, ctx: RequestContext, upload_id: str) -> media.MediaWrite:
+        """Assemble a session's parts into an asset, through every check ``upload_media``
+        makes (FR-MEDIA-1,3): 409 ``upload_incomplete`` (``details.missing``), 422
+        ``checksum_mismatch`` (the declared SHA-256), 409 ``upload_closed``, and the upload's
+        own refusals. A refusal leaves the session open with its parts."""
+        principal = self.require_principal(ctx)
+        settings = await media.read_media_settings(self.db)
+        return await self._keyed(
+            ctx,
+            "complete_upload",
+            lambda _: media_uploads.complete(
+                self.db,
+                self.media,
+                upload_id,
+                principal=principal,
+                settings=settings,
+                signer=self.signer,
+                posters=self.posters,
+            ),
+            material={"upload_id": upload_id},
+        )
+
+    async def abort_upload(
+        self, ctx: RequestContext, upload_id: str
+    ) -> media_uploads.UploadAborted:
+        """Abort an open session: its parts go. A completed or aborted one is left as it is
+        (still 204); 404 for an unknown one."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "abort_upload",
+            lambda _: media_uploads.abort(self.db, self.media, upload_id, principal=principal),
+            material={"upload_id": upload_id},
         )
 
 

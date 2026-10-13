@@ -1,48 +1,67 @@
-"""Media assets: upload, the moderation hook, reads, retirement and reference discovery
-(FR-MEDIA-1,2, FR-ADMIN-6, FR-API-6; docs/02 §4.10; #105).
+"""Media assets: upload, the moderation hook, posters, reads, signed URLs, retirement and
+reference discovery (FR-MEDIA-1,2,3, FR-ADMIN-6, FR-API-6; docs/02 §4.10; #105, #107).
 
 **Upload** (``POST /media``; ``Engine.upload_media``) takes the asset's metadata (``MediaUpload``)
 and its bytes:
 
 1. The metadata is validated first: ``kind``, ``content_rating_id`` (omitted: 422
    ``validation_error``), optional ``alt_text`` (≤ 500), ``caption`` (≤ 2000),
-   ``generation_metadata`` (FR-CAT-4's fields, stored exactly as sent) and ``owner``, and the
-   ``depicted_subjects`` every upload must declare (FR-MEDIA-1, FR-IMG-9): an omitted list is 422
-   ``subjects_required``, an explicitly empty one is accepted. Subjects are ``{kind, id}``
-   (``character``, ``catalog_character`` or ``persona``), stored unverified (the subject may be
-   created later), deduplicated, at most 50.
+   ``generation_metadata`` (FR-CAT-4's fields, stored exactly as sent), ``owner`` and, for a
+   video, ``poster`` (an image asset to show for it), and the ``depicted_subjects`` every upload
+   must declare (FR-MEDIA-1, FR-IMG-9): an omitted list is 422 ``subjects_required``, an
+   explicitly empty one is accepted. Subjects are ``{kind, id}`` (``character``,
+   ``catalog_character`` or ``persona``), stored unverified (the subject may be created later),
+   deduplicated, at most 50.
 2. The bytes stream into the staging area (``core.media.store``) while they are hashed and
    counted: a request whose declared length exceeds ``media_max_bytes`` plus the metadata's
    allowance is 413 ``media_too_large`` before the file is read, and so is a file that grows
-   past ``media_max_bytes``. The type is sniffed from the first bytes (``core.media.probe``):
-   one the deployment does not allow (``media_allowed_types``), one Epistrel does not
-   recognise, or one that disagrees with the declared ``kind`` or the file's own MIME type is
-   415 ``media_type_not_allowed``.
+   past ``media_max_bytes``. A request larger than ``media_multipart_threshold`` (declared, or
+   counted as it streams) is 413 ``use_multipart``: it must use a resumable session
+   (``core.media.uploads``, #107). The type is sniffed from the first bytes
+   (``core.media.probe``): one the deployment does not allow (``media_allowed_types``), one
+   Epistrel does not recognise, or one that disagrees with the declared ``kind`` or the file's
+   own MIME type is 415 ``media_type_not_allowed``. A video may carry a second file, its poster
+   (``poster_file``), staged the same way as an image.
 3. The call then takes its ``Idempotency-Key`` (the request hash covers the metadata and the
    bytes' SHA-256), checks the rating (422 ``rating_retired`` for an unknown or retired one,
    #50), probes the dimensions or duration, and, when ``media_moderation_webhook_url`` is set,
-   asks the moderation hook (``core.media.moderation``; fails closed). Nothing is stored before
-   the hook accepts, and a refusal leaves no row and no blob.
-4. One transaction, under the checksum's advisory lock, inserts the row (``live``, ``source =
-   uploaded``, the rating's current version), indexes its subjects (``core.erasure.index``:
-   the declared subjects and the catalog characters its caption, alt text and prompts name),
-   records a committed ``control`` operation (``core.control``) and moves the staged bytes into
-   place. Identical bytes share one blob.
+   asks the moderation hook (``core.media.moderation``; fails closed). A **video's poster**
+   (FR-MEDIA-3, #107) is the ``poster`` named (a ``live`` image: 422 ``media_retired`` or
+   ``poster_invalid`` otherwise), the ``poster_file`` sent, or a PNG ffmpeg takes from the
+   video's first frame (``core.media.poster``; 422 ``poster_required`` without ffmpeg, 422
+   ``poster_extraction_failed`` when it fails). A poster stored with its video inherits the
+   video's owner, rating and subjects, is described ``Poster for <caption or id>``, and goes to
+   the hook too; any refusal fails the whole upload. Nothing is stored before the hook accepts,
+   and a refusal leaves no row and no blob.
+4. One transaction, under the checksums' advisory locks, inserts the rows (``live``, ``source =
+   uploaded``, or ``extracted`` for an extracted poster; the rating's current version; the
+   video's ``poster_media_id``), indexes their subjects (``core.erasure.index``: the declared
+   subjects and the catalog characters a caption, alt text or prompt names), records a
+   committed ``control`` operation (``core.control``) and moves the staged bytes into place.
+   Identical bytes share one blob. A resumable session's completion (``core.media.uploads``)
+   runs steps 3 and 4 on its assembled bytes.
 
 **Reads.** ``get`` returns the metadata of a ``live`` or ``retired`` asset (a ``candidate`` is
-private, FR-IMG-7: 404). ``open_content`` opens its bytes; with a valid signed URL
-(``exp``/``sig``, ``core.media.signing``) it also serves an upload still waiting for the hook,
-which is how the hook's ``content_url`` works before anything is committed. ``list_assets``
-lists ``live`` assets (or ``retired`` ones when asked), newest first.
+private, FR-IMG-7: 404). ``open_content`` opens its bytes, all of them or one byte range
+(``ByteRange``; FR-MEDIA-3: a file seek locally, a ``Range`` request on S3; 416
+``range_not_satisfiable`` when no byte of it exists), answers ``not_modified`` to a matching
+``If-None-Match`` before any range, and applies a range only when ``If-Range`` names the current
+entity tag (the checksum). With a valid signed URL (``exp``/``sig``, ``core.media.signing``) it
+also serves an upload still waiting for the hook, which is how the hook's ``content_url`` works
+before anything is committed. ``signed_url`` is ``GET /media/{id}/url``: a presigned URL the S3
+store serves itself, or on the local store Epistrel's own signed content URL under
+``public_base_url`` (503 ``config_missing`` without it), valid ``media_signed_url_ttl`` seconds
+or less. ``list_assets`` lists ``live`` assets (or ``retired`` ones when asked), newest first.
 
-**Delete is retire** (FR-MEDIA-2): ``retire`` sets ``state = retired``. A retired asset leaves
-listings and refuses new references (``assert_referenceable``, which #108, #115 and #119 call:
-422 ``media_retired``), while the records that already reference it keep reading it. The media
-sweep (``core.media.sweep``) purges it once nothing references it. **Reference discovery**
-queries the records that can reference an asset (``MEDIA_REFERENCE_SOURCES``, which later
-stories extend with ``register_reference_source``); nothing counts references. ``referenced``
-answers for given assets, and ``unreferenced`` is the same test as an anti-join a query filters
-by.
+**Delete is retire** (FR-MEDIA-2): ``retire`` sets ``state = retired``, and a video's poster is
+retired with it. A retired asset leaves listings and refuses new references
+(``assert_referenceable``, which #108, #115 and #119 call: 422 ``media_retired``), while the
+records that already reference it keep reading it. The media sweep (``core.media.sweep``) purges
+it once nothing references it. **Reference discovery** queries the records that can reference an
+asset (``MEDIA_REFERENCE_SOURCES``, which later stories extend with
+``register_reference_source``; a video's ``poster_media_id`` is one); nothing counts references.
+``referenced`` answers for given assets, and ``unreferenced`` is the same test as an anti-join a
+query filters by.
 """
 
 from __future__ import annotations
@@ -54,9 +73,9 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import AsyncIterable, AsyncIterator, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, BinaryIO
 
@@ -88,18 +107,23 @@ from epistrel.core import clock, control, ownership
 from epistrel.core.config_changes import read_section
 from epistrel.core.erasure.index import Declared, index_references
 from epistrel.core.errors import (
+    ConfigMissing,
     InvalidRequest,
     MediaNotFound,
     MediaRetired,
     MediaTooLarge,
     MediaTypeNotAllowed,
+    PosterInvalid,
+    RangeNotSatisfiable,
     SubjectsRequired,
+    UseMultipart,
     refuse_nul,
 )
-from epistrel.core.ids import ULID_PATTERN
+from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.media import moderation, probe
+from epistrel.core.media.poster import POSTER_MIME_TYPE, PosterExtractor
 from epistrel.core.media.signing import Signer
-from epistrel.core.media.store import LocalFilesystemStore
+from epistrel.core.media.store import BlobStore, ByteStream, Window
 from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.ratings import require_assignable
 from epistrel.core.settings_schema import MediaSettings
@@ -148,6 +172,9 @@ MIME_ALIASES = {"image/jpg": "image/jpeg", "image/pjpeg": "image/jpeg", "image/x
 """Non-standard spellings clients send for a file's own MIME type."""
 UNSPECIFIED_TYPE = "application/octet-stream"
 """A file part declared as this (or not at all) declares no type."""
+POSTER_FIELD = "poster"
+POSTER_FILE_FIELD = "poster_file"
+POSTER_ALT_PREFIX = "Poster for "
 
 Ulid = Annotated[str, Field(pattern=ULID_PATTERN)]
 
@@ -195,7 +222,16 @@ def _deduplicated(value: list[DepictedSubject] | None) -> list[DepictedSubject] 
     return None if value is None else list(dict.fromkeys(value))
 
 
-def _subjects_required(schema: dict[str, Any]) -> None:
+EXAMPLE_UPLOAD: dict[str, Any] = {
+    "kind": "image",
+    "content_rating_id": "00000000000000000000RAT001",
+    "alt_text": "Mara at the lighthouse door",
+    "caption": "Gull Rock, the night of the storm.",
+    "depicted_subjects": [{"kind": "catalog_character", "id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"}],
+}
+
+
+def document_subjects_required(schema: dict[str, Any]) -> None:
     """Document ``depicted_subjects`` as the required list it is (omitting it is refused with
     ``subjects_required`` rather than pydantic's ``missing``)."""
     schema.setdefault("required", []).append(DECLARED_FIELD)
@@ -204,26 +240,16 @@ def _subjects_required(schema: dict[str, Any]) -> None:
     if options:
         prop.update(options[0])
     prop.pop("default", None)
-    schema["examples"] = [
-        {
-            "kind": "image",
-            "content_rating_id": "00000000000000000000RAT001",
-            "alt_text": "Mara at the lighthouse door",
-            "caption": "Gull Rock, the night of the storm.",
-            "depicted_subjects": [
-                {"kind": "catalog_character", "id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"}
-            ],
-        }
-    ]
+    schema["examples"] = [dict(EXAMPLE_UPLOAD)]
 
 
 class MediaUpload(BaseModel):
     """``POST /media``'s ``metadata`` part (FR-MEDIA-1): the asset's ``kind`` (which its bytes
     must be), its content rating, optional alt text, caption and generation metadata, the
-    subjects it depicts (required: ``[]`` declares none) and, optionally, its ``owner`` (default:
-    the requesting principal; never ``system``)."""
+    subjects it depicts (required: ``[]`` declares none), optionally its ``owner`` (default: the
+    requesting principal; never ``system``) and, for a video, its ``poster`` (FR-MEDIA-3)."""
 
-    model_config = ConfigDict(extra="forbid", json_schema_extra=_subjects_required)
+    model_config = ConfigDict(extra="forbid", json_schema_extra=document_subjects_required)
 
     kind: MediaKind = Field(description="`image` or `video`: what the bytes must be.")
     content_rating_id: str = Field(
@@ -247,6 +273,12 @@ class MediaUpload(BaseModel):
         default=None,
         description="The asset's owner principal (default: the requesting principal; never "
         "`system`). Recorded, never interpreted.",
+    )
+    poster: Ulid | None = Field(
+        default=None,
+        description="A video only (FR-MEDIA-3): the id of a `live` image asset to show as its "
+        "poster. Without one (and without a `poster_file` part), the poster is taken from the "
+        "video's first frame with ffmpeg. On anything but a video it is 422.",
     )
 
     def stored_generation_metadata(self) -> dict[str, Any] | None:
@@ -277,17 +309,26 @@ def parse_metadata(raw: bytes) -> MediaUpload:
         request = _UPLOAD.validate_json(raw, strict=True)
     except ValidationError as exc:
         raise InvalidRequest.from_errors(exc.errors(), prefix=("body", "metadata")) from None
-    return require_subjects(request)
+    return check_upload(request)
 
 
-def require_subjects(request: MediaUpload) -> MediaUpload:
+def require_subjects(request: MediaUpload, *, at: str = "body.metadata") -> MediaUpload:
     """``request`` if it declared its subjects; 422 ``subjects_required`` otherwise."""
     if request.depicted_subjects is None:
         raise SubjectsRequired(
             "an upload must declare the subjects it depicts: `depicted_subjects` "
             "(an empty list declares none)",
-            {"field": f"body.metadata.{DECLARED_FIELD}"},
+            {"field": f"{at}.{DECLARED_FIELD}"},
         )
+    return request
+
+
+def check_upload(request: MediaUpload, *, at: str = "body.metadata") -> MediaUpload:
+    """The checks pydantic leaves to the Engine: subjects declared (422 ``subjects_required``)
+    and a ``poster`` only on a video (422 ``validation_error`` at ``<at>.poster``)."""
+    request = require_subjects(request, at=at)
+    if request.poster is not None and request.kind is not MediaKind.VIDEO:
+        raise InvalidRequest("only a video has a poster", {"field": f"{at}.{POSTER_FIELD}"})
     return request
 
 
@@ -299,7 +340,8 @@ class MediaAsset(BaseModel):
     bytes), size, dimensions or duration (``null`` when no probe could read them), SHA-256
     checksum, content rating and the rating's version it was uploaded under, alt text, caption,
     generation metadata (as sent), source, state (``live``, or ``retired`` once deleted), the
-    subjects it depicts, and who created it when."""
+    subjects it depicts, who created it when, and, for a video, its poster's id (FR-MEDIA-3;
+    ``null`` for an image)."""
 
     id: str
     owner_principal: str
@@ -320,6 +362,7 @@ class MediaAsset(BaseModel):
     depicted_subjects: list[DepictedSubject]
     created_at: datetime
     created_by: str
+    poster_media_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,20 +395,70 @@ class MediaPage:
     next_cursor: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class MediaUrl:
+    """A short-lived URL that serves an asset's bytes without the service credential (S3's
+    presigned URL, or Epistrel's signed content URL), and when it stops working."""
+
+    url: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ByteRange:
+    """One requested byte range (RFC 9110 §14.1.2): ``first``-``last`` (``last`` omitted: to the
+    end), or the final ``suffix`` bytes."""
+
+    first: int | None = None
+    last: int | None = None
+    suffix: int | None = None
+
+    def resolve(self, size: int) -> tuple[int, int] | None:
+        """The inclusive ``(start, end)`` this range selects of ``size`` bytes, clamped to the
+        content; ``None`` when no byte of it exists (416)."""
+        if self.suffix is not None:
+            if self.suffix <= 0 or size == 0:
+                return None
+            return max(0, size - self.suffix), size - 1
+        first = self.first or 0
+        if first >= size:
+            return None
+        last = size - 1 if self.last is None else min(self.last, size - 1)
+        return first, last
+
+
 @dataclass
 class MediaContent:
-    """An asset's bytes, opened: their MIME type, size and checksum (``None`` for an upload
-    still waiting for the moderation hook). Read them with ``chunks()`` or ``read()``; either
-    closes the file at the end, and ``aclose()`` closes it early."""
+    """An asset's bytes, opened: their MIME type, how many this answer carries (``size``), the
+    whole content's size (``total``), the checksum (``None`` for an upload still waiting for the
+    moderation hook) and, for a partial answer, the inclusive ``start``/``end`` of the range.
+    ``not_modified`` answers a matching ``If-None-Match`` with no bytes; ``handle`` is ``None``
+    then, and for a metadata-only read (``HEAD``). Read the bytes with ``chunks()`` or
+    ``read()``; either closes the stream at the end, and ``aclose()`` closes it early."""
 
     media_id: str
     mime_type: str
     size: int
     checksum: str | None
-    handle: BinaryIO = field(repr=False)
+    handle: ByteStream | None = field(default=None, repr=False)
+    total: int = 0
+    start: int | None = None
+    end: int | None = None
+    not_modified: bool = False
+    _closed: bool = field(default=False, repr=False)
+
+    @property
+    def partial(self) -> bool:
+        return self.start is not None
+
+    @property
+    def etag(self) -> str | None:
+        return f'"{self.checksum}"' if self.checksum is not None else None
 
     async def chunks(self) -> AsyncIterator[bytes]:
         try:
+            if self.handle is None:
+                return
             while True:
                 chunk = await asyncio.to_thread(self.handle.read, CHUNK_BYTES)
                 if not chunk:
@@ -378,7 +471,8 @@ class MediaContent:
         return b"".join([chunk async for chunk in self.chunks()])
 
     async def aclose(self) -> None:
-        if not self.handle.closed:
+        if self.handle is not None and not self._closed:
+            self._closed = True
             await asyncio.to_thread(self.handle.close)
 
 
@@ -397,6 +491,19 @@ class Staged:
     kind: MediaKind
 
 
+@dataclass
+class UploadFile:
+    """A second file an upload carries, a video's ``poster_file``: its bytes (or chunks) and
+    the MIME type it declares."""
+
+    content: bytes | AsyncIterable[bytes]
+    content_type: str | None = None
+
+
+PosterFileSource = UploadFile | Callable[[], Awaitable[UploadFile | None]] | None
+"""A ``poster_file``: given, absent, or (REST) found only once the main file has been read."""
+
+
 def _declared(content_type: str | None) -> str | None:
     """A file part's own MIME type without parameters, or ``None`` when it declares none."""
     if content_type is None:
@@ -404,6 +511,14 @@ def _declared(content_type: str | None) -> str | None:
     value = content_type.split(";", 1)[0].strip().lower()
     value = MIME_ALIASES.get(value, value)
     return None if value in ("", UNSPECIFIED_TYPE) else value
+
+
+def _type_refused(
+    reason: str, message: str, found: str | None, declared: str | None, allowed: list[str]
+) -> MediaTypeNotAllowed:
+    return MediaTypeNotAllowed(
+        message, {"reason": reason, "mime_type": found, "declared": declared, "allowed": allowed}
+    )
 
 
 def check_type(
@@ -414,27 +529,52 @@ def check_type(
     found = probe.sniff(head)
     declared = _declared(content_type)
     allowed = list(settings.media_allowed_types)
-
-    def refused(reason: str, message: str) -> MediaTypeNotAllowed:
-        return MediaTypeNotAllowed(
-            message,
-            {"reason": reason, "mime_type": found, "declared": declared, "allowed": allowed},
-        )
-
     if found is None:
-        raise refused("unrecognized", "the file is not a type Epistrel recognises")
+        raise _type_refused(
+            "unrecognized", "the file is not a type Epistrel recognises", found, declared, allowed
+        )
     if found not in allowed:
-        raise refused("not_allowed", f"{found} is not an allowed media type")
+        raise _type_refused(
+            "not_allowed", f"{found} is not an allowed media type", found, declared, allowed
+        )
     if declared is not None and declared != found:
-        raise refused("declared_mismatch", f"the file is {found}, not {declared}")
+        raise _type_refused(
+            "declared_mismatch", f"the file is {found}, not {declared}", found, declared, allowed
+        )
     if probe.kind_of(found) is not kind:
-        raise refused("kind_mismatch", f"the file is {found}, not an {kind.value}")
+        raise _type_refused(
+            "kind_mismatch", f"the file is {found}, not an {kind.value}", found, declared, allowed
+        )
     return found
 
 
-def _too_large(size: int, limit: int) -> MediaTooLarge:
+def check_declared_type(mime_type: str, settings: MediaSettings, kind: MediaKind) -> str:
+    """A resumable session's declared MIME type, before any byte arrives: 415
+    ``media_type_not_allowed`` unless it is allowed and agrees with ``kind``."""
+    declared = _declared(mime_type) or mime_type
+    allowed = list(settings.media_allowed_types)
+    if declared not in allowed:
+        raise _type_refused(
+            "not_allowed", f"{declared} is not an allowed media type", None, declared, allowed
+        )
+    if probe.kind_of(declared) is not kind:
+        raise _type_refused(
+            "kind_mismatch", f"{declared} is not an {kind.value}", None, declared, allowed
+        )
+    return declared
+
+
+def too_large(size: int, limit: int) -> MediaTooLarge:
     return MediaTooLarge(
         f"the upload is larger than the {limit}-byte limit", {"size": size, "limit": limit}
+    )
+
+
+def _use_multipart(size: int, threshold: int) -> UseMultipart:
+    return UseMultipart(
+        f"an upload larger than {threshold} bytes must use a resumable session "
+        "(POST /media/uploads)",
+        {"size": size, "threshold": threshold},
     )
 
 
@@ -450,7 +590,7 @@ def _abandon(handle: BinaryIO, path: Path) -> None:
 
 
 async def stage(
-    store: LocalFilesystemStore,
+    store: BlobStore,
     asset_id: str,
     content: AsyncIterable[bytes],
     *,
@@ -458,14 +598,21 @@ async def stage(
     kind: MediaKind,
     content_type: str | None = None,
     body_size: int | None = None,
+    threshold: int | None = None,
+    counted: int = 0,
 ) -> Staged:
     """Stream ``content`` into the staging file of ``asset_id``, hashing and counting it, and
     check its type and size as it arrives (see the module docstring). ``body_size`` is the whole
-    request's declared length (REST's ``Content-Length``). On any refusal or error the staging
-    file is removed."""
+    request's declared length (REST's ``Content-Length``). ``threshold`` is the direct upload's
+    ``media_multipart_threshold``, over this file plus the ``counted`` bytes of the request's
+    earlier files (``None``: no threshold). On any refusal or error the staging file is
+    removed."""
     limit = settings.media_max_bytes
     if body_size is not None and body_size > limit + ENVELOPE_MAX_BYTES:
-        raise _too_large(body_size, limit)
+        raise too_large(body_size, limit)
+    declared = body_size if body_size is not None else 0
+    if threshold is not None and declared > threshold + ENVELOPE_MAX_BYTES:
+        raise _use_multipart(declared, threshold)
     path = store.staging_path(asset_id)
     handle = await asyncio.to_thread(store.open_staging, asset_id)
     digest = hashlib.sha256()
@@ -478,7 +625,9 @@ async def stage(
                 continue
             size += len(chunk)
             if size > limit:
-                raise _too_large(size, limit)
+                raise too_large(size, limit)
+            if threshold is not None and counted + size > threshold:
+                raise _use_multipart(counted + size, threshold)
             if found is None:
                 head += chunk[: probe.SNIFF_BYTES - len(head)]
                 if len(head) >= probe.SNIFF_BYTES:
@@ -494,9 +643,24 @@ async def stage(
     return Staged(asset_id, path, digest.hexdigest(), size, found, kind)
 
 
-async def discard(staged: Staged) -> None:
+def _digest_file(path: Path) -> tuple[str, int, bytes]:
+    """A staged file's SHA-256, size and first bytes."""
+    digest = hashlib.sha256()
+    size = 0
+    head = b""
+    with path.open("rb") as handle:
+        while chunk := handle.read(CHUNK_BYTES):
+            if not head:
+                head = chunk[: probe.SNIFF_BYTES]
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size, head
+
+
+async def discard(staged: Staged | None) -> None:
     """Remove the staged file if it is still there (a refusal, a replay, an error)."""
-    await asyncio.to_thread(staged.path.unlink, missing_ok=True)
+    if staged is not None:
+        await asyncio.to_thread(staged.path.unlink, missing_ok=True)
 
 
 async def content_of(data: bytes | AsyncIterable[bytes]) -> AsyncIterator[bytes]:
@@ -508,6 +672,13 @@ async def content_of(data: bytes | AsyncIterable[bytes]) -> AsyncIterator[bytes]
         return
     async for chunk in data:
         yield chunk
+
+
+async def poster_file_of(source: PosterFileSource) -> UploadFile | None:
+    """The ``poster_file`` a source gives (REST's is read only now, after the main file)."""
+    if source is None or isinstance(source, UploadFile):
+        return source
+    return await source()
 
 
 # -- shared reads --------------------------------------------------------------------------------
@@ -554,6 +725,7 @@ _COLUMNS = (
     media_assets.c.depicted_subjects,
     media_assets.c.created_at,
     media_assets.c.created_by,
+    media_assets.c.poster_media_id,
 )
 _FROM = media_assets.outerjoin(
     content_rating_versions,
@@ -569,7 +741,8 @@ def _not_found(media_id: str) -> MediaNotFound:
     return MediaNotFound(f"media asset {media_id} does not exist", {"media_id": media_id})
 
 
-async def _read(conn: AsyncConnection, media_id: str) -> MediaAsset:
+async def read_asset(conn: AsyncConnection, media_id: str) -> MediaAsset:
+    """The asset's metadata (``live`` or ``retired``); 404 otherwise."""
     row = (
         await conn.execute(
             select(*_COLUMNS).select_from(_FROM).where(media_assets.c.id == media_id)
@@ -580,7 +753,7 @@ async def _read(conn: AsyncConnection, media_id: str) -> MediaAsset:
     return _asset(row)
 
 
-async def _rating_version(conn: AsyncConnection, rating_id: str) -> str:
+async def rating_version(conn: AsyncConnection, rating_id: str) -> str:
     """The current version of ``rating_id`` if it can be assigned (held ``FOR SHARE``); 422
     ``rating_retired`` (``reason`` unknown or retired) otherwise."""
     await require_assignable(conn, rating_id, field="metadata.content_rating_id")
@@ -590,6 +763,18 @@ async def _rating_version(conn: AsyncConnection, rating_id: str) -> str:
         )
     ).scalar_one()
     return version
+
+
+async def check_supplied_poster(conn: AsyncConnection, media_id: str, *, field: str) -> None:
+    """A ``poster`` an upload names: a ``live`` asset (held ``FOR SHARE``; 422
+    ``media_retired`` otherwise) that is an image (422 ``poster_invalid``)."""
+    await assert_referenceable(conn, [media_id], field=field)
+    kind = await conn.scalar(select(media_assets.c.kind).where(media_assets.c.id == media_id))
+    if kind != MediaKind.IMAGE.value:
+        raise PosterInvalid(
+            f"media asset {media_id} is not an image, so it cannot be a poster",
+            {"media_id": media_id, "field": field, "reason": "not_image"},
+        )
 
 
 # -- upload ----------------------------------------------------------------------------------------
@@ -644,78 +829,296 @@ def _indexed_fields(request: MediaUpload) -> dict[str, str | None]:
     return {path: found[path] for path in INDEXED_FIELDS}
 
 
-async def upload(
+def poster_request(video: MediaUpload, video_id: str, *, owner: str) -> MediaUpload:
+    """What a poster stored with its video is: an image with the video's rating, subjects and
+    owner, described ``Poster for <caption or id>``."""
+    return MediaUpload(
+        kind=MediaKind.IMAGE,
+        content_rating_id=video.content_rating_id,
+        alt_text=(POSTER_ALT_PREFIX + (video.caption or video_id))[:ALT_TEXT_MAX],
+        depicted_subjects=list(video.depicted_subjects or []),
+        owner=owner,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Probed:
+    """A staged file and what its probe read."""
+
+    staged: Staged
+    found: probe.Dimensions
+
+
+@dataclass(frozen=True, slots=True)
+class Prepared:
+    """A staged upload checked and accepted (its rating, its probe, the hook) and, for a
+    video, its poster: an existing image (``poster_id``), or one stored with it (``poster``,
+    ``poster_source``)."""
+
+    request: MediaUpload
+    owner: str
+    main: Probed
+    poster_id: str | None = None
+    poster: Probed | None = None
+    poster_source: MediaSource = MediaSource.UPLOADED
+    poster_field: str = f"body.metadata.{POSTER_FIELD}"
+
+    @property
+    def extracted(self) -> Staged | None:
+        """The poster ffmpeg made (its staging file is this module's to remove)."""
+        if self.poster is not None and self.poster_source is MediaSource.EXTRACTED:
+            return self.poster.staged
+        return None
+
+
+async def _dimensions(staged: Staged, posters: PosterExtractor) -> probe.Dimensions:
+    if staged.kind is MediaKind.VIDEO:
+        return await posters.probe_video(staged.path)
+    return await probe.dimensions(staged.path, staged.kind)
+
+
+async def _moderate(
+    staged: Staged,
+    request: MediaUpload,
+    found: probe.Dimensions,
+    *,
+    owner: str,
+    settings: MediaSettings,
+    signer: Signer,
+) -> None:
+    hook = settings.media_moderation_webhook_url
+    if hook is None:
+        return
+    path, _ = signer.sign_path(content_path(staged.asset_id))
+    base = (settings.public_base_url or "").rstrip("/")
+    payload = _hook_payload(staged, request, found, owner=owner, content_url=base + path)
+    await moderation.moderate(
+        hook, payload, signer=signer, timeout_ms=settings.media_moderation_timeout_ms
+    )
+
+
+async def extract_poster(store: BlobStore, posters: PosterExtractor, video: Staged) -> Staged:
+    """The video's first frame as a staged PNG image (the poster asset's own id)."""
+    poster_id = new_ulid()
+    out = store.staging_path(poster_id)
+    await posters.extract(video.path, out)
+    try:
+        sha256, size, head = await asyncio.to_thread(_digest_file, out)
+        if probe.sniff(head) != POSTER_MIME_TYPE:
+            raise ValueError("ffmpeg wrote no PNG")
+    except BaseException:
+        await asyncio.to_thread(out.unlink, missing_ok=True)
+        raise
+    return Staged(poster_id, out, sha256, size, POSTER_MIME_TYPE, MediaKind.IMAGE)
+
+
+async def prepare(
     db: AsyncEngine,
-    store: LocalFilesystemStore,
+    store: BlobStore,
     staged: Staged,
     request: MediaUpload,
     *,
     principal: str,
     settings: MediaSettings,
     signer: Signer,
-) -> MediaWrite:
-    """Store a staged upload as a ``live`` asset (steps 3 and 4 of the module docstring):
-    422 ``rating_retired``; 422 ``moderation_rejected``, 503 ``moderation_unavailable`` or 503
-    ``config_key_missing`` from the hook; nothing is stored on any refusal."""
-    request = require_subjects(request)
+    posters: PosterExtractor,
+    poster_file: Staged | None = None,
+    poster_field: str = f"body.metadata.{POSTER_FIELD}",
+) -> Prepared:
+    """Steps 3's checks of the module docstring, before anything is stored: the rating (and a
+    named poster), the probe, the hook and, for a video, its poster (given, sent, or extracted
+    and sent to the hook too). Nothing is written; a poster this call extracted is removed when
+    it fails."""
     async with db.begin() as conn:
-        await _rating_version(conn, request.content_rating_id)
-    found = await probe.dimensions(staged.path, staged.kind)
+        await rating_version(conn, request.content_rating_id)
+        if request.poster is not None:
+            await check_supplied_poster(conn, request.poster, field=poster_field)
     owner = request.owner or principal
-    hook = settings.media_moderation_webhook_url
-    if hook is not None:
-        path, _ = signer.sign_path(content_path(staged.asset_id))
-        base = (settings.public_base_url or "").rstrip("/")
-        payload = _hook_payload(staged, request, found, owner=owner, content_url=base + path)
-        await moderation.moderate(
-            hook, payload, signer=signer, timeout_ms=settings.media_moderation_timeout_ms
+    found = await _dimensions(staged, posters)
+    await _moderate(staged, request, found, owner=owner, settings=settings, signer=signer)
+    main = Probed(staged, found)
+    if staged.kind is not MediaKind.VIDEO:
+        return Prepared(request, owner, main, poster_field=poster_field)
+    if request.poster is not None:
+        return Prepared(request, owner, main, poster_id=request.poster, poster_field=poster_field)
+    poster_meta = poster_request(request, staged.asset_id, owner=owner)
+    if poster_file is not None:
+        poster_found = await probe.dimensions(poster_file.path, MediaKind.IMAGE)
+        await _moderate(
+            poster_file, poster_meta, poster_found, owner=owner, settings=settings, signer=signer
         )
+        return Prepared(
+            request,
+            owner,
+            main,
+            poster=Probed(poster_file, poster_found),
+            poster_field=poster_field,
+        )
+    extracted = await extract_poster(store, posters, staged)
+    try:
+        poster_found = await probe.dimensions(extracted.path, MediaKind.IMAGE)
+        await _moderate(
+            extracted, poster_meta, poster_found, owner=owner, settings=settings, signer=signer
+        )
+    except BaseException:
+        await discard(extracted)
+        raise
+    return Prepared(
+        request,
+        owner,
+        main,
+        poster=Probed(extracted, poster_found),
+        poster_source=MediaSource.EXTRACTED,
+        poster_field=poster_field,
+    )
+
+
+async def _insert(
+    conn: AsyncConnection,
+    probed: Probed,
+    request: MediaUpload,
+    *,
+    owner: str,
+    version_id: str,
+    source: MediaSource,
+    principal: str,
+    poster_media_id: str | None,
+) -> None:
+    staged, found = probed.staged, probed.found
+    await conn.execute(
+        insert(media_assets).values(
+            id=staged.asset_id,
+            owner_principal=owner,
+            kind=staged.kind.value,
+            mime_type=staged.mime_type,
+            size=staged.size,
+            width=found.width,
+            height=found.height,
+            duration_ms=found.duration_ms,
+            checksum=staged.sha256,
+            content_rating_version_id=version_id,
+            alt_text=request.alt_text,
+            caption=request.caption,
+            generation_metadata=request.stored_generation_metadata(),
+            source=source.value,
+            state=MediaState.LIVE.value,
+            depicted_subjects=[s.model_dump(mode="json") for s in request.depicted_subjects or []],
+            created_at=clock.now(),
+            created_by=principal,
+            poster_media_id=poster_media_id,
+        )
+    )
     subjects: list[Declared] = [
         (subject.kind, subject.id, DECLARED_FIELD) for subject in request.depicted_subjects or []
     ]
-    async with db.begin() as conn:
-        await lock_checksum(conn, staged.sha256)
-        version_id = await _rating_version(conn, request.content_rating_id)
-        await conn.execute(
-            insert(media_assets).values(
-                id=staged.asset_id,
-                owner_principal=owner,
-                kind=staged.kind.value,
-                mime_type=staged.mime_type,
-                size=staged.size,
-                width=found.width,
-                height=found.height,
-                duration_ms=found.duration_ms,
-                checksum=staged.sha256,
-                content_rating_version_id=version_id,
-                alt_text=request.alt_text,
-                caption=request.caption,
-                generation_metadata=request.stored_generation_metadata(),
-                source=MediaSource.UPLOADED.value,
-                state=MediaState.LIVE.value,
-                depicted_subjects=[
-                    s.model_dump(mode="json") for s in request.depicted_subjects or []
-                ],
-                created_at=clock.now(),
-                created_by=principal,
-            )
-        )
-        await index_references(
+    await index_references(
+        conn,
+        RECORD_TABLE,
+        staged.asset_id,
+        story_id=None,
+        fields=_indexed_fields(request),
+        subjects=subjects,
+    )
+
+
+async def commit(
+    conn: AsyncConnection,
+    store: BlobStore,
+    prepared: Prepared,
+    *,
+    principal: str,
+    assembled: str | None = None,
+) -> str:
+    """Step 4 of the module docstring in ``conn``'s transaction: the rows (the poster's first),
+    their subject index, one ``control`` operation, then the bytes; the asset's id.
+    ``assembled`` names the upload session whose assembled object the store copies (S3)."""
+    request, main, poster = prepared.request, prepared.main, prepared.poster
+    checksums = {main.staged.sha256} | ({poster.staged.sha256} if poster is not None else set())
+    for checksum in sorted(checksums):
+        await lock_checksum(conn, checksum)
+    version_id = await rating_version(conn, request.content_rating_id)
+    poster_id = prepared.poster_id
+    if poster_id is not None:
+        await check_supplied_poster(conn, poster_id, field=prepared.poster_field)
+    if poster is not None:
+        poster_id = poster.staged.asset_id
+        await _insert(
             conn,
-            RECORD_TABLE,
-            staged.asset_id,
-            story_id=None,
-            fields=_indexed_fields(request),
-            subjects=subjects,
+            poster,
+            poster_request(request, main.staged.asset_id, owner=prepared.owner),
+            owner=prepared.owner,
+            version_id=version_id,
+            source=prepared.poster_source,
+            principal=principal,
+            poster_media_id=None,
         )
-        await control.record_control_operation(conn, actor=principal)
-        # Last, so a refused statement above leaves the bytes staged (and then discarded).
-        await asyncio.to_thread(store.put, staged.path, staged.sha256)
-        # Until this commits, the checksum's lock keeps the sweep from deleting the blob ``put``
-        # may have kept rather than written (identical bytes a purge left behind).
-        await pauses.pause(pauses.MEDIA_UPLOAD_BEFORE_COMMIT)
-        asset = await _read(conn, staged.asset_id)
-        revision = await config_revision(conn)
+    await _insert(
+        conn,
+        main,
+        request,
+        owner=prepared.owner,
+        version_id=version_id,
+        source=MediaSource.UPLOADED,
+        principal=principal,
+        poster_media_id=poster_id if main.staged.kind is MediaKind.VIDEO else None,
+    )
+    await control.record_control_operation(conn, actor=principal)
+    # Last, so a refused statement above leaves the bytes staged (and then discarded).
+    if poster is not None:
+        await asyncio.to_thread(
+            store.put,
+            poster.staged.path,
+            poster.staged.sha256,
+            content_type=poster.staged.mime_type,
+        )
+    await asyncio.to_thread(
+        store.put,
+        main.staged.path,
+        main.staged.sha256,
+        content_type=main.staged.mime_type,
+        assembled=assembled,
+    )
+    # Until this commits, the checksum's lock keeps the sweep from deleting the blob ``put``
+    # may have kept rather than written (identical bytes a purge left behind).
+    await pauses.pause(pauses.MEDIA_UPLOAD_BEFORE_COMMIT)
+    return main.staged.asset_id
+
+
+async def upload(
+    db: AsyncEngine,
+    store: BlobStore,
+    staged: Staged,
+    request: MediaUpload,
+    *,
+    principal: str,
+    settings: MediaSettings,
+    signer: Signer,
+    posters: PosterExtractor,
+    poster_file: Staged | None = None,
+) -> MediaWrite:
+    """Store a staged upload as a ``live`` asset (steps 3 and 4 of the module docstring):
+    422 ``rating_retired``; 422 ``moderation_rejected``, 503 ``moderation_unavailable`` or 503
+    ``config_key_missing`` from the hook; a video's poster refusals; nothing is stored on any
+    refusal."""
+    request = check_upload(request)
+    prepared = await prepare(
+        db,
+        store,
+        staged,
+        request,
+        principal=principal,
+        settings=settings,
+        signer=signer,
+        posters=posters,
+        poster_file=poster_file,
+    )
+    try:
+        async with db.begin() as conn:
+            media_id = await commit(conn, store, prepared, principal=principal)
+            asset = await read_asset(conn, media_id)
+            revision = await config_revision(conn)
+    finally:
+        await discard(prepared.extracted)
     return MediaWrite(asset=asset, config_revision=revision)
 
 
@@ -725,21 +1128,49 @@ async def upload(
 async def get(db: AsyncEngine, media_id: str) -> MediaAsset:
     """The asset's metadata (``live`` or ``retired``); 404 otherwise."""
     async with db.connect() as conn:
-        return await _read(conn, media_id)
+        return await read_asset(conn, media_id)
 
 
-def _opened(handle: BinaryIO) -> tuple[bytes, int]:
-    head = handle.read(probe.SNIFF_BYTES)
-    handle.seek(0)
-    return head, os.fstat(handle.fileno()).st_size
+def _staged_head(path: Path) -> tuple[bytes, int]:
+    with path.open("rb") as handle:
+        head = handle.read(probe.SNIFF_BYTES)
+        return head, os.fstat(handle.fileno()).st_size
+
+
+def _etag_matches(candidates: Sequence[str], etag: str | None) -> bool:
+    """``If-None-Match``'s weak comparison: ``*`` matches any current tag, else the opaque
+    tags compare with any ``W/`` dropped."""
+    if etag is None:
+        return False
+    bare = etag.removeprefix("W/")
+    return any(value == "*" or value.removeprefix("W/") == bare for value in candidates)
+
+
+def _open_window(
+    opener: Callable[[], ByteStream],
+    ranged: Callable[[int, int], ByteStream],
+    window: tuple[int, int] | None,
+) -> ByteStream:
+    return opener() if window is None else ranged(window[0], window[1])
 
 
 async def open_content(
-    db: AsyncEngine, store: LocalFilesystemStore, media_id: str, *, signed: bool = False
+    db: AsyncEngine,
+    store: BlobStore,
+    media_id: str,
+    *,
+    signed: bool = False,
+    byte_range: ByteRange | None = None,
+    if_none_match: Sequence[str] = (),
+    if_range: str | None = None,
+    with_bytes: bool = True,
 ) -> MediaContent:
-    """The asset's bytes, opened (a ``live`` or ``retired`` asset). With ``signed`` (the
-    request carried a valid signed URL for this asset) an upload still waiting for the
-    moderation hook is served from staging too. 404 otherwise."""
+    """The asset's bytes, opened (a ``live`` or ``retired`` asset), all of them or the one
+    ``byte_range`` (applied only when ``if_range`` is absent or names the current entity tag;
+    416 ``range_not_satisfiable`` when no byte of it exists). A matching ``if_none_match``
+    answers ``not_modified`` first. With ``signed`` (the request carried a valid signed URL for
+    this asset) an upload still waiting for the moderation hook is served from staging too.
+    ``with_bytes`` false (``HEAD``) opens nothing. 404 otherwise."""
     async with db.connect() as conn:
         row = (
             await conn.execute(
@@ -751,25 +1182,99 @@ async def open_content(
                 ).where(media_assets.c.id == media_id)
             )
         ).one_or_none()
+    staged_path: Path | None = None
     if row is not None and row.state != MediaState.CANDIDATE.value:
+        mime_type, total, checksum = str(row.mime_type), int(row.size), str(row.checksum)
+    elif row is None and signed:
+        staged_path = store.staging_path(media_id)
         try:
-            handle = await asyncio.to_thread(store.open, row.checksum)
-        except FileNotFoundError:
-            raise MediaNotFound(
-                f"the bytes of media asset {media_id} are missing",
-                {"media_id": media_id, "reason": "bytes_missing"},
-            ) from None
-        return MediaContent(media_id, row.mime_type, int(row.size), row.checksum, handle)
-    if row is None and signed:
-        try:
-            handle = await asyncio.to_thread(store.staging_path(media_id).open, "rb")
+            head, total = await asyncio.to_thread(_staged_head, staged_path)
         except FileNotFoundError:
             raise _not_found(media_id) from None
-        head, size = await asyncio.to_thread(_opened, handle)
-        return MediaContent(
-            media_id, probe.sniff(head) or "application/octet-stream", size, None, handle
+        mime_type, checksum = probe.sniff(head) or UNSPECIFIED_TYPE, None
+    else:
+        raise _not_found(media_id)
+    content = MediaContent(media_id, mime_type, total, checksum, total=total)
+    if if_none_match and _etag_matches(if_none_match, content.etag):
+        content.not_modified = True
+        content.size = 0
+        return content
+    window: tuple[int, int] | None = None
+    if byte_range is not None and (if_range is None or if_range == content.etag):
+        window = byte_range.resolve(total)
+        if window is None:
+            raise RangeNotSatisfiable(
+                f"no byte of the requested range exists in {total} bytes",
+                {"media_id": media_id, "size": total},
+            )
+        content.start, content.end = window
+        content.size = window[1] - window[0] + 1
+    if not with_bytes:
+        return content
+    if staged_path is not None:
+        path = staged_path
+
+        def local() -> ByteStream:
+            return path.open("rb")
+
+        def local_range(start: int, end: int) -> ByteStream:
+            return Window(path.open("rb"), start, end - start + 1)
+
+        opener, ranged = local, local_range
+    else:
+        assert checksum is not None  # noqa: S101 - a committed asset has its checksum
+        digest = checksum
+
+        def blob() -> ByteStream:
+            return store.open(digest)
+
+        def blob_range(start: int, end: int) -> ByteStream:
+            return store.open_range(digest, start, end)
+
+        opener, ranged = blob, blob_range
+    try:
+        content.handle = await asyncio.to_thread(_open_window, opener, ranged, window)
+    except FileNotFoundError:
+        raise MediaNotFound(
+            f"the bytes of media asset {media_id} are missing",
+            {"media_id": media_id, "reason": "bytes_missing"},
+        ) from None
+    return content
+
+
+async def signed_url(
+    db: AsyncEngine,
+    store: BlobStore,
+    media_id: str,
+    *,
+    ttl_s: int | None,
+    settings: MediaSettings,
+    signer: Signer,
+) -> MediaUrl:
+    """``GET /media/{id}/url`` (FR-MEDIA-3): a URL that serves the asset's bytes without the
+    service credential for ``ttl_s`` seconds (the setting ``media_signed_url_ttl`` when
+    ``None``, never longer): the store's own presigned URL (S3), or Epistrel's signed content
+    URL (local: 503 ``config_key_missing`` or ``config_missing`` for ``public_base_url``).
+    404 for an asset that is not ``live`` or ``retired``."""
+    limit = settings.media_signed_url_ttl
+    if ttl_s is not None and ttl_s < 1:
+        raise InvalidRequest("ttl must be at least 1 second", {"field": "query.ttl"})
+    seconds = limit if ttl_s is None else min(ttl_s, limit)
+    async with db.connect() as conn:
+        asset = await read_asset(conn, media_id)
+    started = datetime.now(UTC)
+    presigned = await asyncio.to_thread(store.presign, asset.checksum, seconds)
+    if presigned is not None:
+        return MediaUrl(url=presigned, expires_at=started + timedelta(seconds=seconds))
+    signer.require("EPISTREL_CONFIG_KEY is not set, so no signed media URL can be made")
+    base = settings.public_base_url
+    if base is None:
+        raise ConfigMissing(
+            "public_base_url is not set, so a signed media URL has no base to start with",
+            {"setting": "public_base_url"},
         )
-    raise _not_found(media_id)
+    path, exp = signer.sign_path(content_path(media_id), ttl_s=seconds)
+    return MediaUrl(url=base.rstrip("/") + path, expires_at=datetime.fromtimestamp(exp, UTC))
 
 
 def _encode_cursor(asset: MediaAsset) -> str:
@@ -842,19 +1347,30 @@ async def list_assets(
 
 async def retire(db: AsyncEngine, media_id: str, *, principal: str) -> MediaRetirement:
     """Delete-as-retire (FR-MEDIA-2; see the module docstring): ``live`` becomes ``retired``,
-    recorded by a ``control`` operation; a retired asset is left as it is (``changed`` false,
-    nothing recorded); 404 for an unknown asset or a candidate."""
+    and so does a video's ``live`` poster, recorded by one ``control`` operation; a retired
+    asset is left as it is (``changed`` false, nothing recorded); 404 for an unknown asset or a
+    candidate."""
     async with db.begin() as conn:
-        state = await conn.scalar(
-            select(media_assets.c.state).where(media_assets.c.id == media_id).with_for_update()
-        )
-        if state is None or state == MediaState.CANDIDATE.value:
+        row = (
+            await conn.execute(
+                select(media_assets.c.state, media_assets.c.poster_media_id)
+                .where(media_assets.c.id == media_id)
+                .with_for_update()
+            )
+        ).one_or_none()
+        if row is None or row.state == MediaState.CANDIDATE.value:
             raise _not_found(media_id)
-        changed = state == MediaState.LIVE.value
+        changed = row.state == MediaState.LIVE.value
         if changed:
+            retired = [media_id]
+            if row.poster_media_id is not None:
+                retired.append(str(row.poster_media_id))
             await conn.execute(
                 update(media_assets)
-                .where(media_assets.c.id == media_id)
+                .where(
+                    media_assets.c.id.in_(retired),
+                    media_assets.c.state == MediaState.LIVE.value,
+                )
                 .values(state=MediaState.RETIRED.value)
             )
             await control.record_control_operation(conn, actor=principal)
@@ -866,9 +1382,10 @@ async def assert_referenceable(
     conn: AsyncConnection, media_ids: Sequence[str], *, field: str = "media_id"
 ) -> None:
     """The check every write that adds a reference to an asset makes, in its own transaction
-    (#108, #115, #119): each asset must be ``live``. Holds them ``FOR SHARE``, so none can be
-    retired or purged before the write commits. 422 ``media_retired`` (``reason`` ``retired``,
-    ``unknown`` or ``candidate``) at ``field`` (``field[i]`` for several) otherwise."""
+    (#107's posters, #108, #115, #119): each asset must be ``live``. Holds them ``FOR SHARE``,
+    so none can be retired or purged before the write commits. 422 ``media_retired``
+    (``reason`` ``retired``, ``unknown`` or ``candidate``) at ``field`` (``field[i]`` for
+    several) otherwise."""
     wanted = list(dict.fromkeys(media_ids))
     if not wanted:
         return
@@ -899,13 +1416,14 @@ _IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 @dataclass(frozen=True, slots=True)
 class ReferenceSource:
-    """A ``jsonb`` column whose documents may name assets: the media ids are the strings
-    ``path`` (a SQL/JSON path) yields."""
+    """A column whose values may name assets: a ``jsonb`` document whose media ids are the
+    strings ``path`` (a SQL/JSON path) yields, or, with ``path`` ``None``, a column that holds
+    one asset id itself (``media_assets.poster_media_id``)."""
 
     table: str
     """``schema.table``."""
     column: str
-    path: str = ANY_STRING_PATH
+    path: str | None = ANY_STRING_PATH
 
     def __post_init__(self) -> None:
         parts = self.table.split(".")
@@ -921,11 +1439,13 @@ class ReferenceSource:
 MEDIA_REFERENCE_SOURCES: list[ReferenceSource] = [
     ReferenceSource("catalog.character_catalog", "draft"),
     ReferenceSource("catalog.character_versions", "content"),
+    ReferenceSource(f"public.{RECORD_TABLE}", "poster_media_id", None),
 ]
-"""Where references to assets live (FR-MEDIA-2): catalog drafts and published versions now;
-#108 (scenarios), #119 (story snapshots; #316 tracks both) and M8 (candidates, story images)
-register theirs. A source whose table does not exist (yet) is skipped; one whose column does not
-exist fails the query, so a source is registered only once its column exists."""
+"""Where references to assets live (FR-MEDIA-2): catalog drafts and published versions, and a
+video's poster (#107); #108 (scenarios), #119 (story snapshots; #316 tracks both) and M8
+(candidates, story images) register theirs. A source whose table does not exist (yet) is
+skipped; one whose column does not exist fails the query, so a source is registered only once
+its column exists."""
 
 
 def register_reference_source(source: ReferenceSource) -> None:
@@ -946,6 +1466,18 @@ async def _present_sources(conn: AsyncConnection) -> list[ReferenceSource]:
     return present
 
 
+def _values(source: ReferenceSource, path_param: str) -> tuple[str, str]:
+    """``(FROM clause, value expression)`` that lists the asset ids ``source`` names: rows of
+    ``t``, joined to the path's items for a document."""
+    if source.path is None:
+        return f"{source.quoted} AS t", f't."{source.column}"'
+    return (
+        f'{source.quoted} AS t CROSS JOIN LATERAL jsonb_path_query(t."{source.column}", '
+        f"CAST(:{path_param} AS jsonpath)) AS v(item)",
+        "v.item #>> '{}'",
+    )
+
+
 async def referenced(conn: AsyncConnection, media_ids: Sequence[str]) -> set[str]:
     """Which of ``media_ids`` some record of ``MEDIA_REFERENCE_SOURCES`` names, found by
     querying the records (never by a counter)."""
@@ -954,14 +1486,16 @@ async def referenced(conn: AsyncConnection, media_ids: Sequence[str]) -> set[str
     if not wanted:
         return found
     for source in await _present_sources(conn):
+        source_from, value = _values(source, "path")
+        params: dict[str, Any] = {"ids": wanted}
+        if source.path is not None:
+            params["path"] = source.path
         hits = await conn.scalars(
             sql_text(
-                f"SELECT DISTINCT v.item #>> '{{}}' FROM {source.quoted} AS t "  # noqa: S608
-                f'CROSS JOIN LATERAL jsonb_path_query(t."{source.column}", '
-                "CAST(:path AS jsonpath)) AS v(item) "
-                "WHERE v.item #>> '{}' = ANY(CAST(:ids AS text[]))"
+                f"SELECT DISTINCT CAST({value} AS text) FROM {source_from} "  # noqa: S608
+                f"WHERE CAST({value} AS text) = ANY(CAST(:ids AS text[]))"
             ),
-            {"path": source.path, "ids": wanted},
+            params,
         )
         found.update(str(hit) for hit in hits)
     return found
@@ -975,14 +1509,14 @@ async def unreferenced(conn: AsyncConnection) -> ColumnElement[bool]:
     clauses: list[TextClause] = []
     for index, source in enumerate(await _present_sources(conn)):
         param = f"reference_path_{index}"
-        clauses.append(
-            sql_text(
-                f"NOT EXISTS (SELECT 1 FROM {source.quoted} AS t "  # noqa: S608
-                f'CROSS JOIN LATERAL jsonb_path_query(t."{source.column}", '
-                f"CAST(:{param} AS jsonpath)) AS v(item) "
-                f"WHERE v.item #>> '{{}}' = CAST({RECORD_TABLE}.id AS text))"
-            ).bindparams(**{param: source.path})
+        source_from, value = _values(source, param)
+        clause = sql_text(
+            f"NOT EXISTS (SELECT 1 FROM {source_from} "  # noqa: S608
+            f"WHERE CAST({value} AS text) = CAST({RECORD_TABLE}.id AS text))"
         )
+        if source.path is not None:
+            clause = clause.bindparams(**{param: source.path})
+        clauses.append(clause)
     return and_(true(), *clauses)
 
 
@@ -992,7 +1526,9 @@ __all__ = [
     "INDEXED_FIELDS",
     "MEDIA_REFERENCE_SOURCES",
     "METADATA_MAX_BYTES",
+    "POSTER_FILE_FIELD",
     "RECORD_TABLE",
+    "ByteRange",
     "DepictedSubject",
     "GenerationMetadata",
     "MediaAsset",
@@ -1000,25 +1536,43 @@ __all__ = [
     "MediaPage",
     "MediaRetirement",
     "MediaUpload",
+    "MediaUrl",
     "MediaWrite",
+    "PosterFileSource",
+    "Prepared",
+    "Probed",
     "ReferenceSource",
     "Staged",
+    "UploadFile",
     "assert_referenceable",
+    "check_declared_type",
+    "check_supplied_poster",
     "check_type",
+    "check_upload",
+    "commit",
     "content_of",
     "content_path",
     "discard",
+    "document_subjects_required",
+    "extract_poster",
     "get",
     "list_assets",
     "lock_checksum",
     "open_content",
     "parse_metadata",
+    "poster_file_of",
+    "poster_request",
+    "prepare",
+    "rating_version",
+    "read_asset",
     "read_media_settings",
     "referenced",
     "register_reference_source",
     "require_subjects",
     "retire",
+    "signed_url",
     "stage",
+    "too_large",
     "unreferenced",
     "upload",
 ]

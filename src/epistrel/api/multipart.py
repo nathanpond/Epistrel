@@ -10,7 +10,9 @@ is read. Then this module parses the stream with ``python_multipart``'s streamin
 - the second part must be ``file``: its bytes are handed to the Engine chunk by chunk
   (``UploadForm.chunks``), with the part's own ``Content-Type``, and are never held in memory
   whole;
-- nothing may follow (a third part is 422 at ``body``).
+- a video's poster may follow as a third part, ``poster_file`` (#107): streamed the same way
+  (``UploadForm.poster``, read once the ``file`` part has ended);
+- nothing else may follow (another part is 422 at ``body``).
 
 A body that is not ``multipart/form-data`` with a boundary, that is malformed, whose parts come
 in another order, or that ends before its closing boundary is 422 ``validation_error`` at
@@ -29,7 +31,13 @@ from python_multipart.exceptions import FormParserError
 from python_multipart.multipart import MultipartParser, parse_options_header
 
 from epistrel.core.errors import InvalidRequest
-from epistrel.core.media.assets import METADATA_MAX_BYTES, MediaUpload, parse_metadata
+from epistrel.core.media.assets import (
+    METADATA_MAX_BYTES,
+    POSTER_FILE_FIELD,
+    MediaUpload,
+    UploadFile,
+    parse_metadata,
+)
 
 if TYPE_CHECKING:
     from python_multipart.multipart import MultipartCallbacks
@@ -144,17 +152,38 @@ class UploadForm:
     content_type: str | None
     _events: AsyncIterator[tuple[Any, ...]]
 
-    async def chunks(self) -> AsyncIterator[bytes]:
-        """The file's bytes as they arrive; afterwards the body must end (422 for a further
-        part or a truncated body)."""
+    async def _part(self) -> AsyncIterator[bytes]:
         async for event in self._events:
             if event[0] == "data":
                 yield event[1]
             elif event[0] == "end":
-                break
+                return
+
+    async def _end(self, after: str) -> None:
         async for event in self._events:
             if event[0] == "part":
-                raise _refused("nothing may follow the `file` part")
+                raise _refused(f"nothing may follow the `{after}` part")
+
+    async def chunks(self) -> AsyncIterator[bytes]:
+        """The file's bytes as they arrive (then ``poster`` reads what follows)."""
+        async for chunk in self._part():
+            yield chunk
+
+    async def poster(self) -> UploadFile | None:
+        """Once the file's bytes are read: the ``poster_file`` part that follows, or ``None``
+        when the body ends there (422 for any other part or a truncated body)."""
+        async for event in self._events:
+            if event[0] != "part":
+                continue
+            if event[1] != POSTER_FILE_FIELD:
+                raise _refused(f"only a `{POSTER_FILE_FIELD}` part may follow the `file` part")
+            return UploadFile(content=self._poster_chunks(), content_type=event[2])
+        return None
+
+    async def _poster_chunks(self) -> AsyncIterator[bytes]:
+        async for chunk in self._part():
+            yield chunk
+        await self._end(POSTER_FILE_FIELD)
 
 
 async def read_upload(request: Request) -> UploadForm:

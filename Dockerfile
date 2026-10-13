@@ -24,6 +24,13 @@ FROM python:3.14-slim AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH" \
     EPISTREL_MEDIA_ROOT=/var/lib/epistrel/media
+# ffmpeg (and its ffprobe) take a video's poster from its first frame and probe videos (#107).
+# It is a GPL program run as a separate process, never linked or imported, and no Python
+# dependency (project invariant 2's exception, ADR-151). Debian's package, unpinned: Dependabot
+# cannot track apt, so each image build installs the current one.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 epistrel \
     && useradd --system --uid 10001 --gid 10001 --home-dir /app --shell /usr/sbin/nologin epistrel \
     && mkdir -p /var/lib/epistrel/media \

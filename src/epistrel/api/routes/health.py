@@ -16,6 +16,11 @@ queued job (``null``: nothing overdue). Status:
 ``content_logging`` is ``true`` while operator-only content debug logging is on in this process
 (``EPISTREL_CONTENT_DEBUG_LOGGING``, NFR-SEC-4; #74), so turning it on is visible.
 
+``checks.ffmpeg`` and ``checks.ffprobe`` say whether the tools that extract a video's poster and
+probe a video answered ``-version`` (``ok`` or ``missing``; checked once, at start-up or at the
+first probe, #107). Neither changes the status: without ffmpeg only a video uploaded without a
+poster is refused (422 ``poster_required``).
+
 Ages use the database's own ``now()``. An app that was never started (no engine) reports ``ok``
 with the database ``skipped``.
 """
@@ -56,13 +61,16 @@ class WorkersCheck(BaseModel):
 
 
 class HealthChecks(BaseModel):
-    """Each check: the database, the workers, and the oldest overdue timer and job (seconds;
-    `null`: nothing overdue)."""
+    """Each check: the database, the workers, the oldest overdue timer and job (seconds;
+    `null`: nothing overdue), and whether ffmpeg and ffprobe (video posters and probes) are
+    there (`missing` never changes the status)."""
 
     database: Literal["ok", "error", "skipped"]
     workers: WorkersCheck = WorkersCheck()
     oldest_overdue_timer_s: float | None = None
     oldest_overdue_job_s: float | None = None
+    ffmpeg: Literal["ok", "missing"] = "missing"
+    ffprobe: Literal["ok", "missing"] = "missing"
 
 
 class HealthResponse(BaseModel):
@@ -125,4 +133,6 @@ async def health(request: Request, response: Response) -> HealthResponse:
         result = await check(engine)
     if result.status == "unavailable":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-    return result.model_copy(update={"content_logging": content_logging_active()})
+    tools = await request.app.state.epistrel.posters.status()
+    checks = result.checks.model_copy(update={"ffmpeg": tools.ffmpeg, "ffprobe": tools.ffprobe})
+    return result.model_copy(update={"checks": checks, "content_logging": content_logging_active()})

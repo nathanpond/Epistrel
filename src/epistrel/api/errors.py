@@ -32,12 +32,24 @@ async def epistrel_error_handler(request: Request, exc: Exception) -> JSONRespon
     return JSONResponse(exc.envelope(), status_code=exc.http_status, headers=headers)
 
 
+HEADER_LOCATION = "header"
+"""FastAPI's ``loc`` for a header parameter; the envelope names it ``headers.<name>``
+(docs/02 §9), as the Engine's own header checks do."""
+
+
+def _documented_loc(error: dict[str, object]) -> dict[str, object]:
+    loc = error.get("loc")
+    if isinstance(loc, tuple | list) and loc and loc[0] == HEADER_LOCATION:
+        return {**error, "loc": ("headers", *loc[1:])}
+    return error
+
+
 async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """FastAPI's request validation (body, query, path, headers) in the one envelope: 422
     ``validation_error`` with ``details.field`` (the first failure's dotted path) and
     ``details.errors`` (every failure), before the handler or the Engine runs (FR-API-4)."""
     assert isinstance(exc, RequestValidationError)  # noqa: S101 - registered for it only
-    error = InvalidRequest.from_errors(exc.errors())
+    error = InvalidRequest.from_errors([_documented_loc(dict(e)) for e in exc.errors()])
     return JSONResponse(error.envelope(), status_code=error.http_status)
 
 

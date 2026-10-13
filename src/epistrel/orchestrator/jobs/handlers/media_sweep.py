@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from epistrel.core.media.store import LocalFilesystemStore
+from epistrel.core.media.store import BlobStore
 from epistrel.core.media.sweep import sweep
 from epistrel.core.settings_schema import DEFAULT_MEDIA_SWEEP_INTERVAL_S, MEDIA_SWEEP_TASK
 from epistrel.orchestrator.jobs.recurring import NoPayload, RecurringTask, recording
@@ -21,17 +21,17 @@ from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
 MEDIA_SWEEP = MEDIA_SWEEP_TASK
 INTERVAL_SETTING = "media_sweep_interval"
 
-_bound: list[LocalFilesystemStore] = []
+_bound: list[BlobStore] = []
 
 
-def bind(store: LocalFilesystemStore | None) -> None:
+def bind(store: BlobStore | None) -> None:
     """Make ``store`` (the process's ``Engine.media``) what the job sweeps; ``None`` unbinds."""
     _bound.clear()
     if store is not None:
         _bound.append(store)
 
 
-def bound() -> LocalFilesystemStore | None:
+def bound() -> BlobStore | None:
     return _bound[0] if _bound else None
 
 

@@ -20,6 +20,8 @@ The points:
 - ``media.upload.before_commit``: an upload holds its checksum's advisory lock, has inserted its
   row and moved its bytes into place (or found the blob already there); its transaction has not
   committed yet (#105).
+- ``media.complete.locked``: an upload session's completion holds the session's row lock and
+  found it open with every part; it has not assembled the parts yet (#107).
 
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 """
@@ -35,12 +37,14 @@ CATALOG_PUBLISH_LOCKED = "catalog.publish.locked"
 OWNERSHIP_ADD_FOUND = "ownership.add.found"
 MEDIA_SWEEP_BEFORE_PURGE = "media.sweep.before_purge"
 MEDIA_UPLOAD_BEFORE_COMMIT = "media.upload.before_commit"
+MEDIA_COMPLETE_LOCKED = "media.complete.locked"
 POINTS = (
     CATALOG_SAVE_BEFORE_CAS,
     CATALOG_PUBLISH_LOCKED,
     OWNERSHIP_ADD_FOUND,
     MEDIA_SWEEP_BEFORE_PURGE,
     MEDIA_UPLOAD_BEFORE_COMMIT,
+    MEDIA_COMPLETE_LOCKED,
 )
 
 ARRIVAL_TIMEOUT_S = 10.0
@@ -103,6 +107,7 @@ def held(point: str) -> Iterator[Hold]:
 __all__ = [
     "CATALOG_PUBLISH_LOCKED",
     "CATALOG_SAVE_BEFORE_CAS",
+    "MEDIA_COMPLETE_LOCKED",
     "MEDIA_SWEEP_BEFORE_PURGE",
     "MEDIA_UPLOAD_BEFORE_COMMIT",
     "OWNERSHIP_ADD_FOUND",

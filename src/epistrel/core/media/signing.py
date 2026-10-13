@@ -7,7 +7,10 @@ Both are HMAC-SHA256 keyed by a **subkey** that HKDF-SHA256 derives from
 - ``media-url`` signs a content URL: ``sig`` = base64url (unpadded) of the HMAC of
   ``"<METHOD>|<path>|<exp>"``, where ``exp`` is the expiry in Unix seconds. A URL verifies
   until 30 seconds after ``exp`` (clock skew). The moderation hook's ``content_url`` is one,
-  valid for 5 minutes; #107 reuses this signer for ``GET /media/{id}/url`` and the S3 path.
+  valid for 5 minutes; ``GET /media/{id}/url`` on the local store gives one valid for
+  ``media_signed_url_ttl`` (#107), and a valid one is enough on its own to read
+  ``GET /media/{id}/content`` (invariant 4's one conditional exemption). ``check`` tells an
+  expired URL (``url_expired``) from a forged one (``signature_invalid``).
 - ``media-moderation-hook`` signs a hook request: ``X-Epistrel-Signature: sha256=<hex>`` is the
   HMAC of ``"<X-Epistrel-Timestamp>." + body``. The consumer verifies it with the secret
   ``epistrel moderation-secret`` prints (the derived subkey in hex), never the config key.
@@ -22,6 +25,7 @@ import base64
 import hashlib
 import hmac
 from datetime import datetime
+from typing import Literal
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -75,11 +79,12 @@ class Signer:
     def configured(self) -> bool:
         return self._key is not None
 
-    def require(self) -> None:
+    def require(self, message: str | None = None) -> None:
         """503 ``config_key_missing`` unless a config key is configured."""
         if self._key is None:
             raise SigningKeyMissing(
-                "EPISTREL_CONFIG_KEY is not set; the moderation hook's content URL and request "
+                message
+                or "EPISTREL_CONFIG_KEY is not set; the moderation hook's content URL and request "
                 "signature cannot be made, so no upload can be moderated"
             )
 
@@ -106,12 +111,22 @@ class Signer:
         self, method: str, path: str, exp: int, sig: str, *, now: datetime | None = None
     ) -> bool:
         """Whether ``sig`` signs ``method path`` until ``exp`` (plus the skew), now."""
+        return self.check(method, path, exp, sig, now=now) == "valid"
+
+    def check(
+        self, method: str, path: str, exp: int, sig: str, *, now: datetime | None = None
+    ) -> Literal["valid", "expired", "invalid"]:
+        """``valid`` when ``sig`` signs ``method path`` and ``exp`` (plus the skew) has not
+        passed; ``expired`` when it signs them but has; ``invalid`` otherwise (and always
+        without a config key)."""
         if self._key is None:
-            return False
-        if _epoch(now or clock.now()) > exp + CLOCK_SKEW_S:
-            return False
+            return "invalid"
         expected = self.url_signature(method, path, exp)
-        return hmac.compare_digest(expected.encode(), sig.encode())
+        if not hmac.compare_digest(expected.encode(), sig.encode()):
+            return "invalid"
+        if _epoch(now or clock.now()) > exp + CLOCK_SKEW_S:
+            return "expired"
+        return "valid"
 
     # -- the moderation hook ------------------------------------------------------------------
 

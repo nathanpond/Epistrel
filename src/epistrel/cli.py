@@ -78,18 +78,24 @@ def app_factory() -> FastAPI:
 
 
 async def _preflight(settings: Settings) -> str | None:
-    """Start-up checks: the media root is writable (#105), then those that need the database;
-    ``None`` when the server may start."""
+    """Start-up checks: the media root is writable and, on S3, the bucket exists (#105, #107),
+    then those that need the database: the media are in the store ``EPISTREL_MEDIA_STORE``
+    names (#107) and a stored model API key has its config key; ``None`` when the server may
+    start."""
     from epistrel.core.db import make_engine
-    from epistrel.core.media.store import LocalFilesystemStore, MediaRootUnwritable
+    from epistrel.core.media.store import MediaRootUnwritable
+    from epistrel.core.media.stores import make_store, store_kind_problem
     from epistrel.orchestrator.models.config import config_key_problem
 
     try:
-        LocalFilesystemStore(settings.media_root).prepare()
+        await asyncio.to_thread(make_store(settings).prepare)
     except MediaRootUnwritable as exc:
         return str(exc)
     engine = make_engine(settings)
     try:
+        problem = await store_kind_problem(settings, engine)
+        if problem is not None:
+            return problem
         return await config_key_problem(settings, engine)
     finally:
         await engine.dispose()

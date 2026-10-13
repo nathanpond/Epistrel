@@ -531,3 +531,135 @@ class SigningKeyMissing(EpistrelError):
 
     code = "config_key_missing"
     http_status = 503
+
+
+# -- media delivery (#107) ---------------------------------------------------------------------
+
+
+class UrlExpired(EpistrelError):
+    """A signed media URL presented without the service credential whose signature is good but
+    whose expiry (``exp``, plus 30 s of clock skew) has passed (FR-MEDIA-3). ``details``:
+    ``media_id`` and ``exp``."""
+
+    code = "url_expired"
+    http_status = 403
+
+
+class SignatureInvalid(EpistrelError):
+    """A signed media URL presented without the service credential whose ``sig`` does not
+    sign its path and ``exp`` (tampered, or for another asset). ``details``: ``media_id``."""
+
+    code = "signature_invalid"
+    http_status = 403
+
+
+class RangeNotSatisfiable(EpistrelError):
+    """A ``Range`` no byte of the content satisfies (it starts at or past the end). The REST
+    answer carries ``Content-Range: bytes */<size>``. ``details``: ``size``."""
+
+    code = "range_not_satisfiable"
+    http_status = 416
+
+    def response_headers(self) -> dict[str, str]:
+        return {"Content-Range": f"bytes */{self.details.get('size', 0)}"}
+
+
+class ConfigMissing(EpistrelError):
+    """A deployment setting the call needs is unset (``details.setting``), so it cannot be
+    answered: ``GET /media/{id}/url`` on the local store without ``public_base_url``."""
+
+    code = "config_missing"
+    http_status = 503
+
+
+class MediaStoreUnavailable(EpistrelError):
+    """The S3-compatible store did not answer, or answered an error, while a call needed it.
+    Nothing was written. ``details``: ``operation`` and ``reason`` (the store's error code or
+    ``connection``)."""
+
+    code = "media_store_unavailable"
+    http_status = 503
+
+
+class UseMultipart(EpistrelError):
+    """A direct upload larger than ``media_multipart_threshold``: such an upload must use a
+    resumable session (``POST /media/uploads``). Nothing is stored. ``details``: ``threshold``
+    and ``size`` (the declared length, or the bytes seen when the upload was cut)."""
+
+    code = "use_multipart"
+    http_status = 413
+
+
+class LengthRequired(EpistrelError):
+    """An upload part sent without a ``Content-Length`` (a chunked body): a part's size must be
+    declared. Nothing is stored."""
+
+    code = "length_required"
+    http_status = 411
+
+
+class PartInvalid(EpistrelError):
+    """An upload part numbered outside ``1..part_count``, or whose size is not the session's
+    ``part_size`` (the last part: the remainder), or whose bytes do not match their declared
+    length. Nothing is stored for it. ``details``: ``part``, ``reason`` and the sizes."""
+
+    code = "part_invalid"
+    http_status = 422
+
+
+class UploadClosed(EpistrelError):
+    """A part or a completion for an upload session that is no longer ``open``: completed,
+    aborted, expired, or being completed by another call. ``details``: ``upload_id`` and
+    ``state``."""
+
+    code = "upload_closed"
+    http_status = 409
+
+
+class UploadIncomplete(EpistrelError):
+    """A completion before every part arrived. The session stays open. ``details``:
+    ``upload_id`` and ``missing`` (the part numbers)."""
+
+    code = "upload_incomplete"
+    http_status = 409
+
+
+class ChecksumMismatch(EpistrelError):
+    """The bytes' SHA-256 is not the one declared: the assembled upload's (the session stays
+    open and no asset is created), or a part's ``X-Part-SHA256``. ``details``: ``declared``
+    and ``actual`` (and ``part`` for a part)."""
+
+    code = "checksum_mismatch"
+    http_status = 422
+
+
+class PosterRequired(EpistrelError):
+    """A video uploaded without a poster while ffmpeg, which would extract one from its first
+    frame, is unavailable. Nothing is stored. ``details``: ``setting`` (``ffmpeg_path``)."""
+
+    code = "poster_required"
+    http_status = 422
+
+
+class PosterExtractionFailed(EpistrelError):
+    """ffmpeg could not take a poster from the video's first frame (it failed, timed out or
+    wrote no image). The whole upload is rolled back. ``details``: ``reason``."""
+
+    code = "poster_extraction_failed"
+    http_status = 422
+
+
+class PosterInvalid(EpistrelError):
+    """A supplied poster (``poster``) that is not an image asset. ``details``: ``media_id``,
+    ``field`` and ``reason`` (``not_image``)."""
+
+    code = "poster_invalid"
+    http_status = 422
+
+
+class UploadNotFound(EpistrelError):
+    """The upload session a call names does not exist (or its row was swept). ``details``:
+    ``upload_id``."""
+
+    code = "not_found"
+    http_status = 404

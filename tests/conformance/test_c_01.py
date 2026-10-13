@@ -20,12 +20,20 @@ character, #103), the API-key routes (they need ``EPISTREL_CONFIG_KEY``) and ``u
 encode; ``test_c_01__malformed`` sends its malformed cases by hand); all are covered by C-03 and
 their own tests. ``replace_model_config`` is generated, and each successful write is undone so
 that later examples still reach the stub model. The fixture media asset may be retired by a
-generated ``delete_media``: a retired asset still reads, so later examples still reach it.
+generated ``delete_media``: a retired asset still reads, so later examples still reach it. The
+fixture upload session (#107) may be completed or aborted by a generated call: a closed session
+still reads, and its parts and completion answer 409 ``upload_closed``, a documented answer.
+``PUT /media/uploads/{id}/parts/{n}`` takes a raw ``application/octet-stream`` body, which no
+component describes (``_body_problems`` checks only that it is binary). ``GET /media/{id}/url``
+signs with the app's ``EPISTREL_CONFIG_KEY`` under the seeded ``public_base_url``, which is put
+back after each generated settings write, since a valid write may unset it and the route would
+then answer a documented 503 ``config_missing``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -56,7 +64,9 @@ from epistrel.api.openapi import TAG_NAMES, dumps
 from epistrel.config import Settings
 from epistrel.core.catalog.characters import CharacterCreate, PublishRequest
 from epistrel.core.db import make_engine, make_sync_engine
+from epistrel.core.deployment import SettingsPatch
 from epistrel.core.media.assets import MediaUpload
+from epistrel.core.media.uploads import UploadOpen
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.stories import StorySpec
@@ -69,6 +79,7 @@ from tests.catalog_support import character as catalog_character
 from tests.conformance.conftest import migrated_database
 from tests.conftest import REPO_ROOT
 from tests.media_support import files, metadata, png
+from tests.model_support import config_key
 from tests.respond_support import AUTHOR, body
 from tests.story_support import story_body
 
@@ -103,6 +114,9 @@ _COUNT = "SELECT count(*) FROM {}"
 REFUSED = frozenset({400, 401, 404, 409, 422})
 RESTORED = "replace_model_config"
 """Generated, then undone after each success (``_restore_model_config``)."""
+SETTINGS_WRITE = "update_deployment_settings"
+PUBLIC_BASE_URL = "https://media.example.test"
+"""Seeded, and put back after each generated settings write (``_restore_public_base``)."""
 EXAMPLES = 100
 CHECKS = [
     not_a_server_error,
@@ -124,6 +138,7 @@ class Live:
     operation_id: str
     character_id: str
     media_id: str
+    upload_id: str
 
     def counts(self) -> dict[str, int]:
         sync = make_sync_engine(self.url)
@@ -146,13 +161,14 @@ class Live:
             "purpose": "generation",
             "character_id": self.character_id,
             "media_id": self.media_id,
+            "upload_id": self.upload_id,
         }
 
 
-async def _seed(settings: Settings) -> tuple[str, str, str, str]:
-    """A two-character story with one played turn, a published catalog character, and an
-    uploaded image: the story's id, the turn's operation id, the character's id and the
-    image's id."""
+async def _seed(settings: Settings) -> tuple[str, str, str, str, str]:
+    """A two-character story with one played turn, a published catalog character, an
+    uploaded image and an open upload session (#107): the story's id, the turn's operation id,
+    the character's id, the image's id and the session's id."""
     db = make_engine(settings)
     engine = Engine.from_settings(settings)
     engine.bind(db)
@@ -169,7 +185,28 @@ async def _seed(settings: Settings) -> tuple[str, str, str, str]:
         character_id = draft.character.id
         await engine.publish_character(AUTHOR, character_id, PublishRequest(draft_revision=1))
         image = await engine.upload_media(AUTHOR, MediaUpload.model_validate(metadata()), png())
-        return created.story_id, played.beats[0].operation_id, character_id, image.asset.id
+        await engine.update_deployment_settings(
+            AUTHOR, SettingsPatch(public_base_url=PUBLIC_BASE_URL)
+        )
+        session_bytes = png()
+        session = await engine.open_upload(
+            AUTHOR,
+            UploadOpen.model_validate(
+                {
+                    **metadata(),
+                    "size": len(session_bytes),
+                    "mime_type": "image/png",
+                    "sha256": hashlib.sha256(session_bytes).hexdigest(),
+                }
+            ),
+        )
+        return (
+            created.story_id,
+            played.beats[0].operation_id,
+            character_id,
+            image.asset.id,
+            session.upload_id,
+        )
     finally:
         await engine.models.aclose()
         await db.dispose()
@@ -180,9 +217,9 @@ def live(pg_url: str) -> Iterator[Live]:
     """The app on a fresh, migrated scratch database (dropped afterwards)."""
     with migrated_database(pg_url, "epistrel_c01") as url:
         try:
-            settings = auth_settings(url, model_adapter="stub")
-            story_id, operation_id, character_id, media_id = asyncio.run(_seed(settings))
-            yield Live(create_app(settings), url, story_id, operation_id, character_id, media_id)
+            settings = auth_settings(url, model_adapter="stub", config_key=config_key())
+            ids = asyncio.run(_seed(settings))
+            yield Live(create_app(settings), url, *ids)
         finally:
             schemathesis_asgi.shutdown_lifespans()
 
@@ -213,8 +250,21 @@ def exercise(case: Case[Any], live: Live) -> None:
             assert error["details"]["errors"], error
     if before is not None and response.status_code in REFUSED:
         assert live.counts() == before, (case.operation.label, response.status_code)
-    if case.operation.definition.raw.get("operationId") == RESTORED and response.status_code == 200:
+    operation_id = case.operation.definition.raw.get("operationId")
+    if operation_id == RESTORED and response.status_code == 200:
         _restore_model_config(live)
+    if operation_id == SETTINGS_WRITE and response.status_code == 200:
+        _restore_public_base(live)
+
+
+def _restore_public_base(live: Live) -> None:
+    """Put the seeded ``public_base_url`` back after a generated settings write (#107)."""
+    restore = SCHEMA["/admin/settings"]["PUT"].Case(
+        body={"public_base_url": PUBLIC_BASE_URL},
+        headers={"X-Epistrel-Principal": "c01-restore"},
+    )
+    restored = restore.call(app=live.app, headers=bearer())
+    assert restored.status_code == 200, restored.text
 
 
 def _restore_model_config(live: Live) -> None:
@@ -322,6 +372,11 @@ def _body_problems(
     if request is None:
         return []
     content = request["content"]
+    if "application/octet-stream" in content:
+        binary = content["application/octet-stream"]["schema"]
+        if binary != {"type": "string", "format": "binary"}:
+            return [f"{operation_id}: the raw body is not binary"]
+        return []
     if "multipart/form-data" in content:
         form = content["multipart/form-data"]["schema"]
         if set(form["required"]) != {"metadata", "file"}:

@@ -2156,3 +2156,198 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - Mutation-checked: the test fails with no aliases read, with the draft's or the versions' aliases dropped, without the string check (the upload fails) and without the list check (an object's key is indexed).
   **Why:** I followed the Discretion line rather than only logging the deferral, which was the verifier's other option. With the read in place, a caption, alt text or prompt that names a character only by alias is indexed from the day #115 lands. Otherwise it would stay unindexed until #123's scan and rebuild. I chose the explicit path over a search for any `aliases` key, because #115's opaque `visual_identity.adapter_params` could carry such a key, and its strings would name nobody. Cost if wrong: if #115 stores aliases somewhere else, the read finds nothing. The planted test would still pass, so the gap would reopen silently until #123. #115 must keep `metadata.aliases`, or move `ALIASES_PATH` and the test's planted shape along with it.
   **Issue:** #105, #115, #123
+- **Decision (drift):** Every "#110" in #107 means the S3-compatible adapter, as the drift note says. The planner's S-id substitution turned "S3" into "#110", the catalog listing story, which has nothing to do with object storage. #107 depends only on #105.
+  **Why:** The text means the S3 adapter in every place. Cost if wrong: none.
+  **Issue:** #107, #110
+- **Decision (drift):** The test store is MinIO RELEASE.2025-07-23T15-54-02Z. The image is `bitnamilegacy/minio:2025.7.23-debian-12-r5`, pinned by digest (`sha256:6dabb4a2…`) as `tests/conftest.py::MINIO_IMAGE`, next to `PG_IMAGE`. Its `minio` binary runs directly (`MINIO_ENTRYPOINT`), with no Bitnami setup scripts. The planned `minio/minio` tag could not be used.
+  - At execution, `gh api repos/minio/minio/releases/latest` resolved `RELEASE.2025-10-15T17-29-55Z`.
+  - Docker Hub no longer has `minio/minio`: the API answers "object not found", and `docker manifest inspect` is denied. Quay has no tag for that release either.
+  - Bitnami's legacy registry has the newest MinIO release that still has an image. Its setup scripts start and stop the server once before serving, so a readiness check could pass and then fail.
+  - The `minio` session fixture fails, never skips, without Docker. Pulling by tag plus digest works through docker-py; I checked by removing the local image and pulling again.
+  **Why:** The AC names MinIO through testcontainers, and this is still MinIO. A different S3 server (SeaweedFS, LocalStack) would change what the test proves. Bitnami's legacy images get no updates, which is acceptable for a pinned test service. MinIO is AGPL, so it is a test and development service only. Cost if wrong: move the pin when an official image returns.
+  **Issue:** #107
+- **Decision (drift):** MinIO for local development is a separate override file, `docker/compose.minio.yml`, not a profile in `docker-compose.yml`. X-07 and C-10 pin the default stack's services to `engine` and `db`. The override runs the tests' pinned image and creates the bucket in a one-shot `minio-bucket` service; the engine waits for it to finish (`service_completed_successfully`). It sets the engine's `EPISTREL_MEDIA_S3_*` settings, publishes MinIO on 127.0.0.1:9000 (the presign endpoint), and labels its secrets dev-only. `test_compose.py` checks all of this. A trial `up minio-bucket` created the bucket and exited 0.
+  **Why:** This is the drift note's option. A bucket created by the setup scripts would hit the same stop-and-start race as above. Cost if wrong: one file.
+  **Issue:** #107
+- **Decision (drift):** The signed-URL exemption is built as a third router:
+  - `GET /media/{media_id}/content` and a schema-less `HEAD` twin move to `routes.media.content_router`.
+  - That router is on `routes.signed_router`, which `create_app` includes only in `api` and `all` modes (`include_signed`). Its guard is `api.auth.require_credential_or_signed_url`.
+  - `auth.SIGNED_ROUTES = {("GET", "/media/{media_id}/content")}` names the route. `unguarded_routes` accepts the signed guard on that method and path and nowhere else.
+  - The guard's rules:
+    - a recognised credential passes, whatever `exp`/`sig` say;
+    - a signature of `GET|<path>|<exp>` that has not expired passes;
+    - a signature that does not match the URL is 403 `signature_invalid`;
+    - a matching signature past `exp` plus the 30 s skew is 403 `url_expired`;
+    - neither credential nor signature is the credential's 401.
+  - The OpenAPI document marks the route `security: [{HTTPBearer: []}, {}]`.
+  - `test_route_guard.py` gains bite tests: the guard on another path or method is reported, and the route with no guard is reported. It also gains the behavioural 401/403 test and the worker-mode check.
+  - C-02 needs no change: its worker-mode assertion still holds.
+  - The OpenAPI builder's rules key on `SIGNED_ROUTES`.
+  - CLAUDE.md invariant 4, the exempt-route sentence in docs/02 §9 and the README are reworded. ADR-152 amends ADR-149: ADR-149 gets an Amended-by line, a *[refined by ADR-152]* marker and the indexes.
+  **Why:** This is the drift note's design. `unguarded_routes` reads the route table and cannot see query parameters. C-02 forbids the route on `public_router`, which worker mode serves. A signed URL authenticates one asset's bytes only. Cost if wrong: one router.
+  **Issue:** #107, #44
+- **Decision (drift):** The six new Engine operations (`get_media_url`, `open_upload`, `get_upload`, `put_upload_part`, `complete_upload`, `abort_upload`) get C-03 parity steps, with no `PARITY_EXCLUDED` set:
+  - a settings write first sets `public_base_url`;
+  - `Rest` gains a raw `content` body;
+  - `normalise` blanks a signed URL's `exp` and `sig`, since the signature covers the real asset id.
+  `MEDIA_ANSWERS` gains `get_media_url`. The new `SESSION_ANSWERS` pins the session steps' statuses. The session check is written without the word "upload" in C-03's body, because C-03 is an M2 part and "upload*" is an M3 lexicon term.
+  **Why:** `parity_gaps` has no exclusion list, and #128 is in group C. The drift note's first option keeps the parity rule whole. #128's plan of excluding "part uploads, signed URLs" is now unnecessary. Cost if wrong: none; the steps are small.
+  **Issue:** #107, #128
+- **Decision (drift):** The part `PUT` is in neither `_keyed` nor `CODECS`, so it stores no idempotency result. `get_request_context` still mints and echoes an `Idempotency-Key` for it, as for any PUT. Its 200 body is `PartStoredBody(DeploymentMutationResponse)`: `{n, size, received_parts, config_revision, idempotency_key}`. Open is 201, complete 201 and abort 204, each with a codec.
+  **Why:** A part sent again replaces the first, so the request is idempotent by itself. `response_base_problems` still requires the revision base on a non-204 mutating answer. Cost if wrong: one codec.
+  **Issue:** #107
+- **Decision (Rule 1):** The video probe now works. #105's ffprobe invocation passed `-nostdin`, an ffmpeg-only option that ffprobe refuses ("Option not found"). So every real probe failed, and every video's width, height and duration were stored as `null`. #105's tests used a stand-in script that ignores its arguments, so nothing caught it.
+  - The flag is gone; stdin was already `DEVNULL`. The input is now `file:<path>`, matching the extraction.
+  - Checked against Homebrew's ffmpeg 9.0.2 and against Debian's 7.1.5 in the built image; both refuse `-nostdin` from ffprobe.
+  - Regression test: `test_the_real_tools_read_and_frame_a_video` probes a real 2000×1000 one-second video and expects `(2000, 1000, 1000)`. C-23 also asserts `duration_ms == 1000`.
+  **Why:** The Discretion's "ffprobe fills `duration_ms`" was impossible without the fix. Cost if wrong: none.
+  **Issue:** #107, #105
+- **Decision:** The store port has one local base. `store.LocalStaging` owns the media root's staging area and the sessions' part directories (`<root>/uploads/<id>/`). `LocalFilesystemStore` and `core/media/s3.py::S3BlobStore` both extend it.
+  - New port methods: `open_range`, `presign` (local: `None`), `put(..., content_type=, assembled=)`, `begin_parts`, `part_staging`, `store_part`, `stored_parts`, `assemble`, `reopen_parts`, `finish_parts`, `abort_parts` and `stale_part_uploads`.
+  - A part always streams to a local temp file first, so its size and optional SHA-256 are checked before the store sees it. The local store renames it into place; the S3 store sends it with `UploadPart`.
+  - Completion assembles into the new asset's staging file while hashing. On S3 that means `CompleteMultipartUpload`, then streaming the object back. #105's whole path then runs on that file: sniff, rating, probe, hook, poster.
+  - On S3, `put(assembled=)` copies `uploads/<id>` to the checksum key with s3transfer's managed copy, which also handles objects over CopyObject's 5 GB limit.
+  - S3 calls map a missing object to `FileNotFoundError` and every other failure to 503 `media_store_unavailable`, logging the operation and the error code only.
+  - `core/media/stores.py::make_store` picks the adapter and imports boto3 only for S3.
+  **Why:** ffprobe, ffmpeg, Pillow and the hook's `content_url` all need a local file, and hashing needs the bytes anyway. One staging path keeps a completion's checks identical to a direct upload's. Cost if wrong: one local copy of a completed upload, removed when the call ends.
+  **Issue:** #107
+- **Decision:** On S3, a refused completion re-opens the session. The refusal may come after the multipart upload was completed (a checksum mismatch, a hook refusal, a poster failure). `reopen_parts` then starts a new multipart upload, copies each part's range back from the assembled object (`UploadPartCopy`), deletes the object, and records the new `UploadId` on the row. `stored_parts` answers `None` while an assembled object exists, so a retry reuses it.
+  `test_a_refused_completion_leaves_the_session_open[s3]` covers this: the session completes after a hook refusal, and after a wrong part is sent again.
+  **Why:** The plan says a refused completion leaves the session open with its parts. On S3 a completed multipart upload takes no more parts, so "send the wrong part again" would otherwise fail. Cost if wrong: copies inside the store, only on that path.
+  **Issue:** #107
+- **Decision:** The `media_upload_sessions` columns go beyond the Discretion's list. They add:
+  - `created_by` (the opener);
+  - `s3_upload_id` (pass 2's "UploadId in a column");
+  - `media_id` (the asset a completion created, also in `GET`);
+  - `created_at` and `updated_at`;
+  - `closed_at`, which with `idempotency_result_window` decides when the sweep deletes a closed row.
+  `owner_principal` is the asset's owner: `owner`, or the opener. Each `CHECK` is text: `state`, a lowercase SHA-256, `size > 0` and `part_size > 0`. One index covers `(state, expires_at)`. `GET` also answers `part_count`.
+  Migration 0023 also:
+  - adds `media_assets.poster_media_id` with its index;
+  - extends `ck_media_assets_source` with `extracted`;
+  - adds `deployment_state.media_store`, `CHECK` `local`/`s3`, backfilled `local` when any asset exists, since only the local store existed before.
+  Its downgrade turns `extracted` rows into `uploaded`, so the old check holds again. I-08 and the drift test pass.
+  **Why:** The AC needs these facts, and the table is the one the story names. A new column the story's own AC need is not Rule 4. `media_store` is the pass-2 Discretion's column. Cost if wrong: migration edits before M3 merges.
+  **Issue:** #107
+- **Decision:** A completion holds the session's row `FOR UPDATE` for its whole run, hook and ffmpeg included, so a second completion waits and then finds the session closed (409 `upload_closed`). It is waiting `FOR UPDATE`, not `NOWAIT`, so a completion that meets a part `PUT` in flight waits for it instead of being refused.
+  - A part `PUT` takes the same lock to record its part.
+  - The planner's "completion is idempotent on `upload_id`" is read as: keyed under `Idempotency-Key` with material `{upload_id}`. A retry under the same key replays the asset; another key gets 409 `upload_closed` (pass 2).
+  - New pause point `media.complete.locked`. `test_a_second_completion_waits_and_finds_it_closed` waits until `pg_stat_activity` shows the second completion blocked on a lock, then expects `[201, 409]`.
+  **Why:** A `NOWAIT` would refuse a completion that only met a part upload. The row lock serialises without a fourth state. Cost if wrong: one connection held while the hook answers (at most `media_moderation_timeout_ms`).
+  **Issue:** #107
+- **Decision:** Open, complete and abort each record one committed `control` operation by the requester (`core/control.py`), as #105's upload and retire do. A part records none. Opening checks what it can at once:
+  - the size against `media_max_bytes` (413);
+  - the declared type against `media_allowed_types` and `kind` (415);
+  - the rating (422 `rating_retired`);
+  - a named `poster` (422 `media_retired` or `poster_invalid`);
+  - for a video with no poster, that ffmpeg is there (422 `poster_required`).
+  Completion checks the size and type again, against the settings then in force and the sniffed bytes.
+  **Why:** This is the attribution pattern the other catalog and media writes follow. A session that can never complete should be refused when it is opened. Cost if wrong: one row per write.
+  **Issue:** #107
+- **Decision:** How the poster is delivered and checked.
+  - A `poster_file` part must follow `file`. `UploadForm.poster` reads it only after the main file has streamed; a REST caller passes the bound method, a library caller an `UploadFile` or `None`.
+  - A `poster_file` on an image, or beside `poster`, is 422 at `body.poster_file`. `poster` on a non-video is 422 at `body.metadata.poster`, or `body.poster` for a session.
+  - A supplied poster must be `live` (`assert_referenceable`: 422 `media_retired`) and an image. A non-image is the new code 422 `poster_invalid` (`reason: not_image`).
+  - An extracted poster skips the `media_allowed_types` check. Epistrel makes it, always PNG, and it is sniffed to be one.
+  - The hook sees the video first, then a poster stored with it.
+  - A poster's alt text is truncated to the 500-character limit.
+  - The poster row's reference to its video is a source with `path = None` in `MEDIA_REFERENCE_SOURCES` (`public.media_assets.poster_media_id`): a column that holds an id itself. `referenced`/`unreferenced` handle both shapes.
+  - Retiring a video retires its `live` poster in the same transaction, whatever the poster's source, as the Discretion says.
+  **Why:** These are the AC's two supply routes, plus the Discretion's rules. An allowed-types list governs what consumers upload, not what Epistrel derives. Cost if wrong: a deployment that drops `image/png` from its allowed types still gets PNG posters.
+  **Issue:** #107
+- **Decision:** `media_multipart_threshold` applies to the whole direct request: the file plus any `poster_file`. It is checked by declared length before reading, or counted as the bytes stream. #105's `media_too_large` pre-check is unchanged (`media_max_bytes` plus the envelope), so a body carrying a poster may hold at most that in total. The new deployment settings, all prospective, are:
+  - `media_signed_url_ttl`: 1–86400 s, default 300;
+  - `media_multipart_threshold`: 1 KiB–10 GiB, default 8 MiB;
+  - `media_upload_ttl`: 60 s–7 days, default 24 h.
+  **Why:** "Uploads larger than the threshold use sessions" reads as the request. The two pre-checks stay simple. Cost if wrong: a poster near the limit on a video near the limit needs a session.
+  **Issue:** #107
+- **Decision:** How ranges and conditions are split. The API parses the headers: `routes.media.parse_range`, one `bytes` range of at most 18 digits a side, and `entity_tags`. Core applies the semantics: `assets.open_content(byte_range=, if_none_match=, if_range=, with_bytes=)`, with `ByteRange.resolve` clamping.
+  - `If-None-Match` matching weakly, or `*`, is 304 before any range.
+  - `If-Range` applies a range only when it is exactly the current `ETag`; a weak tag or a date gives the whole file.
+  - `HEAD` is a second route with no schema entry (`get_media_content_head`): headers only, no blob opened.
+  - Content answers (200, 206, 304, `HEAD`) carry `Accept-Ranges: bytes`, `Access-Control-Allow-Origin: *` and `Access-Control-Expose-Headers: Accept-Ranges, Content-Range, Content-Length, ETag`. Error answers do not.
+  - Streams use 64 KiB chunks on both stores; S3 reads go through `asyncio.to_thread`.
+  **Why:** One Engine call per handler, and a `HEAD` or a 304 should open nothing, which matters for an S3 `GET`. Documenting `HEAD` would duplicate the `operationId`, and C-02 skips it anyway. Cost if wrong: library callers get typed conditional reads.
+  **Issue:** #107
+- **Decision:** `GET /media/{id}/url` works as follows.
+  - `ttl` is accepted from 1 to 2³¹−1 and cut to `media_signed_url_ttl`.
+  - On the local store it needs `EPISTREL_CONFIG_KEY` (503 `config_key_missing`) and `public_base_url` (503 `config_missing`, `details.setting`), as the Discretion says. This differs from #105's hook `content_url`, which falls back to a relative path.
+  - `expires_at` is the signed `exp` locally, and the moment of presigning plus the TTL on S3.
+  - A retired asset gets a URL; a candidate or an unknown asset is 404.
+  - FastAPI's header validation errors are now reported at `headers.<name>`, as docs/02 §9 documents, instead of `header.<name>`. `X-Part-SHA256` is the first FastAPI-validated header.
+  **Why:** A relative URL is useless to a player outside Epistrel's own origin. The header path was a defect of the generic validation handler, which until now had no header parameter to report. Cost if wrong: one setting an operator must set.
+  **Issue:** #107
+- **Decision:** `/health`'s `checks` gains `ffmpeg` and `ffprobe` (`ok`/`missing`). `FfmpegTools.status()` checks each tool's `-version` once, 5 s at most, and keeps the answer. The lifespan calls it at start-up; an app that was never started checks on the first `/health` or video. Neither value changes the status. The ffmpeg seam is `Engine.posters` (`PosterExtractor`: `status`, `probe_video`, `extract`), and C-23's spy replaces it on the app's Engine. `test_health.py`'s exact body now expects `ok` for both, since the suite needs ffmpeg; a new test covers `missing`.
+  **Why:** These are the Discretion's "probes once at start-up, ffprobe reported separately" and "a PosterExtractor protocol on app state". Cost if wrong: none.
+  **Issue:** #107
+- **Decision:** Existing tests changed because the story changes the behaviour they pin. No assertion was loosened.
+  - The media sweep's exact result dicts (test_media_assets, I-17) gain the session pass's three counts, at 0.
+  - `MEDIA_COLUMNS` gains `poster_media_id`.
+  - `test_list_filters_and_pages`' video names one of the listed images as its `poster`, since every video needs one. Its listing assertions are unchanged.
+  - I-21's `stub_settings` gains a config key. `_blanked` blanks a signed URL's `exp`/`sig`. `Call.cleanup` unsets the `public_base_url` the URL case sets.
+  - `CALLS` gains `HEAD` content and `GET` url, so the nothing-gates matrix covers them.
+  - C-01's live app gets a config key and a seeded `public_base_url`, which is put back after each generated settings write: a generated write may unset it, and the 503 would trip `not_a_server_error`. C-01 also seeds an upload session, and `_body_problems` accepts a binary `application/octet-stream` body. No operation was excluded from generation. A full C-01 run passed: 73 passed.
+  **Why:** The AC require each behaviour; these are the smallest test changes that hold them. Cost if wrong: none.
+  **Issue:** #107
+- **Decision:** The C-23 part is `test_c_23__delivery`, `part("M3", "FR-MEDIA-3")`, parametrised over `local` and `s3`, in `tests/integration/test_media_delivery.py`, the file the plan names.
+  - #115's `test_c_23__optional_images` (FR-CAT-4) must join this file: traceability counts a test ID per milestone in one file.
+  - The ffmpeg complement runs inside the part, on a second scratch deployment whose `EPISTREL_FFMPEG_PATH` names nothing.
+  - check-lexicon: the part avoids M4's "extraction" and M6's "clock". The skew constant is aliased `SKEW_S`, and `frozen_at` is imported by name.
+  - Detailed tests in the same file cover:
+    - RFC 9110 ranges and conditions on both stores;
+    - the local store's signed URLs;
+    - the threshold;
+    - part checks;
+    - a session from open to close;
+    - checks at open;
+    - concurrent completions;
+    - refused completions on both stores;
+    - a multipart video's poster;
+    - the session sweep;
+    - posters, and an extracted poster the hook refuses;
+    - posters in the sweep;
+    - the store-kind start-up check through `epistrel serve` (exit 78) and a missing bucket;
+    - the S3 store itself.
+  - `tests/test_media_units.py` covers the range parser, `Signer.check`, `ffprobe_beside`, the real tools, extraction failures and the local session parts.
+  **Why:** The plan names this file. Cost if wrong: renames only.
+  **Issue:** #107, #115
+- **Decision:** The image builds and still runs as uid 10001, with Debian trixie's ffmpeg 7.1.5. I built it under a throwaway tag and removed it afterwards. It measured 763 MB, against 301 MB for the last `epistrel:dev` build. Most of the difference is ffmpeg's codec libraries, which `--no-install-recommends` still brings, against the plan's "~150 MB"; boto3 and botocore add a little. Inside the image, `boto3` imports, the probe's new invocation reads a video, and the extraction command writes a PNG.
+  **Why:** AC5 needs the image to run as uid 10001, and the size is a fact the owner should see. Cost if wrong: a smaller ffmpeg build would be a separate decision.
+  **Issue:** #107
+- **Decision:** Hand-offs, not fixed here:
+  - `exports/` is a reserved key prefix on both stores, but the `BlobStore` port has no object API for it. #126 adds the put, open and delete of `exports/<id>.jsonl` it plans.
+  - #128's planned `PARITY_EXCLUDED` and binary-route exclusions are unnecessary for #107's routes: they have C-03 steps and C-01 generation.
+  - M8's #260 plans a candidate content route served through "#107's mechanism" with an Epistrel-signed local URL. Invariant 4 now exempts media content only, so that route would need its own ADR and invariant change. That plan may be stale; see the Ad-hoc entry below.
+  **Why:** The discovered-work rule: out of scope, and not a defect today.
+  **Issue:** #107, #126, #128, #260
+- **Decision:** I mutation-checked the core behaviours, applying each mutation to the source and restoring it byte for byte afterwards. Each of these fails a test:
+  - ranges ignored (C-23);
+  - signatures that never expire (C-23);
+  - the assembled checksum unchecked (C-23);
+  - videos stored without a poster (C-23);
+  - the signed guard accepted on any route (`test_route_guard`);
+  - a retired video's poster left live (`test_posters`);
+  - expired sessions never swept (`test_the_sweep_ends_stale_sessions`);
+  - part sizes unchecked (`test_parts_are_checked`);
+  - a forged signature accepted (`test_signed_urls_on_the_local_store`).
+  One mutation survived: dropping `parse_range`'s explicit comma check. The range pattern already refuses a second range, so the check was redundant and is removed.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
+  **Issue:** #107
+- **Decision (Rule 1):** `store_kind_problem` passes, logging the exception type only, when the database cannot be reached at start-up. The config-key check already does this. The per-story gate caught the bug: `test_health_reports_database_error_and_keeps_serving` starts the app against a closed port and expects it to keep serving 503 `/health`. My first version raised from the lifespan instead, so the app never started. That test's exact body also gains `ffmpeg`/`ffprobe` (`ok`), as the drift note foresaw.
+  **Why:** An unreachable database is `/health`'s to report (NFR-REL-3). The check runs again at the next start. Cost if wrong: a start against a down database records nothing, which is harmless.
+  **Issue:** #107
+
+## Ad-hoc — 2026-10-12
+
+- **Change:** Project invariant 2 gains an explicit exception (CLAUDE.md, ADR-151): "ffmpeg is a GPL command-line tool invoked as a separate process for poster extraction; it is not linked and not a Python dependency". The image's runtime stage installs Debian's `ffmpeg` and CI installs it on the runner. `check-licenses`, over the Python runtime closure, is unchanged and passes.
+  **Why:** This is the owner's round-one decision on #107, applied by #107 for FR-MEDIA-3's poster extraction: "ffmpeg (GPL) may be installed in the image and run as a separate process by subprocess; it is never linked or imported, so invariant 2 holds — recorded as an `## Ad-hoc` decision and an ADR line".
+  **Affects:** No other plan names ffmpeg or the license allowlist. The image is much larger (763 MB against 301 MB), which the release and smoke plans (M1, C-10) absorb without change.
+- **Change:** Project invariant 4 is reworded (CLAUDE.md; ADR-152 amends ADR-149). Every REST route requires the service credential except `GET /health`, `/metrics`, `/openapi.json`, `/docs` and `/redoc`, and media content fetched with a valid signed URL: `GET /media/{id}/content` with an unexpired `exp` and `sig`. Without them the Bearer credential is still required. The route-table guard (`tests/test_route_guard.py`) checks the one signed route over `api.auth.SIGNED_ROUTES`.
+  **Why:** This is the owner's round-two decision on #107, applied by #107.
+  **Affects:** M8's #260 plans `GET …/image-candidates/{cid}/content`, read through an Epistrel-signed `…/content?exp=&sig=` URL "through #107's mechanism". The reworded invariant does not exempt that route. It needs its own exemption (a new ADR and an invariant change) or a credential-only design, so `/n8-replan M8` should look at #260. #255 (reference images as #107 signed URLs) and #126 (export content behind the credential, with no signed URL) fit the new wording unchanged.
+
+## /n8-exec M3 — 2026-10-12 (continued)
+
+- **Decision:** The M3 section continues here, after the two `## Ad-hoc` entries #107 recorded for its owner-decided invariant changes. Later stories append below.
+  **Why:** #107's owner lines ("(user, round one)", "(user, round two)") say both decisions are recorded as `## Ad-hoc` entries. M2 logged its planned amendments (#44, #71) as decisions, to keep the run's section last. Appending the entries and reopening the section keeps both: the drift ledger has the entries, and the M3 section is still last. Cost if wrong: one heading.
+  **Issue:** #107

@@ -19,6 +19,11 @@ The ``media_sweep`` recurring job (``orchestrator.jobs.handlers.media_sweep``, e
    names (left by an upload whose transaction failed after its bytes moved into place). Two
    assets with identical bytes share one blob, so purging one keeps the bytes.
 3. **Staging.** Staged uploads older than an hour (a crashed upload's) are removed.
+4. **Upload sessions** (#107; ``core.media.uploads.sweep_sessions``). Open sessions past their
+   expiry (``media_upload_ttl`` after their last part) are aborted and their parts removed;
+   completed and aborted sessions are deleted once the idempotency result window has passed
+   since they closed; and parts a store holds for no open session are removed once they are
+   ``media_upload_ttl`` old (a crash between a session's opening and its row).
 
 Each run handles at most ``MAX_BATCHES`` batches of ``BATCH`` rows or blobs, and the next run
 goes on from there, so the sweep eventually reaches every row and every blob however many there
@@ -52,7 +57,8 @@ from epistrel.core import clock, ownership
 from epistrel.core.context import SYSTEM_PRINCIPAL
 from epistrel.core.erasure.index import drop_references
 from epistrel.core.media.assets import RECORD_TABLE, lock_checksum, referenced, unreferenced
-from epistrel.core.media.store import LocalFilesystemStore
+from epistrel.core.media.store import BlobStore
+from epistrel.core.media.uploads import sweep_sessions
 from epistrel.core.tables.media import MediaState, media_assets
 from epistrel.core.tables.ownership import EntityType
 from epistrel.testing import pauses
@@ -77,7 +83,7 @@ def _eligible(now: datetime) -> Any:
     )
 
 
-async def collect_blob(db: AsyncEngine, store: LocalFilesystemStore, checksum: str) -> bool:
+async def collect_blob(db: AsyncEngine, store: BlobStore, checksum: str) -> bool:
     """Delete blob ``checksum`` if no asset row of any state has it (under its lock)."""
     async with db.begin() as conn:
         await lock_checksum(conn, checksum)
@@ -107,9 +113,7 @@ async def _purge(db: AsyncEngine, asset_id: str, now: datetime) -> str | None:
         return str(row.checksum)
 
 
-async def _purge_unreferenced(
-    db: AsyncEngine, store: LocalFilesystemStore, now: datetime
-) -> tuple[int, int]:
+async def _purge_unreferenced(db: AsyncEngine, store: BlobStore, now: datetime) -> tuple[int, int]:
     purged = blobs = 0
     after: tuple[datetime, str] | None = None
     async with db.connect() as conn:
@@ -133,7 +137,7 @@ async def _purge_unreferenced(
     return purged, blobs
 
 
-async def _collect_orphans(db: AsyncEngine, store: LocalFilesystemStore) -> int:
+async def _collect_orphans(db: AsyncEngine, store: BlobStore) -> int:
     deleted = 0
     limit = BATCH * MAX_BATCHES
     resume = await asyncio.to_thread(store.sweep_cursor)
@@ -161,7 +165,7 @@ async def _collect_orphans(db: AsyncEngine, store: LocalFilesystemStore) -> int:
     return deleted
 
 
-def _clear_staging(store: LocalFilesystemStore) -> int:
+def _clear_staging(store: BlobStore) -> int:
     removed = 0
     for path, age in list(store.staged_files()):
         if age >= ORPHAN_AGE_S:
@@ -171,20 +175,31 @@ def _clear_staging(store: LocalFilesystemStore) -> int:
 
 
 async def sweep(
-    db: AsyncEngine, store: LocalFilesystemStore, *, now: datetime | None = None
+    db: AsyncEngine, store: BlobStore, *, now: datetime | None = None
 ) -> dict[str, int]:
     """One media sweep (see the module docstring); the counts of what it removed."""
     moment = now or clock.now()
     purged, blobs = await _purge_unreferenced(db, store, moment)
     blobs += await _collect_orphans(db, store)
     staged = await asyncio.to_thread(_clear_staging, store)
+    sessions = await sweep_sessions(db, store, now=moment)
     logger.info(
-        "media sweep: %d asset(s) purged, %d blob(s) deleted, %d staged upload(s) removed",
+        "media sweep: %d asset(s) purged, %d blob(s) deleted, %d staged upload(s) removed, "
+        "%d upload session(s) expired, %d closed session(s) deleted, %d stray part upload(s) "
+        "removed",
         purged,
         blobs,
         staged,
+        sessions["sessions_expired"],
+        sessions["sessions_purged"],
+        sessions["parts_removed"],
     )
-    return {"assets_purged": purged, "blobs_deleted": blobs, "staged_removed": staged}
+    return {
+        "assets_purged": purged,
+        "blobs_deleted": blobs,
+        "staged_removed": staged,
+        **sessions,
+    }
 
 
 __all__ = ["BATCH", "LIVE_GRACE", "MAX_BATCHES", "ORPHAN_AGE_S", "collect_blob", "sweep"]

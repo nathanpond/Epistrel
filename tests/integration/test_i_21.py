@@ -79,6 +79,7 @@ from tests.integration.ownership_fixtures import (
     request_path,
 )
 from tests.media_support import blob_path, media_client, scratch, uploaded
+from tests.model_support import config_key
 from tests.respond_support import respond_client
 from tests.story_support import story_body
 
@@ -88,7 +89,8 @@ Snapshot = dict[str, list[str]]
 
 @pytest.fixture
 def stub_settings(pg_url: str) -> Settings:
-    return auth_settings(pg_url, model_adapter="stub")
+    """The stub model, and a config key so ``GET /media/{id}/url`` can sign (#107)."""
+    return auth_settings(pg_url, model_adapter="stub", config_key=config_key())
 
 
 def _unique(prefix: str) -> str:
@@ -392,6 +394,8 @@ def _label(case: tuple[tuple[str, str], dict[str, str]]) -> str:
 
 
 ULID_TEXT = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+SIGNED_TEXT = re.compile(r"([?&](?:exp|sig)=)[^&]*")
+"""A signed URL's expiry and signature (#107), which differ between two fresh assets."""
 TIME_TEXT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?")
 
 
@@ -409,7 +413,7 @@ def _blanked(body: Any) -> Any:
     if isinstance(body, list):
         return sorted((_blanked(item) for item in body), key=_canonical)
     if isinstance(body, str):
-        return TIME_TEXT.sub("<time>", ULID_TEXT.sub("<id>", body))
+        return TIME_TEXT.sub("<time>", SIGNED_TEXT.sub(r"\1<signed>", ULID_TEXT.sub("<id>", body)))
     return body
 
 
@@ -446,13 +450,16 @@ async def test_i_21__nothing_gates(
                 )
                 await ok(granted, 201)
             extra = await call.prepare(client, kind, entity)
-            response = await client.request(
-                method,
-                request_path(kind, path, entity, extra),
-                json=call.body(entity),
-                params=query,
-                headers=headers(requester),
-            )
+            try:
+                response = await client.request(
+                    method,
+                    request_path(kind, path, entity, extra),
+                    json=call.body(entity),
+                    params=query,
+                    headers=headers(requester),
+                )
+            finally:
+                await call.cleanup(client, kind, entity)
             statuses[requester] = response.status_code
             assert response.status_code == call.expected, (requester, response.text)
             if method == "GET":

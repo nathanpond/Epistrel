@@ -416,6 +416,14 @@ MEDIA_MODERATION_TIMEOUT_MAX_MS = 60_000
 DEFAULT_MEDIA_SWEEP_INTERVAL_S = 3_600
 MEDIA_SWEEP_INTERVAL_MIN_S = 60
 MEDIA_SWEEP_INTERVAL_MAX_S = 7 * 86_400
+DEFAULT_MEDIA_SIGNED_URL_TTL_S = 300
+MEDIA_SIGNED_URL_TTL_MIN_S = 1
+MEDIA_SIGNED_URL_TTL_MAX_S = 86_400
+DEFAULT_MEDIA_MULTIPART_THRESHOLD = 8 * 1024 * 1024
+MEDIA_MULTIPART_THRESHOLD_MIN = 1024
+DEFAULT_MEDIA_UPLOAD_TTL_S = 86_400
+MEDIA_UPLOAD_TTL_MIN_S = 60
+MEDIA_UPLOAD_TTL_MAX_S = 7 * 86_400
 URL_MAX_CHARS = 2_048
 MIME_TYPE_PATTERN = r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$"
 """A MIME type as ``media_allowed_types`` lists it: ``type/subtype``, lowercase, no
@@ -448,8 +456,12 @@ class MediaSettings(BaseModel):
     (``media_max_bytes``); the optional moderation hook every upload is sent to before it is
     stored (``media_moderation_webhook_url``; ``null``: none) and how long it may take
     (``media_moderation_timeout_ms``); how often the media sweep runs (``media_sweep_interval``,
-    seconds); and the base URL the hook's ``content_url`` starts with (``public_base_url``;
-    ``null``: the URL is relative to Epistrel's root). Prospective: an upload or sweep uses the
+    seconds); and the base URL the hook's ``content_url`` and ``GET /media/{id}/url``'s signed
+    URLs start with (``public_base_url``; ``null``: the hook's URL is relative to Epistrel's root,
+    and a signed URL cannot be made). From #107 (FR-MEDIA-3): how long a signed URL works
+    (``media_signed_url_ttl``, seconds), the size above which an upload must use a resumable
+    session (``media_multipart_threshold``, bytes), and how long an upload session lives after its
+    last activity (``media_upload_ttl``, seconds). Prospective: an upload or sweep uses the
     values in force when it starts."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -472,6 +484,19 @@ class MediaSettings(BaseModel):
         le=MEDIA_SWEEP_INTERVAL_MAX_S,
     )
     public_base_url: Annotated[HttpUrl | None, PROSPECTIVE] = None
+    media_signed_url_ttl: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_MEDIA_SIGNED_URL_TTL_S,
+        ge=MEDIA_SIGNED_URL_TTL_MIN_S,
+        le=MEDIA_SIGNED_URL_TTL_MAX_S,
+    )
+    media_multipart_threshold: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_MEDIA_MULTIPART_THRESHOLD,
+        ge=MEDIA_MULTIPART_THRESHOLD_MIN,
+        le=MEDIA_MAX_BYTES_LIMIT,
+    )
+    media_upload_ttl: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_MEDIA_UPLOAD_TTL_S, ge=MEDIA_UPLOAD_TTL_MIN_S, le=MEDIA_UPLOAD_TTL_MAX_S
+    )
 
     @field_validator("media_allowed_types")
     @classmethod

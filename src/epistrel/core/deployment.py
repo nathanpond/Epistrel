@@ -118,6 +118,9 @@ class SettingsPatch(BaseModel):
     media_moderation_timeout_ms: int | None = None
     media_sweep_interval: int | None = None
     public_base_url: str | None = None
+    media_signed_url_ttl: int | None = None
+    media_multipart_threshold: int | None = None
+    media_upload_ttl: int | None = None
 
     def changes(self) -> dict[str, Any]:
         present: dict[str, Any] = {}

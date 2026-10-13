@@ -1,5 +1,6 @@
-"""The media building blocks without a database (#105): signed URLs and the hook signature, the
-moderation secret command, what a probe reads, and the local blob store."""
+"""The media building blocks without a database (#105, #107): signed URLs and the hook
+signature, the moderation secret command, what a probe reads, the local blob store, byte ranges,
+ffmpeg's poster extraction, and a resumable session's parts on the local store."""
 
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from pydantic import SecretStr
 
 from epistrel.core.errors import SigningKeyMissing
 from epistrel.core.media import probe
+from epistrel.core.media.poster import ToolStatus
 from epistrel.core.media.signing import (
     CLOCK_SKEW_S,
     Signer,
@@ -299,3 +301,167 @@ def test_processes_prepare_one_root_at_once(tmp_path: Path) -> None:
         thread.join()
     assert errors == []
     assert list(LocalFilesystemStore(root).staged_files()) == []
+
+
+# -- delivery (#107): ranges, signatures, posters, probes, session parts ---------------------------
+
+
+def test_a_range_header_reads_as_rfc_9110_says() -> None:
+    """``parse_range`` takes one ``bytes`` range (first-last, first-, -suffix), any case and
+    spacing; anything else is ``None``: the whole content. ``ByteRange.resolve`` clamps a range
+    to the content and finds none in a range that starts past it or a zero suffix."""
+    from epistrel.api.routes.media import entity_tags, parse_range
+    from epistrel.core.media.assets import ByteRange
+
+    assert parse_range("bytes=0-99") == ByteRange(first=0, last=99)
+    assert parse_range("bytes=100-") == ByteRange(first=100)
+    assert parse_range("bytes=-5") == ByteRange(suffix=5)
+    assert parse_range(" Bytes = 1 - 2 ") == ByteRange(first=1, last=2)
+    for ignored in (None, "", "bytes=", "bytes=-", "bytes=5-2", "bytes=0-1,3-4", "items=0-1"):
+        assert parse_range(ignored) is None, ignored
+    assert parse_range("bytes=" + "9" * 19 + "-") is None  # longer than any size
+    assert ByteRange(first=0, last=99).resolve(50) == (0, 49)
+    assert ByteRange(first=10).resolve(50) == (10, 49)
+    assert ByteRange(suffix=5).resolve(50) == (45, 49)
+    assert ByteRange(suffix=500).resolve(50) == (0, 49)
+    assert ByteRange(first=50).resolve(50) is None
+    assert ByteRange(suffix=0).resolve(50) is None
+    assert ByteRange(first=0).resolve(0) is None
+    assert entity_tags(None) == []
+    assert entity_tags(' "a" , W/"b",*') == ['"a"', 'W/"b"', "*"]
+
+
+def test_a_signature_is_checked_as_valid_expired_or_invalid() -> None:
+    """``check`` tells a forged or misdirected signature (``invalid``) from a good one past its
+    expiry and skew (``expired``); without a key everything is ``invalid``."""
+    signer = Signer(SecretStr(CONFIG_KEY))
+    path = "/media/01J9Z8Q4N5V6W7X8Y9Z0A1B2C6/content"
+    exp = int(NOW.timestamp()) + 60
+    sig = signer.url_signature("GET", path, exp)
+    assert signer.check("GET", path, exp, sig, now=NOW) == "valid"
+    later = NOW + timedelta(seconds=60 + CLOCK_SKEW_S + 1)
+    assert signer.check("GET", path, exp, sig, now=later) == "expired"
+    assert signer.check("GET", path, exp, "x" + sig[1:], now=NOW) == "invalid"
+    assert signer.check("GET", path.replace("C6", "C7"), exp, sig, now=later) == "invalid"
+    assert Signer(None).check("GET", path, exp, sig, now=NOW) == "invalid"
+    with pytest.raises(SigningKeyMissing, match="no signed media URL"):
+        Signer(None).require("no key, so no signed media URL")
+
+
+def test_ffprobe_is_taken_from_beside_ffmpeg() -> None:
+    from epistrel.core.media.poster import ffprobe_beside
+
+    assert ffprobe_beside("ffmpeg") == "ffprobe"
+    assert ffprobe_beside("/opt/ff/bin/ffmpeg") == "/opt/ff/bin/ffprobe"
+    assert ffprobe_beside("/opt/ff/ffmpeg-7") == "/opt/ff/ffprobe-7"
+    assert ffprobe_beside("/usr/local/bin/avconv") == "/usr/local/bin/ffprobe"
+
+
+def _video_file(tmp_path: Path, width: int, height: int) -> Path:
+    from tests.media_support import video
+
+    path = tmp_path / "01J9Z8Q4N5V6W7X8Y9Z0A1B2C6"
+    path.write_bytes(video(width, height))
+    return path
+
+
+async def test_the_real_tools_read_and_frame_a_video(tmp_path: Path) -> None:
+    """With the installed ffmpeg: ffprobe reads a real video's width, height and duration
+    (regression: the probe passed ``-nostdin``, which ffprobe refuses, so it never read a
+    video), and the first frame becomes a PNG no larger than 1280 pixels a side, the aspect
+    kept."""
+    from epistrel.core.media.poster import FfmpegTools
+
+    tools = FfmpegTools()
+    assert await tools.status() == ToolStatus("ok", "ok")
+    wide = _video_file(tmp_path, 2000, 1000)
+    assert await tools.probe_video(wide) == probe.Dimensions(2000, 1000, 1000)
+    assert await probe.dimensions(wide, MediaKind.VIDEO) == probe.Dimensions(2000, 1000, 1000)
+    out = tmp_path / "poster"
+    await tools.extract(wide, out)
+    with Image.open(out) as frame:
+        assert (frame.format, frame.size) == ("PNG", (1280, 640))
+
+
+async def test_extraction_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No ffmpeg is 422 ``poster_required`` naming ``ffmpeg_path``; ffmpeg failing is
+    ``poster_extraction_failed`` (``ffmpeg_failed``), running out of time ``timeout``, and
+    writing nothing ``no_frame``; no output file is left behind. ``status`` reads each tool's
+    ``-version`` once and keeps the answer."""
+    from epistrel.core.errors import PosterExtractionFailed, PosterRequired
+    from epistrel.core.media import poster
+
+    video = tmp_path / "v"
+    video.write_bytes(b"not a video")
+    out = tmp_path / "out"
+    with pytest.raises(PosterRequired) as missing:
+        await poster.FfmpegTools(str(tmp_path / "absent")).extract(video, out)
+    assert missing.value.details == {"setting": "ffmpeg_path"}
+
+    fake = tmp_path / "bin" / "ffmpeg"
+    fake.parent.mkdir()
+    calls = tmp_path / "calls"
+
+    def script(body: str) -> poster.FfmpegTools:
+        fake.write_text(
+            f'#!/bin/sh\nif [ "$1" = "-version" ]; then echo v >> {calls}; exit 0; fi\n{body}\n'
+        )
+        fake.chmod(0o755)
+        return poster.FfmpegTools(str(fake))
+
+    failing = script("exit 1")
+    with pytest.raises(PosterExtractionFailed) as failed:
+        await failing.extract(video, out)
+    assert failed.value.details == {"reason": "ffmpeg_failed"}
+    assert not out.exists()
+    await failing.status()
+    assert calls.read_text().count("v") == 1  # ffmpeg asked once; ffprobe is absent here
+    assert (await failing.status()).ffprobe == "missing"
+    silent = script("exit 0")
+    with pytest.raises(PosterExtractionFailed) as nothing:
+        await silent.extract(video, out)
+    assert nothing.value.details == {"reason": "no_frame"}
+    monkeypatch.setattr(poster, "EXTRACT_TIMEOUT_S", 0.2)
+    slow = script("exec /bin/sleep 5")
+    with pytest.raises(PosterExtractionFailed) as late:
+        await slow.extract(video, out)
+    assert late.value.details == {"reason": "timeout"}
+    assert not out.exists()
+
+
+def test_the_local_store_keeps_session_parts_and_reads_ranges(tmp_path: Path) -> None:
+    """The local store keeps a session's parts as numbered files under
+    ``<root>/uploads/<upload id>`` (a part sent again replaces the first), lists them, writes
+    them in order into a target, and removes them on finishing or aborting; directories older
+    than an age are the stray ones. ``open_range`` reads a window of a blob."""
+    store = LocalFilesystemStore(tmp_path / "media")
+    store.prepare()
+    upload_id = "01J9Z8Q4N5V6W7X8Y9Z0A1B2C6"
+    assert store.begin_parts(upload_id, "image/png") is None
+    for number, data in ((2, b"world"), (1, b"x" * 6), (1, b"hello ")):
+        staged = store.part_staging(upload_id, number)
+        staged.write_bytes(data)
+        store.store_part(upload_id, number, staged, None)
+        assert not staged.exists()
+    assert store.stored_parts(upload_id, None) == {1: 6, 2: 5}
+    target = io.BytesIO()
+    store.assemble(upload_id, 2, None, target)
+    assert target.getvalue() == b"hello world"
+    assert store.reopen_parts(upload_id, None, 6, 11) is None
+    assert store.stale_part_uploads(3600) == []
+    assert store.stale_part_uploads(0) == [(upload_id, None)]
+    store.finish_parts(upload_id, None)
+    assert not store.session_dir(upload_id).exists()
+    assert store.stored_parts(upload_id, None) == {}
+    with pytest.raises(ValueError, match="upload session"):
+        store.session_dir("../escape")
+    data = bytes(range(200))
+    digest = hashlib.sha256(data).hexdigest()
+    with store.open_staging("01J9Z8Q4N5V6W7X8Y9Z0A1B2C7") as handle:
+        handle.write(data)
+    store.put(store.staging_path("01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"), digest)
+    window = store.open_range(digest, 100, 109)
+    assert window.read(4) + window.read() == data[100:110]
+    assert window.read() == b""
+    window.close()
+    assert store.presign(digest, 60) is None

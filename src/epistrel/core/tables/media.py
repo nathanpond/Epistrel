@@ -4,11 +4,20 @@
 or ``video``), the MIME type sniffed from its bytes, its size, its dimensions or duration (null
 when no probe could read them), the SHA-256 ``checksum`` that addresses its bytes in the blob
 store, the content-rating version it was uploaded under, alt text, caption, generation metadata,
-``source`` (``uploaded`` here; ``generated`` from M8), ``state`` and the ``depicted_subjects`` the
-upload declared (``[{kind, id}]``). Two assets with identical bytes share one blob: the blob is
-keyed by checksum, never by asset. ``state`` is ``live``; ``retired`` once deleted (the row and
-its bytes stay while anything references them, and the media sweep purges it once nothing does);
-or ``candidate`` (M8's unattached catalog images, which the general sweep never touches).
+``source`` (``uploaded``; ``extracted`` for a video's poster ffmpeg took from its first frame,
+#107; ``generated`` from M8), ``state``, the ``depicted_subjects`` the upload declared (``[{kind,
+id}]``) and, for a video, ``poster_media_id``: the image asset that is its poster (FR-MEDIA-3;
+#107), a plain reference the media sweep counts. Two assets with identical bytes share one blob:
+the blob is keyed by checksum, never by asset. ``state`` is ``live``; ``retired`` once deleted
+(the row and its bytes stay while anything references them, and the media sweep purges it once
+nothing does); or ``candidate`` (M8's unattached catalog images, which the general sweep never
+touches).
+
+``media_upload_sessions`` holds the resumable uploads (FR-MEDIA-3; #107): the asset's metadata,
+declared size, MIME type and SHA-256, the part size and the parts received so far, its ``state``
+(``open``, ``completed`` or ``aborted``), when it expires (``media_upload_ttl`` after its last
+activity), the asset a completion created, and, on an S3-compatible store, the store's own
+multipart ``UploadId``.
 
 ``subject_references`` is the subject-reference index #123 completes: one row per (subject,
 record, field) for every record that references a subject, written in the record's own
@@ -38,7 +47,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from epistrel.core.tables.base import metadata, ulid_type
 
@@ -54,10 +63,12 @@ class MediaKind(StrEnum):
 
 
 class MediaSource(StrEnum):
-    """Where an asset came from: ``uploaded`` by the consumer, or ``generated`` (M8)."""
+    """Where an asset came from: ``uploaded`` by the consumer, ``generated`` (M8), or
+    ``extracted``: a video's poster taken from its first frame with ffmpeg (#107)."""
 
     UPLOADED = "uploaded"
     GENERATED = "generated"
+    EXTRACTED = "extracted"
 
 
 class MediaState(StrEnum):
@@ -67,6 +78,15 @@ class MediaState(StrEnum):
     LIVE = "live"
     RETIRED = "retired"
     CANDIDATE = "candidate"
+
+
+class UploadState(StrEnum):
+    """A resumable upload session's state (#107): ``open`` (parts may arrive), ``completed``
+    (its asset exists) or ``aborted`` (by ``DELETE`` or by the sweep once it expired)."""
+
+    OPEN = "open"
+    COMPLETED = "completed"
+    ABORTED = "aborted"
 
 
 class SubjectKind(StrEnum):
@@ -106,6 +126,8 @@ SUBJECT_KIND_CHECK = _in("subject_kind", SubjectKind)
 SCOPE_CHECK = _in("scope", ReferenceScope)
 REF_KIND_CHECK = _in("ref_kind", ReferenceKind)
 STORY_SCOPE_CHECK = "(story_id IS NOT NULL) = (scope = 'story')"
+UPLOAD_STATE_CHECK = _in("state", UploadState)
+DECLARED_SHA256_CHECK = "declared_sha256 ~ '^[0-9a-f]{64}$'"
 
 media_assets = Table(
     "media_assets",
@@ -128,6 +150,7 @@ media_assets = Table(
     Column("depicted_subjects", JSONB, nullable=False),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False),
     Column("created_by", Text, nullable=False),
+    Column("poster_media_id", ulid_type(), nullable=True),
     CheckConstraint(KIND_CHECK, name="kind"),
     CheckConstraint(SOURCE_CHECK, name="source"),
     CheckConstraint(STATE_CHECK, name="state"),
@@ -144,6 +167,40 @@ Index(
     media_assets.c.state,
     media_assets.c.created_at,
     media_assets.c.id,
+)
+# The media sweep's "does a video name this poster" (#107).
+Index("ix_media_assets_poster_media_id", media_assets.c.poster_media_id)
+
+media_upload_sessions = Table(
+    "media_upload_sessions",
+    metadata,
+    Column("id", ulid_type(), primary_key=True),
+    Column("owner_principal", Text, nullable=False),
+    Column("created_by", Text, nullable=False),
+    Column("size", BigInteger, nullable=False),
+    Column("mime_type", Text, nullable=False),
+    Column("metadata", JSONB, nullable=False),
+    Column("declared_sha256", CHAR(CHECKSUM_LENGTH), nullable=False),
+    Column("part_size", Integer, nullable=False),
+    Column("received_parts", ARRAY(Integer), nullable=False),
+    Column("state", Text, nullable=False),
+    Column("s3_upload_id", Text, nullable=True),
+    Column("media_id", ulid_type(), nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("expires_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("closed_at", TIMESTAMP(timezone=True), nullable=True),
+    CheckConstraint(UPLOAD_STATE_CHECK, name="state"),
+    CheckConstraint(DECLARED_SHA256_CHECK, name="declared_sha256"),
+    CheckConstraint("size > 0", name="size"),
+    CheckConstraint("part_size > 0", name="part_size"),
+)
+
+# The sweep's expired open sessions and its closed rows past the result window.
+Index(
+    "ix_media_upload_sessions_state_expires_at",
+    media_upload_sessions.c.state,
+    media_upload_sessions.c.expires_at,
 )
 
 subject_references = Table(
@@ -189,6 +246,7 @@ Index(
 __all__ = [
     "CHECKSUM_CHECK",
     "CHECKSUM_LENGTH",
+    "DECLARED_SHA256_CHECK",
     "KIND_CHECK",
     "REF_KIND_CHECK",
     "SCOPE_CHECK",
@@ -196,12 +254,15 @@ __all__ = [
     "STATE_CHECK",
     "STORY_SCOPE_CHECK",
     "SUBJECT_KIND_CHECK",
+    "UPLOAD_STATE_CHECK",
     "MediaKind",
     "MediaSource",
     "MediaState",
     "ReferenceKind",
     "ReferenceScope",
     "SubjectKind",
+    "UploadState",
     "media_assets",
+    "media_upload_sessions",
     "subject_references",
 ]

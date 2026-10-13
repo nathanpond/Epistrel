@@ -226,6 +226,27 @@ PINNED = {"items": [{"text": "Ada owes Wren."}]}
 INSTRUCTIONS = {"text": "Keep it brief."}
 
 
+PUBLIC_BASE_URL = "https://media.example.test"
+"""The base of a signed media URL, set for ``GET /media/{id}/url`` and unset after it (#107)."""
+
+
+async def _public_base(client: httpx.AsyncClient, base: str | None) -> None:
+    response = await client.put(
+        "/admin/settings", json={"public_base_url": base}, headers=headers(OWNER)
+    )
+    await ok(response, 200)
+
+
+async def _signable(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    await _public_base(client, PUBLIC_BASE_URL)
+    return {}
+
+
+async def _unsignable(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    await _public_base(client, None)
+    return {}
+
+
 async def _configured(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     await _send(client, kind, entity, "PATCH", "/settings", SETTINGS, 200)
     return {}
@@ -244,13 +265,15 @@ async def _instructed(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> 
 @dataclass(frozen=True)
 class Call:
     """A request that succeeds (``expected``) when the entity's owner sends it. ``json`` is the
-    body, or a function of the entity; ``prepare`` runs first, as the owner. The request is sent
-    once per query string in ``queries``, each its own matrix case."""
+    body, or a function of the entity; ``prepare`` runs first, as the owner, and ``cleanup``
+    after the case (a deployment setting ``prepare`` changed). The request is sent once per query
+    string in ``queries``, each its own matrix case."""
 
     expected: int
     json: Any = None
     queries: tuple[dict[str, str], ...] = ({},)
     prepare: Prepare = _nothing
+    cleanup: Prepare = _nothing
 
     def body(self, entity: Entity) -> Any:
         return self.json(entity) if callable(self.json) else self.json
@@ -321,9 +344,12 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{M}/owner"): Call(200, {"principal": NEW_OWNER}),
     ("POST", f"{M}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
     ("DELETE", f"{M}{RELATION}"): Call(204, prepare=_related),
-    # -- media assets: reads of the metadata the upload stored, and of the bytes
+    # -- media assets: reads of the metadata the upload stored, and of the bytes (#107: their
+    # headers too, and a signed URL for them)
     ("GET", M): Call(200),
     ("GET", f"{M}/content"): Call(200),
+    ("HEAD", f"{M}/content"): Call(200),
+    ("GET", f"{M}/url"): Call(200, prepare=_signable, cleanup=_unsignable),
     ("GET", f"{M}/relations"): Call(200, prepare=_related),
 }
 """Every route under an owned entity's path, ``/admin`` excluded."""
@@ -355,6 +381,7 @@ __all__ = [
     "NEW_OWNER",
     "OWNER",
     "PRIVILEGED_NAMES",
+    "PUBLIC_BASE_URL",
     "RELATED",
     "STRANGER",
     "Call",

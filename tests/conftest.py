@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
+import urllib.error
+import urllib.request
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -34,6 +38,21 @@ SMOKE_DIR = Path(__file__).resolve().parent / "smoke"
 SCENARIO_DIR = Path(__file__).resolve().parent / "scenario"
 P05_FILE = "test_p_05.py"
 PG_IMAGE = "pgvector/pgvector:pg16"
+MINIO_IMAGE = (
+    "bitnamilegacy/minio:2025.7.23-debian-12-r5"
+    "@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20"
+)
+"""The S3-compatible store the S3 adapter's tests run against (#107): MinIO
+RELEASE.2025-07-23T15-54-02Z. Resolved 2026-10-12: ``minio/minio`` is no longer published on
+Docker Hub, and MinIO's latest release (RELEASE.2025-10-15T17-29-55Z) has no image anywhere, so
+the tag is Bitnami's frozen legacy build of the newest release that has one, pinned by digest.
+Its ``minio`` binary runs directly (``MINIO_ENTRYPOINT``), without Bitnami's setup scripts, which
+start and stop the server once before serving. MinIO is AGPL: a test service only, never a
+dependency."""
+MINIO_ENTRYPOINT = "/opt/bitnami/minio/bin/minio"
+MINIO_ACCESS_KEY = "epistrel-test"
+MINIO_SECRET_KEY = "epistrel-test-secret-0123"
+MINIO_READY_S = 60.0
 OVERRIDE_VAR = "EPISTREL_TEST_DATABASE_URL"
 LIVE_MODEL_MARKER = "live_model"
 PERF_LONG_MARKER = "perf_long"
@@ -132,6 +151,54 @@ def pg_url() -> Iterator[str]:
         url = container.get_connection_url()
         command.upgrade(alembic_config(url), "head")
         yield url
+    finally:
+        container.stop()
+
+
+@dataclass(frozen=True)
+class S3Endpoint:
+    """A running S3-compatible store: its URL and its access key pair."""
+
+    url: str
+    access_key: str
+    secret_key: str
+
+
+@pytest.fixture(scope="session")
+def minio() -> Iterator[S3Endpoint]:
+    """MinIO (``MINIO_IMAGE``) in a throwaway container for the session; a test fails, never
+    skips, without Docker (#107)."""
+    try:
+        from testcontainers.core.container import DockerContainer
+
+        container = DockerContainer(
+            MINIO_IMAGE,
+            command="server /tmp/data --address :9000",
+            env={"MINIO_ROOT_USER": MINIO_ACCESS_KEY, "MINIO_ROOT_PASSWORD": MINIO_SECRET_KEY},
+            ports=[9000],
+            entrypoint=MINIO_ENTRYPOINT,
+        )
+        container.start()
+    except Exception as exc:
+        pytest.fail(
+            f"The S3 adapter's tests need MinIO ({MINIO_IMAGE!r}), started through Docker.\n"
+            f"Cause: {type(exc).__name__}: {exc}",
+            pytrace=False,
+        )
+    try:
+        url = f"http://{container.get_container_host_ip()}:{container.get_exposed_port(9000)}"
+        deadline = time.monotonic() + MINIO_READY_S
+        while True:
+            try:
+                with urllib.request.urlopen(f"{url}/minio/health/ready", timeout=2) as ready:  # noqa: S310 - the container's own URL
+                    if ready.status == 200:
+                        break
+            except OSError, urllib.error.URLError:
+                pass
+            if time.monotonic() > deadline:
+                pytest.fail(f"MinIO did not become ready within {MINIO_READY_S}s", pytrace=False)
+            time.sleep(0.2)
+        yield S3Endpoint(url, MINIO_ACCESS_KEY, MINIO_SECRET_KEY)
     finally:
         container.stop()
 

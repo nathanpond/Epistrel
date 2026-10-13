@@ -70,6 +70,8 @@ from tests.media_support import (
 from tests.model_support import CONFIG_KEY, config_key
 
 AUTHOR = RequestContext(principal="p-media")
+NO_SESSIONS = {"sessions_expired": 0, "sessions_purged": 0, "parts_removed": 0}
+"""The media sweep's upload-session counts (#107) when there are no sessions to sweep."""
 
 
 @pytest.fixture
@@ -685,7 +687,15 @@ async def test_list_filters_and_pages(settings: Settings, engine: AsyncEngine) -
     owner = f"p-lister-{secrets.token_hex(3)}"
     async with media_client(settings, engine) as client:
         made = [await uploaded(client, owner=owner) for _ in range(3)]
-        video = await uploaded(client, mp4(), content_type="video/mp4", kind="video", owner=owner)
+        # Every video has a poster (#107): one of the listed images, so nothing new is listed.
+        video = await uploaded(
+            client,
+            mp4(),
+            content_type="video/mp4",
+            kind="video",
+            owner=owner,
+            poster=made[0]["id"],
+        )
         assert (video["mime_type"], video["duration_ms"]) == ("video/mp4", None)
         related = await client.post(
             f"/media/{made[0]['id']}/relations",
@@ -998,6 +1008,7 @@ MEDIA_COLUMNS = {
     "depicted_subjects": ("jsonb", "NO"),
     "created_at": ("timestamptz", "NO"),
     "created_by": ("text", "NO"),
+    "poster_media_id": ("bpchar", "YES"),
 }
 REFERENCE_COLUMNS = {
     "id": ("bpchar", "NO"),
@@ -1014,8 +1025,9 @@ REFERENCE_COLUMNS = {
 
 async def test_media_tables(engine: AsyncEngine) -> None:
     """Migration 0022 creates ``media_assets`` with the asset's columns (``kind`` image|video,
-    ``source`` uploaded|generated, ``state`` live|retired|candidate, a lowercase SHA-256
-    ``checksum``) and ``subject_references`` in #123's shape (a story row names its story, a
+    ``source`` uploaded|generated, which 0023 extends with ``extracted``, ``state``
+    live|retired|candidate, a lowercase SHA-256 ``checksum``, and from 0023 a video's
+    ``poster_media_id``) and ``subject_references`` in #123's shape (a story row names its story, a
     catalog row none; one row per subject, record and field, a null field included). The
     checks refuse what the vocabularies leave out."""
     from sqlalchemy.exc import IntegrityError
@@ -1182,7 +1194,7 @@ async def test_sweep_purges_what_nothing_references(space: Scratch) -> None:
     aged(stale, OLD)
 
     counts = await sweep(space.db, space.lib.media)
-    assert counts == {"assets_purged": 1, "blobs_deleted": 2, "staged_removed": 1}
+    assert counts == {"assets_purged": 1, "blobs_deleted": 2, "staged_removed": 1, **NO_SESSIONS}
     assert await ids(space) == {young, in_draft, in_version, candidate}
     assert not blob_path(space.root, retired_sum).exists()
     assert not blob_path(space.root, orphan_old).exists()
@@ -1216,7 +1228,7 @@ async def test_sweep_purges_what_nothing_references(space: Scratch) -> None:
     assert later["assets_purged"] == 1
     assert await ids(space) == {in_draft, in_version, candidate}
     again = await sweep(space.db, space.lib.media, now=tomorrow)
-    assert again == {"assets_purged": 0, "blobs_deleted": 0, "staged_removed": 0}
+    assert again == {"assets_purged": 0, "blobs_deleted": 0, "staged_removed": 0, **NO_SESSIONS}
 
     await execute(space, "UPDATE catalog.character_catalog SET draft = '{}'::jsonb")
     freed = await sweep(space.db, space.lib.media)
@@ -1279,7 +1291,12 @@ async def test_the_recurring_job(space: Scratch) -> None:
     finally:
         await space.lib.stop_workers()
     assert media_sweep_job.bound() is None
-    assert done.result == {"assets_purged": 1, "blobs_deleted": 1, "staged_removed": 0}
+    assert done.result == {
+        "assets_purged": 1,
+        "blobs_deleted": 1,
+        "staged_removed": 0,
+        **NO_SESSIONS,
+    }
     assert retired not in await ids(space)
     assert (
         await scalar(space.db, "SELECT last_status FROM recurring_tasks WHERE name = 'media_sweep'")
@@ -1367,13 +1384,13 @@ async def test_each_run_goes_on_where_the_last_stopped(
     later = clock.now() + timedelta(hours=25)
 
     first = await sweep(space.db, store, now=later)
-    assert first == {"assets_purged": 1, "blobs_deleted": 1, "staged_removed": 0}
+    assert first == {"assets_purged": 1, "blobs_deleted": 1, "staged_removed": 0, **NO_SESSIONS}
     assert await ids(space) == set(in_use)
     assert left.exists()
     assert store.sweep_cursor() == named[1]
 
     second = await sweep(space.db, store, now=later)
-    assert second == {"assets_purged": 0, "blobs_deleted": 1, "staged_removed": 0}
+    assert second == {"assets_purged": 0, "blobs_deleted": 1, "staged_removed": 0, **NO_SESSIONS}
     assert not left.exists()
     assert store.sweep_cursor() is None
     assert all(blob_path(space.root, checksum).exists() for checksum in named)
@@ -1418,7 +1435,7 @@ async def test_the_sweep_waits_for_an_upload_of_the_same_bytes(space: Scratch) -
         hold.release()
         fresh = await uploading
         counts = await sweeping
-    assert counts == {"assets_purged": 1, "blobs_deleted": 0, "staged_removed": 0}
+    assert counts == {"assets_purged": 1, "blobs_deleted": 0, "staged_removed": 0, **NO_SESSIONS}
     assert await ids(space) == {fresh}
     assert stored.exists()
     async with media_client(space.settings, space.db) as client:

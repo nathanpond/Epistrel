@@ -9,6 +9,7 @@ jobs too.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 
@@ -20,6 +21,7 @@ from epistrel.orchestrator.jobs import queue
 from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
 from epistrel.orchestrator.jobs.handlers.retention import sweep_retention
 from epistrel.orchestrator.jobs.types import JobContext
+from epistrel.orchestrator.jobs.worker import Worker, WorkerConfig
 from tests.integration.ownership_fixtures import headers, ok, persona_body
 from tests.offboarding_support import (
     OFFBOARDING,
@@ -632,6 +634,89 @@ async def test_the_last_failed_attempt_reports_failure(
         assert failed["finished_at"] is not None
         again, _ = await offboard(s.client, {"principal": w.a}, status=202)
         assert again["job_id"] != queued["job_id"], "a failed one does not block a new one"
+
+
+async def test_a_job_the_framework_ends_does_not_leave_the_offboarding_active(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker's runtime cap ends the job's last attempt without the handler's own failure
+    path running (the handler is cancelled). The offboarding still reads ``failed`` with the
+    job's error class and its partial report, and the principal can be offboarded again
+    (``offboarding.reconcile``; #117 verification round 1)."""
+    async with offboarding_db(pg_url) as s:
+        w = await world(s.client, s.db)
+        real = offboarding.apply
+
+        async def hangs_on_the_persona(*args: Any, **kwargs: Any) -> Any:
+            if args[2]["type"] == "personas":
+                await asyncio.sleep(60)
+            return await real(*args, **kwargs)
+
+        monkeypatch.setattr(offboarding, "apply", hangs_on_the_persona)
+        queued, _ = await offboard(
+            s.client,
+            {"principal": w.a, "actions": {"stories": "delete"}, "ignore_warnings": True},
+            status=202,
+        )
+        async with s.db.begin() as conn:
+            await conn.exec_driver_sql(
+                "UPDATE jobs SET failures = %(n)s WHERE id = %(j)s",
+                {"n": offboarding_job.MAX_ATTEMPTS - 1, "j": queued["job_id"]},
+            )
+        capped = Worker(
+            s.db,
+            WorkerConfig(
+                poll_interval=0.2,
+                lease_s=30.0,
+                listen=False,
+                concurrency=1,
+                timers=False,
+                max_runtime_s=1.0,
+            ),
+        )
+        await run_jobs(s.db, fresh=capped)
+        assert await scalar(s.db, "SELECT status FROM jobs WHERE id = :j", j=queued["job_id"]) == (
+            "failed"
+        )
+        failed = await report(s.client, queued["job_id"])
+        assert failed["status"] == "failed"
+        assert failed["error"]["class"] == "TimeoutError"
+        assert failed["current"] is None
+        assert failed["finished_at"] is not None
+        assert sorted(failed["report"]["deleted"]["stories"]) == sorted(
+            [w.shared_story, w.own_story]
+        )
+        assert failed["report"]["remaining"]["owned"]["personas"] == [w.persona]
+        monkeypatch.setattr(offboarding, "apply", real)
+        again, _ = await offboard(s.client, {"principal": w.a}, status=202)
+        assert again["job_id"] != queued["job_id"]
+
+
+async def test_an_offboarding_whose_job_is_gone_is_closed_at_the_next_request(
+    pg_url: str,
+) -> None:
+    """A request for a principal whose active offboarding's job has ended or is gone closes the
+    old one as ``failed`` in its own transaction and is accepted (not 409
+    ``offboarding_in_progress``)."""
+    async with offboarding_db(pg_url) as s:
+        w = await world(s.client, s.db)
+        queued, _ = await offboard(
+            s.client,
+            {"principal": w.a, "actions": {"stories": "delete"}, "ignore_warnings": True},
+            status=202,
+        )
+        async with s.db.begin() as conn:
+            await conn.exec_driver_sql(
+                "UPDATE offboarding_jobs SET status = 'running' WHERE id = %(j)s",
+                {"j": queued["job_id"]},
+            )
+            await conn.exec_driver_sql("DELETE FROM jobs WHERE id = %(j)s", {"j": queued["job_id"]})
+        again, _ = await offboard(s.client, {"principal": w.a}, status=202)
+        assert again["job_id"] != queued["job_id"]
+        closed = await report(s.client, queued["job_id"])
+        assert closed["status"] == "failed"
+        assert closed["error"]["class"] == "JobMissing"
+        assert closed["report"]["deleted"]["stories"] == []
 
 
 async def test_a_principal_may_hold_a_slash(pg_url: str) -> None:

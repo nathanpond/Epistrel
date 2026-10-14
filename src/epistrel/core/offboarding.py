@@ -8,7 +8,9 @@ type not named is ``keep``. ``transfer`` needs ``transfer_to`` (422
 ``transfer_target_required``), which must be neither the principal nor ``system`` (422
 ``transfer_target_invalid``). ``system`` itself cannot be offboarded (422
 ``principal_reserved``). A principal with a queued or running offboarding is 409
-``offboarding_in_progress``.
+``offboarding_in_progress``. An offboarding whose #70 job ended without closing it (the
+runtime cap, or a failed commit, on the last attempt) is closed as ``failed`` with its partial
+report when it is next requested or read (``reconcile``), so it never blocks the principal.
 
 **The plan** (``plan``) is read in the request's transaction. It is a snapshot of ids, in the
 fixed order ``stories, characters, scenarios, personas, media, engine_profiles, relations``, each
@@ -72,7 +74,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import ColumnElement, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock, ownership, principals
@@ -102,6 +104,7 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.impact import TwoStageRequest
 from epistrel.core.tables import (
     deployment_state,
+    jobs,
     media_assets,
     offboarding_jobs,
     scenario_catalog,
@@ -306,8 +309,61 @@ async def lock_principal(conn: AsyncConnection, principal: str) -> None:
     await conn.execute(select(func.pg_advisory_xact_lock(LOCK_NAMESPACE, func.hashtext(principal))))
 
 
+async def reconcile(conn: AsyncConnection, where: ColumnElement[bool]) -> int:
+    """Close as ``failed`` every queued or running offboarding matching ``where`` whose #70 job
+    has ended (``done`` or ``failed``) or is gone, with its partial report, in ``conn``'s
+    transaction; returns how many it closed.
+
+    The handler marks its offboarding ``failed`` on its last attempt, but the job framework can
+    also end a job without the handler seeing it: the runtime cap cancels the handler, or the
+    commit itself fails, on the last attempt. Without this the row would stay active forever,
+    and every later offboarding of the principal would be 409 ``offboarding_in_progress``."""
+    ended = (
+        await conn.execute(
+            select(offboarding_jobs, jobs.c.status.label("job_status"), jobs.c.result)
+            .select_from(offboarding_jobs.outerjoin(jobs, jobs.c.id == offboarding_jobs.c.id))
+            .where(
+                where,
+                offboarding_jobs.c.status.in_(ACTIVE_STATUSES),
+                or_(jobs.c.id.is_(None), jobs.c.status.in_(JOB_ENDED)),
+            )
+            .order_by(offboarding_jobs.c.id)
+            .with_for_update(of=offboarding_jobs)
+        )
+    ).all()
+    for row in ended:
+        kind = _ended_class(row.job_status, row.result)
+        await _close(
+            conn,
+            _job(row),
+            OffboardingStatus.FAILED,
+            {
+                "class": kind,
+                "message": f"the offboarding job ended before the offboarding finished ({kind})",
+            },
+        )
+    return len(ended)
+
+
+JOB_ENDED = ("done", "failed")
+"""#70's terminal job statuses."""
+
+
+def _ended_class(job_status: str | None, result: Any) -> str:
+    """The error class a reconciled offboarding reports: the job's own failure class when it
+    recorded one (an exception class name, never a message), else what happened to the job."""
+    if job_status is None:
+        return "JobMissing"
+    error = result.get("error") if isinstance(result, Mapping) else None
+    if job_status == "failed" and isinstance(error, str) and error.isidentifier():
+        return error
+    return "JobFailed" if job_status == "failed" else "JobEnded"
+
+
 async def refuse_active(conn: AsyncConnection, principal: str) -> None:
-    """409 ``offboarding_in_progress`` when the principal has a queued or running one."""
+    """409 ``offboarding_in_progress`` when the principal has a queued or running one (after
+    closing any whose job already ended, ``reconcile``)."""
+    await reconcile(conn, offboarding_jobs.c.principal == principal)
     active = await conn.scalar(
         select(offboarding_jobs.c.id).where(
             offboarding_jobs.c.principal == principal,
@@ -842,8 +898,10 @@ class OffboardingView(BaseModel):
 
 
 async def get(db: AsyncEngine, job_id: str) -> OffboardingView:
-    """The offboarding ``job_id``; 404 when there is none (or its row was purged)."""
-    async with db.connect() as conn:
+    """The offboarding ``job_id``; 404 when there is none (or its row was purged). One whose
+    job ended without closing it reads ``failed`` (``reconcile``)."""
+    async with db.begin() as conn:
+        await reconcile(conn, offboarding_jobs.c.id == job_id)
         row = (
             await conn.execute(select(offboarding_jobs).where(offboarding_jobs.c.id == job_id))
         ).one_or_none()
@@ -921,6 +979,7 @@ __all__ = [
     "lock_principal",
     "plan",
     "purge_finished",
+    "reconcile",
     "refuse_active",
     "save_progress",
     "stored",

@@ -19,7 +19,9 @@ After that one is skipped as ``busy``. The handler yields every ``BATCH`` entiti
 (``JobOutput.requeue_in``), so no run nears the worker's runtime cap. It records no operation:
 each entity's change is recorded by the path that made it. ``max_attempts`` is 20. A run that
 fails is retried with #70's backoff and resumes where it stopped, and the last failed attempt
-marks the offboarding ``failed`` with its partial report.
+marks the offboarding ``failed`` with its partial report. A last attempt the framework ends
+without this handler seeing it (the runtime cap cancels it, or the commit fails) leaves the row
+active, and ``offboarding.reconcile`` closes it at the next request or read.
 """
 
 from __future__ import annotations

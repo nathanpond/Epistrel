@@ -22,7 +22,9 @@ story locked:
   ``kind = reactivation`` (from and target: the story's rating at its current version), its
   #70 ``rating_check`` job whose payload carries the edit (``Continuation``), a committed
   ``control`` operation that binds the request's ``Idempotency-Key`` and records
-  ``story_paused`` (``cause: reactivation_check``), and the story ``paused``. The caller gets
+  ``story_paused`` (``cause: reactivation_check``), and the story ``paused``. An archived
+  source of a fork is the exception: it changes no truth meanwhile, so it is neither paused nor
+  recorded as paused, and it stays archived whatever the check ends with. The caller gets
   #118's ``RatingCheckStarted`` (REST 202 with ``Location``: the check).
 
 The job (``orchestrator.jobs.handlers.rating_check``) waits for a turn in flight to commit,
@@ -32,7 +34,8 @@ policies (``change.evaluate_history``). ``settle``, under the story lock, runs t
 when the timeline or the policy set moved since that read; otherwise it stamps every turn that
 passed with the current set, so a later attempt never checks it again, even when another turn
 failed. Any violation refuses the edit: the check is ``refused`` with every violation by
-position and policy (never the text), the story resumes, and nothing else changes. When every
+position and policy (never the text), the story resumes (when this check paused it), and
+nothing else changes. When every
 turn passed, ``apply`` runs the edit itself while the story is still paused
 (``pause.holding``: only this job's own calls pass), as the request would have run it (same
 principal, same membership hooks; the request's ``X-Epistrel-Expected-Revision`` was checked at
@@ -55,7 +58,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock, control, fork, pause, timeline
 from epistrel.core.enums import Membership, OperationKind, OperationStatus, StoryStatus
-from epistrel.core.errors import RevisionConflict, StoryArchived, StoryNotFound, StoryPaused
+from epistrel.core.errors import (
+    RevisionConflict,
+    StoryArchived,
+    StoryNotFound,
+    StoryPaused,
+    UnknownChain,
+)
 from epistrel.core.events.types import StoryPausedEvent, StoryResumedEvent
 from epistrel.core.policies.model import Policy
 from epistrel.core.ratings import change
@@ -64,7 +73,10 @@ from epistrel.core.tables import operations, rating_check_jobs, stories
 from epistrel.core.tables.rating_checks import RatingCheckKind, RatingCheckStatus
 from epistrel.core.variants import (
     Chain,
+    ChainRef,
+    Node,
     SwapRequest,
+    Tree,
     fork_selection,
     list_chains,
     load_tree,
@@ -274,20 +286,21 @@ async def guard(
             )
         )
         if row.status != StoryStatus.ARCHIVED.value:
-            # An archived source (a fork) changes no truth meanwhile: it is not paused.
+            # An archived source (a fork) changes no truth meanwhile: it is not paused, and
+            # no ``story_paused`` is recorded for a pause that did not happen.
             await conn.execute(
                 update(stories)
                 .where(stories.c.id == story_id)
                 .values(status=StoryStatus.PAUSED.value, paused_by=job_id)
             )
-        await change.control_event(
-            conn,
-            story_id=story_id,
-            operation_id=operation_id,
-            type_="story_paused",
-            payload=StoryPausedEvent(job_id=job_id, cause=pause.REACTIVATION_CHECK),
-            actor=continuation.principal,
-        )
+            await change.control_event(
+                conn,
+                story_id=story_id,
+                operation_id=operation_id,
+                type_="story_paused",
+                payload=StoryPausedEvent(job_id=job_id, cause=pause.REACTIVATION_CHECK),
+                actor=continuation.principal,
+            )
     return change.RatingCheckStarted(
         job_id=job_id,
         operation_id=operation_id,
@@ -389,7 +402,7 @@ async def settle(
             return Verdict.GONE
         story = (
             await conn.execute(
-                select(stories.c.timeline_revision)
+                select(stories.c.timeline_revision, stories.c.paused_by)
                 .where(stories.c.id == check.story_id)
                 .with_for_update()
             )
@@ -421,10 +434,12 @@ async def settle(
                 .values(progress=progress, checked_revision=pending.revision)
             )
             return Verdict.PASSED
-        operation_id = await control.record_control_operation(
-            conn, actor=check.started_by, story_id=check.story_id
-        )
-        await _resume(conn, check, operation_id, RatingCheckStatus.REFUSED.value)
+        if story.paused_by == check.id:
+            # An archived source (a fork) was never paused: it stays as it is (see ``end``).
+            operation_id = await control.record_control_operation(
+                conn, actor=check.started_by, story_id=check.story_id
+            )
+            await _resume(conn, check, operation_id, RatingCheckStatus.REFUSED.value)
         await conn.execute(
             update(rating_check_jobs)
             .where(rating_check_jobs.c.id == check.id)
@@ -556,10 +571,28 @@ async def chains(db: AsyncEngine, story_id: str) -> list[Chain]:
         if chain.membership is not Membership.ACTIVE:
             needs = any(
                 missing(stamps.get(node.operation_id), current)
-                for node in tree.segment_of(chain.turn, chain.variant)
+                for node in _activated_by(tree, chain)
             )
         marked.append(chain if not needs else _requiring(chain))
     return marked
+
+
+def _activated_by(tree: Tree, chain: Chain) -> list[Node]:
+    """The nodes a swap to ``chain`` makes active: as ``plan_swap``, the path from the active
+    chain to the tip the chain leads to (its parent segments not active too, and the one way
+    it continues). A chain that continues in more than one way names no tip (the swap is 409
+    ``unknown_chain``): the path to its own segment's end, which any tip through it activates.
+    """
+    try:
+        return list(tree.path(tree.resolve(ChainRef(turn=chain.turn, variant=chain.variant))).nodes)
+    except UnknownChain:
+        segment = tree.segment_of(chain.turn, chain.variant)
+        if not segment:
+            return []
+        try:
+            return list(tree.path(segment[-1]).nodes)
+        except UnknownChain:
+            return segment
 
 
 def _requiring(chain: Chain) -> Chain:

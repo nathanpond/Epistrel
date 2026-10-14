@@ -1276,3 +1276,89 @@ async def test_an_edit_that_became_impossible_ends_the_check_failed(pg_url: str)
         assert failed["status"] == "failed"
         assert failed["error"]["class"] == "NothingToUndo"
         assert failed["outcome"] is None
+
+
+async def test_a_refused_fork_of_an_archived_story_leaves_it_archived(pg_url: str) -> None:
+    """An archived source is not paused by a fork's reactivation check, so a refused check
+    leaves it as it was: still ``archived``, with no ``story_resumed`` recorded and no fork
+    created (#120 verification round 1)."""
+    async with rating_db(pg_url) as s:
+        await guard_rating(s)
+        story_id, player = await _set_aside(s, EXPLICIT_ID, "A cat purrs.", "A dragon lands.")
+        s.lib.models.stub.script("generation", ["The wind turns."])
+        await played(s.client, story_id, body(player, "Again?"))
+        await _tightened(s, story_id)
+        archived = await s.client.post(f"/stories/{story_id}/archive", headers=WRITE)
+        assert archived.status_code == 200, archived.text
+        before = await _memberships(s, story_id)
+        stories_before = await _count(s, "stories")
+        events = "SELECT type FROM events WHERE story_id = :s ORDER BY seq"
+        events_before = [r[0] for r in await rows(s.db, events, s=story_id)]
+        fork_body = {"variant_chain": {"turn": 2, "variant": 1}}
+        job = await _held(await _edit(s, story_id, "fork", fork_body), story_id)
+        assert (await story(s.client, story_id))["status"] == "archived"
+        await run_jobs(s.db)
+        found = await check(s.client, story_id, job)
+        assert found["status"] == "refused", found
+        assert (await story(s.client, story_id))["status"] == "archived"
+        assert await scalar(s.db, "SELECT paused_by FROM stories WHERE id = :s", s=story_id) is None
+        added = [r[0] for r in await rows(s.db, events, s=story_id)][len(events_before) :]
+        assert "story_resumed" not in added
+        assert "story_paused" not in added
+        assert await _count(s, "stories") == stories_before
+        assert await _memberships(s, story_id) == before
+
+
+async def test_requires_check_covers_the_whole_path_a_swap_activates(pg_url: str) -> None:
+    """``requires_check`` reads every turn a swap to the chain would make active: its parent
+    segments that are not active too, and the one way it continues. Turns 1-3 played, turn 3
+    played again, then truncated to 1: turn 2 is discarded, its two continuations 3:1
+    (dormant) and 3:2 (discarded). An unchecked turn 2 flags 3:1 (whose own turn is checked),
+    and the swap to it is held for a check; an unchecked 3:2 flags 2:1 (whose own turn is
+    checked) but not 3:1 (#120 verification round 1)."""
+    async with rating_db(pg_url) as s:
+        await guard_rating(s)
+
+        async def branched() -> str:
+            story_id, player = await _set_aside(
+                s, TEEN_ID, "A cat purrs.", "A cat naps.", "A cat sleeps.", keep=2
+            )
+            s.lib.models.stub.script("generation", ["The wind turns."])
+            await played(s.client, story_id, body(player, "Again?"))
+            await _truncated(s, story_id, 1)
+            assert await _memberships(s, story_id) == [
+                (1, 1, "active"),
+                (2, 1, "discarded"),
+                (3, 1, "dormant"),
+                (3, 2, "discarded"),
+            ]
+            return story_id
+
+        async def unchecked(story_id: str, turn: int, variant: int) -> None:
+            async with s.db.begin() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE operations SET checked_guardrails = NULL WHERE story_id = :s "
+                        "AND kind = 'turn' AND narrative_turn = :t AND turn_variant = :v"
+                    ),
+                    {"s": story_id, "t": turn, "v": variant},
+                )
+
+        async def flags(story_id: str) -> dict[tuple[int, int], bool]:
+            listed = await s.client.get(f"/stories/{story_id}/variants", headers=READ)
+            assert listed.status_code == 200, listed.text
+            return {(c["turn"], c["variant"]): c["requires_check"] for c in listed.json()["items"]}
+
+        parent = await branched()
+        assert set((await flags(parent)).values()) == {False}
+        await unchecked(parent, 2, 1)
+        assert (await flags(parent))[(3, 1)] is True
+        chain = {"to_variant_chain": {"turn": 3, "variant": 1}}
+        job = await _held(await _edit(s, parent, "swap", chain), parent)
+        assert (await _ended(s, parent, job))["status"] == "reactivated"
+
+        tip = await branched()
+        await unchecked(tip, 3, 2)
+        found = await flags(tip)
+        assert found[(2, 1)] is True
+        assert found[(3, 1)] is False

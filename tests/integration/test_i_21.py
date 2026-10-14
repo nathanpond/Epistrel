@@ -119,6 +119,7 @@ from tests.integration.ownership_fixtures import (
 )
 from tests.media_support import blob_path, media_client, scratch, uploaded
 from tests.model_support import config_key
+from tests.offboarding_support import contents as table_contents
 from tests.offboarding_support import counts as table_counts
 from tests.offboarding_support import (
     lookup,
@@ -1130,6 +1131,7 @@ async def test_i_21__offboarding(pg_url: str) -> None:
         ]
         body = {"principal": a, "actions": DOCS_ACTIONS, "transfer_to": k}
         before = await table_counts(s.db)
+        rows_before = await table_contents(s.db)
         dry, _ = await offboard(s.client, {**body, "dry_run": True}, status=200)
         assert dry["applied"] is False
         assert dry["counts"]["stories"] == {"delete": 2, "transfer": 0, "keep": 0}
@@ -1155,6 +1157,7 @@ async def test_i_21__offboarding(pg_url: str) -> None:
         assert held["applied"] is False
         assert held["warnings"] == dry["warnings"]
         assert await table_counts(s.db) == before
+        assert await table_contents(s.db) == rows_before
         key = new_ulid()
         queued, _ = await offboard(s.client, {**body, "ignore_warnings": True}, status=202, key=key)
         await run_jobs(s.db)

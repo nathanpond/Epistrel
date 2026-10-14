@@ -24,14 +24,17 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import ProcessMode, Settings
 from epistrel.core import config_changes as config_log
+from epistrel.core import control as control_ops
 from epistrel.core import (
     deployment,
     feedback,
     fork,
     idempotency,
     ingest,
+    offboarding,
     operation_view,
     ownership,
+    principals,
     projections,
     ratings,
     stories,
@@ -99,6 +102,7 @@ from epistrel.orchestrator.budget import (
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
+from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
 from epistrel.orchestrator.jobs.handlers.rebuild import (
     REBUILD_KIND,
@@ -247,6 +251,13 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "delete_persona": ResultCodec.of(
         catalog_personas.DeletedPersona, status=204, revision_field=_CONFIG
     ),
+    # Principal offboarding (#117): stored only once enqueued (202); a dry run or a plan held by
+    # its warnings releases its key.
+    "offboard_principal": ResultCodec.of(
+        offboarding.OffboardingPlan | offboarding.OffboardingQueued,
+        status=lambda result: 202 if offboarding.stored(result) else 200,
+        revision_field=_CONFIG,
+    ),
     # Engine profiles (#106): deployment-scoped like the catalog's writes.
     "create_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
     # Two-stage (#109): stored only once applied; a report alone releases its key.
@@ -301,6 +312,10 @@ CODECS.update(
 
 IDEMPOTENCY_WAIT_S = DEFAULT_TURN_DEADLINE_S + idempotency.WAIT_SLACK_S
 """How long a duplicate waits for its original (the turn deadline + 5 s), then 503."""
+
+
+OffboardingResult = offboarding.OffboardingPlan | offboarding.OffboardingQueued
+"""What an offboarding request answers: the plan (nothing written) or the enqueued job (#117)."""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -2383,6 +2398,94 @@ class Engine:
         return await ownership.list_relations(
             self.db, ownership.entity_type_of(entity_type), entity_id
         )
+
+    # -- principals: lookup and offboarding (FR-AUTH-7; #117) ----------------------------------
+    # A principal is opaque and never resolved: a lookup of one nothing names is empty. The
+    # offboarding request is deployment-scoped and keyed per deployment; its job runs as
+    # ``system``.
+
+    async def lookup_principal(
+        self,
+        ctx: RequestContext,
+        principal_id: str,
+        *,
+        limit: int = principals.DEFAULT_LIMIT,
+        cursors: Mapping[str, str] | None = None,
+    ) -> principals.PrincipalLookup:
+        """Every entity linked to ``principal_id`` (FR-AUTH-7), by type: what it owns (a
+        character with its companion; companions are not listed as scenarios) and what names it
+        in a relation (with the relations' names), each type a page of up to ``limit`` with its
+        count, newest first. ``cursors`` maps a page (``stories``, ``related.stories``, …) to its
+        previous page's ``next_cursor``. An unknown principal answers empty pages."""
+        found = principals.lookup_principal_id(principal_id)
+        given = dict(cursors or {})
+        refuse_nul({"principal": found, "cursors": given}, ("query",))
+        return await principals.lookup(self.db, found, limit=limit, cursors=given)
+
+    async def offboard_principal(
+        self, ctx: RequestContext, request: offboarding.OffboardingRequest
+    ) -> OffboardingResult:
+        """Offboard ``request.principal`` (FR-AUTH-7): apply each type's action (``delete``,
+        ``transfer`` to ``request.transfer_to``, or ``keep``; relations ``remove`` or ``keep``)
+        to a snapshot of what it owns and is related to, taken now. A dry run, or a request
+        whose plan warns (a shared story, a profile or media asset others use, the default
+        profile) without ``ignore_warnings``, answers the plan (``applied`` false), writes
+        nothing and releases its key. Otherwise the offboarding is enqueued as one background
+        job (``OffboardingQueued``, REST 202) under the request's ``Idempotency-Key``: a retry
+        answers the same job. 422 ``principal_reserved``, ``transfer_target_required`` or
+        ``transfer_target_invalid`` for a request that cannot run; 409
+        ``offboarding_in_progress`` while the principal has one queued or running."""
+        actor = self.require_principal(ctx)
+        offboarding.check_request(request)
+
+        async def run(
+            _: RequestContext,
+        ) -> offboarding.OffboardingPlan | offboarding.OffboardingQueued:
+            async with self.db.begin() as conn:
+                await offboarding.lock_principal(conn, request.principal)
+                await offboarding.refuse_active(conn, request.principal)
+                planned = await offboarding.plan(conn, request)
+                revision = await offboarding.config_revision(conn)
+                if request.dry_run or (planned.warnings and not request.ignore_warnings):
+                    return offboarding.OffboardingPlan(
+                        counts=planned.counts,
+                        warnings=planned.warnings,
+                        config_revision=revision,
+                    )
+                job_id = await job_queue.enqueue(
+                    conn, offboarding_job.OFFBOARDING_KIND, offboarding_job.OffboardingPayload()
+                )
+                operation_id = await control_ops.record_control_operation(conn, actor=actor)
+                await offboarding.create(
+                    conn,
+                    job_id,
+                    request,
+                    planned,
+                    created_by=actor,
+                    operation_id=operation_id,
+                )
+                return offboarding.OffboardingQueued(
+                    job_id=job_id,
+                    counts=planned.counts,
+                    warnings=planned.warnings,
+                    config_revision=revision,
+                )
+
+        return await self._keyed(
+            ctx,
+            "offboard_principal",
+            run,
+            material={"body": request.model_dump(mode="json")},
+            keep=offboarding.stored,
+        )
+
+    async def get_offboarding(
+        self, ctx: RequestContext, job_id: str
+    ) -> offboarding.OffboardingView:
+        """An offboarding's status, progress and request, and once it ends its report: every
+        entity deleted, transferred, removed, kept or skipped, and what is still linked to the
+        principal (FR-AUTH-7). 404 for an unknown job (or a purged report)."""
+        return await offboarding.get(self.db, job_id)
 
     # -- media assets (FR-MEDIA-1,2; FR-API-6; #105) --------------------------------------------
     # Deployment-scoped: an upload or a delete records a story-less ``control`` operation, keyed

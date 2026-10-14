@@ -173,6 +173,14 @@ ProfileId = Annotated[
         examples=["00000000000000000000PRF001"],
     ),
 ]
+JobId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The background job's id (a ULID), as its 202 answered it.",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2D1"],
+    ),
+]
 PersonaId = Annotated[
     str,
     Path(

@@ -71,6 +71,7 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "feedback_tags": ConfigClass.prospective,
         "feedback_text_max_chars": ConfigClass.prospective,
         "feedback_retention": ConfigClass.prospective,
+        "offboarding_report_retention_days": ConfigClass.prospective,
     },
 }
 

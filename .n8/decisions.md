@@ -4573,3 +4573,91 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** #115 fix round 1, gap 3 (docs): in docs/02 §4.10, the deflection-style sentence now comes after "It is recorded by a `control` operation ... a fork copies it", so "It" refers to the added character again. The C-15 module docstring now lists #115's part, `test_c_15__character_content` (FR-CAT-2,4, as its part marker says).
   **Why:** docs/02 is authoritative, and the pronoun misattributed the recording rule. Cost if wrong: none.
   **Issue:** #115
+- **Decision (drift, deviation from the pass-1 line):** #117's request records a committed, story-less `control` operation in the POST transaction (#103's pattern, `control.record_control_operation`), which binds the `Idempotency-Key` and stores the 202. It does not record an `in_flight` operation that the job finalises, as the pass-1 line says. So `jobs.operation_id` and `operations.stage_log` are not added. The operation's id is kept on the new `offboarding_jobs.operation_id` instead. A dry run, or a plan held by its warnings, writes nothing and releases its key (`_keyed(keep=offboarding.stored)`, #109).
+  **Why:** The drift note: #75's `fail_orphans` marks `failed` any `in_flight` operation older than 60 s that no running job with a live lease claims. A queued offboarding claims nothing (between yields, in backoff), and `Operation` cannot finish a row another process began. Keeping the in-flight shape would have needed an `_unclaimed` extension plus a guarded cross-process finalise; for #128's stage view, the `offboarding_jobs` row's status and progress already say what the stages would. Cost if wrong: #118 and #128, whose plans name `jobs.operation_id`, add the column themselves (see the Ad-hoc entry below).
+  **Issue:** #117, #118, #128
+- **Decision (drift):** The job framework gains two small pieces instead of the per-entity `maintenance` operations of the pass-1 line. `JobOutput.requeue_in` lets a handler that records no operation put its row back to `queued`, due in N seconds, under its fence. It is not a failure, and `failures` is untouched (`queue._requeue`, reusing `_back_to_queue`). `queue.hold(conn, job)` fences one of a handler's own transactions: it locks the job row and raises `Fenced` when the claim no longer holds it. The offboarding handler (`orchestrator/jobs/handlers/offboarding.py`, `records_operation=False`, `max_attempts` 20) yields every 100 entities. Each entity's change is recorded by the path that made it: its own `control` operation and ownership rows. It is not a `maintenance` operation declaring the progress row as an input.
+  **Why:** `commit_job` commits one output once, and #50's `delete_story` runs its own `control` `Operation` and transaction, so no delete can join a job's operation (drift note). A per-entity `maintenance` operation would add one empty operations row per entity and still not cover the delete. Cost if wrong: another handler style; `requeue_in` is additive and refused for handlers that record an operation.
+  **Issue:** #117, #70
+- **Decision:** Resumability is a marker in `offboarding_jobs.progress`, not one transaction holding both the action and the progress. Before acting, the job records the entry as `progress.current`. The type's own path then acts in its own transaction. A fenced transaction then records the outcome in the report and moves `progress.index` past it. A run that finds its entry already `current` is `resumed`: a delete whose entity is gone, or a transfer whose entity is already at `transfer_to`, is recorded as done without acting again. Soft deletes (media retire, profile delete) and relation removal are idempotent anyway. `test_i_21__offboarding_resumes` kills the run after a story's delete and before its record. Every entity's ownership events are then counted once.
+  **Why:** Every normal delete and transfer opens its own transaction, so the action and the progress cannot commit together. The re-check is the drift note's ("rely on the per-entity re-check (`gone`)"). Cost if wrong: a run fenced between acting and recording, whose replacement then finds the entity changed by someone else, records `skipped`. That is a report inaccuracy, never a double action.
+  **Issue:** #117
+- **Decision:** The job's ownership rows name it without new parameters on every delete path. `core.ownership.acting_job(job_id)` sets a context variable, and `record_event` writes it into `ownership_events.job_id` when no explicit `job_id` is given. The job runs every path as `system`. Relations are removed by a new `ownership.remove_relations_of` (one transaction per entity under its row lock, one `relation_removed` event per name, one `control` operation). The relation queries the plan needs (`principals.related_entities`, `related_principals`) live in `core/principals.py`, so `core.ownership` and `core.principals` stay the only readers of `entity_relations` (`tests/test_ownership_rules.py`).
+  **Why:** The pass-1 line ("rows the job writes carry principal `system` and the job id"), and #104's rule that only the two modules read relations. Cost if wrong: one context variable.
+  **Issue:** #117, #104
+- **Decision:** Choices the AC and Discretion left open:
+  - **Counts.** A companion is counted with its character, not as a scenario, so `characters` counts characters. A media asset moved by a transferred entry counts as `transfer`. Relations count `{remove, keep}`.
+  - **The 202 body.** It is `{applied: true, job_id, counts, warnings}`: the plan's `{job_id, counts}` plus the warnings it was confirmed over. The 200 body is `{applied: false, counts, warnings}`. Both extend `DeploymentMutationResponse` and carry `config_revision`.
+  - **Warnings.** Each is `{kind, entity_type, entity_id, principals}`, with `entity_type` the ownership type (`story`, `engine_profile`, `media`). `profile_in_use` and `media_referenced` count only other owners, as FR-AUTH-7 says. `media_referenced` reads every reference source with its holder (`media.assets.REFERENCE_HOLDERS` and `references`, new, beside #105's `referenced`).
+  - **Report.** Buckets are `deleted`, `transferred`, `removed` (relations), `kept` and `skipped`, each by type. A companion is listed under `scenarios` with `companion_of`, and a moved asset carries `reason: referenced`. Skip reasons are `gone`, `not_owned`, `name_taken`, `default_profile`, `busy` and `none` (no relation left to remove).
+  - **Remaining.** `remaining` lists only live links. A retired asset and a deleted profile are still owned until their sweeps purge them, so they are not "still linked". The lookup itself lists them with their status, as the pass-1 line says.
+  - **The snapshot.** It holds every owned entity, `keep` ones included, so the report lists what was kept. A media `candidate` (FR-IMG-7, private) is neither listed nor offboarded.
+  - **Relations.** `relations: remove` covers the entities the principal does not own, plus the ones it owns and transfers. A deleted entity's relations go with it; a kept one's stay.
+  - **Personas.** A persona transfer that would give `transfer_to` two personas of one name is skipped (`name_taken`), not failed.
+  - **Busy stories.** A busy story is deferred and retried 3 times, `BUSY_DELAY_S` (5 s) apart, through `requeue_in`.
+  - **Failure.** On the job's last failed attempt the row is `failed`, with `error {class, message}`. The message names the class only, never what was being processed (invariant 3's spirit). The partial report and `remaining` are kept.
+  **Why:** Each is the reading closest to FR-AUTH-7 and the pass-1 lines. Cost if wrong: a report or body shape changes before any consumer reads it.
+  **Issue:** #117
+- **Decision:** The lookup's routes and parameters.
+  - `GET /principals/{principal_id:path}`: the principal is the rest of the path (it may contain `/`). It follows the principal rule with `system` allowed; a blank one is 422 at `path.principal_id`.
+  - One `limit` (1–200, default 50). The per-page cursors are explicit query parameters, `cursor[<type>]` and `cursor[related.<type>]`, in #110's encoding (`catalog.search.encode_cursor`), bound to the principal, the section and the type. A cursor sent to another page is 422 `cursor_invalid` at `query.cursor[<page>]`.
+  - Keysets: `(updated_at, id)`, or `(created_at, id)` for stories and media, and the newest relation's `created_at` for related entities.
+  - Items: `{id, name, status, version, listing_status, companion}`, with `null` where a type has none. A media asset's name is its caption, else its alt text. A profile's status is `active` or `deleted`. A persona's status is `null`.
+  - The route has its own non-admin router with the new closed-list tag `principals`. `OPERATOR_PATH_PATTERNS`' `offboard` segment now also matches `offboarding`.
+  **Why:** The pass-1 line and the drift note's route placement. Cost if wrong: renames before #128 freezes the surface.
+  **Issue:** #117, #110, #128
+- **Decision (drift):** Retention. Finished `offboarding_jobs` rows are purged by #71's `sweep_retention` after the new `offboarding_report_retention_days` (default 90, 1–3650, prospective; in `RetentionSettings` and `SettingsPatch`, pinned in U-18). The sweep's result gains `offboarding_jobs`. The row keeps its own status and report, with no foreign key to `jobs`.
+  **Why:** The drift note: finished `jobs` rows go after `job_retention_days` (7). Like `job_retention_days`, the new setting is not read back by `GET /admin/settings`, because `RetentionSettings` is missing from `config_changes.SECTIONS` (#315, open). Cost if wrong: none beyond #315's.
+  **Issue:** #117, #71, #315
+- **Decision (drift):** The parts follow docs/04 §15 and the one-file rule.
+  - `test_i_21__offboarding` and `test_i_21__offboarding_resumes` both carry `part("M3", "FR-AUTH-7")`, in `tests/integration/test_i_21.py`.
+  - The test plan's bare `test_offboarding` maps to no docs/04 ID.
+  - X-07 (M3) is the media sweep's (#105), so the resume part is an I-21 slice.
+  - The I-21 slice follows docs/04's text (profiles `transfer`). It also runs a dry run with profiles `delete`, to show all three warning kinds.
+  - The test plan's variant (profiles deleted, so a profile is retired) is the detailed `test_offboarding_carries_out_every_action`. It sits with 13 more detailed tests in `tests/integration/test_offboarding.py`, the must-have's file.
+  - Each test runs on its own scratch database: it counts rows, and its worker would otherwise claim other tests' jobs.
+  - check-parts counts 202 parts, check-lexicon finds 0 violations, and check-traceability passes.
+  **Why:** The drift note. Cost if wrong: renames only.
+  **Issue:** #117
+- **Decision:** Existing tests changed because new operations need them; no assertion was loosened.
+  - **C-03.** It gains four principal steps: a lookup, a dry run of removing everything of the parity principal's, a 202 enqueue that keeps everything, and the job read back as `queued`. `Step` gains an optional `status`, because the library result's REST status is the 202 beside the route's 200. Its body names no M3 term.
+  - **C-01.** It seeds a queued offboarding, and its path ids gain `job_id` and `principal_id`, so generated requests reach the new routes. Its C-01 run passed: 123 tests.
+  - **U-18.** It pins the new setting as prospective.
+  **Why:** The parity rule (`parity_gaps`) and the delivered-route conformance. Cost if wrong: none.
+  **Issue:** #117, #73
+- **Decision:** The hand-offs from #114 and #116 are applied as their entries ask.
+  - Personas are deleted through `core.catalog.personas.delete`.
+  - A character's companion goes with it through the character's own paths, never as an entity of its own. The catalog delete removes it (its own `deleted` event and audit row), and `ownership.transfer_owner` moves it.
+  - The report lists the companion under `scenarios` with `companion_of`.
+  - A scenarios action never touches a companion: companions are left out of the snapshot (`listed: companion_of IS NULL`).
+  **Why:** The relayed Ad-hoc entries. Cost if wrong: none.
+  **Issue:** #117, #114, #116
+- **Decision:** #117's gate, per the M3 per-story rule (the full suite is the orchestrator's, at the end of group B).
+  - **Routes, Engine methods and OpenAPI:** `tests/conformance/` (C-01's generated run included), the route guard, the response bases, the route flags and `test_openapi_calls_the_message_finished_never_verified`: 175 passed in 596 s.
+  - **Migrations, jobs, ownership and offboarding:** `test_migrations`, `test_drift`, I-08, the event-store schema, X-07, `test_jobs`, the summary job, `test_offboarding`, I-21, `test_ownership`, the ownership rules, U-18, the trust boundary, the docs' Python version, the event registry, S-RETENTION, S-DELETE and `test_time`: 211 passed in 63 s.
+  - **The catalog, media and profile modules the new code calls:** engine profiles, feedback, I-17, I-18, media assets and delivery, scenario validation, story characters, catalog listing, the media units, personas, companions, catalog characters, the scenario catalog and config changes: 230 passed in 74 s.
+  - **Static checks:** ruff check and format, mypy (518 files), lint-imports (3 kept), check-assignment, check-parts (202 parts), check-lexicon (0 violations), check-traceability, check-deps, `openapi --check` (regenerated) and `model_guide --check` all pass. No dependency changed, so check-licenses was not run.
+  **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #117
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #117 built principal lookup and offboarding with shapes that differ from what its plan and later plans name.
+  - **Routes.** `GET /principals/{id}` (tag `principals`), `POST /admin/offboarding` and `GET /admin/offboarding/{job_id}` replace docs/02 §9's `/principals/{pid}/entities` and `/admin/principals/{pid}/offboard[/{job_id}]`. docs/02 §9 and §4.10 are amended, and the README gains a section.
+  - **New error codes.** `principal_reserved`, `transfer_target_required` and `transfer_target_invalid` (422), and `offboarding_in_progress` (409).
+  - **The request's operation** is a committed `control` operation that binds the key. The plan's `in_flight` operation, finalised by the job, is not built. **`jobs.operation_id` is not added**: the link lives on `offboarding_jobs.operation_id`, and `operations.stage_log` is not added either.
+  - **The job framework** gains `JobOutput.requeue_in`, which continues a job later without a failure, and `queue.hold`, which fences one of a handler's own transactions.
+  - **The rest.** `ownership.acting_job` puts the job's id on ownership rows. `media.assets.references` and `REFERENCE_HOLDERS` name who holds each media reference. A new setting, `offboarding_report_retention_days` (90), is purged by `sweep_retention`.
+  **Why:** #117's AC and its pass-1 lines, corrected by the drift notes: #75's orphan sweep fails an `in_flight` operation that a queued job does not claim, and `commit_job` commits once. The decision entries above give the details.
+  **Affects:**
+  - **M3 #118 (rating tightening).** Its pass-1 line opens an `in_flight` `control` operation at PUT time, finalised by the job and linked "via `jobs.operation_id` (#117)". That column does not exist. #118 must add it, with the `_unclaimed` extension in `core/orphans.py` the #117 drift note describes, or follow #117's committed-operation pattern with the link on its own `rating_check_jobs` row. `JobOutput.requeue_in` and `queue.hold` are there to reuse.
+  - **M3 #128 (API surface).** Its stage view was to read `jobs.operation_id` and `operations.stage_log` for an offboarding. An offboarding's stages are its `offboarding_jobs` row (`status`, `progress`, `current`). The route table and error list now hold the three new routes and four new codes, with C-03 steps. `OPERATOR_PATH_PATTERNS` already matches `offboarding`.
+  - **M3 #124 (erasure).** Offboarding leaves attribution on events, as FR-AUTH-7 says. If erasure reuses the stage log, it adds `operations.stage_log` itself, as its own migration already plans.
+  - **The Console (nathanpond/Epistrel-Console).** New surfaces: a principal lookup screen, an offboarding form (dry run, warnings, confirm), and a progress and report view.
+  - **Next step:** #118 is the next group B story; its drift check should apply this, or `/n8-replan M3` should run before it.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after #117's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111, #113, #114, #115 and #116 did. Cost if wrong: one heading.
+  **Issue:** #117

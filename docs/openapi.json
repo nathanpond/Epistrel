@@ -2159,6 +2159,21 @@
         "title": "CompanionPublishedBody",
         "type": "object"
       },
+      "CompanionRef": {
+        "additionalProperties": false,
+        "description": "A character's companion scenario (#116), which follows it.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CompanionRef",
+        "type": "object"
+      },
       "ConfigChangeItem": {
         "description": "One change: the revision it produced, the setting, its class, the old and new values\n(secret-bearing values redacted), who made it and when.",
         "properties": {
@@ -2400,6 +2415,26 @@
           }
         },
         "title": "CreationSettings",
+        "type": "object"
+      },
+      "CurrentEntity": {
+        "additionalProperties": false,
+        "description": "The entity the job is working on now.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id"
+        ],
+        "title": "CurrentEntity",
         "type": "object"
       },
       "CustomInstructionsBody": {
@@ -7303,6 +7338,447 @@
         "title": "NameOverrides",
         "type": "object"
       },
+      "OffboardingActions": {
+        "additionalProperties": false,
+        "description": "The action for each type of entity the principal owns (``delete``, ``transfer`` or\n``keep``), and for the relations naming it on entities it does not own (``remove`` or\n``keep``). A type not named is ``keep``.",
+        "properties": {
+          "characters": {
+            "default": "keep",
+            "description": "Catalog characters; a character's companion scenario goes with it.",
+            "enum": [
+              "delete",
+              "transfer",
+              "keep"
+            ],
+            "title": "Characters",
+            "type": "string"
+          },
+          "engine_profiles": {
+            "default": "keep",
+            "description": "Engine profiles; `delete` retires them (FR-PROF-1). The deployment's default profile is never deleted.",
+            "enum": [
+              "delete",
+              "transfer",
+              "keep"
+            ],
+            "title": "Engine Profiles",
+            "type": "string"
+          },
+          "media": {
+            "default": "keep",
+            "description": "Media assets; `delete` retires them (FR-MEDIA-2). Media a transferred catalog entry references move with it whatever this says.",
+            "enum": [
+              "delete",
+              "transfer",
+              "keep"
+            ],
+            "title": "Media",
+            "type": "string"
+          },
+          "personas": {
+            "default": "keep",
+            "description": "Saved player personas.",
+            "enum": [
+              "delete",
+              "transfer",
+              "keep"
+            ],
+            "title": "Personas",
+            "type": "string"
+          },
+          "relations": {
+            "default": "keep",
+            "description": "The relations naming the principal on entities it does not own (or transfers).",
+            "enum": [
+              "remove",
+              "keep"
+            ],
+            "title": "Relations",
+            "type": "string"
+          },
+          "scenarios": {
+            "default": "keep",
+            "description": "Scenarios other than companions (which follow characters).",
+            "enum": [
+              "delete",
+              "transfer",
+              "keep"
+            ],
+            "title": "Scenarios",
+            "type": "string"
+          },
+          "stories": {
+            "default": "keep",
+            "description": "`delete`: whole-story deletion, gone for every participant (FR-STORE-16).",
+            "enum": [
+              "delete",
+              "transfer",
+              "keep"
+            ],
+            "title": "Stories",
+            "type": "string"
+          }
+        },
+        "title": "OffboardingActions",
+        "type": "object"
+      },
+      "OffboardingError": {
+        "additionalProperties": false,
+        "description": "Why a failed job stopped: the exception class, and a message naming no content.",
+        "properties": {
+          "class": {
+            "title": "Class",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "class",
+          "message"
+        ],
+        "title": "OffboardingError",
+        "type": "object"
+      },
+      "OffboardingPlanBody": {
+        "description": "A dry run, or a request its warnings held: nothing was written (``applied`` false). The\ncounts per type (``delete``, ``transfer`` and ``keep``; for relations ``remove`` and\n``keep``; a character's companion goes with it, and media moved by a transferred entry\ncount as ``transfer``) and the warnings. Send it again with ``ignore_warnings`` to\nproceed.",
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "counts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/OffboardingWarningBody"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "config_revision",
+          "applied",
+          "counts",
+          "warnings"
+        ],
+        "title": "OffboardingPlanBody",
+        "type": "object"
+      },
+      "OffboardingProgress": {
+        "additionalProperties": false,
+        "description": "How far the job is: entries done (recorded) of the snapshot's total.",
+        "properties": {
+          "done": {
+            "title": "Done",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "done",
+          "total"
+        ],
+        "title": "OffboardingProgress",
+        "type": "object"
+      },
+      "OffboardingQueuedBody": {
+        "description": "The offboarding a worker carries out (202): its job (read it at the ``Location``), and\nthe counts and warnings it was confirmed over.",
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "counts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/OffboardingWarningBody"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "config_revision",
+          "applied",
+          "job_id",
+          "counts",
+          "warnings"
+        ],
+        "title": "OffboardingQueuedBody",
+        "type": "object"
+      },
+      "OffboardingRequest": {
+        "additionalProperties": false,
+        "description": "``POST /admin/offboarding`` (FR-AUTH-7): the principal to offboard, the action per type,\nthe new owner for every ``transfer``, and the two-stage flags (FR-PROF-7).",
+        "examples": [
+          {
+            "actions": {
+              "characters": "transfer",
+              "media": "transfer",
+              "personas": "delete",
+              "scenarios": "transfer",
+              "stories": "delete"
+            },
+            "dry_run": true,
+            "principal": "p-4d81e2",
+            "transfer_to": "p-curator"
+          }
+        ],
+        "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/OffboardingActions",
+            "description": "The action per type."
+          },
+          "dry_run": {
+            "default": false,
+            "description": "Answer the counts and warnings and change nothing (it wins over `ignore_warnings`).",
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "ignoreWarnings": {
+            "default": false,
+            "description": "`ignore_warnings`, for camelCase clients (send one of the two).",
+            "title": "Ignorewarnings",
+            "type": "boolean"
+          },
+          "ignore_warnings": {
+            "default": false,
+            "description": "Apply the change even when its impact report warns (FR-PROF-7). An invalid configuration is refused all the same.",
+            "title": "Ignore Warnings",
+            "type": "boolean"
+          },
+          "principal": {
+            "description": "The principal to offboard (opaque).",
+            "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+            "title": "Principal",
+            "type": "string"
+          },
+          "transfer_to": {
+            "anyOf": [
+              {
+                "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The new owner for every `transfer` (required with one; never the offboarded principal or `system`).",
+            "title": "Transfer To"
+          }
+        },
+        "required": [
+          "principal"
+        ],
+        "title": "OffboardingRequest",
+        "type": "object"
+      },
+      "OffboardingStatus": {
+        "description": "An offboarding's state: #70's job statuses.",
+        "enum": [
+          "queued",
+          "running",
+          "done",
+          "failed"
+        ],
+        "title": "OffboardingStatus",
+        "type": "string"
+      },
+      "OffboardingView": {
+        "additionalProperties": false,
+        "description": "An offboarding: its status (#70's enum), progress, the entity in hand, the request,\nand once it ends the report (``deleted``, ``transferred``, ``removed``, ``kept``,\n``skipped``, each by type, and ``remaining``: what is still linked to the principal), with\nthe error of a failed job.",
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CurrentEntity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OffboardingError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/OffboardingProgress"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report"
+          },
+          "request": {
+            "additionalProperties": true,
+            "title": "Request",
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OffboardingStatus"
+          }
+        },
+        "required": [
+          "job_id",
+          "principal",
+          "status",
+          "progress",
+          "current",
+          "counts",
+          "report",
+          "error",
+          "request",
+          "created_by",
+          "created_at",
+          "finished_at"
+        ],
+        "title": "OffboardingView",
+        "type": "object"
+      },
+      "OffboardingWarningBody": {
+        "additionalProperties": false,
+        "description": "Something the offboarding would do that touches other principals: ``shared_story`` (a\nstory to be deleted that others are related to), ``profile_in_use`` (a profile to be\ndeleted that other owners' stories use), ``media_referenced`` (an asset to be retired that\nother owners' records reference) or ``default_profile`` (the deployment's default, which is\nnever deleted), with the entity and the other principals.",
+        "properties": {
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "entity_type": {
+            "title": "Entity Type",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "principals": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Principals",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "entity_type",
+          "entity_id",
+          "principals"
+        ],
+        "title": "OffboardingWarningBody",
+        "type": "object"
+      },
       "OmniscientCharacterBody": {
         "description": "A character as an omniscient read returns it: with its true age (FR-CAT-12) and the\ncatalog entries promoted from it (``promoted_to``, FR-CAT-8; oldest first).",
         "properties": {
@@ -7967,6 +8443,153 @@
           "revision"
         ],
         "title": "OverridesRef",
+        "type": "object"
+      },
+      "OwnedEntities": {
+        "additionalProperties": false,
+        "description": "What the principal owns, by type.",
+        "properties": {
+          "characters": {
+            "$ref": "#/components/schemas/OwnedPage"
+          },
+          "engine_profiles": {
+            "$ref": "#/components/schemas/OwnedPage"
+          },
+          "media": {
+            "$ref": "#/components/schemas/OwnedPage"
+          },
+          "personas": {
+            "$ref": "#/components/schemas/OwnedPage"
+          },
+          "scenarios": {
+            "$ref": "#/components/schemas/OwnedPage"
+          },
+          "stories": {
+            "$ref": "#/components/schemas/OwnedPage"
+          }
+        },
+        "required": [
+          "stories",
+          "characters",
+          "scenarios",
+          "personas",
+          "media",
+          "engine_profiles"
+        ],
+        "title": "OwnedEntities",
+        "type": "object"
+      },
+      "OwnedItem": {
+        "additionalProperties": false,
+        "description": "One entity the principal owns: its id, name, status, latest version and listing status\n(``null`` where its type has none), and a character's companion.",
+        "properties": {
+          "companion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CompanionRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A character's companion scenario, which follows it."
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "listing_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A catalog entry's listing status.",
+            "title": "Listing Status"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The story's or profile's name, a catalog entry's draft card name, a persona's name, or a media asset's caption (else its alt text).",
+            "title": "Name"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A story's or catalog entry's status, a media asset's state (`live`, `retired`), a profile's `active` or `deleted`; `null` for a persona.",
+            "title": "Status"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest published version, where versioned.",
+            "title": "Version"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "status",
+          "version",
+          "listing_status"
+        ],
+        "title": "OwnedItem",
+        "type": "object"
+      },
+      "OwnedPage": {
+        "additionalProperties": false,
+        "description": "The principal's entities of one type: how many there are, a page of them newest first,\nand the cursor of the next page (``null`` on the last).",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OwnedItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "count",
+          "items",
+          "next_cursor"
+        ],
+        "title": "OwnedPage",
         "type": "object"
       },
       "OwnerBody": {
@@ -9123,6 +9746,29 @@
           "message"
         ],
         "title": "PolicyReplacement",
+        "type": "object"
+      },
+      "PrincipalLookup": {
+        "additionalProperties": false,
+        "description": "Every entity linked to ``principal`` (FR-AUTH-7), owned and related, by type.",
+        "properties": {
+          "owned": {
+            "$ref": "#/components/schemas/OwnedEntities"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "related": {
+            "$ref": "#/components/schemas/RelatedEntities"
+          }
+        },
+        "required": [
+          "principal",
+          "owned",
+          "related"
+        ],
+        "title": "PrincipalLookup",
         "type": "object"
       },
       "ProfileAssignment": {
@@ -12544,6 +13190,98 @@
         "title": "RegexRule",
         "type": "object"
       },
+      "RelatedEntities": {
+        "additionalProperties": false,
+        "description": "What the principal is related to, by type.",
+        "properties": {
+          "characters": {
+            "$ref": "#/components/schemas/RelatedPage"
+          },
+          "engine_profiles": {
+            "$ref": "#/components/schemas/RelatedPage"
+          },
+          "media": {
+            "$ref": "#/components/schemas/RelatedPage"
+          },
+          "personas": {
+            "$ref": "#/components/schemas/RelatedPage"
+          },
+          "scenarios": {
+            "$ref": "#/components/schemas/RelatedPage"
+          },
+          "stories": {
+            "$ref": "#/components/schemas/RelatedPage"
+          }
+        },
+        "required": [
+          "stories",
+          "characters",
+          "scenarios",
+          "personas",
+          "media",
+          "engine_profiles"
+        ],
+        "title": "RelatedEntities",
+        "type": "object"
+      },
+      "RelatedItem": {
+        "additionalProperties": false,
+        "description": "One entity with relations naming the principal, and those relations' names.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "relations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Relations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "relations"
+        ],
+        "title": "RelatedItem",
+        "type": "object"
+      },
+      "RelatedPage": {
+        "additionalProperties": false,
+        "description": "The entities of one type related to the principal: their count, a page newest relation\nfirst, and the next page's cursor.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RelatedItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "count",
+          "items",
+          "next_cursor"
+        ],
+        "title": "RelatedPage",
+        "type": "object"
+      },
       "RelationBody": {
         "description": "The entity's relation: added (201), or already there (200, nothing recorded). The\n``config_revision`` is the deployment's, unchanged.",
         "properties": {
@@ -15392,6 +16130,13 @@
             "title": "Minor Age Threshold",
             "type": "integer"
           },
+          "offboarding_report_retention_days": {
+            "default": 90,
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Offboarding Report Retention Days",
+            "type": "integer"
+          },
           "profile_defaults": {
             "additionalProperties": false,
             "description": "An engine profile's settings, by capability module (FR-PROF-2).",
@@ -16039,6 +16784,17 @@
               }
             ],
             "title": "Minor Age Threshold"
+          },
+          "offboarding_report_retention_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offboarding Report Retention Days"
           },
           "profile_defaults": {
             "anyOf": [
@@ -18933,6 +19689,7 @@
                           "media_sweep_interval",
                           "media_upload_ttl",
                           "minor_age_threshold",
+                          "offboarding_report_retention_days",
                           "profile_defaults",
                           "profile_defaults.budgets",
                           "profile_defaults.budgets.deadline_ms",
@@ -20710,6 +21467,279 @@
           }
         ],
         "summary": "Store a purpose's API key",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/offboarding": {
+      "post": {
+        "description": "Apply an action to everything the principal owns, chosen per type (FR-AUTH-7): `delete`, `transfer` (to `transfer_to`) or `keep` for `stories`, `characters`, `scenarios`, `personas`, `media` and `engine_profiles`, and `remove` or `keep` for the `relations` naming it on entities it does not own. A type not named is `keep`. A character's companion scenario follows the character's action. Media a transferred catalog entry references move with it, whatever the media action. Deletion uses each type's own delete: a story is deleted for every participant, catalog and persona deletion never alters stories, and media and profiles are retired. The ids are taken now, so entities created for the principal later are not included. The plan warns of stories to be deleted that others are related to, profiles to be deleted that other owners' stories use, media to be retired that other owners' records reference, and the default profile, which is never deleted. A `dry_run`, or a plan with warnings and no `ignore_warnings`, answers 200 `{applied: false, counts, warnings}` and writes nothing. Otherwise a background job carries it out, one entity at a time, resumable and safe to repeat: 202 `{job_id, counts, warnings}` with `Location`, and a retry under the same `Idempotency-Key` answers the same job. 422 `principal_reserved` for `system`, `transfer_target_required` for a `transfer` without `transfer_to`, `transfer_target_invalid` for a `transfer_to` that is the principal or `system`; 409 `offboarding_in_progress` while the principal has one queued or running. Offboarding is not erasure: the principal stays recorded on events in stories it did not own.",
+        "operationId": "offboard_principal",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OffboardingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OffboardingPlanBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OffboardingQueuedBody"
+                }
+              }
+            },
+            "description": "Enqueued: a worker carries it out (read it at the `Location`).",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              },
+              "Location": {
+                "description": "`/admin/offboarding/{job_id}` of the offboarding.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `offboarding_in_progress`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `principal_reserved`, `transfer_target_invalid`, `transfer_target_required`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Offboard a principal",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/offboarding/{job_id}": {
+      "get": {
+        "description": "The offboarding's `status` (`queued`, `running`, `done` or `failed`), `progress` (`{done, total}` of the entities taken), the entity in hand (`current`), the per-type `counts` and the `request`. Once it ends, the `report` lists, by type, every entity `deleted`, `transferred` (`{id, to}`; a companion with `companion_of`, media moved by a transferred entry with `reason: referenced`), `removed` (relations), `kept` and `skipped` (`{id, reason}`: `gone`, `not_owned`, `name_taken`, `default_profile` or `busy`), and `remaining`: the live entities still owned by or related to the principal. A failed job answers its partial report and `error`. The report is kept `offboarding_report_retention_days` (90) after the job ends.",
+        "operationId": "get_offboarding",
+        "parameters": [
+          {
+            "description": "The background job's id (a ULID), as its 202 answered it.",
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "description": "The background job's id (a ULID), as its 202 answered it.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2D1"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OffboardingView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read an offboarding's progress and report",
         "tags": [
           "admin"
         ]
@@ -32379,6 +33409,346 @@
         ]
       }
     },
+    "/principals/{principal_id}": {
+      "get": {
+        "description": "Every entity linked to the principal (FR-AUTH-7), by type: `owned` (its `owner_principal`) and `related` (the entities with a relation naming it, with the relations' names). Stories, catalog characters, scenarios, personas, media assets and engine profiles each answer `{count, items, next_cursor}`, newest first. An owned item is `{id, name, status, version, listing_status}` (`null` where the type has none), and a character's names its companion scenario (`companion`), which follows it and is not listed under scenarios. Archived stories and entries, retired media and deleted profiles are listed with their status. `limit` (1 to 200) applies to every page; each page continues with its own cursor, `cursor[<type>]` or `cursor[related.<type>]` (422 `cursor_invalid` for one another page gave). A principal nothing names answers empty pages: principals are opaque and never resolved. Ownership and relations gate nothing (FR-AUTH-8).",
+        "operationId": "lookup_principal",
+        "parameters": [
+          {
+            "description": "The principal (opaque): the rest of the path, so it may contain `/`.",
+            "in": "path",
+            "name": "principal_id",
+            "required": true,
+            "schema": {
+              "description": "The principal (opaque): the rest of the path, so it may contain `/`.",
+              "examples": [
+                "p-7f3a9c"
+              ],
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "title": "Principal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of owned stories.",
+            "in": "query",
+            "name": "cursor[stories]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of owned stories.",
+              "title": "Cursor[Stories]"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of owned characters.",
+            "in": "query",
+            "name": "cursor[characters]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of owned characters.",
+              "title": "Cursor[Characters]"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of owned scenarios.",
+            "in": "query",
+            "name": "cursor[scenarios]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of owned scenarios.",
+              "title": "Cursor[Scenarios]"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of owned personas.",
+            "in": "query",
+            "name": "cursor[personas]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of owned personas.",
+              "title": "Cursor[Personas]"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of owned media.",
+            "in": "query",
+            "name": "cursor[media]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of owned media.",
+              "title": "Cursor[Media]"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of owned engine profiles.",
+            "in": "query",
+            "name": "cursor[engine_profiles]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of owned engine profiles.",
+              "title": "Cursor[Engine Profiles]"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of related stories.",
+            "in": "query",
+            "name": "cursor[related.stories]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of related stories.",
+              "title": "Cursor[Related.Stories]"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of related characters.",
+            "in": "query",
+            "name": "cursor[related.characters]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of related characters.",
+              "title": "Cursor[Related.Characters]"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of related scenarios.",
+            "in": "query",
+            "name": "cursor[related.scenarios]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of related scenarios.",
+              "title": "Cursor[Related.Scenarios]"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of related personas.",
+            "in": "query",
+            "name": "cursor[related.personas]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of related personas.",
+              "title": "Cursor[Related.Personas]"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of related media.",
+            "in": "query",
+            "name": "cursor[related.media]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of related media.",
+              "title": "Cursor[Related.Media]"
+            }
+          },
+          {
+            "description": "The `next_cursor` of the previous page of related engine profiles.",
+            "in": "query",
+            "name": "cursor[related.engine_profiles]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The `next_cursor` of the previous page of related engine profiles.",
+              "title": "Cursor[Related.Engine Profiles]"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrincipalLookup"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `cursor_invalid`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Look up everything linked to a principal",
+        "tags": [
+          "principals"
+        ]
+      }
+    },
     "/stories": {
       "get": {
         "description": "Every story, newest first, unless the request filters: by `status`, by `owner` (the owner principal, `system` included), or by `relation` (`name:principal`, or `name:` for any principal; repeat it and every one must hold). Owners and relations narrow a list only when a request asks: they gate nothing (FR-AUTH-8).",
@@ -38285,6 +39655,10 @@
     {
       "description": "Player personas (FR-CAT-6): the name, gender, age and short description a player plays as, saved per principal for reuse. A persona is not a catalog entry, and a story keeps a snapshot of the one it was created with, so editing or deleting a persona never changes a story.",
       "name": "personas"
+    },
+    {
+      "description": "Principal lookup (FR-AUTH-7): everything linked to a principal, owned and related, by type, with counts and pages. Principals are opaque and never resolved; offboarding is under `/admin/offboarding`.",
+      "name": "principals"
     },
     {
       "description": "Each owned entity's one owner and its relations (FR-AUTH-5,6): transfers and relation changes, recorded with the acting principal. Ownership and relations exist for listing, attribution and offboarding only; nothing gates on them (FR-AUTH-8).",

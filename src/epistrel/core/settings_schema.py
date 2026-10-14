@@ -383,12 +383,18 @@ DEFAULT_WORKER_HEARTBEAT_TIMEOUT_S = 60.0
 DEFAULT_TIMER_LAG_ALERT_S = 300.0
 
 
+DEFAULT_OFFBOARDING_REPORT_RETENTION_DAYS = 90
+"""How long a finished offboarding's report is kept (#117)."""
+
+
 class RetentionSettings(BaseModel):
     """How long the ``retention_sweep`` keeps what may expire (FR-STORE-30; #71), stored under
     ``deployment_state.settings``: audit records (``audit`` events and ``audit_log`` rows) for
     ``audit_retention_days`` (a story's own value overrides it for that story's records), and
-    finished (``done``/``failed``) job rows for ``job_retention_days``. Prospective: each sweep
-    applies the values in force when it runs; story history never expires."""
+    finished (``done``/``failed``) job rows for ``job_retention_days``, and a finished principal
+    offboarding's status and report (``offboarding_jobs``, #117) for
+    ``offboarding_report_retention_days``. Prospective: each sweep applies the values in force
+    when it runs; story history never expires."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -399,6 +405,9 @@ class RetentionSettings(BaseModel):
     )
     job_retention_days: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_JOB_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
+    )
+    offboarding_report_retention_days: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_OFFBOARDING_REPORT_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
 
 

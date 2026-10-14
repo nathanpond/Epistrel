@@ -41,8 +41,10 @@ written and no revision moves.
 
 from __future__ import annotations
 
+import contextlib
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -561,7 +563,8 @@ async def record_event(
     job_id: str | None = None,
 ) -> None:
     """One ``ownership_events`` row in ``conn``'s transaction (``at``: the transaction's time).
-    #110 records listing-status changes and #117 its job's changes through it."""
+    #110 records listing-status changes and #117 its job's changes through it: ``job_id``, or
+    else the job ``acting_job`` names."""
     await conn.execute(
         insert(ownership_events).values(
             id=new_ulid(),
@@ -571,9 +574,24 @@ async def record_event(
             old=null() if old is None else old,
             new=null() if new is None else new,
             acting_principal=principal,
-            job_id=job_id,
+            job_id=job_id if job_id is not None else _ACTING_JOB.get(),
         )
     )
+
+
+_ACTING_JOB: ContextVar[str | None] = ContextVar("epistrel_ownership_job", default=None)
+
+
+@contextlib.contextmanager
+def acting_job(job_id: str) -> Iterator[None]:
+    """Record ``job_id`` on every ``ownership_events`` row written inside the block: #117's
+    offboarding job runs the types' own deletes and transfers, and each row they write names
+    the job, without those paths taking a job argument."""
+    token = _ACTING_JOB.set(job_id)
+    try:
+        yield
+    finally:
+        _ACTING_JOB.reset(token)
 
 
 def _pair(principal: str, relation: str) -> dict[str, str]:
@@ -778,6 +796,58 @@ async def remove_relation(
     )
 
 
+async def remove_relations_of(
+    db: AsyncEngine,
+    entity_type: EntityType,
+    entity_id: str,
+    related: str,
+    *,
+    principal: str,
+) -> list[str] | None:
+    """Remove every relation the entity has to ``related`` in one transaction, under the
+    entity's row lock, recorded as one ``relation_removed`` event per relation with
+    ``principal`` as the actor, and one ``control`` operation when anything went (#117's
+    offboarding, ``relations: remove``). Returns the names removed (sorted, byte order), ``[]``
+    when there were none, or ``None`` when the entity is gone. A companion has no relations of
+    its own, so it has none to remove."""
+    owned = REGISTRY[entity_type]
+    async with db.begin() as conn:
+        columns = await columns_of(conn, owned)
+        if not columns:
+            return None
+        handle = _table(owned, ["id"])
+        found = await conn.scalar(
+            select(handle.c.id).where(handle.c.id == entity_id).with_for_update(key_share=True)
+        )
+        if found is None:
+            return None
+        removed = await conn.scalars(
+            delete(entity_relations)
+            .where(
+                entity_relations.c.entity_type == entity_type.value,
+                entity_relations.c.entity_id == entity_id,
+                entity_relations.c.principal == related,
+            )
+            .returning(entity_relations.c.relation)
+        )
+        names = sorted(str(name) for name in removed)
+        for name in names:
+            await record_event(
+                conn,
+                OwnershipEventKind.RELATION_REMOVED,
+                entity_type,
+                entity_id,
+                old=_pair(related, name),
+                new=None,
+                principal=principal,
+            )
+        if names:
+            await control.record_control_operation(
+                conn, actor=principal, story_id=_story_of(owned, entity_id)
+            )
+    return names
+
+
 async def drop_entity(
     conn: AsyncConnection, entity_type: EntityType, entity_id: str, *, principal: str
 ) -> None:
@@ -873,6 +943,7 @@ __all__ = [
     "RelationRequest",
     "RelationWrite",
     "Relations",
+    "acting_job",
     "add_relation",
     "columns_of",
     "delivered",
@@ -889,5 +960,6 @@ __all__ = [
     "relation_filter_problem",
     "relation_name_problem",
     "remove_relation",
+    "remove_relations_of",
     "transfer_owner",
 ]

@@ -156,6 +156,7 @@ class SettingsPatch(BaseModel):
     default_safe_fallback: str | None = None
     audit_retention_days: int | None = None
     job_retention_days: int | None = None
+    offboarding_report_retention_days: int | None = None
     worker_heartbeat_timeout: float | None = None
     timer_lag_alert: float | None = None
     media_allowed_types: list[str] | None = None

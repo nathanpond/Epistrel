@@ -817,3 +817,45 @@ class StoryCharacterNotFound(EpistrelError):
 
     code = "not_found"
     http_status = 404
+
+
+class OffboardingNotFound(EpistrelError):
+    """The offboarding job a call names does not exist (or its report was purged).
+    ``details``: ``job_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class PrincipalReserved(EpistrelError):
+    """An offboarding of ``system``, the principal background work and the presets act as
+    (FR-AUTH-7; #117). Nothing is written. ``details``: ``field``, ``principal``."""
+
+    code = "principal_reserved"
+    http_status = 422
+
+
+class TransferTargetRequired(EpistrelError):
+    """An offboarding names a ``transfer`` action but no ``transfer_to`` (FR-AUTH-7; #117).
+    Nothing is written. ``details``: ``field`` and ``types`` (the types that transfer)."""
+
+    code = "transfer_target_required"
+    http_status = 422
+
+
+class TransferTargetInvalid(EpistrelError):
+    """An offboarding's ``transfer_to`` is the offboarded principal itself or ``system``
+    (FR-AUTH-7; #117). Nothing is written. ``details``: ``field``, ``reason`` (``same_principal``
+    or ``reserved``)."""
+
+    code = "transfer_target_invalid"
+    http_status = 422
+
+
+class OffboardingInProgress(EpistrelError):
+    """The principal already has a queued or running offboarding (FR-AUTH-7; #117): read its
+    progress, and ask again once it finishes. Nothing is written. ``details``: ``principal`` and
+    ``job_id``."""
+
+    code = "offboarding_in_progress"
+    http_status = 409

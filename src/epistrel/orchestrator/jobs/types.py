@@ -92,6 +92,11 @@ class JobOutput:
     result_of: Callable[[], dict[str, Any]] | None = None
     positioned: tuple[PositionedOutput, ...] = ()
     source_window: dict[str, Any] | None = None
+    requeue_in: float | None = None
+    """For a handler that records no operation: put the job back to ``queued``, due in this many
+    seconds, instead of finishing it (#117's offboarding yields between batches and waits out a
+    busy story). Not a failure: the attempt's token is spent, and the next claim takes a new
+    one."""
 
 
 Run = Callable[[JobContext], Coroutine[Any, Any, JobOutput]]

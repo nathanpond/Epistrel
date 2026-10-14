@@ -1513,6 +1513,84 @@ async def referenced(conn: AsyncConnection, media_ids: Sequence[str]) -> set[str
     return found
 
 
+@dataclass(frozen=True, slots=True)
+class MediaReference:
+    """One record that names an asset (``referenced``'s finding, with who holds it): the
+    owned entity the record belongs to (its type and id, as ``core.ownership`` names them) and
+    that entity's owner. ``None`` for a record no owned entity holds."""
+
+    media_id: str
+    entity_type: str | None
+    entity_id: str | None
+    owner: str | None
+
+
+REFERENCE_HOLDERS: dict[str, tuple[str, str, str]] = {
+    "catalog.character_catalog": ("character", "t.id", "t.owner_principal"),
+    "catalog.character_versions": (
+        "character",
+        "t.catalog_id",
+        "(SELECT c.owner_principal FROM catalog.character_catalog AS c WHERE c.id = t.catalog_id)",
+    ),
+    "catalog.scenario_catalog": ("scenario", "t.id", "t.owner_principal"),
+    "catalog.scenario_versions": (
+        "scenario",
+        "t.catalog_id",
+        "(SELECT c.owner_principal FROM catalog.scenario_catalog AS c WHERE c.id = t.catalog_id)",
+    ),
+    f"public.{RECORD_TABLE}": ("media", "t.id", "t.owner_principal"),
+    "public.characters": (
+        "story",
+        "t.story_id",
+        "(SELECT s.owner_principal FROM public.stories AS s WHERE s.id = t.story_id)",
+    ),
+}
+"""For each reference source's table: the owned entity a record belongs to and the SQL of its
+id and owner (``t`` is the record). #117's offboarding reads them: media referenced by an entry
+it transfers move with it, and media it would retire that another owner's entry references are
+warned of."""
+
+
+async def references(conn: AsyncConnection, media_ids: Sequence[str]) -> list[MediaReference]:
+    """Every record of ``MEDIA_REFERENCE_SOURCES`` that names one of ``media_ids``, with the
+    owned entity it belongs to and that entity's owner (``REFERENCE_HOLDERS``; ``None`` for a
+    source no entry describes). Found by querying the records, like ``referenced``."""
+    wanted = list(dict.fromkeys(media_ids))
+    found: set[MediaReference] = set()
+    if not wanted:
+        return []
+    for source in await _present_sources(conn):
+        source_from, value = _values(source, "path")
+        holder = REFERENCE_HOLDERS.get(source.table)
+        entity_type, entity_id, owner = (
+            (f"'{holder[0]}'", holder[1], holder[2]) if holder else ("NULL", "NULL", "NULL")
+        )
+        params: dict[str, Any] = {"ids": wanted}
+        if source.path is not None:
+            params["path"] = source.path
+        rows = await conn.execute(
+            sql_text(
+                f"SELECT DISTINCT CAST({value} AS text) AS media_id, "  # noqa: S608
+                f"CAST({entity_type} AS text) AS entity_type, "
+                f"CAST({entity_id} AS text) AS entity_id, CAST({owner} AS text) AS owner "
+                f"FROM {source_from} WHERE CAST({value} AS text) = ANY(CAST(:ids AS text[]))"
+            ),
+            params,
+        )
+        found.update(
+            MediaReference(
+                str(row.media_id),
+                row.entity_type,
+                None if row.entity_id is None else str(row.entity_id).strip(),
+                row.owner,
+            )
+            for row in rows
+        )
+    return sorted(
+        found, key=lambda r: (r.media_id, r.entity_type or "", r.entity_id or "", r.owner or "")
+    )
+
+
 async def unreferenced(conn: AsyncConnection) -> ColumnElement[bool]:
     """A condition on ``media_assets`` rows that holds when no record of
     ``MEDIA_REFERENCE_SOURCES`` names the asset: ``referenced`` as an anti-join, so a query can
@@ -1540,12 +1618,14 @@ __all__ = [
     "METADATA_MAX_BYTES",
     "POSTER_FILE_FIELD",
     "RECORD_TABLE",
+    "REFERENCE_HOLDERS",
     "ByteRange",
     "DepictedSubject",
     "GenerationMetadata",
     "MediaAsset",
     "MediaContent",
     "MediaPage",
+    "MediaReference",
     "MediaRetirement",
     "MediaUpload",
     "MediaUrl",
@@ -1579,6 +1659,7 @@ __all__ = [
     "read_asset",
     "read_media_settings",
     "referenced",
+    "references",
     "register_reference_source",
     "require_subjects",
     "retire",

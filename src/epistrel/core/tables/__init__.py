@@ -23,6 +23,7 @@ from epistrel.core.tables.idempotency import idempotency_keys
 from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.media import media_assets, subject_references
 from epistrel.core.tables.model_config import model_config
+from epistrel.core.tables.offboarding import offboarding_jobs
 from epistrel.core.tables.operations import operations
 from epistrel.core.tables.ownership import entity_relations, ownership_events
 from epistrel.core.tables.personas import personas
@@ -64,6 +65,7 @@ __all__ = [
     "media_assets",
     "metadata",
     "model_config",
+    "offboarding_jobs",
     "operations",
     "ownership_events",
     "personas",

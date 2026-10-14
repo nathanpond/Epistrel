@@ -42,7 +42,10 @@ fixture persona (#114) is generated against, and ``delete_persona`` is excluded 
 it). A promotion's ``character_id`` is the fixture story's non-player character, Ada (the path
 parameter shares its name with the catalog character's), so generated promotions reach the
 operation; each makes a new catalog draft, and generated characters added to the fixture story
-fill its cast up to its cap, after which an addition answers a documented 422.
+fill its cast up to its cap, after which an addition answers a documented 422. The fixture
+offboarding (#117) offboards a principal that owns nothing, so its job's progress and report
+read; a generated offboarding of a principal with one queued answers a documented 409, and the
+principal lookup is generated against the fixture author.
 """
 
 from __future__ import annotations
@@ -84,6 +87,7 @@ from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.core.deployment import SettingsPatch
 from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
+from epistrel.core.offboarding import OffboardingQueued, OffboardingRequest
 from epistrel.core.profiles.store import ProfileCreate
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.settings_schema import StorySettings
@@ -167,6 +171,7 @@ class Live:
     message_id: str
     persona_id: str
     story_character_id: str
+    job_id: str
 
     def counts(self) -> dict[str, int]:
         sync = make_sync_engine(self.url)
@@ -194,6 +199,8 @@ class Live:
             "profile_id": self.profile_id,
             "message_id": self.message_id,
             "persona_id": self.persona_id,
+            "job_id": self.job_id,
+            "principal_id": AUTHOR.principal or "",
         }
 
     def path_ids_of(self, operation_id: str | None) -> dict[str, str]:
@@ -208,9 +215,10 @@ class Live:
 async def _seed(settings: Settings) -> tuple[str, ...]:
     """A two-character story with one played turn, a published catalog character, an
     uploaded image, an open upload session (#107), a published scenario (#108), an engine
-    profile (#106) and a persona (#114): the story's id, the turn's operation id, the
-    character's id, the image's id, the session's id, the scenario's id, the profile's id, the
-    turn's reply (#112), the persona's id and the story's non-player character's id (#114)."""
+    profile (#106), a persona (#114) and an offboarding (#117): the story's id, the turn's
+    operation id, the character's id, the image's id, the session's id, the scenario's id, the
+    profile's id, the turn's reply (#112), the persona's id, the story's non-player character's
+    id (#114) and the offboarding's job id (#117)."""
     db = make_engine(settings)
     engine = Engine.from_settings(settings)
     engine.bind(db)
@@ -253,6 +261,10 @@ async def _seed(settings: Settings) -> tuple[str, ...]:
                 {"name": "C-01 profile", "settings": {"budgets": {"deadline_ms": 30_000}}}
             ),
         )
+        queued = await engine.offboard_principal(
+            AUTHOR, OffboardingRequest(principal="c01-offboarded")
+        )
+        assert isinstance(queued, OffboardingQueued)
         persona = await engine.create_persona(
             AUTHOR,
             PersonaCreate.model_validate(
@@ -270,6 +282,7 @@ async def _seed(settings: Settings) -> tuple[str, ...]:
             played.message.message_id,
             persona.persona.id,
             created.characters[1].id,
+            queued.job_id,
         )
     finally:
         await engine.models.aclose()

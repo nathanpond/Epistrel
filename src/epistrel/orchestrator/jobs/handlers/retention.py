@@ -12,6 +12,8 @@ FR-CONC-6, NFR-REL-5; #71).
   marker. Discarded and dormant continuations are never touched: they are story history, kept
   until the story is deleted.
 - finished (``done``/``failed``) ``jobs`` rows not updated for ``job_retention_days`` (7).
+- finished principal offboardings (``offboarding_jobs``, #117) that ended more than
+  ``offboarding_report_retention_days`` (90) ago: their status and report.
 - deleted engine profiles that no story uses any more (FR-PROF-1; #106): each is purged with
   its versions and its relations, its ownership ``deleted`` event recorded by ``system``
   (``core.profiles.store.purge_deleted``). A deleted profile a story still uses is kept, and
@@ -63,7 +65,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import clock
+from epistrel.core import clock, offboarding
 from epistrel.core.config_changes import read_section
 from epistrel.core.enums import EventCategory, OperationStatus
 from epistrel.core.idempotency import KeyStatus, purge_expired, read_idempotency_settings
@@ -185,6 +187,18 @@ async def _chunked(db: AsyncEngine, table: Any, ids_query: Any, *, audit: bool) 
     return deleted
 
 
+async def _purge_offboarding(db: AsyncEngine, before: datetime) -> int:
+    """Finished offboardings (#117) older than ``offboarding_report_retention_days``."""
+    deleted = 0
+    for _ in range(MAX_CHUNKS):
+        async with db.begin() as conn:
+            found = await offboarding.purge_finished(conn, before, CHUNK)
+        deleted += found
+        if found < CHUNK:
+            break
+    return deleted
+
+
 async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[str, int]:
     """One retention run (see the module docstring); returns how many rows of each it deleted."""
     moment = now or clock.now()
@@ -202,6 +216,9 @@ async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[
         "audit_log": await _chunked(db, audit_log, expired_audit_log(moment, days), audit=True),
         "jobs": await _chunked(db, jobs, finished_jobs, audit=False),
         "engine_profiles": await profiles.purge_deleted(db),
+        "offboarding_jobs": await _purge_offboarding(
+            db, moment - timedelta(days=settings.offboarding_report_retention_days)
+        ),
         **await _expire_feedback(db, moment),
     }
 

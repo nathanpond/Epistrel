@@ -21,6 +21,7 @@ from epistrel.api.routes import (
     media,
     operations,
     personas,
+    principals,
     respond,
     stories,
     story_profile,
@@ -45,6 +46,7 @@ router.include_router(catalog_scenarios.router)
 router.include_router(media.router)
 router.include_router(engine_profiles.router)
 router.include_router(personas.router)
+router.include_router(principals.router)
 router.include_router(story_profile.router)
 router.include_router(feedback.router)
 router.include_router(admin.router)

@@ -35,6 +35,18 @@ The detailed tests are in ``tests/integration/test_ownership.py``. The story-cre
   whole table (counted); and a listing-status change leaves a story made from the entry
   byte-identical. On its own scratch database, so the table is the test's alone. The
   nothing-gates matrix covers each entry's listing-status route (``CALLS``).
+- ``test_i_21__offboarding`` (#117): docs/04's offboarding of A. The lookup lists A's owned and
+  related entities by type with counts. The dry run counts and warns (a story to be deleted is
+  shared with E; with profiles deleted instead, all three warning kinds). Without
+  ``ignore_warnings`` nothing changes; with it the worker deletes A's stories (the shared one for
+  E too) and personas, moves the character with its companion and the image it shows, the
+  scenario and the profile to curator K, retires the other images (one still served for another
+  owner's character), removes A's relation on another owner's entity, and leaves A's principal
+  on its turns in a story it did not own. A retry under the key changes nothing, and the report
+  lists every entity with nothing left linked to A.
+- ``test_i_21__offboarding_resumes`` (#117): the worker dies after acting on an entity and
+  before recording it; a fresh worker resumes from the progress row and finishes, and every
+  entity is acted on exactly once (its ownership events counted).
 - ``test_i_21__persona`` (#114): deleting a saved persona leaves a story created with it
   unchanged, whoever deletes it. Until #119's genesis creates stories from personas, the story's
   player character is given the persona's snapshot the way genesis will
@@ -68,7 +80,9 @@ from epistrel import (
     StorySpec,
 )
 from epistrel.config import Settings
+from epistrel.core import offboarding
 from epistrel.core.db import make_engine
+from epistrel.core.ids import new_ulid
 from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.media.sweep import sweep
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
@@ -102,6 +116,19 @@ from tests.integration.ownership_fixtures import (
 )
 from tests.media_support import blob_path, media_client, scratch, uploaded
 from tests.model_support import config_key
+from tests.offboarding_support import counts as table_counts
+from tests.offboarding_support import (
+    lookup,
+    offboard,
+    offboarding_db,
+    ownership_changes,
+    report,
+    retry_now,
+    run_jobs,
+    worker,
+    world,
+)
+from tests.offboarding_support import scalar as scratch_scalar
 from tests.persona_support import copy_into
 from tests.profile_support import EDITED, PROFILES, profile_body
 from tests.respond_support import respond_client
@@ -1054,3 +1081,204 @@ async def test_i_21__persona(stub_settings: Settings, engine: AsyncEngine) -> No
         archived = await client.post(f"/stories/{story.id}/archive", headers=headers(a))
         assert archived.status_code == 200, archived.text
         assert await _snapshot(engine, story.id) != before
+
+
+# -- #117: lookup and offboarding -----------------------------------------------------------------
+
+DOCS_ACTIONS = {
+    "stories": "delete",
+    "personas": "delete",
+    "characters": "transfer",
+    "scenarios": "transfer",
+    "media": "delete",
+    "engine_profiles": "transfer",
+    "relations": "remove",
+}
+"""docs/04 I-21's offboarding of A."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-AUTH-7")
+async def test_i_21__offboarding(pg_url: str) -> None:
+    """A's lookup lists what A owns and is related to, by type, with counts. Offboarding A with
+    docs/04's actions: the dry run counts and warns of the story shared with E (and, with
+    profiles deleted instead, of all three warning kinds), and changes nothing; without
+    ``ignore_warnings`` the request answers the warnings and changes nothing; with it, the job
+    carries out every action, A's turns in a story it did not own still name A, a retry under
+    the key changes nothing, and the report lists every entity with nothing left linked to A.
+
+    Complement asserted: the curator, the player and the other owner keep what is theirs, and
+    the image another owner's character shows is retired yet still served."""
+    async with offboarding_db(pg_url) as s:
+        w = await world(s.client, s.db)
+        a, k, e = w.a, w.curator, w.player
+        found = await lookup(s.client, a)
+        assert {key: page["count"] for key, page in found["owned"].items()} == {
+            "stories": 2,
+            "characters": 1,
+            "scenarios": 1,
+            "personas": 1,
+            "media": 3,
+            "engine_profiles": 1,
+        }
+        assert found["owned"]["characters"]["items"][0]["companion"] == {"id": w.companion}
+        assert found["related"]["characters"]["items"] == [
+            {"id": w.others_character, "relations": ["editor"]}
+        ]
+        body = {"principal": a, "actions": DOCS_ACTIONS, "transfer_to": k}
+        before = await table_counts(s.db)
+        dry, _ = await offboard(s.client, {**body, "dry_run": True}, status=200)
+        assert dry["applied"] is False
+        assert dry["counts"]["stories"] == {"delete": 2, "transfer": 0, "keep": 0}
+        assert dry["counts"]["media"] == {"delete": 2, "transfer": 1, "keep": 0}
+        assert dry["counts"]["engine_profiles"] == {"delete": 0, "transfer": 1, "keep": 0}
+        assert dry["counts"]["relations"] == {"remove": 1, "keep": 0}
+        kinds = [(x["kind"], x["entity_id"], x["principals"]) for x in dry["warnings"]]
+        assert kinds == [
+            ("shared_story", w.shared_story, [e]),
+            ("media_referenced", w.shared_image, [w.other]),
+        ]
+        three, _ = await offboard(
+            s.client,
+            {**body, "actions": {**DOCS_ACTIONS, "engine_profiles": "delete"}, "dry_run": True},
+            status=200,
+        )
+        assert [x["kind"] for x in three["warnings"]] == [
+            "shared_story",
+            "profile_in_use",
+            "media_referenced",
+        ]
+        held, _ = await offboard(s.client, body, status=200)
+        assert held["applied"] is False
+        assert held["warnings"] == dry["warnings"]
+        assert await table_counts(s.db) == before
+        key = new_ulid()
+        queued, _ = await offboard(s.client, {**body, "ignore_warnings": True}, status=202, key=key)
+        await run_jobs(s.db)
+        done = await report(s.client, queued["job_id"])
+        assert done["status"] == "done"
+        gone = await scratch_scalar(
+            s.db,
+            "SELECT count(*) FROM stories WHERE id IN (:x, :y)",
+            x=w.shared_story,
+            y=w.own_story,
+        )
+        assert gone == 0
+        assert (await lookup(s.client, e))["related"]["stories"]["count"] == 0
+        curator = await lookup(s.client, k)
+        assert [i["id"] for i in curator["owned"]["characters"]["items"]] == [w.character]
+        assert curator["owned"]["characters"]["items"][0]["companion"] == {"id": w.companion}
+        assert [i["id"] for i in curator["owned"]["scenarios"]["items"]] == [w.scenario]
+        assert [i["id"] for i in curator["owned"]["media"]["items"]] == [w.kept_image]
+        assert [i["id"] for i in curator["owned"]["engine_profiles"]["items"]] == [w.profile]
+        state = await scratch_scalar(
+            s.db, "SELECT state FROM media_assets WHERE id = :m", m=w.shared_image
+        )
+        assert state == "retired"
+        served = await s.client.get(f"/media/{w.shared_image}/content", headers=READ)
+        assert served.status_code == 200
+        loose = await scratch_scalar(
+            s.db, "SELECT state FROM media_assets WHERE id = :m", m=w.loose_image
+        )
+        assert loose == "retired"
+        assert (await lookup(s.client, a))["related"]["characters"]["count"] == 0
+        assert (await lookup(s.client, w.other))["owned"]["characters"]["count"] == 1
+        turns = await scratch_scalar(
+            s.db,
+            "SELECT count(*) FROM events WHERE story_id = :s AND principal = :p",
+            s=w.others_story,
+            p=a,
+        )
+        assert turns > 0
+        found = done["report"]
+        assert sorted(found["deleted"]["stories"]) == sorted([w.shared_story, w.own_story])
+        assert found["deleted"]["personas"] == [w.persona]
+        assert sorted(found["deleted"]["media"]) == sorted([w.shared_image, w.loose_image])
+        assert found["transferred"]["characters"] == [{"id": w.character, "to": k}]
+        assert [x["id"] for x in found["transferred"]["scenarios"]] == [w.companion, w.scenario]
+        assert found["transferred"]["media"] == [
+            {"id": w.kept_image, "to": k, "reason": "referenced"}
+        ]
+        assert found["transferred"]["engine_profiles"] == [{"id": w.profile, "to": k}]
+        assert found["removed"]["relations"][0]["id"] == w.others_character
+        assert all(not ids for ids in found["remaining"]["owned"].values())
+        assert all(not ids for ids in found["remaining"]["related"].values())
+        settled = await table_counts(s.db)
+        again, replay = await offboard(
+            s.client, {**body, "ignore_warnings": True}, status=202, key=key
+        )
+        assert again["job_id"] == queued["job_id"]
+        assert replay.headers["Idempotent-Replay"] == "true"
+        await run_jobs(s.db)
+        assert await table_counts(s.db) == settled
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-AUTH-7")
+async def test_i_21__offboarding_resumes(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The worker dies after acting on the second entity (a story deletion) and before the job
+    records it. A fresh worker resumes from the progress row: it records that story as deleted
+    without acting again and finishes the rest. Every entity is acted on exactly once, counted
+    by its ownership events, and the report lists each once.
+
+    Complement asserted: the first worker did stop midway (the job was not done, and the second
+    story was already gone)."""
+    async with offboarding_db(pg_url) as s:
+        w = await world(s.client, s.db)
+        real = offboarding.apply
+        calls: list[str] = []
+
+        async def dies_after_the_second(*args: Any, **kwargs: Any) -> Any:
+            outcomes = await real(*args, **kwargs)
+            calls.append(str(args[2]["id"]))
+            if len(calls) == 2:
+                raise RuntimeError("the worker died")
+            return outcomes
+
+        monkeypatch.setattr(offboarding, "apply", dies_after_the_second)
+        queued, _ = await offboard(
+            s.client,
+            {
+                "principal": w.a,
+                "actions": DOCS_ACTIONS,
+                "transfer_to": w.curator,
+                "ignore_warnings": True,
+            },
+            status=202,
+        )
+        job_id = queued["job_id"]
+        await run_jobs(s.db)
+        midway = await report(s.client, job_id)
+        assert midway["status"] == "running"
+        assert midway["progress"]["done"] == 1
+        assert midway["current"] == {"type": "stories", "id": calls[1]}
+        assert (
+            await scratch_scalar(s.db, "SELECT count(*) FROM stories WHERE id = :s", s=calls[1])
+            == 0
+        )
+        monkeypatch.setattr(offboarding, "apply", real)
+        await retry_now(s.db)
+        await run_jobs(s.db, fresh=worker(s.db))
+        done = await report(s.client, job_id)
+        assert done["status"] == "done"
+        assert done["progress"] == {"done": 10, "total": 10}
+        assert await ownership_changes(s.db, job_id) == {
+            (w.shared_story, "deleted"): 1,
+            (w.own_story, "deleted"): 1,
+            (w.character, "transfer"): 1,
+            (w.companion, "transfer"): 1,
+            (w.scenario, "transfer"): 1,
+            (w.persona, "deleted"): 1,
+            (w.kept_image, "transfer"): 1,
+            (w.profile, "transfer"): 1,
+            (w.others_character, "relation_removed"): 1,
+        }
+        found = done["report"]
+        assert sorted(found["deleted"]["stories"]) == sorted([w.shared_story, w.own_story])
+        listed = [
+            record if isinstance(record, str) else record["id"]
+            for bucket in ("deleted", "transferred", "removed", "kept", "skipped")
+            for records in found[bucket].values()
+            for record in records
+        ]
+        assert len(listed) == len(set(listed)) == 11

@@ -38,6 +38,7 @@ from epistrel.api.routes.admin.model_config import (
     ModelConfigItem,
     ModelConfigMutation,
 )
+from epistrel.api.routes.admin.offboarding import OffboardingPlanBody, OffboardingQueuedBody
 from epistrel.api.routes.admin.policies import PolicyBody, PolicyList, PolicyMutation
 from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, RatingMutation
 from epistrel.api.routes.admin.settings import SettingsBody
@@ -132,6 +133,7 @@ from epistrel.core.fork import ForkRequest
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
+from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
 from epistrel.core.profiles.impact import ImpactPreviewRequest
@@ -210,6 +212,9 @@ class Step:
     capture: Callable[[dict[str, Any], Ids], None] = lambda body, ids: None
     group: str = ""
     """Steps checked together by their statuses (``ENTRY_GROUP``)."""
+    status: Callable[[dict[str, Any]], int] | None = None
+    """The library result's REST status, when the route's own status is not it (a 202 the
+    route answers beside its 200, #117)."""
 
     @property
     def label(self) -> str:
@@ -514,6 +519,33 @@ listed by owner, edited, refused a second time under its name (409 ``persona_nam
 transferred, related, its relations listed, and deleted."""
 PLAYER_GROUP = "player"
 """The ``Step.group`` of the persona steps (#114)."""
+LEAVING = {
+    "principal": PRINCIPAL,
+    "actions": {
+        "stories": "delete",
+        "characters": "delete",
+        "scenarios": "delete",
+        "personas": "delete",
+        "media": "delete",
+        "engine_profiles": "delete",
+        "relations": "remove",
+    },
+    "dry_run": True,
+}
+"""A dry run of removing everything of the parity principal's (#117): counts and warnings,
+nothing written."""
+KEEPING = {"principal": NEW_OWNER["principal"]}
+"""The new owner's request that keeps everything (#117): enqueued (202); no worker runs it."""
+PRINCIPAL_ANSWERS = [
+    ("lookup_principal", 200),
+    ("offboard_principal", 200),
+    ("offboard_principal", 202),
+    ("get_offboarding", 200),
+]
+"""What the principal steps (#117) answer on both surfaces: the parity principal's lookup, a dry
+run that writes nothing, the new owner's request enqueued, and its job read back (queued)."""
+PRINCIPAL_GROUP = "principals"
+"""The ``Step.group`` of the principal steps (#117)."""
 
 
 def _steps() -> list[Step]:
@@ -1186,6 +1218,33 @@ def _steps() -> list[Step]:
             lambda e, ids: _no_content(e.delete_persona(CTX, ids["persona"])),
             group=PLAYER_GROUP,
         ),
+        # -- principals (#117)
+        Step(
+            "lookup_principal",
+            lambda ids: Rest("GET", f"/principals/{PRINCIPAL}"),
+            lambda e, ids: _lookup(e),
+            group=PRINCIPAL_GROUP,
+        ),
+        Step(
+            "offboard_principal",
+            lambda ids: Rest("POST", "/admin/offboarding", LEAVING),
+            lambda e, ids: _offboard(e, LEAVING),
+            group=PRINCIPAL_GROUP,
+        ),
+        Step(
+            "offboard_principal",
+            lambda ids: Rest("POST", "/admin/offboarding", KEEPING),
+            lambda e, ids: _offboard(e, KEEPING),
+            _keep("offboarding", "job_id"),
+            group=PRINCIPAL_GROUP,
+            status=lambda body: 202 if "job_id" in body else 200,
+        ),
+        Step(
+            "get_offboarding",
+            lambda ids: Rest("GET", "/admin/offboarding/{offboarding}"),
+            lambda e, ids: _offboarding(e, ids["offboarding"]),
+            group=PRINCIPAL_GROUP,
+        ),
         # -- media assets (#105)
         Step(
             "upload_media",
@@ -1789,6 +1848,21 @@ async def _personas(engine: Engine) -> dict[str, Any]:
     return dump(PersonaListBody.of(await engine.list_personas(CTX, owner=PRINCIPAL)))
 
 
+async def _lookup(engine: Engine) -> dict[str, Any]:
+    return dump(await engine.lookup_principal(CTX, PRINCIPAL))
+
+
+async def _offboard(engine: Engine, body: dict[str, Any]) -> dict[str, Any]:
+    result = await engine.offboard_principal(CTX, OffboardingRequest.model_validate(body))
+    if isinstance(result, OffboardingPlan):
+        return dump(OffboardingPlanBody.of(result))
+    return dump(OffboardingQueuedBody.of(result))
+
+
+async def _offboarding(engine: Engine, job_id: str) -> dict[str, Any]:
+    return dump(await engine.get_offboarding(CTX, job_id))
+
+
 async def _profile_edit(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(ProfileEditBody.of(await call))
 
@@ -2007,7 +2081,7 @@ async def run_library(settings: Settings, steps: list[Step]) -> list[Rendered]:
                 out.append((error.http_status, error_body(error)))
                 continue
             step.capture(body, ids)
-            out.append((statuses[step.operation](body), body))
+            out.append(((step.status or statuses[step.operation])(body), body))
     return out
 
 
@@ -2157,6 +2231,12 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         if step.group == PLAYER_GROUP
     ]
     assert players == PLAYER_ANSWERS
+    principals = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == PRINCIPAL_GROUP
+    ]
+    assert principals == PRINCIPAL_ANSWERS
     ratings = [
         (step.operation, status, body)
         for step, (status, body) in zip(steps, rest, strict=True)

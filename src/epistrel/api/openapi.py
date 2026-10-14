@@ -26,7 +26,7 @@ What ``build`` adds or changes:
   and ``MediaUpload`` (the ``metadata`` part of ``POST /media``'s multipart body, which the
   route reads itself, #105; ``MULTIPART_BODIES``).
 - Tags: stories, timeline, history, operations, settings, catalog, media, profiles, personas,
-  ownership, feedback, admin, ops. Every
+  principals, ownership, feedback, admin, ops. Every
   owned type's owner and relation routes (``routes.ownership``, #104) are tagged ``ownership``,
   whichever router serves them, and a story character's promotion (#114) ``catalog``.
 - A route flagged ``mutating=False`` (``deps.route_flags``) is documented as a read with a
@@ -100,6 +100,12 @@ TAGS: list[dict[str, str]] = [
         "a player plays as, saved per principal for reuse. A persona is not a catalog entry, "
         "and a story keeps a snapshot of the one it was created with, so editing or deleting a "
         "persona never changes a story.",
+    },
+    {
+        "name": "principals",
+        "description": "Principal lookup (FR-AUTH-7): everything linked to a principal, owned "
+        "and related, by type, with counts and pages. Principals are opaque and never "
+        "resolved; offboarding is under `/admin/offboarding`.",
     },
     {
         "name": OWNERSHIP_TAG,
@@ -208,6 +214,7 @@ ERROR_STATUS: dict[str, int] = {
     "draft_stale": 409,
     "feedback_tag_in_use": 409,
     "listing_status_in_use": 409,
+    "offboarding_in_progress": 409,
     "persona_name_taken": 409,
     "upload_closed": 409,
     "upload_incomplete": 409,
@@ -237,10 +244,13 @@ ERROR_STATUS: dict[str, int] = {
     "poster_extraction_failed": 422,
     "poster_invalid": 422,
     "poster_required": 422,
+    "principal_reserved": 422,
     "profile_deleted": 422,
     "publish_invalid": 422,
     "rating_retired": 422,
     "subjects_required": 422,
+    "transfer_target_invalid": 422,
+    "transfer_target_required": 422,
     "unknown_feedback_tag": 422,
     "unsupported_event_kind": 422,
     "validation_error": 422,
@@ -442,6 +452,15 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "impact_preview": ("invalid_profile", "profile_deleted"),
     "assign_engine_profile": ("invalid_profile", "profile_deleted", "story_archived"),
     "set_profile_overrides": ("invalid_profile", "story_archived"),
+    # Principal lookup and offboarding (#117): a page's cursor another page gave; a request
+    # that cannot run, or a principal already being offboarded.
+    "lookup_principal": ("cursor_invalid",),
+    "offboard_principal": (
+        "principal_reserved",
+        "transfer_target_required",
+        "transfer_target_invalid",
+        "offboarding_in_progress",
+    ),
     # Message feedback (#112): a tag outside the deployment's set; the read of one's own rating
     # needs the principal.
     "rate_message": ("unknown_feedback_tag",),
@@ -474,6 +493,9 @@ MEDIA_CREATING_OPERATIONS = frozenset({"complete_upload"})
 
 CATALOG_CREATING_OPERATIONS = frozenset({"promote_character"})
 """Operations that answer 201 with ``Location: /catalog/characters/{id}`` (#114)."""
+
+OFFBOARDING_OPERATIONS = frozenset({"offboard_principal"})
+"""Operations that answer 202 with ``Location: /admin/offboarding/{job_id}`` (#117)."""
 
 DOCUMENTED_BODIES = {"update_story_settings": "StorySettingsPatch"}
 """Operations whose handler takes a raw JSON object (validated by the Engine) and the component
@@ -661,6 +683,8 @@ def _success_headers(
         headers["Location"] = _header("`/media/{id}` of the new asset.")
     if status == "201" and operation_id in CATALOG_CREATING_OPERATIONS:
         headers["Location"] = _header("`/catalog/characters/{id}` of the new draft entry.")
+    if status == "202" and operation_id in OFFBOARDING_OPERATIONS:
+        headers["Location"] = _header("`/admin/offboarding/{job_id}` of the offboarding.")
     if status == "202" and operation_id in QUEUEING_OPERATIONS:
         headers["Location"] = _header("`/operations/{id}` of the queued turn.")
     return headers

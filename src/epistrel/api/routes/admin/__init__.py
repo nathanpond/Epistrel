@@ -11,7 +11,14 @@ import re
 
 from fastapi import APIRouter
 
-from epistrel.api.routes.admin import model_config, policies, ratings, settings, stories
+from epistrel.api.routes.admin import (
+    model_config,
+    offboarding,
+    policies,
+    ratings,
+    settings,
+    stories,
+)
 
 ADMIN_PREFIX = "/admin"
 
@@ -21,6 +28,7 @@ router.include_router(ratings.router)
 router.include_router(settings.router)
 router.include_router(policies.router)
 router.include_router(model_config.router)
+router.include_router(offboarding.router)
 
 _SEGMENT = r"(?:^|/){}(?:/|$)"
 
@@ -37,7 +45,7 @@ _OPERATOR_SEGMENTS = (
     r"mutate",
     r"record[_-]utterance",
     r"ingest[_-]turn",
-    r"offboard",  # principal offboarding
+    r"offboard(?:ing)?",  # principal offboarding
 )
 
 OPERATOR_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (

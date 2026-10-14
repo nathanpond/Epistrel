@@ -154,6 +154,19 @@ def test_the_documented_pattern_refuses_every_control_character() -> None:
     assert listing_status_value(" \tin review ") == "in review"
 
 
+def test_listing_status_values_accept_both_length_bounds_and_keep_case() -> None:
+    """A listing status value is 1 to 40 characters: both bounds pass the pattern, the
+    validator and the query builder, and case is kept as sent (``Public`` is not
+    ``public``)."""
+    for value in ("x", "y" * 40):
+        assert re.fullmatch(LISTING_STATUS_PATTERN, value) is not None, value
+        assert listing_status_value(value) == value
+        assert catalog_query(listing_status=value).listing_status == value
+    assert re.fullmatch(LISTING_STATUS_PATTERN, "y" * 41) is None
+    assert listing_status_value("Public") == "Public"
+    assert catalog_query(listing_status="LIVE").listing_status == "LIVE"
+
+
 def test_cursors_bind_their_filters() -> None:
     """A cursor carries the last item's position and a hash of the kind and the filters (never
     ``limit``): it decodes to the same position under the same filters, in any order of the

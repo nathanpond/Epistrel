@@ -243,6 +243,22 @@ async def test_catalog_search(space: Space) -> None:
     assert len(paged) == len(set(paged)) == 10
     assert set(paged) == {shown, hidden, owned, *many}
     assert paged[:7] == list(reversed(many))  # newest first
+    # The documented maximum, 200, is accepted over REST and by the library; a page that
+    # holds exactly the last `limit` entries is the last page (no cursor to an empty one).
+    widest = await _ok(await list_page(client, CHARACTERS, limit=200))
+    assert [item["id"] for item in widest["items"]] == paged
+    assert widest["next_cursor"] is None
+    library = await space.lib.search_catalog(RequestContext(), EntityType.CHARACTER, limit=200)
+    assert [item.id for item in library.items] == paged
+    assert library.next_cursor is None
+    exact = await _ok(await list_page(client, CHARACTERS, limit=10))
+    assert [item["id"] for item in exact["items"]] == paged
+    assert exact["next_cursor"] is None
+    first = await _ok(await list_page(client, CHARACTERS, limit=5))
+    assert first["next_cursor"] is not None
+    second = await _ok(await list_page(client, CHARACTERS, limit=5, cursor=first["next_cursor"]))
+    assert [item["id"] for item in second["items"]] == paged[5:]
+    assert second["next_cursor"] is None
     searched = await every(client, CHARACTERS, q="sailor", limit=3)
     assert sorted(item["id"] for item in searched) == sorted(many)
     ranks = [item["rank"] for item in searched]
@@ -625,6 +641,9 @@ async def test_listing_status_writes(space: Space) -> None:
     assert tuple(operation) == ("control", "p-ed")
     bad = await set_listing_status(client, CHARACTERS, mara, "bogus", principal="p-ed", key=key)
     assert _error(bad)[:2] == (422, "invalid_listing_status")
+    # Case-sensitive: "Public" is not the configured "public".
+    cased = await set_listing_status(client, CHARACTERS, mara, "Public", key="status-key-cased")
+    assert _error(cased)[:2] == (422, "invalid_listing_status")
     after = await _updated(client, mara)
     assert after > before
     assert await ids(client, CHARACTERS) == [mara, ivo]
@@ -754,8 +773,10 @@ async def test_listing_status_values_setting(space: Space) -> None:
     ``listing_status_in_use`` while any entry holds it, counting every holder: published, never
     published, archived, companion, either kind.
 
-    Complement asserted: printable text outside ASCII (an accent, a symbol) is a value like any
-    other: configured, set (trimmed) and filtered by."""
+    Complements asserted: printable text outside ASCII (an accent, a symbol) is a value like any
+    other: configured, set (trimmed) and filtered by; values are case-sensitive (``Live`` and
+    ``live`` are two values, ``LIVE`` is neither, and removing the unheld ``live`` is allowed
+    while ``Live`` is held); a 1- and a 40-character value are configured, set and filtered by."""
     client, db = space.client, space.db
     shown = await _ok(await client.get("/admin/settings", headers=READ))
     assert shown["listing_status_values"] == ["private", "in_review", "public"]
@@ -828,6 +849,35 @@ async def test_listing_status_values_setting(space: Space) -> None:
     moved = await set_listing_status(client, CHARACTERS, published, " en révision ✓ ")
     assert (await _ok(moved))["listing_status"] == "en révision ✓"
     assert await ids(client, CHARACTERS, listing_status="en révision ✓") == [published]
+
+    # Values are case-sensitive: "Live" and "live" are two values, stored, set and filtered
+    # exactly as sent. The length rule's bounds are accepted: 1 and 40 characters.
+    cased = ["private", "in_review", "en révision ✓", "Live", "live", "x", "y" * 40]
+    assert (await _ok(await write(cased)))["listing_status_values"] == cased
+    assert (await _ok(await client.get("/admin/settings", headers=READ)))[
+        "listing_status_values"
+    ] == cased
+    live = await _character(client, "Lia Moss")
+    upper = await set_listing_status(client, CHARACTERS, live, "LIVE")
+    assert _error(upper)[:2] == (422, "invalid_listing_status")
+    assert (await _ok(await set_listing_status(client, CHARACTERS, live, "Live")))[
+        "listing_status"
+    ] == "Live"
+    assert await ids(client, CHARACTERS, listing_status="Live") == [live]
+    assert await ids(client, CHARACTERS, listing_status="live") == []
+    for value in ("x", "y" * 40):
+        bound = await _character(client, f"Bound {len(value)}")
+        assert (await _ok(await set_listing_status(client, CHARACTERS, bound, value)))[
+            "listing_status"
+        ] == value
+        assert await ids(client, CHARACTERS, listing_status=value) == [bound]
+    # Removing "live", which no entry holds, is allowed while "Live" is held; removing "Live"
+    # is not.
+    kept = [value for value in cased if value != "live"]
+    assert (await _ok(await write(kept)))["listing_status_values"] == kept
+    held_live = await write([value for value in kept if value != "Live"])
+    assert _error(held_live)[:2] == (409, "listing_status_in_use")
+    assert _error(held_live)[2]["value"] == "Live"
 
 
 async def _lock_waiters(db: AsyncEngine, wanted: int, within: float = 10.0) -> None:

@@ -4536,3 +4536,28 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** The M3 section continues here, after #116's `## Ad-hoc` entry. Later stories append below.
   **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111, #113, #114 and #115 did. Cost if wrong: one heading.
   **Issue:** #116
+
+- **Decision:** Group B paused at the owner's request ("finish current tasks and take a break", about 20:45). The one agent working then, #116's implementer, finished first. The group B workflow (run `wf_bf0f8bc7-2e0`) was stopped at 21:11, seconds after #116 returned and before any other agent did any work: #114's fix round 2 and #116's first verifier had just started, made no tool calls and posted nothing. The tree was clean and the branch pushed at `9b1a306`.
+  State of group B at the pause:
+  - #111 and #112: verified (both in round 2).
+  - #110: built and fixed twice. Its third verification left 4 test gaps: case-sensitive listing status values, the 1- and 40-character edges, the generated search column, and two paging edges. They need a follow-up fix with a focused verifier, as #104, #105, #108 and #109 had in group A.
+  - #113: built and fixed twice. Its third verification left 5 gaps:
+    - `deployment_defaults` is never checked against a value the upper layers change;
+    - no test discriminates the per-setting change class;
+    - the two writes bypass #109's `impact.two_stage`;
+    - the routes' published text says an archived story is 409 even when the call changes nothing (that answers 200);
+    - no test covers pins in the runnability cross-checks.
+    It needs the same follow-up.
+  - #114: built and fixed once. Its second verification left 2 test gaps: a promoted ad-hoc character listed in the catalog, and an omniscient read's `promoted_to`. Fix round 2 and verification round 3 are next.
+  - #115: built. Its first verification left 3 gaps: a non-finite `adapter_params` value in a PATCH is silently deleted, two assertions were weakened by the move of `name` under `public_card`, and a docs/02 §4.10 pronoun. Fix round 1 is next.
+  - #116: built (`78f37fd`, `9b1a306`), not yet verified.
+  - #117, #118 and #119: not started.
+  - Group B's full-suite gate, AC ticks and completion comments wait for the group to finish. No group B AC box is ticked yet.
+  - Filed so far in group B (`needs-triage`): #321 to #325.
+  - The orchestrator relayed group B's `## Ad-hoc` entries (from #111, #113, #114, #115 and #116) to the drift notes of the later stories they name: #116, #117, #119, #122, #123, #124 and #128.
+  **Why:** The owner asked to stop after the work in progress. Stopping between agents leaves a clean tree and every finished agent's result in the run's journal, so resuming redoes nothing that finished.
+  **Resume:**
+  - In the same session, relaunch the workflow with `resumeFromRunId` `wf_bf0f8bc7-2e0`. Finished agents replay from the journal. The queue continues with #114's fix round 2, #115's fix round 1 and #116's verification, then #117 to #119.
+  - After that come the follow-ups for #110 and #113, then group B's gate.
+  - In a new session, author a continuation from that run's journal with the same work list.
+  **Issue:** #110, #111, #112, #113, #114, #115, #116, #117, #118, #119

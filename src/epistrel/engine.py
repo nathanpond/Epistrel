@@ -3124,7 +3124,8 @@ class Engine:
         moves. A confirmed assignment whose upgrade is unavailable (M3's interim rule) is
         applied with the story's configuration as it was, and writes nothing. 404 for an unknown
         story, 422 ``profile_deleted`` for a profile that cannot be assigned, 409
-        ``story_archived`` for an archived story."""
+        ``story_archived`` for an archived story when the call would change something (naming
+        the story's own profile answers 200 and writes nothing)."""
         principal = self.require_principal(ctx)
 
         async def run(ctx: RequestContext) -> TwoStageResult[effective.EffectiveConfig]:
@@ -3158,7 +3159,8 @@ class Engine:
         story-scoped configuration change: the story's ``config_revision`` and the overrides'
         revision move. A confirmed patch whose upgrade is unavailable (M3's interim rule) is
         applied with the story's configuration as it was, and writes nothing. 404 for an unknown
-        story, 409 ``story_archived`` for an archived story."""
+        story, 409 ``story_archived`` for an archived story when the call would change
+        something (a patch that changes no setting answers 200 and writes nothing)."""
         principal = self.require_principal(ctx)
 
         async def run(ctx: RequestContext) -> TwoStageResult[effective.EffectiveConfig]:

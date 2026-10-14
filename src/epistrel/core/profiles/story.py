@@ -21,9 +21,10 @@
   writes nothing: no revision moves and no row is recorded. The impact preview applies its
   ``overrides`` the same way (``effective.resolve``), so it answers what this write would do.
 
-Both run through #109's two stages (``impact.two_stage``) with a one-story impact report from
-the story's configuration now to the one it would run under: a change the report warns of (a
-capability gained or lost, an upgrade unavailable) applies only with ``ignore_warnings``.
+Both run through #109's two stages (``impact.two_stage``, which logs each report at INFO, a
+call that changes nothing included) with a one-story impact report from the story's
+configuration now to the one it would run under: a change the report warns of (a capability
+gained or lost, an upgrade unavailable) applies only with ``ignore_warnings``.
 
 **A write** is a story-scoped prospective configuration change (FR-CONC-14,15): under the story
 lock it moves the story's ``config_revision`` by one, records one ``config_changes`` row per
@@ -32,7 +33,9 @@ override set, changed or removed, with that setting's class), the write's ``cont
 and a ``config_changed`` event per row (``core.config_changes``). An assignment clears the
 story's pin (it follows its new profile's latest version). A turn already running finishes under
 the configuration it captured at its start; the next turn runs under the new one. An archived
-story's configuration is read-only (409 ``story_archived``), as its settings are (#63).
+story's configuration is read-only (409 ``story_archived``), as its settings are (#63), when the
+call would change something: a call that changes nothing (the story's own profile, a patch that
+changes no setting) answers 200 and writes nothing.
 
 **M3's interim rule.** A change that adds data-producing capability to a story with history is
 ``upgrade_unavailable`` (``impact``): confirmed, the story keeps its previous configuration, and
@@ -47,7 +50,8 @@ stories.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import dataclasses
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from pydantic import ConfigDict, Field
@@ -59,7 +63,7 @@ from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import InvalidProfile, RevisionConflict, StoryArchived, StoryNotFound
 from epistrel.core.ids import Ulid
 from epistrel.core.profiles import effective, impact, schema
-from epistrel.core.profiles.effective import Configuration, EffectiveConfig
+from epistrel.core.profiles.effective import Configuration, EffectiveConfig, StoryProfile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactReport, TwoStageRequest, TwoStageResult
 from epistrel.core.profiles.schema import PATCH_SCHEMA, ProfileSettings, Purposes, SettingsPatch
@@ -194,12 +198,42 @@ async def _bump(conn: AsyncConnection, story_id: str, revision: int, **values: A
     )
 
 
-def _held(row: Any, report: ImpactReport) -> TwoStageResult[EffectiveConfig]:
-    """The report alone: the change waits for ``ignore_warnings``, and nothing is written."""
-    return TwoStageResult(
-        applied=False,
-        impact=report,
-        config_revision=int(row.config_revision),
+async def _staged(
+    conn: AsyncConnection,
+    story_id: str,
+    row: Any,
+    change: tuple[Configuration, Configuration],
+    *,
+    facts: RuntimeFacts,
+    ignore_warnings: bool,
+    kept: StoryProfile,
+    write: Callable[[], Awaitable[EffectiveConfig]] | None = None,
+) -> TwoStageResult[EffectiveConfig]:
+    """The write through #109's two stages (``impact.two_stage``, which logs the report): the
+    one-story report of ``change`` (the configuration now, and the one the story would run
+    under), then, unless it warns and the request did not set ``ignore_warnings``, ``write``.
+    No ``write`` (a call that changes nothing), or an upgrade the report finds unavailable
+    (M3's interim rule), answers ``kept``, the configuration as it is (viewed only then), and
+    writes nothing. The
+    result carries the story's revisions after the call."""
+    before, after = change
+    unavailable = False
+
+    async def report() -> ImpactReport:
+        nonlocal unavailable
+        found, unavailable = await _report(conn, story_id, before, after, facts)
+        return found
+
+    async def apply(_: ImpactReport) -> EffectiveConfig:
+        if write is None or unavailable:
+            return effective.view(kept, facts)
+        return await write()
+
+    outcome = await impact.two_stage(report, apply, ignore_warnings=ignore_warnings)
+    revision = await conn.scalar(select(stories.c.config_revision).where(stories.c.id == story_id))
+    return dataclasses.replace(
+        outcome,
+        config_revision=int(revision if revision is not None else row.config_revision),
         timeline_revision=int(row.timeline_revision),
     )
 
@@ -220,11 +254,16 @@ async def assign_profile(
     async with db.begin() as conn:
         row = await _lock(conn, story_id, also=request.profile_id)
         current = await effective.effective_configuration(conn, story_id, validate=False)
-        if request.profile_id == current.profile_id:
-            report, _ = await _report(
-                conn, story_id, current.configuration(), current.configuration(), facts
+        if request.profile_id == current.profile_id:  # nothing to change: nothing is written
+            return await _staged(
+                conn,
+                story_id,
+                row,
+                (current.configuration(), current.configuration()),
+                facts=facts,
+                ignore_warnings=request.ignore_warnings,
+                kept=current,
             )
-            return _applied(row, report, effective.view(current, facts))
         target = await effective.assignable(conn, request.profile_id)
         try:
             settings = effective.resolve_layers(
@@ -239,53 +278,39 @@ async def assign_profile(
             raise
         _refuse_archived(row, story_id)
         moved = current.with_profile(target.profile_id, target.version, target.document, settings)
-        report, unavailable = await _report(
-            conn, story_id, current.configuration(), moved.configuration(), facts
-        )
-        if report.warnings and not request.ignore_warnings:
-            return _held(row, report)
-        if unavailable:  # M3's interim rule: the story keeps its configuration
-            return _applied(row, report, effective.view(current, facts))
-        revision = int(row.config_revision) + 1
-        await _bump(
+
+        async def write() -> EffectiveConfig:
+            revision = int(row.config_revision) + 1
+            await _bump(
+                conn,
+                story_id,
+                revision,
+                engine_profile_id=target.profile_id,
+                engine_profile_version_pin=None,
+            )
+            await record_config_change(
+                conn,
+                config_revision=revision,
+                setting=ASSIGNMENT_SETTING,
+                old=current.profile_id,
+                new=target.profile_id,
+                actor=principal,
+                change_class=ConfigClass.prospective,
+                scope=ConfigScope.STORY,
+                scope_id=story_id,
+            )
+            return effective.view(await effective.effective_configuration(conn, story_id), facts)
+
+        return await _staged(
             conn,
             story_id,
-            revision,
-            engine_profile_id=target.profile_id,
-            engine_profile_version_pin=None,
+            row,
+            (current.configuration(), moved.configuration()),
+            facts=facts,
+            ignore_warnings=request.ignore_warnings,
+            kept=current,
+            write=write,
         )
-        await record_config_change(
-            conn,
-            config_revision=revision,
-            setting=ASSIGNMENT_SETTING,
-            old=current.profile_id,
-            new=target.profile_id,
-            actor=principal,
-            change_class=ConfigClass.prospective,
-            scope=ConfigScope.STORY,
-            scope_id=story_id,
-        )
-        written = await effective.effective_configuration(conn, story_id)
-        return TwoStageResult(
-            applied=True,
-            impact=report,
-            result=effective.view(written, facts),
-            config_revision=revision,
-            timeline_revision=int(row.timeline_revision),
-        )
-
-
-def _applied(
-    row: Any, report: ImpactReport, config: EffectiveConfig
-) -> TwoStageResult[EffectiveConfig]:
-    """A confirmed (or warning-free) call that writes nothing: the configuration as it is."""
-    return TwoStageResult(
-        applied=True,
-        impact=report,
-        result=config,
-        config_revision=int(row.config_revision),
-        timeline_revision=int(row.timeline_revision),
-    )
 
 
 # -- override -------------------------------------------------------------------------------------
@@ -344,38 +369,45 @@ async def set_overrides(
         before = current.configuration()
         changed = changed_settings(current.overrides, wanted)
         if not changed:  # no setting set, changed or removed: nothing is written
-            report, _ = await _report(conn, story_id, before, before, facts)
-            return _applied(row, report, effective.view(current, facts))
-        _refuse_archived(row, story_id)
-        after = Configuration(current.profile_id, current.version, settings)
-        report, unavailable = await _report(conn, story_id, before, after, facts)
-        if report.warnings and not request.ignore_warnings:
-            return _held(row, report)
-        if unavailable:  # M3's interim rule: the story keeps its configuration
-            return _applied(row, report, effective.view(current, facts))
-        revision = int(row.config_revision) + 1
-        await effective.store_overrides(conn, story_id, wanted, current.overrides_revision + 1)
-        await _bump(conn, story_id, revision)
-        old, new = leaf_values(current.overrides), leaf_values(wanted)
-        for path in changed:
-            await record_config_change(
+            return await _staged(
                 conn,
-                config_revision=revision,
-                setting=f"{OVERRIDES_SETTING}.{path}",
-                old=old.get(path),
-                new=new.get(path),
-                actor=principal,
-                change_class=_change_class(path),
-                scope=ConfigScope.STORY,
-                scope_id=story_id,
+                story_id,
+                row,
+                (before, before),
+                facts=facts,
+                ignore_warnings=request.ignore_warnings,
+                kept=current,
             )
-        written = await effective.effective_configuration(conn, story_id)
-        return TwoStageResult(
-            applied=True,
-            impact=report,
-            result=effective.view(written, facts),
-            config_revision=revision,
-            timeline_revision=int(row.timeline_revision),
+        _refuse_archived(row, story_id)
+
+        async def write() -> EffectiveConfig:
+            revision = int(row.config_revision) + 1
+            await effective.store_overrides(conn, story_id, wanted, current.overrides_revision + 1)
+            await _bump(conn, story_id, revision)
+            old, new = leaf_values(current.overrides), leaf_values(wanted)
+            for path in changed:
+                await record_config_change(
+                    conn,
+                    config_revision=revision,
+                    setting=f"{OVERRIDES_SETTING}.{path}",
+                    old=old.get(path),
+                    new=new.get(path),
+                    actor=principal,
+                    change_class=_change_class(path),
+                    scope=ConfigScope.STORY,
+                    scope_id=story_id,
+                )
+            return effective.view(await effective.effective_configuration(conn, story_id), facts)
+
+        return await _staged(
+            conn,
+            story_id,
+            row,
+            (before, Configuration(current.profile_id, current.version, settings)),
+            facts=facts,
+            ignore_warnings=request.ignore_warnings,
+            kept=current,
+            write=write,
         )
 
 

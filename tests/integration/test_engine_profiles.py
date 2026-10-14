@@ -1049,6 +1049,10 @@ async def test_u_28__effective(scratch: Space) -> None:
         # -- precedence: defaults → the profile's version → the story's overrides
         read = await _effective(client, story)
         assert read["deployment_defaults"]["models"]["generation"]["top_p"] == 0.7
+        # The defaults as they are, not as the upper layers leave them: the profile sets the
+        # temperature (0.4) and the window (10), and the story overrides the window (6).
+        assert read["deployment_defaults"]["models"]["generation"]["temperature"] == 0.8
+        assert read["deployment_defaults"]["memory"]["rolling_summary"]["window_messages"] == 30
         assert read["profile"] == {"id": profile, "version": 1, "pinned": False, "deleted": False}
         assert read["overrides"] == {"settings": window, "revision": 1}
         generation = read["effective"]["models"]["generation"]

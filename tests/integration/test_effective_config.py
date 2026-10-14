@@ -24,6 +24,7 @@ traceability wants every part of a test ID and milestone) and the I-18 (M3) slic
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from collections.abc import Set as AbstractSet
@@ -55,7 +56,7 @@ from epistrel.core.settings_schema import (
     StorySettings,
 )
 from epistrel.core.stories import StorySpec
-from epistrel.testing.profiles import TEST_CLAUSE, data_producing, extra_rule
+from epistrel.testing.profiles import TEST_CLAUSE, data_producing, extra_rule, interpretive
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
 from tests.conftest import alembic_config
@@ -1028,6 +1029,131 @@ async def test_a_story_write_whose_upgrade_is_unavailable_writes_nothing(scratch
             )
 
 
+TEMPERATURE = "models.generation.temperature"
+
+
+async def _deployment_changes(db: AsyncEngine, revision: int) -> list[tuple[Any, ...]]:
+    found = await rows(
+        db,
+        'SELECT setting, old, new, "class" FROM config_changes WHERE scope = '
+        "'deployment' AND config_revision = :r ORDER BY setting",
+        r=revision,
+    )
+    return [tuple(r) for r in found]
+
+
+async def _deployment_revision(db: AsyncEngine) -> int:
+    return int(await scalar(db, "SELECT config_revision FROM deployment_state"))
+
+
+async def test_each_row_takes_its_settings_class(scratch: Space) -> None:
+    """A configuration change records each setting with that setting's class (FR-CONC-14;
+    FR-PROF-5). Every setting delivered in M3 is prospective, so the test reads the temperature
+    as interpretive (``interpretive``, test-only). Under it, a profile edit changing the
+    temperature and the window records ``engine_profile:<id>.<temperature>`` interpretive, the
+    window's row prospective, and the version row ``engine_profile:<id>`` interpretive (the
+    strongest of its settings); an overrides patch of both records
+    ``profile_overrides.<temperature>`` interpretive and the window's prospective; a
+    ``profile_defaults`` write of both records ``profile_defaults.<temperature>`` interpretive
+    and the window's prospective.
+
+    Complement asserted: without the switch the same three writes record every row
+    prospective."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        db = scratch.db
+        profile = await _profile(client, merged(nest(TEMPERATURE, 0.6), nest(WINDOW, 12)), "C")
+        story, _ = await _story(client)
+        await ok(await _assign(client, story, profile))
+
+        async def edit(temperature: float, window: int) -> list[tuple[Any, ...]]:
+            revision = await _deployment_revision(db)
+            body = {
+                "name": "C",
+                "settings": merged(nest(TEMPERATURE, temperature), nest(WINDOW, window)),
+            }
+            await ok(await client.put(f"{PROFILES}/{profile}", json=body, headers=headers()))
+            return await _deployment_changes(db, revision + 1)
+
+        async def override(temperature: float, window: int) -> list[tuple[Any, ...]]:
+            patch = merged(nest(TEMPERATURE, temperature), nest(WINDOW, window))
+            await ok(await _override(client, story, patch))
+            return [c[:4] for c in await _story_changes(db, story)][-2:]
+
+        async def defaults(temperature: float, window: int) -> list[tuple[Any, ...]]:
+            revision = await _deployment_revision(db)
+            body = {PROFILE_DEFAULTS: merged(nest(TEMPERATURE, temperature), nest(WINDOW, window))}
+            await ok(await client.put("/admin/settings", json=body, headers=headers()))
+            return await _deployment_changes(db, revision + 1)
+
+        with interpretive(TEMPERATURE):
+            assert await edit(0.3, 4) == [
+                (f"engine_profile:{profile}", 1, 2, "interpretive"),
+                (f"engine_profile:{profile}.{WINDOW}", 12, 4, "prospective"),
+                (f"engine_profile:{profile}.{TEMPERATURE}", 0.6, 0.3, "interpretive"),
+            ]
+            assert await override(0.5, 6) == [
+                (f"profile_overrides.{WINDOW}", None, 6, "prospective"),
+                (f"profile_overrides.{TEMPERATURE}", None, 0.5, "interpretive"),
+            ]
+            assert await defaults(0.7, 20) == [
+                (f"profile_defaults.{WINDOW}", 30, 20, "prospective"),
+                (f"profile_defaults.{TEMPERATURE}", 0.8, 0.7, "interpretive"),
+            ]
+
+        # -- complement: the schema's own classes, every one prospective
+        assert await edit(0.2, 5) == [
+            (f"engine_profile:{profile}", 2, 3, "prospective"),
+            (f"engine_profile:{profile}.{WINDOW}", 4, 5, "prospective"),
+            (f"engine_profile:{profile}.{TEMPERATURE}", 0.3, 0.2, "prospective"),
+        ]
+        assert await override(0.4, 7) == [
+            (f"profile_overrides.{WINDOW}", 6, 7, "prospective"),
+            (f"profile_overrides.{TEMPERATURE}", 0.5, 0.4, "prospective"),
+        ]
+        assert await defaults(0.9, 25) == [
+            (f"profile_defaults.{WINDOW}", 20, 25, "prospective"),
+            (f"profile_defaults.{TEMPERATURE}", 0.7, 0.9, "prospective"),
+        ]
+
+
+def _impact_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    return [
+        record.msg
+        for record in caplog.records
+        if isinstance(record.msg, dict) and record.msg.get("event") == "impact report"
+    ]
+
+
+async def test_a_story_write_logs_its_impact_report(
+    stub_settings: Settings, engine: AsyncEngine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A story's two writes run through #109's two stages (``impact.two_stage``), which logs
+    each report at INFO with counts and warning codes only. An overrides patch turning the
+    rolling summary off is held (``capabilities_lost``): one line, ``applied: false``. An
+    assignment of a profile that turns it off, confirmed, is one line, ``applied: true``. A
+    patch that changes nothing is one line too, ``applied: true`` and no warning."""
+    caplog.set_level(logging.INFO, logger="epistrel.core.profiles.impact")
+    async with respond_client(stub_settings, engine) as (client, _):
+        quiet = await _profile(client, SUMMARY_OFF, "Quiet")
+        story, _ = await _story(client)
+        caplog.clear()
+        held = await ok(await _override(client, story, SUMMARY_OFF))
+        assert held["applied"] is False
+        assert [
+            (line["applied"], line["affected"], line["warnings"]) for line in _impact_lines(caplog)
+        ] == [(False, 1, ["capabilities_lost"])]
+        caplog.clear()
+        assert (await ok(await _assign(client, story, quiet, ignore_warnings=True)))["applied"]
+        assert [(line["applied"], line["warnings"]) for line in _impact_lines(caplog)] == [
+            (True, ["capabilities_lost"])
+        ]
+        caplog.clear()
+        await ok(await _override(client, story, {"pins": None}))
+        assert [(line["applied"], line["warnings"]) for line in _impact_lines(caplog)] == [
+            (True, [])
+        ]
+
+
 # -- the deployment's profile defaults ---------------------------------------------------------
 
 
@@ -1168,6 +1294,98 @@ async def test_profile_defaults_are_the_bottom_layer(scratch: Space) -> None:
             )
         assert written[PROFILE_DEFAULTS]["pins"]["enabled"] is False
         assert (await _effective(client, story))["effective"]["pins"]["enabled"] is False
+
+
+async def test_a_pinned_story_is_not_checked_against_an_edit(scratch: Space) -> None:
+    """A profile edit checks the overrides of the stories that follow the profile's latest
+    version only (FR-PROF-4,5): a pinned story does not follow the new version. While a
+    test-only rule makes pinned memories need the rolling summary, a sparse profile has two
+    stories that override pinned memories on: one follows it, one is pinned to version 1. The
+    edit turning both the summary and pinned memories off is 422 ``invalid_profile`` naming the
+    follower alone (``details.stories``), and nothing is written.
+
+    Complement asserted: once the follower no longer holds the override, the same edit applies
+    (version 2), and the pinned story keeps version 1 and its overrides."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        sparse = await _profile(client, {}, "Sparse")
+        pins_on = nest("pins.enabled", True)
+        follower, _ = await _story(client)
+        pinned, _ = await _story(client)
+        for story in sorted((follower, pinned)):
+            await ok(await _assign(client, story, sparse, ignore_warnings=True))
+            await ok(await _override(client, story, pins_on, ignore_warnings=True))
+        await engine_pin(scratch.db, pinned, sparse, 1)
+        edit = {
+            "name": "Sparse",
+            "settings": merged(SUMMARY_OFF, PINS_OFF),
+            "ignore_warnings": True,
+        }
+        with extra_rule(PINS_NEED_SUMMARY):
+            settled = await configuration_rows(scratch.db)
+            error = refused(
+                await client.put(f"{PROFILES}/{sparse}", json=edit, headers=headers()),
+                422,
+                "invalid_profile",
+            )
+            assert (error["details"]["stories"], error["details"]["count"]) == ([follower], 1)
+            assert await configuration_rows(scratch.db) == settled
+
+            await ok(await _override(client, follower, {"pins": None}))
+            edited = await ok(
+                await client.put(f"{PROFILES}/{sparse}", json=edit, headers=headers())
+            )
+            assert (edited["applied"], edited["result"]["version"]) == (True, 2)
+            kept = await _effective(client, pinned)
+            assert kept["profile"] == {"id": sparse, "version": 1, "pinned": True, "deleted": False}
+            assert kept["overrides"] == {"settings": pins_on, "revision": 1}
+            assert (await _story_row(scratch.db, pinned)).engine_profile_version_pin == 1
+            assert (await _effective(client, follower))["profile"]["version"] == 2
+
+
+async def test_defaults_are_checked_against_the_version_a_story_is_pinned_to(
+    scratch: Space,
+) -> None:
+    """A ``profile_defaults`` write checks every version a story runs on, not only each live
+    profile's latest (FR-PROF-4,5): a pinned story runs on its pin. A profile's version 1 turns
+    pinned memories on, leaving the summary to the defaults; a story is pinned to it, and the
+    profile's version 2 turns pinned memories off. While a test-only rule makes pinned memories
+    need the rolling summary, defaults turning the summary (and pinned memories) off are 422
+    ``invalid_profile`` naming ``<id>@1`` alone (``details.profiles``): its version 2 and Lite
+    could run. Nothing is written.
+
+    Complement asserted: once the story leaves the pinned version (assigned Lite), the same
+    defaults are written."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        profile = await _profile(client, nest("pins.enabled", True), "Pinning")
+        story, _ = await _story(client)
+        await ok(await _assign(client, story, profile, ignore_warnings=True))
+        await engine_pin(scratch.db, story, profile, 1)
+        edit = {"name": "Pinning", "settings": PINS_OFF, "ignore_warnings": True}
+        edited = await ok(await client.put(f"{PROFILES}/{profile}", json=edit, headers=headers()))
+        assert edited["result"]["version"] == 2
+        assert (await _effective(client, story))["profile"]["version"] == 1
+        both_off = {PROFILE_DEFAULTS: merged(SUMMARY_OFF, PINS_OFF)}
+        stored = "SELECT profile_defaults FROM deployment_state"
+        with extra_rule(PINS_NEED_SUMMARY):
+            settled = await configuration_rows(scratch.db)
+            defaults = await scalar(scratch.db, stored)
+            error = refused(
+                await client.put("/admin/settings", json=both_off, headers=headers()),
+                422,
+                "invalid_profile",
+            )
+            assert (error["details"]["profiles"], error["details"]["count"]) == (
+                [f"{profile}@1"],
+                1,
+            )
+            assert await configuration_rows(scratch.db) == settled
+            assert await scalar(scratch.db, stored) == defaults
+
+            await ok(await _assign(client, story, LITE_PRESET_ID, ignore_warnings=True))
+            written = await ok(
+                await client.put("/admin/settings", json=both_off, headers=headers())
+            )
+        assert written[PROFILE_DEFAULTS]["pins"]["enabled"] is False
 
 
 # -- the switches and dials of a turn ---------------------------------------------------------

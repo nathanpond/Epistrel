@@ -82,7 +82,7 @@ from __future__ import annotations
 import copy
 import types
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Annotated, Any, Literal, get_args
 
@@ -460,9 +460,21 @@ def tags_of(info: FieldInfo) -> SettingTags:
     )
 
 
+INTERPRETIVE_SETTINGS: frozenset[str] = frozenset()
+"""Engine-profile settings read as interpretive whatever their ``ConfigClass`` tag says. Empty:
+every delivered setting in M3 is prospective, so the per-setting class of a configuration
+change has nothing real to tell apart. Read at call time, so a test may reclassify delivered
+settings (``epistrel.testing.profiles.interpretive``)."""
+
+
 def setting_tags(model: type[BaseModel] = ProfileSettings) -> dict[str, SettingTags]:
-    """Every leaf of ``model`` with its tags, by dotted path."""
-    return {path: tags_of(info) for path, info in leaves(model)}
+    """Every leaf of ``model`` with its tags, by dotted path (for ``ProfileSettings``, a leaf of
+    ``INTERPRETIVE_SETTINGS`` with the interpretive class)."""
+    found = {path: tags_of(info) for path, info in leaves(model)}
+    if model is ProfileSettings:
+        for path in INTERPRETIVE_SETTINGS & found.keys():
+            found[path] = replace(found[path], change_class=ConfigClass.interpretive)
+    return found
 
 
 # -- modules and levels --------------------------------------------------------------------------
@@ -1025,6 +1037,7 @@ __all__ = [
     "DEPENDENCIES",
     "FR_PROF_4",
     "INTERPRETIVE",
+    "INTERPRETIVE_SETTINGS",
     "IRRELEVANT",
     "LEAF_PATHS",
     "MODULE",

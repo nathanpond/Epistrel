@@ -76,7 +76,9 @@ TWO_STAGE = (
     "whose upgrade is unavailable (`upgrade_unavailable`: it adds data-producing capability to "
     "a story with history, and M3 has no backfill) keeps the story's configuration: `applied: "
     "true`, `result` is the configuration as it was, nothing is written and `config_revision` "
-    "does not move. An archived story is 409 `story_archived`."
+    "does not move. An archived story is 409 `story_archived` when the call would change "
+    "something; a call that changes nothing (the story's own profile, a patch that changes no "
+    "setting) answers 200 and writes nothing."
 )
 ASSIGN_DESCRIPTION = (
     "Run the story under another engine profile, at the profile's latest version, from its next "

@@ -1,4 +1,4 @@
-"""Test-only switches for engine profiles (#106, #109).
+"""Test-only switches for engine profiles (#106, #109, #113).
 
 No two modules delivered in M3 depend on each other, so the dependency graph's delivered path
 (``epistrel.core.profiles.validate.missing_dependencies``) has no real rule to fire. While a
@@ -10,6 +10,12 @@ No module delivered in M3 is data-producing either, so FR-PROF-7's ``upgrade_una
 ``data_producing(*modules)``, the impact report reads those delivered modules as data-producing
 (``schema.DATA_PRODUCING_MODULES``): switching one on, or raising its level, adds data a story's
 history lacks. Leaving the block restores the schema's own tags.
+
+Every setting delivered in M3 is prospective, so a configuration change's class per setting
+(FR-CONC-14) has nothing real to tell apart. While a test holds ``interpretive(*paths)``, the
+schema reads those delivered settings as interpretive (``schema.INTERPRETIVE_SETTINGS``):
+``schema.setting_tags`` gives them the interpretive class, and every ``config_changes`` row that
+takes its class from there records it. Leaving the block restores the schema's own tags.
 
 Nothing in ``Engine`` or ``create_app`` imports this module, and Core never does.
 """
@@ -41,6 +47,21 @@ def data_producing(*modules: str) -> Iterator[frozenset[str]]:
 
 
 @contextmanager
+def interpretive(*paths: str) -> Iterator[frozenset[str]]:
+    """Read ``paths`` as interpretive settings for the block (each must be a delivered
+    setting)."""
+    unknown = [path for path in paths if path not in schema.delivered_tags()]
+    if unknown:
+        raise ValueError(f"not delivered settings: {unknown}")
+    declared = schema.INTERPRETIVE_SETTINGS
+    schema.INTERPRETIVE_SETTINGS = declared | frozenset(paths)
+    try:
+        yield schema.INTERPRETIVE_SETTINGS
+    finally:
+        schema.INTERPRETIVE_SETTINGS = declared
+
+
+@contextmanager
 def extra_rule(rule: DependencyRule) -> Iterator[DependencyRule]:
     """Validate with ``rule`` added to the dependency graph for the block."""
     declared = schema.DEPENDENCIES
@@ -51,4 +72,4 @@ def extra_rule(rule: DependencyRule) -> Iterator[DependencyRule]:
         schema.DEPENDENCIES = declared
 
 
-__all__ = ["TEST_CLAUSE", "data_producing", "extra_rule"]
+__all__ = ["TEST_CLAUSE", "data_producing", "extra_rule", "interpretive"]

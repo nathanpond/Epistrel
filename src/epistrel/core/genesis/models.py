@@ -47,6 +47,7 @@ from pydantic import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core.catalog.models import CharacterCard
 from epistrel.core.catalog.personas import Persona, PersonaFields, persona_of
 from epistrel.core.catalog.report import Entry, EntryLocation, Outcome, VersionLabel
 from epistrel.core.catalog.scenario_models import (
@@ -54,6 +55,7 @@ from epistrel.core.catalog.scenario_models import (
     PATH_MAX,
     SLUG_PATTERN,
     CastLimit,
+    FieldClass,
 )
 from epistrel.core.catalog.service import Revision
 from epistrel.core.errors import InvalidRequest
@@ -362,32 +364,124 @@ def is_scenario_body(body: Any) -> bool:
     return isinstance(body, Mapping) and "scenario" in body
 
 
-# -- the creation report (#119; #122 fills deferred and inactive) ----------------------------
+# -- the creation report (#119, #122) ---------------------------------------------------------
+
+
+class ClassCapabilityCounts(BaseModel):
+    """How many items fall under each field class and each capability (non-zero keys only)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    by_class: dict[str, int] = Field(default_factory=dict)
+    by_capability: dict[str, int] = Field(default_factory=dict)
+
+    @classmethod
+    def of(cls, items: Iterable[DeferredItem | InactiveItem]) -> ClassCapabilityCounts:
+        by_class: dict[str, int] = {}
+        by_capability: dict[str, int] = {}
+        for item in items:
+            capability = (
+                item.capability_needed if isinstance(item, DeferredItem) else item.capability
+            )
+            by_class[item.field_class.value] = by_class.get(item.field_class.value, 0) + 1
+            by_capability[capability] = by_capability.get(capability, 0) + 1
+        return cls(by_class=by_class, by_capability=by_capability)
 
 
 class CreationCounts(BaseModel):
-    """How many errors and warnings the creation found, and what it deferred or left inactive
-    (``0`` until #122 materialises by capability)."""
+    """How many errors, merge ``conflicts`` (always 0 under Lite, which detects none: FR-SCN-7)
+    and warnings the creation found, and what it deferred and left inactive, by field class and
+    capability (#122)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     errors: int = 0
+    conflicts: int = 0
     warnings: int = 0
-    deferred: int = 0
-    inactive: int = 0
+    deferred: ClassCapabilityCounts = Field(default_factory=ClassCapabilityCounts)
+    inactive: ClassCapabilityCounts = Field(default_factory=ClassCapabilityCounts)
 
 
-class CreationReport(BaseModel):
-    """What a creation from a scenario found (FR-SCN-5,6): #111's report (``errors``,
-    ``warnings``: every entry, under the ``full`` projection only; ``null`` under ``card``),
-    ``unavailable`` (the checks the deployment could not run) and the ``counts``."""
+class DeferredItem(BaseModel):
+    """A scenario item the story cannot use yet (FR-SCN-11; a ``genesis_deferred`` row): the
+    dotted ``field_ref`` with indices, its class, its location (#111's shape), the one
+    capability it needs (a #106 module name) and its ``payload`` (``value``: the item's JSON as
+    the scenario holds it; ``characters``: the story character ids genesis resolved, by role)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    field_ref: str
+    field_class: FieldClass
+    location: EntryLocation
+    capability_needed: str
+    payload: dict[str, Any]
+
+
+class InactiveItem(BaseModel):
+    """A setting the story keeps for a capability it lacks (``stories.settings.inactive``): its
+    name, value, the capability it waits for, its class and location."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    value: Any
+    capability: str
+    field_class: FieldClass
+    location: EntryLocation
+
+
+class CastSource(BaseModel):
+    """The catalog version a story character was created from."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    catalog_id: str
+    version: int
+
+
+class CatalogCastCard(CharacterCard):
+    """A catalog character of the new story's cast: its public card (#115's, of the version the
+    story took), the story character's id, its role and its source version."""
+
+    kind: Literal["catalog"] = "catalog"
+    character_id: str
+    role_id: str
+    source: CastSource
+
+
+class MemberCastCard(BaseModel):
+    """An ad-hoc character or the player of the new story's cast: its name, its kind, the story
+    character's id and its role (nothing private: no definition, persona description or age)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["ad_hoc", "player"]
+    character_id: str
+    role_id: str
+    name: str
+
+
+CastCard = Annotated[CatalogCastCard | MemberCastCard, Field(discriminator="kind")]
+
+
+class CreationReport(BaseModel):
+    """What a creation from a scenario found (FR-SCN-5,6,10,11): the new story's id (``null``
+    when nothing was created) and its ``cast`` as cards, the ``counts``, ``unavailable`` (the
+    checks the deployment could not run) and, under the ``full`` projection only (``null``
+    under ``card``), every entry: #111's ``errors`` and ``warnings`` with their location and
+    exact text, every ``deferred`` item with its location and the capability it needs, and
+    every ``inactive`` setting."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    story_id: str | None = None
+    cast: list[CastCard] = Field(default_factory=list)
     counts: CreationCounts
     unavailable: list[str] = Field(default_factory=list)
     errors: list[Entry] | None = None
     warnings: list[Entry] | None = None
+    deferred: list[DeferredItem] | None = None
+    inactive: list[InactiveItem] | None = None
 
 
 __all__ = [
@@ -395,8 +489,15 @@ __all__ = [
     "PLAYER_ROLE_FIXED",
     "AdHocPersona",
     "AdHocSlotCharacter",
+    "CastCard",
+    "CastSource",
+    "CatalogCastCard",
+    "ClassCapabilityCounts",
     "CreationCounts",
     "CreationReport",
+    "DeferredItem",
+    "InactiveItem",
+    "MemberCastCard",
     "PersonaRef",
     "PlayerAssignment",
     "Projection",

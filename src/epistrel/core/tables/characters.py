@@ -39,9 +39,9 @@ and version, the version's whole ``content``, when it was published and the rati
 was published under. Like ``characters`` it is a story table with no foreign key: archiving,
 editing or deleting the catalog entry never touches it, story deletion enumerates it and a fork
 copies it. Ad-hoc characters and the player's persona get no row (the persona's copy is
-``persona_snapshot``). A catalog-sourced ``characters.definition`` holds a plain rendering of the
-snapshot's definition (``core.genesis.create.render_definition``) so Lite turns read one text, as
-they read an ad-hoc character's; the snapshot stays the record.
+``persona_snapshot``). A catalog-sourced ``characters.definition`` holds the snapshot's private
+definition rendered as prose author notes (``core.genesis.render.definition_notes``, #122) so
+Lite turns read one text, as they read an ad-hoc character's; the snapshot stays the record.
 """
 
 from __future__ import annotations

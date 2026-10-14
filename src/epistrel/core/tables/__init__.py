@@ -19,6 +19,7 @@ from epistrel.core.tables.characters import character_snapshots, characters
 from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.events import events
+from epistrel.core.tables.genesis import genesis_deferred
 from epistrel.core.tables.idempotency import idempotency_keys
 from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.media import media_assets, subject_references
@@ -61,6 +62,7 @@ __all__ = [
     "engine_profiles",
     "entity_relations",
     "events",
+    "genesis_deferred",
     "guardrail_check_results",
     "idempotency_keys",
     "jobs",

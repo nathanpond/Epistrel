@@ -38,9 +38,11 @@ Writes the reply of a Lite turn from the story's prompt sections.
 |---|---|
 | `rating_guidance` | `rating_guidance` |
 | `custom_instructions` | `custom_instructions` |
+| `scenario_text` | `scenario_text` |
 | `character_definitions.name` | `character_definition` |
 | `character_definitions.definition` | `character_definition` |
 | `character_definitions.deflection_style` | `character_definition` |
+| `director_notes` | `director_notes` |
 | `pinned_memories` | `pinned_memory` |
 | `summary_segments` | `rolling_summary` |
 | `recent_messages.name` | `recent_message` |
@@ -75,7 +77,7 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 | `subjects.label` | `policy_text` |
 | `subjects.age` | `subject_true_age` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`
 
 ### `lite_summary`
 
@@ -134,7 +136,7 @@ Reviews one catalog entry against one rating's content policy: its description, 
 | `elements.location` | `catalog_text` |
 | `elements.text` | `catalog_text` |
 
-**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`
+**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`
 
 ## Reserved purposes
 
@@ -173,6 +175,8 @@ its floor and data-flow row, in the milestone that delivers it.
 | `checked_text` | The text a guardrail check is judging (input or output). |
 | `catalog_text` | A catalog entry's text under review, private fields included, with where each part sits (a rating suggestion; author-facing, FR-RATE-8). |
 | `rating_description` | A content rating's name and content-policy description. |
+| `scenario_text` | A scenario story's world, seeded facts, relationships, starting places and player persona, as text (#122). |
+| `director_notes` | A scenario story's director notes: plot hooks, objectives, guidance, planned reveals, milestones and endings (#122). |
 
 ## Hosted providers and retention
 

@@ -129,6 +129,15 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
             ),
             {"s": story_id, "c": character_id, "e": new_ulid()},
         )
+        # A deferred genesis item (#122), planted: the story table a Lite genesis writes.
+        await conn.execute(
+            text(
+                "INSERT INTO genesis_deferred (id, story_id, operation_id, field_ref, "
+                "field_class, location, capability_needed, payload) VALUES (:id, :s, :o, "
+                "'starting_state.rules[0]', 'story_rule', '{}', 'structured', '{}')"
+            ),
+            {"id": new_ulid(), "s": story_id, "o": new_ulid()},
+        )
 
 
 def _due() -> datetime:

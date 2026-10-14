@@ -13,6 +13,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep, OperationId
+from epistrel.core.genesis.models import CreationReport
 from epistrel.core.operation_view import OperationView
 
 router = APIRouter(prefix="/operations", tags=["operations"])
@@ -24,7 +25,9 @@ OPERATION_DESCRIPTION = (
     "`origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. "
     "A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when "
     "it was not queued) and `first_call_offset_ms` (from reaching the front to its first model "
-    "call)."
+    "call). A story's `genesis` operation from a scenario carries its full `creation_report` "
+    "(every entry, deferred item and inactive setting) to a read with `?viewpoint=omniscient` "
+    "only; otherwise it is null."
     "\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored "
     "response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an "
     "output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another "
@@ -42,8 +45,9 @@ class StoredResultBody(BaseModel):
 
 class OperationBody(BaseModel):
     """One operation: kind, status, position, revision, attribution, timestamps, attempts,
-    configuration revisions, origin, a turn's queue wait and first-call delay and, within the
-    result window, its stored result."""
+    configuration revisions, origin, a turn's queue wait and first-call delay, a genesis
+    operation's creation report (omniscient reads only) and, within the result window, its
+    stored result."""
 
     id: str
     story_id: str | None
@@ -64,6 +68,7 @@ class OperationBody(BaseModel):
     result: StoredResultBody | None = None
     queued_ms: int | None = None
     first_call_offset_ms: int | None = None
+    creation_report: CreationReport | None = None
 
     @classmethod
     def of(cls, view: OperationView) -> OperationBody:
@@ -86,6 +91,9 @@ class OperationBody(BaseModel):
             idempotency_key=view.idempotency_key,
             queued_ms=view.queued_ms,
             first_call_offset_ms=view.first_call_offset_ms,
+            creation_report=None
+            if view.creation_report is None
+            else CreationReport.model_validate(view.creation_report),
             result=(
                 StoredResultBody(status=view.result.status, body=view.result.body)
                 if view.result is not None

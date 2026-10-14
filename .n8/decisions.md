@@ -5107,3 +5107,87 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** #120 fix round 1 gate (M3 per-story rule; the orchestrator runs the full suite for group C). The run covered `test_rating_change.py` (all #118/#120 slices plus the 2 new tests), `test_reactivation.py`, S undo-swap, I-04, time, C-03, S fork-snapshot, S rewind, I-03, I-08 and the event registry. Result: 58 passed, 0 failed. All static and CI-lint gates pass. No route, model or dependency changed, so `openapi --check` stayed clean and check-licenses was not run. The conformance suite and the ownership and route-guard modules were not re-run, because no route or schema changed.
   **Why:** M3's per-story gate rule. Cost if wrong: a failure surfaces in group C's full run.
   **Issue:** #120
+
+- **Decision (drift):** The dispatcher is `core/genesis/materialize.py`: each scenario field's handling comes from its class (`CLASS_HANDLING`: `public_card` and `style` never, `knowledge_seed` rendered and deferred, `story_rule` and `starting_state` deferred, `director` rendered, `configuration` and `recommendation` consumed) with six per-path exceptions (`PATH_HANDLING`: the world description and the starting places rendered only, the roles present rendered, the opening narration consumed as turn 1, the scheduled events deferred only), and a `configuration`/`story_setting` field (plus `required_providers`) is a `setting`. `handling_problems()` is the build-time check (an override naming no field, a class with no handling, a public-card, director, recommendation or style field that would defer, a setting with no capability entry), asserted empty by `tests/test_genesis_materialize.py`, which also proves a broken table is reported. The item enumeration refuses any item whose fields the dispatcher does not defer.
+  **Why:** The key_link "every field dispatched by its class; an unknown class is a build error", with the pass-2 lines on what is rendered only. Cost if wrong: one path moves between handlings.
+  **Issue:** #122, #108
+- **Decision:** `genesis_deferred` (migration 0038) is `(id ulid pk, story_id, operation_id, field_ref, field_class, location jsonb, capability_needed, payload jsonb, created_at, materialized_at null)` with `ix_genesis_deferred_story_id`, no foreign key (like `character_snapshots`), in `STORY_TABLES` (enumerated delete) and copied by a fork with its genesis operation (it has `operation_id`). One row per item, one capability per row: a seed is `structured` when its audience holds `public` and it is not `secret`, else `partitions` (a belief or nested seed always), a scheduled seed `clock`; locations, entities, relationships, name overrides, rules, predicates, closed sets and a planned reveal's truth `structured`; the clock and scheduled events `clock`; States and a role's starting values `states`; the player persona's seeding one `partitions` row at `persona.audience`. The payload is `{value: <the item's JSON from the stored document>, characters: {role: story character id}}` (the persona row adds `known_to`). `determinism.ORDER` orders it by story then `field_ref`; S-DELETE plants a row.
+  **Why:** The pass-1 and pass-2 lines. A planned reveal's truth follows the pass-1 line (`structured`) rather than the seed rule, so its row names one capability; the table is a story table without foreign keys because S-DELETE forbids any other. Cost if wrong: one capability token per item kind, which M5 to M7's materialisation reads.
+  **Issue:** #122, #231, #149, #202
+- **Decision (deviation from the pass-1 line):** A role's default participation is stored as the inactive setting `participation.<role id>` (capability `multi_character`) in `stories.settings.inactive`, not as a new `characters` column. Inactive settings are `stories.settings.inactive = {name: {value, capability}}`; `interaction_mode` → `multi_character`, `player_authority` → `structured`, `ambiguous_retcon_timing` and `backfill_conflict_policy` → `history_rewrite`, `required_providers` → `providers` (`core/genesis/settings_map.py`, complete by `unmapped_settings()`). #119's top-level `interaction_mode`, `player_authority`, `ambiguous_retcon_timing` and `backfill_conflict_policy` keys move under `inactive`; `turn_concurrency`, the default viewpoint, `audit_retention_days` and the policies stay applied. A setting is applied instead once its capability is in #106's `DELIVERED`.
+  **Why:** AC5 needs the setting stored and listed, which `settings.inactive` does without a schema change to `characters` (Rule 4 territory the AC does not need). No reader used the moved top-level keys (searched). Cost if wrong: #157 or M7 reads participation from the settings rather than a column.
+  **Issue:** #122, #119
+- **Decision:** The creation report (`core/genesis/models.py`) gains `story_id`, `cast` (a catalog member is #115's card of the version taken, `catalog.characters.version_card`, plus `kind: catalog`, `character_id`, `role_id`, `source {catalog_id, version}`; an ad-hoc member or the player is `{kind, character_id, role_id, name}`), `counts {errors, conflicts, warnings, deferred {by_class, by_capability}, inactive {by_class, by_capability}}` (non-zero keys only; `conflicts` always 0 under Lite) and, under `full` only, `deferred[]` (`field_ref`, `field_class`, `location`, `capability_needed`, `payload`) and `inactive[]` (`name`, `value`, `capability`, `field_class`, `location`). `counts.deferred`/`inactive` change from #119's integers to the two maps. I kept `errors` in the counts (a refusal's report uses it) beside the AC's `conflicts`.
+  **Why:** AC4 and the pass-1/pass-2 lines. Cost if wrong: #128 freezes a slightly different count shape.
+  **Issue:** #122, #119, #128
+- **Decision:** Every `personality_in_role` warning of a creation names the story character filling its role as `source` (`merge.name_warnings`, the story name with any canonical override), the player's role included; #111's heuristic and term list stay in `catalog/checks/personality.py` (pass 2), and `merge.py` imports it. A role whose seeds assert personality gets one sentence after its seeds in the scenario text: "Where a scenario fact describes <Name>'s personality, it is guidance only: <Name>'s own author notes decide how <Name> behaves."
+  **Why:** AC3 ("personality comes only from the character ... rendered as guidance that yields: the prompt says so"). The pass-1 wording ("it takes precedence over the character's own description") says the opposite of the AC and of FR-SCN-7, so I followed the AC. Cost if wrong: one sentence's wording.
+  **Issue:** #122, #111
+- **Decision (drift):** The two prompt blocks are rendered on every turn from `stories.scenario_snapshot` and the cast (`core/genesis/render.read_rendered`, called by `core.turns.read_turn_inputs`); `GenerationInputs` gains `scenario_text` and `director_notes` with new content categories `scenario_text` and `director_notes` (descriptions in `tools/model_guide.py`, `docs/models.md` regenerated; the guardrail and rating-suggestion purposes never receive them). The template pastes the finished blocks in the order guidance, instructions, scenario text, author notes, director notes, pins, summary, preamble (no Jinja partials: `render.py` emits finished text, as pass 2 says). `READ_SET_MEMBERS` gains `scenario_text` and `director_notes`, each the hash of its block; `test_concurrency.py` and `test_revisions.py` pin the new member list (a required behaviour change, no assertion loosened).
+  **Why:** The drift note's path (GenerationInputs, TurnInputs, read-set loaders) and pass 2's "render.py emits finished text blocks". Cost if wrong: none to the product; the blocks' text is a constant per story.
+  **Issue:** #122, #57, #47
+- **Decision (drift, #119's hand-off):** A catalog character's author notes stay in `characters.definition`, written at genesis, now as `render.definition_notes` (appearance, personality, values, background flavor, the five disposition axes as fixed sentences with their nuance, likes and dislikes, speech, vocabulary, mannerisms, sample lines), replacing #119's interim rendering; true age, visual identity, safe fallback and deflection style are left out (the template already renders the story's `deflection_style` column, per #115's note). The column is the snapshot's rendering, so the `definitions` read-set member and every Lite reader are unchanged, and editing the catalog after creation changes no prompt (asserted in `test_i_18__scenario_prompt`).
+  **Why:** #119 kept the column NOT NULL and offered "replace the rendering"; rendering per turn would change nothing the story can observe, since the snapshot is fixed. Cost if wrong: a later change to the prose rendering affects only stories created after it.
+  **Issue:** #122, #119, #115, #114
+- **Decision:** Rendering details beyond the pass-2 lines: disclosure sentences use the holder's name instead of a pronoun ("June conceals it and may lie to protect it"), since the snapshot has no pronoun; a `self` audience joined by `acquaintances` or `perceivable` drops the redundant "Known to <holder>"; a named group renders as "the <group>"; each filled role's starting place is a "Where each starts:" list before `Present at the start`; a relationship name loses a trailing `_of` (`mother_of` is "mother"); an unfilled optional role's seeds render under "Other people:" by its public label; the persona note gives name, gender, exact age and description, then "Known to <names>: <Name>'s name and exact age; others perceive <gender>, <age band>".
+  **Why:** Low-cost wording choices the Discretion leaves open. Cost if wrong: prompt wording only.
+  **Issue:** #122
+- **Decision (#119's hand-off):** The opening narration is labelled `Narrator: ` in the window: `WindowRow.opening` is set for a reply row whose payload's `finish_reason` is `opening` (`core.turns.OPENING_FINISH`, now the one constant `genesis.create` uses), and `transcript_line` prefixes it. Other narration rows (ingested M2 narration, the summary's chunks) are unchanged.
+  **Why:** #119 stored the opening verbatim and left the prefix to #122; a broader prefix would change M2 prompts and summary inputs. Cost if wrong: none.
+  **Issue:** #122, #119
+- **Decision (drift):** The full creation report is persisted as `operations.turn_report = {creation_report: ...}` on the genesis operation, written in the genesis transaction after `write_in`. `GET /operations/{id}` gains `creation_report`, filled only for a `genesis` operation and a read naming `?viewpoint=omniscient` (else `null`); `OperationView`, `OperationBody` and `docs/openapi.json` are updated.
+  **Why:** The pass-2 line and the drift note. Cost if wrong: #124 must redact one more jsonb path (named in the Ad-hoc entry).
+  **Issue:** #122, #61, #124
+- **Decision (drift):** Tests follow docs/04 §15 and the one-file rule. `test_i_27__lite` `part("M3", "FR-SCN-2,5,9,11")` in `tests/integration/test_i_27.py`; `test_u_27__lite` `part("M3", "FR-SCN-7; FR-CAT-2")` in a new `tests/test_u_27.py`; `test_i_18__scenario_prompt` `part("M3", "FR-LITE-1")` in `tests/integration/test_i_18.py` (it carries the catalog-edit complement); `test_c_15__story_creation` `part("M3", "FR-SCN-10")` in `tests/conformance/test_c_15.py`; unmarked `tests/test_genesis_materialize.py` and `tests/test_genesis_render.py`. Capability tokens, seed kinds and setting names stay in `tests/lite_genesis_support.py` (check-lexicon). The planned `tests/fixtures/scenarios/sunday_dinner.json` is not created: `lite_genesis_support.sunday_dinner` is #119's `scenario_support.COMPLETE` (already the Sunday Dinner family with every group) with a planted public description, label and style. The planned `tests/integration/test_lite_genesis.py` is not created. "No placeholder record" is asserted by enumerating every `story_id` table from `information_schema` and comparing the rows a creation adds to the exact expected set.
+  **Why:** The drift notes and #113's and #119's hand-offs. Cost if wrong: renames only.
+  **Issue:** #122, #113, #119
+- **Decision:** The I-18 slice's pinned memory and catalog edit were reworded after `test_c_11` (the lexicon gate's own test) caught "clock" and "rewritten" in the part's body. No gate was changed.
+  **Why:** check-lexicon. Cost if wrong: none.
+  **Issue:** #122
+- **Decision (discovered work):** Running `tests/test_markers.py` before the session's first `pg_url` setup errors every later integration test with "Table 'schema_meta' is already defined" (an ordering I used in an area run; it reproduces without this story's changes). Already filed as #311; not fixed, and my area runs keep integration modules before the unit modules.
+  **Why:** The discovered-work rule. Cost if wrong: none.
+  **Issue:** #122, #311
+- **Decision:** `docs/02` §4.10's `genesis_deferred` column list is amended to the built shape (with the Ad-hoc entry below). #123's writer registration and #124's redaction of `genesis_deferred.payload` and the persisted report are left to those stories, as the pass-1 line assigns them.
+  **Why:** The pass-1 line names those stories. Cost if wrong: #123/#124 miss the table (named in their Affects line).
+  **Issue:** #122, #123, #124
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #122 materialised Lite stories from their scenario snapshot. It changed shapes that later stories build on.
+  - **The new table `genesis_deferred`** (migration 0038; docs/02 §4.10 amended). Its columns are `id, story_id, operation_id, field_ref, field_class, location, capability_needed, payload {value, characters}, created_at, materialized_at`.
+    - It has one row per item the story cannot use, and each row names one #106 capability: `structured`, `partitions`, `clock` or `states`.
+    - It is a story table with no foreign key: story deletion enumerates it, and a fork copies it with the genesis operation.
+  - **Inactive settings.** Settings for undelivered capabilities now live in `stories.settings.inactive` as `{name: {value, capability}}`.
+    - They were top-level keys at #119.
+    - A role's participation is stored there as `participation.<role id>`, not as a `characters` column.
+  - **The creation report** gains `story_id`, `cast` cards, and `counts {errors, conflicts, warnings, deferred/inactive {by_class, by_capability}}`. `deferred`/`inactive` were integers at #119. Under `full` it also has the `deferred[]` and `inactive[]` arrays.
+  - **The report is persisted** on the genesis operation's `turn_report.creation_report`. `GET /operations/{id}` returns it as `creation_report` under `?viewpoint=omniscient` only.
+  - **The Lite prompt** gains the `## Scenario` and `## Author notes (not facts)` blocks.
+    - New `GenerationInputs` fields `scenario_text`/`director_notes`, with content categories of the same names.
+    - Two new read-set members.
+    - A catalog character's `characters.definition` is now `render.definition_notes` prose.
+    - The opening narration is labelled `Narrator:` in the window.
+  **Why:** #122's AC and its pass-1/pass-2 Discretion, corrected by its drift notes and the #113, #114, #115 and #119 hand-offs. The decision entries above give the details.
+  **Affects:**
+  - **M3 #123 (index).** Register `genesis_deferred` (its `payload` holds seed and persona text) and `operations.turn_report.creation_report` with the reference writers.
+  - **M3 #124 (erasure).** Redact the same two, plus `stories.settings.inactive` values (they hold no prose today).
+  - **M3 #128 (API surface).**
+    - The `CreationReport` shape changed: counts are maps, and it has the cast cards and the arrays.
+    - `OperationBody` gained `creation_report`.
+    - `docs/openapi.json` is regenerated.
+  - **M4 #149, M5 (partitions), M6 #202 and M7 #231 (materialisation).**
+    - Read the deferred items from `genesis_deferred` by `capability_needed`, with each row's original JSON in `payload.value` and the resolved character ids in `payload.characters`, and set `materialized_at`.
+    - #202's States, clock and scheduled events are rows under `states`/`clock`.
+    - #231 drains rows by capability.
+  - **M5 #174, #175, #176 (multi-character) and M7 #230 (backfill conflicts).** `interaction_mode` and each role's participation (`participation.<role id>`) are under `settings.inactive` with capability `multi_character`. `backfill_conflict_policy`/`ambiguous_retcon_timing` are there under `history_rewrite`. A story created before those capabilities land reads them from there.
+  - **The Console (nathanpond/Epistrel-Console).**
+    - The story-setup screen can show the card report's counts, cast cards and unavailable checks.
+    - An author view can show the `full` report's deferred and inactive lists, or read them later from `GET /operations/{id}?viewpoint=omniscient`.
+    - The story settings screen should show `settings.inactive` read-only.
+  - **Next step:** `/n8-replan` for M4 to M7 (#149, #174 to #176, #202, #230, #231) after M3. #123, #124 and #128 are later group C stories in this run: their drift check should apply this.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #122's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #122

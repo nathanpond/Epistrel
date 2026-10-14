@@ -62,8 +62,12 @@ READ_SET_MEMBERS: tuple[str, ...] = (
     "instructions",
     "definitions",
     "guidance_text",
+    "scenario_text",
+    "director_notes",
 )
-"""The Lite read set (FR-CONC-4: the assembled prompt's inputs). Guardrail and policy sets are
+"""The Lite read set (FR-CONC-4: the assembled prompt's inputs); a story created from a
+scenario adds its two rendered blocks (``scenario_text``, ``director_notes``: each the block's
+text, hashed; #122). Guardrail and policy sets are
 not members: they belong to #64's configuration dependency set, which is re-checked. Neither is
 the configuration (the generation settings, the window): a turn captures it at its start and
 runs under it, so a change of the profile, the overrides or the defaults is prospective and
@@ -342,6 +346,20 @@ async def _guidance_text(conn: AsyncConnection, story_id: str, spec: LiteReadSet
     )
 
 
+async def _scenario_text(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
+    """A scenario story's ``## Scenario`` block as the prompt renders it (#122)."""
+    from epistrel.core.genesis.render import read_rendered
+
+    return (await read_rendered(conn, story_id)).scenario_text
+
+
+async def _director_notes(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
+    """A scenario story's ``## Author notes (not facts)`` block as the prompt renders it."""
+    from epistrel.core.genesis.render import read_rendered
+
+    return (await read_rendered(conn, story_id)).director_notes
+
+
 for _name, _loader in (
     ("window", _window),
     ("segments", _segments),
@@ -349,6 +367,8 @@ for _name, _loader in (
     ("instructions", _instructions),
     ("definitions", _definitions),
     ("guidance_text", _guidance_text),
+    ("scenario_text", _scenario_text),
+    ("director_notes", _director_notes),
 ):
     register_read_set_member(_name, _loader)
 

@@ -1,9 +1,11 @@
 {#- The single Lite prompt (FR-LITE-1, #57).
 
 The ``system`` block holds, in order: the story rating's prompt guidance (always first,
-FR-RATE-4), the custom instructions, each character's definition as labelled author notes
-(never a public card) in request order, each followed by its deflection style when it has one
-(FR-GUARD-7, #115), the pinned memories, the rolling summary, then the constant preamble: who
+FR-RATE-4), the custom instructions, a scenario story's scenario text (#122: rendered by
+``core.genesis.render``, closed by the instruction that its facts prevail), each character's
+definition as labelled author notes (never a public card) in request order, each followed by its deflection style when it has one
+(FR-GUARD-7, #115), a scenario story's director notes (#122, labelled apart from the
+facts), the pinned memories, the rolling summary, then the constant preamble: who
 is voiced, in request order, and the one line that separates the characters' knowledge
 (FR-LITE-5: by instruction only), and on a guardrail regeneration one constraint line per
 violated output policy (#68). Empty sections are left out. The verbatim window follows as chat messages, one per transcript
@@ -23,6 +25,10 @@ the final ``user`` message. -#}
 {{ custom_instructions }}
 
 {% endif %}
+{% if scenario_text %}
+{{ scenario_text }}
+
+{% endif %}
 {% for character in character_definitions %}
 ### Author notes: {{ character.name }}
 {{ character.definition }}
@@ -31,6 +37,10 @@ When {{ character.name }} refuses or changes the subject: {{ character.deflectio
 {% endif %}
 
 {% endfor %}
+{% if director_notes %}
+{{ director_notes }}
+
+{% endif %}
 {% if pinned_memories %}
 ## Pinned memories
 {% for memory in pinned_memories %}

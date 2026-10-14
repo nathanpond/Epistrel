@@ -11,7 +11,8 @@ FR-LITE-7).
 
 The M3 part #113 delivers, ``test_i_18__profile_resolution``, resolves the generation settings
 from the story's engine profile, then its overrides, then the request (FR-LITE-4, FR-PROF-5).
-#122's I-18 (M3) slice (the scenario text in the prompt) joins this file: traceability counts a
+#122's I-18 (M3) slice, ``test_i_18__scenario_prompt``, places a scenario story's scenario text
+and director notes in the prompt order (FR-LITE-1) and joins this file: traceability counts a
 test ID per milestone in one file."""
 
 from __future__ import annotations
@@ -46,7 +47,12 @@ from epistrel.orchestrator.lite.schemas import RegenerateRequest, RespondRequest
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.rebase import output_passes
 from epistrel.orchestrator.policies.store import guard_context
+from tests import genesis_support as g
+from tests import lite_genesis_support as lg
+from tests import scenario_support as scenarios
 from tests.auth_support import auth_settings
+from tests.catalog_support import publish as catalog_publish
+from tests.catalog_support import save as catalog_save
 from tests.concurrency_support import set_instructions, set_pins, summarise
 from tests.event_support import execute_in_tx, rows, scalar
 from tests.gate_support import input_policies
@@ -270,6 +276,97 @@ async def test_i_18__profile_resolution(stub_settings: Settings, engine: AsyncEn
             0.5,
             150,
         )
+
+
+@pytest.mark.part("M3", "FR-LITE-1")
+async def test_i_18__scenario_prompt(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """A story created from a scenario (#122): the captured prompt's ``system`` block holds, in
+    order, the rating guidance, the custom instructions, the scenario text (closed by the
+    instruction that its facts prevail), the characters' author notes, the director notes,
+    the pinned memories and the summary, then the preamble; the opening narration is the
+    window's first message, labelled ``Narrator:``. Both scenario blocks are read-set members.
+
+    Complement asserted: after the story's creation, editing and republishing its catalog
+    character and its scenario changes nothing in its next prompt's scenario text, author
+    notes or director notes."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        locked, default = await scenarios.cast_characters(client)
+        mother = await g.catalog_character_id(client, "June Harrow", age=60, labels=["warm"])
+        document = lg.sunday_dinner(locked, default)
+        scenario_id, _ = await g.published_scenario(client, document)
+        made = await g.create_from(
+            client,
+            g.from_scenario(
+                scenario_id, slots={"mother": g.catalog_slot(mother)}, ignore_warnings=True
+            ),
+        )
+        story = made["story_id"]
+        by_role = {c["role_id"]: c["id"] for c in made["characters"]}
+        await set_instructions(engine, story, "INSTRUCTIONS: keep it at the table.")
+        await set_pins(engine, story, "PIN: the gravy boat is chipped.")
+        await summarise(engine, story, 1)
+        payload = body(by_role["player"], "Smells good.", render_character_ids=[by_role["mother"]])
+
+        stub.reset()
+        await played(client, story, payload)
+        (call,) = generation_calls(stub)
+        system = system_of(call)
+        guidance = (await story_guidance(engine, story)).prompt_guidance
+        positions = _order(
+            system,
+            guidance,
+            "INSTRUCTIONS: keep it at the table.",
+            lg.SCENARIO_HEADING,
+            lg.PREVAIL,
+            "### Author notes: Sam",
+            "### Author notes: June Harrow",
+            lg.DIRECTOR_HEADING,
+            "PIN: the gravy boat is chipped.",
+            "summary through 1",
+            "never speak or act for Sam",
+        )
+        assert positions == sorted(positions)
+        assert call.messages[1].role == "assistant"
+        assert call.messages[1].content == f"Narrator: {g.OPENING}"
+        read_set = (
+            await rows(
+                engine,
+                "SELECT read_set FROM operations WHERE story_id = :s AND kind = 'turn' "
+                "AND narrative_turn = 2",
+                s=story,
+            )
+        )[0].read_set
+        assert {"scenario_text", "director_notes"} <= set(read_set)
+
+        def blocks(text: str) -> tuple[str, str, str]:
+            return (
+                lg.section(text, lg.SCENARIO_HEADING, "### Author notes:"),
+                lg.section(text, "### Author notes: Sam", lg.DIRECTOR_HEADING),
+                lg.section(text, lg.DIRECTOR_HEADING, "## Pinned memories"),
+            )
+
+        kept = blocks(system)
+        edited = await catalog_save(
+            client, mother, 2, definition={"personality": "Wholly changed after the story began."}
+        )
+        assert edited.status_code == 200, edited.text
+        assert (await catalog_publish(client, mother, 3)).status_code == 201
+        draft = (await scenarios.read(client, scenario_id, draft=True, projection="full")).json()
+        changed = await scenarios.save(
+            client,
+            scenario_id,
+            draft["draft_revision"],
+            world={"description": "A different farm entirely."},
+            drivers={"director_guidance": "A different plan entirely."},
+        )
+        assert changed.status_code == 200, changed.text
+        republished = await scenarios.publish(client, scenario_id, changed.json()["draft_revision"])
+        assert republished.status_code == 201, republished.text
+        stub.reset()
+        await played(client, story, payload)
+        (again,) = generation_calls(stub)
+        assert blocks(system_of(again)) == kept
 
 
 async def _revision(engine: AsyncEngine, story: str) -> int:

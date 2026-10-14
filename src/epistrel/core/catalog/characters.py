@@ -294,6 +294,27 @@ async def _project(
     )
 
 
+async def version_card(conn: AsyncConnection, entry: Any, version_row: Any) -> CharacterCard:
+    """The public card of a published ``version_row`` of catalog character ``entry`` (its
+    ``id``, ``listing_status`` and ``status``): what a ``card`` read of that version shows. A
+    story's creation report shows its catalog cast this way (#122)."""
+    document: Mapping[str, Any] = (
+        version_row.content if isinstance(version_row.content, Mapping) else {}
+    )
+    found = await _project(
+        conn,
+        entry,
+        document,
+        version=int(version_row.version),
+        published_at=version_row.published_at,
+        draft_revision=None,
+        projection=Projection.CARD,
+        version_row=version_row,
+    )
+    assert isinstance(found, CharacterCard)  # noqa: S101 - the card projection
+    return found
+
+
 # -- results ----------------------------------------------------------------------------------
 
 
@@ -661,5 +682,6 @@ __all__ = [
     "publish",
     "save",
     "unarchive",
+    "version_card",
     "versions",
 ]

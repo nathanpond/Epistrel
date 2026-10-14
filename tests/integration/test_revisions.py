@@ -118,6 +118,8 @@ async def test_base_and_read_set_are_captured(engine: AsyncEngine) -> None:
         "instructions",
         "definitions",
         "guidance_text",
+        "scenario_text",
+        "director_notes",
     }
     assert all(len(digest) == 64 for digest in read_set.values())
     await held.release()

@@ -5,7 +5,9 @@ and variant), the story's revision once it committed, who asked, when, the viewp
 was produced for, its revalidation attempts (#47), its origin and, for an ingested batch, every
 operation the batch committed together (#58). A committed Lite turn also reports its wait in its
 story's queue and its delay to the first model call (``queued_ms``, ``first_call_offset_ms``,
-from its turn report; #76). Within the result window the stored result of
+from its turn report; #76). A story's genesis from a scenario keeps its full creation report
+(#122) on its ``genesis`` operation, returned only to a read naming the ``omniscient``
+viewpoint. Within the result window the stored result of
 the operation's ``Idempotency-Key`` is included — for a viewpoint-bound result (a turn) only
 when the read names that same viewpoint; another named viewpoint is 409
 ``idempotency_conflict``, and a read naming none gets the view without the result.
@@ -20,8 +22,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.enums import OperationKind
 from epistrel.core.errors import EpistrelError, IdempotencyConflict
 from epistrel.core.idempotency import StoredResult, stored_result
+from epistrel.core.settings_schema import OMNISCIENT
 from epistrel.core.tables import operations
 
 
@@ -55,6 +59,9 @@ class OperationView:
     """A committed turn's wait in its story's queue (``None``: not queued, or not a turn; #76)."""
     first_call_offset_ms: int | None = None
     """A committed turn's delay from reaching the front to its first model call (#76)."""
+    creation_report: dict[str, Any] | None = None
+    """A story's ``genesis`` operation from a scenario: its full creation report (#122),
+    returned only to a read naming the ``omniscient`` viewpoint."""
 
 
 INGESTED = "ingested"
@@ -114,7 +121,18 @@ async def read_operation(
         result=result,
         queued_ms=_report_ms(row.turn_report, "queued_ms"),
         first_call_offset_ms=_report_ms(row.turn_report, "first_call_offset_ms"),
+        creation_report=_creation_report(row, viewpoint),
     )
+
+
+def _creation_report(row: Any, viewpoint: str | None) -> dict[str, Any] | None:
+    """A genesis operation's persisted creation report (#122), for an omniscient read only."""
+    if str(row.kind) != OperationKind.GENESIS.value or not isinstance(row.turn_report, dict):
+        return None
+    if viewpoint is None or viewpoint.strip().casefold() != OMNISCIENT:
+        return None
+    found = row.turn_report.get("creation_report")
+    return found if isinstance(found, dict) else None
 
 
 def _report_ms(report: Any, name: str) -> int | None:

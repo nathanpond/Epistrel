@@ -27,6 +27,11 @@ Every C-15 (M3) part lives in this file (traceability counts a test ID per miles
   definition, metadata and visual identity (reference images with their audience), and the
   publish checks over them (FR-CAT-2,4). The details are in
   ``tests/integration/test_character_content.py``.
+- #122's part, ``test_c_15__story_creation``: a story's creation report under ``card`` (the
+  story, its cast as cards, counts by field class and capability, the unavailable checks) and
+  ``full`` (every entry, deferred item and inactive setting), and public descriptions and labels
+  seeded nowhere (FR-SCN-10). The materialisation itself is I-27's
+  (``tests/integration/test_i_27.py``).
 """
 
 from __future__ import annotations
@@ -50,6 +55,8 @@ from epistrel.core.catalog.scenario_models import (
     scenario_schema_classes,
 )
 from epistrel.core.ids import new_ulid
+from tests import genesis_support as g
+from tests import lite_genesis_support as lg
 from tests import scenario_support as scenarios
 from tests.catalog_support import (
     BASE,
@@ -959,3 +966,114 @@ async def test_c_15__validate(settings: Settings, engine: AsyncEngine) -> None:
         archived = await client.post(f"{scenarios.BASE}/{sid}/archive", headers=WRITE)
         assert archived.status_code == 200, archived.text
         assert (await validate(client, sid)).json()["valid"] is True
+
+
+CARD_PHRASE = "June Harrow keeps the light on Gull Rock."
+"""The catalog character's public description (``tests.character_support.complete``'s)."""
+
+SEEDED_TABLES = (
+    "characters",
+    "events",
+    "transcript_messages",
+    "genesis_deferred",
+    "policies",
+    "story_texts",
+    "story_heads",
+)
+"""Where a story's genesis seeds content; the snapshots (``stories.scenario_snapshot``,
+``character_snapshots``) copy the published versions whole (FR-SCN-9), and the creation's own
+answer (its stored report) is not story content."""
+
+
+async def _story_text(engine: AsyncEngine, story_id: str) -> str:
+    """Every seeded row of the story, and its ``stories`` row without the snapshot, as text."""
+    found: list[str] = []
+    for table in SEEDED_TABLES:
+        found += [
+            str(r[0])
+            for r in await rows(
+                engine,
+                f'SELECT t::text FROM "{table}" t WHERE story_id = :s',  # noqa: S608
+                s=story_id,
+            )
+        ]
+    found += [
+        str(r[0])
+        for r in await rows(
+            engine,
+            "SELECT (to_jsonb(t) - 'scenario_snapshot')::text FROM stories t WHERE id = :s",
+            s=story_id,
+        )
+    ]
+    return "\n".join(found)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-SCN-10")
+async def test_c_15__story_creation(settings: Settings, engine: AsyncEngine) -> None:
+    """Creating a story from a scenario with the default ``card`` projection answers the story,
+    its cast as cards (a catalog character's public card with its role and source version; the
+    player's name and kind), the counts of merge conflicts and warnings, of deferred and
+    inactive items by field class and capability, and the names of the checks that could not
+    run; with ``full`` the same counts and every report entry: the warnings with location and
+    exact text, every deferred item and every inactive setting. Phrases planted in the
+    scenario's and the catalog character's public descriptions and in a label are seeded
+    nowhere in the story.
+
+    Complement asserted: the card answer quotes none of the scenario's private phrases, and
+    the full one carries them in its deferred items."""
+    async with rest(settings, engine) as client:
+        locked, default = await scenarios.cast_characters(client)
+        mother = await g.catalog_character_id(client, "June Harrow", age=60, labels=["warm"])
+        body = lg.sunday_dinner(locked, default)
+        scenario_id, _ = await g.published_scenario(client, body)
+        request = g.from_scenario(
+            scenario_id, slots={"mother": g.catalog_slot(mother)}, ignore_warnings=True
+        )
+        card = (await g.create_from(client, request))["report"]
+        full = (await g.create_from(client, {**request, "projection": "full"}))["report"]
+
+        assert set(card) == {
+            "story_id",
+            "cast",
+            "counts",
+            "unavailable",
+            "errors",
+            "warnings",
+            "deferred",
+            "inactive",
+        }
+        assert [card[k] for k in ("errors", "warnings", "deferred", "inactive")] == [None] * 4
+        assert card["counts"] == full["counts"]
+        assert set(card["counts"]) == {"errors", "conflicts", "warnings", "deferred", "inactive"}
+        assert set(card["counts"]["deferred"]) == {"by_class", "by_capability"}
+        assert card["counts"]["deferred"]["by_capability"] == lg.counted(lg.expected_deferred(body))
+        assert card["unavailable"] == list(scenarios.M3_UNAVAILABLE)
+        mother_card = card["cast"][0]
+        assert (mother_card["kind"], mother_card["role_id"], mother_card["name"]) == (
+            "catalog",
+            "mother",
+            "June Harrow",
+        )
+        assert mother_card["source"] == {"catalog_id": mother, "version": 1}
+        assert mother_card["public_description"] == CARD_PHRASE
+        assert "definition" not in mother_card
+        assert card["cast"][-1] == {
+            "kind": "player",
+            "character_id": card["cast"][-1]["character_id"],
+            "role_id": "player",
+            "name": "Sam",
+        }
+        quoted = json.dumps(card)
+        for phrase in (*scenarios.PRIVATE_PHRASES, *PRIVATE_PHRASES):
+            assert phrase not in quoted, phrase
+
+        assert full["counts"]["warnings"] == len(full["warnings"])
+        assert len(full["deferred"]) == sum(full["counts"]["deferred"]["by_class"].values())
+        assert len(full["inactive"]) == sum(full["counts"]["inactive"]["by_class"].values())
+        assert scenarios.ROLE_SECRET in json.dumps(full["deferred"])
+
+        seeded = await _story_text(engine, full["story_id"])
+        for phrase in (lg.PUBLIC_PHRASE, lg.LABEL_PHRASE, CARD_PHRASE):
+            assert phrase not in seeded, phrase
+        assert scenarios.ROLE_SECRET in seeded

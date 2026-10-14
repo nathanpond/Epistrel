@@ -432,6 +432,129 @@
         "title": "CardRating",
         "type": "object"
       },
+      "CastSource": {
+        "additionalProperties": false,
+        "description": "The catalog version a story character was created from.",
+        "properties": {
+          "catalog_id": {
+            "title": "Catalog Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "catalog_id",
+          "version"
+        ],
+        "title": "CastSource",
+        "type": "object"
+      },
+      "CatalogCastCard": {
+        "additionalProperties": false,
+        "description": "A catalog character of the new story's cast: its public card (#115's, of the version the\nstory took), the story character's id, its role and its source version.",
+        "properties": {
+          "character_id": {
+            "title": "Character Id",
+            "type": "string"
+          },
+          "content_rating": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CardRating"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "images": {
+            "$ref": "#/components/schemas/CharacterCardImages"
+          },
+          "kind": {
+            "const": "catalog",
+            "default": "catalog",
+            "title": "Kind",
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "listing_status": {
+            "title": "Listing Status",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "public_description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Description"
+          },
+          "role_id": {
+            "title": "Role Id",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/CastSource"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EntryStatus"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "name",
+          "public_description",
+          "images",
+          "labels",
+          "content_rating",
+          "listing_status",
+          "status",
+          "character_id",
+          "role_id",
+          "source"
+        ],
+        "title": "CatalogCastCard",
+        "type": "object"
+      },
       "CatalogSourceBody": {
         "description": "The catalog version a story character was created from (``catalog_id@version``).",
         "properties": {
@@ -2314,6 +2437,28 @@
         "title": "CheckViolationBody",
         "type": "object"
       },
+      "ClassCapabilityCounts": {
+        "additionalProperties": false,
+        "description": "How many items fall under each field class and each capability (non-zero keys only).",
+        "properties": {
+          "by_capability": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Capability",
+            "type": "object"
+          },
+          "by_class": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Class",
+            "type": "object"
+          }
+        },
+        "title": "ClassCapabilityCounts",
+        "type": "object"
+      },
       "CompanionPublishedBody": {
         "description": "The companion version a character's publish made (FR-CAT-10; #116): the companion\nscenario's id, its new version (pinned to the character's new version), its draft's new\n``draft_revision`` (the draft's pin moved with it; with ``with_companion`` it is what was\npublished) and that version's validation ``report`` (a rating difference with the character\nis a ``rating_looser`` warning there).",
         "properties": {
@@ -2564,12 +2709,15 @@
       },
       "CreationCounts": {
         "additionalProperties": false,
-        "description": "How many errors and warnings the creation found, and what it deferred or left inactive\n(``0`` until #122 materialises by capability).",
+        "description": "How many errors, merge ``conflicts`` (always 0 under Lite, which detects none: FR-SCN-7)\nand warnings the creation found, and what it deferred and left inactive, by field class and\ncapability (#122).",
         "properties": {
-          "deferred": {
+          "conflicts": {
             "default": 0,
-            "title": "Deferred",
+            "title": "Conflicts",
             "type": "integer"
+          },
+          "deferred": {
+            "$ref": "#/components/schemas/ClassCapabilityCounts"
           },
           "errors": {
             "default": 0,
@@ -2577,9 +2725,7 @@
             "type": "integer"
           },
           "inactive": {
-            "default": 0,
-            "title": "Inactive",
-            "type": "integer"
+            "$ref": "#/components/schemas/ClassCapabilityCounts"
           },
           "warnings": {
             "default": 0,
@@ -2592,10 +2738,46 @@
       },
       "CreationReport": {
         "additionalProperties": false,
-        "description": "What a creation from a scenario found (FR-SCN-5,6): #111's report (``errors``,\n``warnings``: every entry, under the ``full`` projection only; ``null`` under ``card``),\n``unavailable`` (the checks the deployment could not run) and the ``counts``.",
+        "description": "What a creation from a scenario found (FR-SCN-5,6,10,11): the new story's id (``null``\nwhen nothing was created) and its ``cast`` as cards, the ``counts``, ``unavailable`` (the\nchecks the deployment could not run) and, under the ``full`` projection only (``null``\nunder ``card``), every entry: #111's ``errors`` and ``warnings`` with their location and\nexact text, every ``deferred`` item with its location and the capability it needs, and\nevery ``inactive`` setting.",
         "properties": {
+          "cast": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "ad_hoc": "#/components/schemas/MemberCastCard",
+                  "catalog": "#/components/schemas/CatalogCastCard",
+                  "player": "#/components/schemas/MemberCastCard"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogCastCard"
+                },
+                {
+                  "$ref": "#/components/schemas/MemberCastCard"
+                }
+              ]
+            },
+            "title": "Cast",
+            "type": "array"
+          },
           "counts": {
             "$ref": "#/components/schemas/CreationCounts"
+          },
+          "deferred": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DeferredItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deferred"
           },
           "errors": {
             "anyOf": [
@@ -2610,6 +2792,31 @@
               }
             ],
             "title": "Errors"
+          },
+          "inactive": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InactiveItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inactive"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
           },
           "unavailable": {
             "items": {
@@ -2866,6 +3073,40 @@
           "elapsed_ms"
         ],
         "title": "CustomInstructionsWritten",
+        "type": "object"
+      },
+      "DeferredItem": {
+        "additionalProperties": false,
+        "description": "A scenario item the story cannot use yet (FR-SCN-11; a ``genesis_deferred`` row): the\ndotted ``field_ref`` with indices, its class, its location (#111's shape), the one\ncapability it needs (a #106 module name) and its ``payload`` (``value``: the item's JSON as\nthe scenario holds it; ``characters``: the story character ids genesis resolved, by role).",
+        "properties": {
+          "capability_needed": {
+            "title": "Capability Needed",
+            "type": "string"
+          },
+          "field_class": {
+            "$ref": "#/components/schemas/FieldClass"
+          },
+          "field_ref": {
+            "title": "Field Ref",
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/EntryLocation"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "field_ref",
+          "field_class",
+          "location",
+          "capability_needed",
+          "payload"
+        ],
+        "title": "DeferredItem",
         "type": "object"
       },
       "DegradationBody": {
@@ -4874,6 +5115,21 @@
         "title": "FeedbackRequest",
         "type": "object"
       },
+      "FieldClass": {
+        "description": "FR-SCN-11's eight classes: where a scenario field is stored and where it may go.",
+        "enum": [
+          "public_card",
+          "knowledge_seed",
+          "story_rule",
+          "starting_state",
+          "director",
+          "configuration",
+          "recommendation",
+          "style"
+        ],
+        "title": "FieldClass",
+        "type": "string"
+      },
       "ForkCharacterBody": {
         "description": "A character of the fork and the source character it copies.",
         "properties": {
@@ -6277,6 +6533,38 @@
         "title": "ImpactReport",
         "type": "object"
       },
+      "InactiveItem": {
+        "additionalProperties": false,
+        "description": "A setting the story keeps for a capability it lacks (``stories.settings.inactive``): its\nname, value, the capability it waits for, its class and location.",
+        "properties": {
+          "capability": {
+            "title": "Capability",
+            "type": "string"
+          },
+          "field_class": {
+            "$ref": "#/components/schemas/FieldClass"
+          },
+          "location": {
+            "$ref": "#/components/schemas/EntryLocation"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "capability",
+          "field_class",
+          "location"
+        ],
+        "title": "InactiveItem",
+        "type": "object"
+      },
       "IngestEvent": {
         "additionalProperties": false,
         "description": "One event to record. ``kind`` is free text here so that a kind M2 does not record is\nrefused with ``unsupported_event_kind`` rather than a generic validation error.",
@@ -7247,6 +7535,40 @@
           "expires_at"
         ],
         "title": "MediaUrlBody",
+        "type": "object"
+      },
+      "MemberCastCard": {
+        "additionalProperties": false,
+        "description": "An ad-hoc character or the player of the new story's cast: its name, its kind, the story\ncharacter's id and its role (nothing private: no definition, persona description or age).",
+        "properties": {
+          "character_id": {
+            "title": "Character Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "ad_hoc",
+              "player"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "role_id": {
+            "title": "Role Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "character_id",
+          "role_id",
+          "name"
+        ],
+        "title": "MemberCastCard",
         "type": "object"
       },
       "Membership": {
@@ -8453,7 +8775,7 @@
         "type": "object"
       },
       "OperationBody": {
-        "description": "One operation: kind, status, position, revision, attribution, timestamps, attempts,\nconfiguration revisions, origin, a turn's queue wait and first-call delay and, within the\nresult window, its stored result.",
+        "description": "One operation: kind, status, position, revision, attribution, timestamps, attempts,\nconfiguration revisions, origin, a turn's queue wait and first-call delay, a genesis\noperation's creation report (omniscient reads only) and, within the result window, its\nstored result.",
         "properties": {
           "attempts": {
             "items": {
@@ -8500,6 +8822,16 @@
               }
             ],
             "title": "Config Revisions"
+          },
+          "creation_report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CreationReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "first_call_offset_ms": {
             "anyOf": [
@@ -33797,7 +34129,7 @@
     },
     "/operations/{operation_id}": {
       "get": {
-        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when it was not queued) and `first_call_offset_ms` (from reaching the front to its first model call).\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
+        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when it was not queued) and `first_call_offset_ms` (from reaching the front to its first model call). A story's `genesis` operation from a scenario carries its full `creation_report` (every entry, deferred item and inactive setting) to a read with `?viewpoint=omniscient` only; otherwise it is null.\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
         "operationId": "get_operation",
         "parameters": [
           {

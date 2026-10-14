@@ -90,11 +90,12 @@ from dataclasses import field as dataclass_field
 from typing import Any, Final
 
 from pydantic import ValidationError
-from sqlalchemy import func, insert, null, select
+from sqlalchemy import func, insert, null, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import audit, clock, ownership
 from epistrel.core.catalog import personas as catalog_personas
+from epistrel.core.catalog.characters import version_card
 from epistrel.core.catalog.checks import (
     document,
     fact_consistency,
@@ -110,6 +111,7 @@ from epistrel.core.catalog.checks.character_documents import (
     true_age_of,
 )
 from epistrel.core.catalog.checks.eligibility import eligibility_failures
+from epistrel.core.catalog.models import CharacterCard
 from epistrel.core.catalog.report import Entry, EntryLocation, Outcome, ValidationReport
 from epistrel.core.catalog.scenario_models import (
     CastLimits,
@@ -147,11 +149,18 @@ from epistrel.core.events.types import (
     ScenarioOrigin,
     StoryCreated,
 )
+from epistrel.core.genesis import merge, render
+from epistrel.core.genesis.materialize import CastRole, Materialized, materialize
 from epistrel.core.genesis.models import (
     PLAYER,
     AdHocSlotCharacter,
+    CastCard,
+    CastSource,
+    CatalogCastCard,
+    ClassCapabilityCounts,
     CreationCounts,
     CreationReport,
+    MemberCastCard,
     PersonaRef,
     PlayerAssignment,
     StoryFromScenario,
@@ -189,12 +198,15 @@ from epistrel.core.tables import (
     character_versions,
     characters,
     engine_profiles,
+    genesis_deferred,
+    operations,
     scenario_catalog,
     scenario_versions,
     stories,
 )
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.core.tables.ownership import EntityType
+from epistrel.core.turns import OPENING_FINISH
 from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -246,19 +258,12 @@ OVERRIDE_PATHS: Final = frozenset({"cast.max_characters_at_start"})
 """What a creation may override: a path under the story settings defaults, or the
 starting-cast limit."""
 
-STORY_SETTING_KEYS: Final = (
-    "interaction_mode",
-    "player_authority",
-    "ambiguous_retcon_timing",
-    "backfill_conflict_policy",
-)
-"""``story_settings_defaults`` fields stored in the story's settings as given: what later
-milestones' capabilities read (inactive under Lite)."""
+INACTIVE_KEY: Final = "inactive"
+"""Where a story's settings keep the settings for capabilities it lacks (#122):
+``{name: {value, capability}}`` (``settings_map``)."""
 
 ENTRY_POINT: Final = "story_create"
 NARRATION_BEAT: Final = 1
-OPENING_FINISH: Final = "opening"
-"""``finish_reason`` of the opening narration's beat (authored, not generated)."""
 UNKNOWN_NAME: Final = "Unnamed"
 
 PERSONALITY_RULE: Final = "personality: character over scenario"
@@ -325,6 +330,8 @@ class Member:
     rating_id: str | None = None
     persona: catalog_personas.PersonaSnapshot | None = None
     principal: str | None = None
+    card: CharacterCard | None = None
+    """A catalog character's public card, of the version the story takes (#122)."""
     id: str = dataclass_field(default_factory=new_ulid)
 
     @property
@@ -349,6 +356,8 @@ class Plan:
     rating_id: str
     scenario_rating_id: str | None
     settings: dict[str, Any]
+    materialized: Materialized
+    """What the creation defers and leaves inactive (#122)."""
 
 
 def _entry(
@@ -381,48 +390,10 @@ def _text(value: Any) -> str | None:
 
 
 def render_definition(name: str, content: Mapping[str, Any]) -> str:
-    """The plain text a catalog character's snapshot gives the story's ``characters.definition``
-    (what Lite turns read until #122 renders from the snapshot): its private definition only,
-    never its public card or labels (the public description is never seeded)."""
-    found = content.get("definition")
-    definition: Mapping[str, Any] = found if isinstance(found, Mapping) else {}
-    lines: list[str] = [f"{name}."]
-    for label, key in (
-        ("Appearance", "appearance"),
-        ("Personality", "personality"),
-        ("Values and motivations", "values_motivations"),
-        ("Background", "background_flavor"),
-    ):
-        value = _text(definition.get(key))
-        if value is not None:
-            lines.append(f"{label}: {value}")
-    likes = definition.get("likes_dislikes")
-    if isinstance(likes, Mapping):
-        for label, key in (("Likes", "likes"), ("Dislikes", "dislikes")):
-            items = [i for i in likes.get(key) or () if isinstance(i, str)]
-            if items:
-                lines.append(f"{label}: {', '.join(items)}")
-    axes = definition.get("dispositions")
-    if isinstance(axes, Mapping):
-        parts: list[str] = []
-        for axis, value in axes.items():
-            if isinstance(value, Mapping) and isinstance(value.get("setting"), str):
-                nuance = _text(value.get("nuance"))
-                part = f"{axis.replace('_', ' ')}: {value['setting']}"
-                parts.append(f"{part} ({nuance})" if nuance else part)
-        if parts:
-            lines.append("Dispositions: " + "; ".join(parts))
-    style = definition.get("interaction_style")
-    if isinstance(style, Mapping):
-        for label, key in (("Speech", "speech_style"), ("Vocabulary", "vocabulary")):
-            value = _text(style.get(key))
-            if value is not None:
-                lines.append(f"{label}: {value}")
-        for label, key in (("Mannerisms", "mannerisms"), ("Sample lines", "sample_dialogue")):
-            items = [i for i in style.get(key) or () if isinstance(i, str)]
-            if items:
-                lines.append(f"{label}: " + " | ".join(items))
-    return "\n".join(lines)
+    """The author notes a catalog character's snapshot gives the story's ``characters.definition``
+    (what every Lite turn reads): its private definition as prose (``render.definition_notes``,
+    #122), never its public card, labels, true age, visual identity or deflection style."""
+    return render.definition_notes(name, content)
 
 
 def _definition_field(content: Mapping[str, Any], key: str) -> str | None:
@@ -499,6 +470,7 @@ async def _catalog_rows(
                 character_catalog.c.id,
                 character_catalog.c.status,
                 character_catalog.c.current_version,
+                character_catalog.c.listing_status,
             ).where(character_catalog.c.id.in_(ids))
         )
     }
@@ -908,6 +880,7 @@ async def _catalog_members(
             catalog_id=choice.catalog_id,
             version=version,
             rating_id=rating_id,
+            card=await version_card(conn, entry, version),
         )
     return found
 
@@ -924,17 +897,20 @@ def _unique_names(members: Sequence[Member]) -> None:
         seen[key] = member
 
 
-def _settings(draft: ScenarioDraft, members: Sequence[Member]) -> dict[str, Any]:
+def _settings(
+    draft: ScenarioDraft, members: Sequence[Member], materialized: Materialized
+) -> dict[str, Any]:
+    """The story's settings: the defaults Lite uses applied, every other one kept under
+    ``inactive`` with the capability it waits for (#122, ``settings_map``)."""
     defaults = draft.story_settings_defaults
     values: dict[str, Any] = {}
     if defaults.turn_concurrency is not None:
         values["turn_concurrency"] = defaults.turn_concurrency
     if defaults.audit_retention_days is not None:
         values["audit_retention_days"] = defaults.audit_retention_days
-    for key in STORY_SETTING_KEYS:
-        value = getattr(defaults, key)
-        if value is not None:
-            values[key] = value
+    inactive = materialized.settings()
+    if inactive:
+        values[INACTIVE_KEY] = inactive
     viewpoint: str | None = None
     by_role = {m.role.id: m for m in members}
     if (
@@ -1053,8 +1029,25 @@ async def plan(db: AsyncEngine, request: StoryFromScenario, *, ports: Ports | No
                 ),
             )
             entries.extend(report.errors)
-            entries.extend(report.warnings)
-            settings = _settings(draft, members)
+            entries.extend(
+                merge.name_warnings(report.warnings, {m.role.id: m.name for m in members})
+            )
+            materialized = materialize(
+                scenario_id,
+                version,
+                content,
+                draft,
+                [
+                    CastRole(
+                        role_id=m.role.id,
+                        character_id=m.id,
+                        is_player=m.is_player,
+                        persona=None if m.persona is None else m.persona.model_dump(mode="json"),
+                    )
+                    for m in members
+                ],
+            )
+            settings = _settings(draft, members, materialized)
     found = Plan(
         request=request,
         scenario_id=scenario_id,
@@ -1067,6 +1060,7 @@ async def plan(db: AsyncEngine, request: StoryFromScenario, *, ports: Ports | No
         rating_id=rating_id,
         scenario_rating_id=scenario_rating,
         settings=settings,
+        materialized=materialized,
     )
     refuse(found)
     return found
@@ -1089,16 +1083,48 @@ def _filled_slot_count(
 # -- the report and the refusal --------------------------------------------------------------
 
 
-def creation_report_of(found: Plan, *, full: bool | None = None) -> CreationReport:
-    """The creation report: every entry under ``full`` (a refusal's always), counts under
-    ``card``."""
+def _card(member: Member) -> CastCard:
+    if member.card is not None and member.catalog_id is not None and member.version is not None:
+        return CatalogCastCard(
+            **member.card.model_dump(),
+            character_id=member.id,
+            role_id=member.role.id,
+            source=CastSource(catalog_id=member.catalog_id, version=int(member.version.version)),
+        )
+    return MemberCastCard(
+        kind="player" if member.is_player else "ad_hoc",
+        character_id=member.id,
+        role_id=member.role.id,
+        name=member.name,
+    )
+
+
+def creation_report_of(
+    found: Plan, *, full: bool | None = None, story_id: str | None = None
+) -> CreationReport:
+    """The creation report (FR-SCN-10): the story, its cast as cards, the counts (errors, merge
+    conflicts, warnings, deferred and inactive by class and capability) and the unavailable
+    checks; under ``full`` (a refusal's always) every entry, deferred item and inactive
+    setting."""
     report = ValidationReport.of(found.entries, found.unavailable)
     show = found.request.projection == "full" if full is None else full
+    deferred = list(found.materialized.deferred)
+    inactive = list(found.materialized.inactive)
     return CreationReport(
-        counts=CreationCounts(errors=len(report.errors), warnings=len(report.warnings)),
+        story_id=story_id,
+        cast=[_card(m) for m in found.members],
+        counts=CreationCounts(
+            errors=len(report.errors),
+            conflicts=merge.LITE_CONFLICTS,
+            warnings=len(report.warnings),
+            deferred=ClassCapabilityCounts.of(deferred),
+            inactive=ClassCapabilityCounts.of(inactive),
+        ),
         unavailable=list(report.unavailable),
         errors=list(report.errors) if show else None,
         warnings=list(report.warnings) if show else None,
+        deferred=deferred if show else None,
+        inactive=inactive if show else None,
     )
 
 
@@ -1383,6 +1409,27 @@ async def insert_cast(conn: AsyncConnection, story_id: str, found: Plan) -> None
         await conn.execute(insert(character_snapshots), snapshots)
 
 
+async def insert_deferred(
+    conn: AsyncConnection, story_id: str, operation_id: str, found: Plan
+) -> None:
+    """One ``genesis_deferred`` row per item the story cannot use yet (#122)."""
+    rows = [
+        {
+            "id": new_ulid(),
+            "story_id": story_id,
+            "operation_id": operation_id,
+            "field_ref": item.field_ref,
+            "field_class": item.field_class.value,
+            "location": item.location.model_dump(mode="json"),
+            "capability_needed": item.capability_needed,
+            "payload": item.payload,
+        }
+        for item in found.materialized.deferred
+    ]
+    if rows:
+        await conn.execute(insert(genesis_deferred), rows)
+
+
 async def genesis(
     db: AsyncEngine,
     found: Plan,
@@ -1464,7 +1511,19 @@ async def genesis(
                         ),
                     ),
                 )
+            await insert_deferred(conn, story_id, op.operation_id, found)
             await op.write_in(conn)
+            await conn.execute(
+                update(operations)
+                .where(operations.c.operation_id == op.operation_id)
+                .values(
+                    turn_report={
+                        "creation_report": creation_report_of(
+                            found, full=True, story_id=story_id
+                        ).model_dump(mode="json")
+                    }
+                )
+            )
             revision = 1
             if narration:
                 turn = Operation(
@@ -1518,9 +1577,8 @@ async def create_from_scenario(
     profile_id, version, document_, warnings = await choose_profile(db, found)
     found.entries.extend(warnings)
     impact = await impact_of(db, found, profile_id, version, document_, facts)
-    report = creation_report_of(found)
     if impact.warnings and not request.ignore_warnings:
-        return CreationHeld(impact=impact, report=report)
+        return CreationHeld(impact=impact, report=creation_report_of(found))
     created_id, revision, rating = await genesis(
         db,
         found,
@@ -1529,6 +1587,7 @@ async def create_from_scenario(
         write_policies=write_policies,
         story_id=story_id,
     )
+    report = creation_report_of(found, story_id=created_id)
     return CreatedStory(
         story_id=created_id,
         characters=tuple(
@@ -1556,6 +1615,7 @@ __all__ = [
     "genesis",
     "genesis_texts",
     "insert_cast",
+    "insert_deferred",
     "plan",
     "refuse",
     "render_definition",

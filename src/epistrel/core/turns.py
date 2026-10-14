@@ -5,7 +5,9 @@ the prompt is built from are exactly the ones the read set hashed (FR-CONC-2,4).
 the Engine's own record (FR-RESP-2): the story rating's current prompt guidance (FR-RATE-4),
 the custom instructions and pinned memories (the ``story_texts`` projection, #60), the
 rolling-summary segments a prompt includes (``core.summary.included_segments``, #72, each as a
-``Turns a-b:`` line), the cast's definitions, and every **verbatim** transcript row: each active
+``Turns a-b:`` line), the cast's definitions, a scenario story's scenario text and director
+notes (rendered from its snapshot on every turn, ``core.genesis.render``; #122), and every
+**verbatim** transcript row: each active
 row after the last turn the included segments cover, and never fewer than the latest
 ``window_messages`` rows (FR-LITE-1,2). The background summary job keeps the uncovered rows
 near ``window_messages``; a row is never dropped from the prompt before a segment covers it.
@@ -44,6 +46,7 @@ from epistrel.core.enums import Authority, Membership, OperationKind, OperationS
 from epistrel.core.errors import InvalidRequest, NothingToRegenerate, StoryNotFound
 from epistrel.core.events import Operation
 from epistrel.core.events.types import GuardrailOutputRejected, MessageRendered, PlayerInput
+from epistrel.core.genesis.render import read_rendered
 from epistrel.core.profiles.effective import StoryProfile, effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.ratings import story_guidance
@@ -64,6 +67,8 @@ from epistrel.core.tables import (
 
 INPUT_BEAT = 1
 REPLY_BEAT = 2
+OPENING_FINISH = "opening"
+"""``finish_reason`` of a scenario story's opening narration (#119's ``genesis.create``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +113,9 @@ class WindowRow:
     text: str
     say: str | None
     do: str | None
+    opening: bool = False
+    """The opening narration of a story created from a scenario (turn 1, stored verbatim,
+    ``finish_reason: opening``; #119): the prompt labels it ``Narrator:`` (#122)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +134,11 @@ class TurnInputs:
     window_messages: int
     default_safe_fallback: str = DEFAULT_SAFE_FALLBACK
     """The deployment's safe fallback line in force when the turn started (#68)."""
+    scenario_text: str = ""
+    """A story created from a scenario: its ``## Scenario`` block, rendered from the snapshot
+    on every turn (``core.genesis.render``; #122). ``""`` for a blank story."""
+    director_notes: str = ""
+    """A story created from a scenario: its ``## Author notes (not facts)`` block (#122)."""
 
 
 def _cast_query(story_id: str) -> Any:
@@ -245,6 +258,7 @@ async def transcript_rows(
                 text=r.text,
                 say=payload.get("say") if player else None,
                 do=payload.get("do") if player else None,
+                opening=not player and payload.get("finish_reason") == OPENING_FINISH,
             )
         )
     return tuple(rows)
@@ -319,6 +333,7 @@ async def read_turn_inputs(
         else ()
     )
     cast = _cast((await conn.execute(_cast_query(story_id))).all())
+    scenario = await read_rendered(conn, story_id)
     return TurnInputs(
         guidance=guidance.prompt_guidance or "",
         instructions=texts.custom_instructions if texts is not None else "",
@@ -336,6 +351,8 @@ async def read_turn_inputs(
         generation=generation_of(settings),
         window_messages=window_messages,
         default_safe_fallback=guardrails.default_safe_fallback,
+        scenario_text=scenario.scenario_text,
+        director_notes=scenario.director_notes,
     )
 
 

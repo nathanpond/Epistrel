@@ -41,6 +41,8 @@ class ContentCategory(StrEnum):
     CHECKED_TEXT = "checked_text"
     CATALOG_TEXT = "catalog_text"
     RATING_DESCRIPTION = "rating_description"
+    SCENARIO_TEXT = "scenario_text"
+    DIRECTOR_NOTES = "director_notes"
 
 
 class StructuredOutput(StrEnum):
@@ -118,7 +120,14 @@ class GenerationInputs(InputSchema):
 
     rating_guidance: Annotated[str, C.RATING_GUIDANCE] = ""
     custom_instructions: Annotated[str, C.CUSTOM_INSTRUCTIONS] = ""
+    scenario_text: Annotated[str, C.SCENARIO_TEXT] = ""
+    """A story created from a scenario (#122): its ``## Scenario`` block, rendered from the
+    story's snapshot (the world, the seeds as text, the relationships, the starting places, the
+    player's persona), closed by the instruction that scenario facts prevail."""
     character_definitions: list[CharacterDefinition] = Field(default_factory=list)
+    director_notes: Annotated[str, C.DIRECTOR_NOTES] = ""
+    """A story created from a scenario (#122): its ``## Author notes (not facts)`` block (the
+    plot hooks, objectives, guidance, planned reveals, milestones and endings)."""
     pinned_memories: Annotated[list[str], C.PINNED_MEMORY] = Field(default_factory=list)
     summary_segments: Annotated[list[str], C.ROLLING_SUMMARY] = Field(default_factory=list)
     recent_messages: list[TranscriptLine] = Field(default_factory=list)

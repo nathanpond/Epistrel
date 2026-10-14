@@ -77,6 +77,8 @@ ORDER: dict[str, str] = {
     "characters": f"{_STORY_RANK}, t.ordinal",
     # A story's genesis snapshots (#119): one row per catalog character, in cast order.
     "character_snapshots": f"{_STORY_RANK}, {_CAST_RANK}",
+    # What a story's genesis deferred (#122): one row per item, by its field.
+    "genesis_deferred": f"{_STORY_RANK}, t.field_ref",
     "operations": (
         f"{_STORY_RANK}, t.started_at, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST,"
         " t.kind"

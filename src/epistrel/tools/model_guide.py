@@ -55,6 +55,14 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "sits (a rating suggestion; author-facing, FR-RATE-8)."
     ),
     ContentCategory.RATING_DESCRIPTION: "A content rating's name and content-policy description.",
+    ContentCategory.SCENARIO_TEXT: (
+        "A scenario story's world, seeded facts, relationships, starting places and player "
+        "persona, as text (#122)."
+    ),
+    ContentCategory.DIRECTOR_NOTES: (
+        "A scenario story's director notes: plot hooks, objectives, guidance, planned reveals, "
+        "milestones and endings (#122)."
+    ),
 }
 
 STRUCTURED_LABELS: Mapping[StructuredOutput, str] = {

@@ -12853,6 +12853,10 @@
             "title": "Job Id",
             "type": "string"
           },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
           "operation_id": {
             "anyOf": [
               {
@@ -12863,6 +12867,18 @@
               }
             ],
             "title": "Operation Id"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
           },
           "progress": {
             "$ref": "#/components/schemas/CheckProgressBody"
@@ -12907,6 +12923,7 @@
           }
         },
         "required": [
+          "kind",
           "job_id",
           "story_id",
           "status",
@@ -12920,7 +12937,8 @@
           "rating_version",
           "config_revision",
           "violations",
-          "error"
+          "error",
+          "outcome"
         ],
         "title": "RatingCheckBody",
         "type": "object"
@@ -20248,6 +20266,10 @@
               }
             ]
           },
+          "requires_check": {
+            "title": "Requires Check",
+            "type": "boolean"
+          },
           "tip_turn": {
             "title": "Tip Turn",
             "type": "integer"
@@ -20272,7 +20294,8 @@
           "tip_turn",
           "turn_count",
           "membership_tx",
-          "parent"
+          "parent",
+          "requires_check"
         ],
         "title": "VariantChainBody",
         "type": "object"
@@ -36474,7 +36497,7 @@
     },
     "/stories/{story_id}/content-rating/checks/{job_id}": {
       "get": {
-        "description": "A tightening's check (FR-RATE-7): `status` (`checking` while the story is paused, then `applied`, `refused` or `failed`), `progress` (`{done, total}` records), when and by whom it was started, and the `target` (`{rating_id, version}`). Applied: the `rating_version` and the story's `config_revision` it left. Refused: `violations`, each `{position, policy_id, policy_name}` in position order (turns by `{turn, variant, beat}` first, then `{kind, id}` for seeds, pinned memories, the custom instructions and images), never the text; the rating did not change. Failed: `error {class, message}` (a model that could not answer on the last attempt); the rating did not change. A check is kept `rating_check_retention_days` (30) after it ends. A job that is not one of the story's checks is 404.",
+        "description": "A tightening's check (FR-RATE-7): `status` (`checking` while the story is paused, then `applied`, `refused` or `failed`), `progress` (`{done, total}` records), when and by whom it was started, and the `target` (`{rating_id, version}`). Applied: the `rating_version` and the story's `config_revision` it left. Refused: `violations`, each `{position, policy_id, policy_name}` in position order (turns by `{turn, variant, beat}` first, then `{kind, id}` for seeds, pinned memories, the custom instructions and images), never the text; the rating did not change. Failed: `error {class, message}` (a model that could not answer on the last attempt); the rating did not change. A check is kept `rating_check_retention_days` (30) after it ends. A job that is not one of the story's checks is 404. A `reactivation` check (FR-RATE-7: an untruncate, swap or fork of a dormant continuation whose turns lack a policy now in effect) checks those turns against the story's current rating (`target`) and ends `reactivated` (they passed and the edit was applied: `outcome {operation, result}` is what it answered), `refused` (with the `violations`; nothing changed) or `failed` (the edit could no longer be made, or a model could not answer).",
         "operationId": "get_rating_check",
         "parameters": [
           {
@@ -37138,7 +37161,7 @@
     },
     "/stories/{story_id}/fork": {
       "post": {
-        "description": "Copy the story's corrected history through `at_turn` (default the head) into a new story: every active record positioned at or before it, the cast, settings, rating, engine profile (a deleted one too: the fork runs on its last version), pinned memories, custom instructions and story policies, under new ids. The copy reads one snapshot of the source, so it equals the source at exactly one timeline revision (`forked_from.revision`), and the two stories are independent from then on. `variant_chain` (`{turn, variant}` or `\"turn:variant\"`) copies another chain, e.g. a dormant continuation, as the fork's active history; `at_turn` must then lie on it (422 otherwise), and a chain that names no variant or continues in more than one way is 409 `unknown_chain`. `at_turn` above the head is 422. An archived story can be forked; the fork is active. Answers 201 with `Location`. The source records a `fork` event and keeps its revision. `Idempotency-Key` (per deployment, like story creation) and `X-Epistrel-Expected-Revision` (the source's) are optional.",
+        "description": "Copy the story's corrected history through `at_turn` (default the head) into a new story: every active record positioned at or before it, the cast, settings, rating, engine profile (a deleted one too: the fork runs on its last version), pinned memories, custom instructions and story policies, under new ids. The copy reads one snapshot of the source, so it equals the source at exactly one timeline revision (`forked_from.revision`), and the two stories are independent from then on. `variant_chain` (`{turn, variant}` or `\"turn:variant\"`) copies another chain, e.g. a dormant continuation, as the fork's active history; `at_turn` must then lie on it (422 otherwise), and a chain that names no variant or continues in more than one way is 409 `unknown_chain`. `at_turn` above the head is 422. An archived story can be forked; the fork is active. Answers 201 with `Location`. The source records a `fork` event and keeps its revision. `Idempotency-Key` (per deployment, like story creation) and `X-Epistrel-Expected-Revision` (the source's) are optional.\n\nReactivation check (FR-RATE-7): when `variant_chain` names a continuation that is not active and one of the turns it would copy was last checked against a guardrail set that lacks a policy now in effect, the source is paused and those turns are checked first: 202 `{job_id, operation_id, status: checking}` with `Location` (the check). If they all pass, the check creates the fork and ends `reactivated` with this answer as its `outcome`; otherwise it ends `refused` with each violation and no fork is created.",
         "operationId": "fork",
         "parameters": [
           {
@@ -37233,6 +37256,32 @@
                 "description": "`/stories/{id}` of the new story.",
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatingCheckStartedBody"
+                }
+              }
+            },
+            "description": "The dormant continuation's turns are checked first; the source is paused, and the check creates the fork if they pass (read it at the `Location`).",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
                 }
               }
             }
@@ -40189,7 +40238,7 @@
     },
     "/stories/{story_id}/swap": {
       "post": {
-        "description": "Make the chain `to_variant_chain` (`{turn, variant}` of its first turn, as `GET /stories/{id}/variants` lists it) active: everything active after the turn where it parts from the active chain becomes `dormant`, and the chain's turns (and the work positioned on them) become `active`. Nothing is deleted; swapping back restores the exact prior state. Swapping to the active chain writes nothing (200, `operation_id` null). A chain that names no variant, or continues in more than one way, is 409 `unknown_chain` (with the `candidates` to choose from). Turns waiting in the story's queue fail with `timeline_changed`.\n\nA control action: it bumps the story's timeline revision, and a turn generating while it commits is abandoned with 409 `timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "description": "Make the chain `to_variant_chain` (`{turn, variant}` of its first turn, as `GET /stories/{id}/variants` lists it) active: everything active after the turn where it parts from the active chain becomes `dormant`, and the chain's turns (and the work positioned on them) become `active`. Nothing is deleted; swapping back restores the exact prior state. Swapping to the active chain writes nothing (200, `operation_id` null). A chain that names no variant, or continues in more than one way, is 409 `unknown_chain` (with the `candidates` to choose from). Turns waiting in the story's queue fail with `timeline_changed`.\n\nA control action: it bumps the story's timeline revision, and a turn generating while it commits is abandoned with 409 `timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.\n\nReactivation check (FR-RATE-7): when a turn this would make active was last checked against a guardrail set that lacks a policy now in effect (a stricter rating since it was set aside, a policy added since, or no recorded set at all), the story is paused and those turns are checked first: 202 `{job_id, operation_id, status: checking}` with `Location` (the check, `GET /stories/{id}/content-rating/checks/{job_id}`). If every turn passes, the check applies this edit and ends `reactivated` with its answer as `outcome`; otherwise it ends `refused` with each violation by position and policy, and nothing changes. Turns already checked against the current set are not checked again, and when there are none to check the edit answers synchronously as described. `X-Epistrel-Expected-Revision` is checked when the request is made.",
         "operationId": "swap",
         "parameters": [
           {
@@ -40258,6 +40307,32 @@
               }
             },
             "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatingCheckStartedBody"
+                }
+              }
+            },
+            "description": "The turns it would make active are checked first; the story is paused (read the check at the `Location`).",
             "headers": {
               "Idempotency-Key": {
                 "description": "The request's key, echoed (generated if absent).",
@@ -40761,7 +40836,7 @@
     },
     "/stories/{story_id}/untruncate": {
       "post": {
-        "description": "Reactivate exactly what the most recent truncation discarded (undo is last in, first out). Naming `truncate_operation_id` is optional; a truncation that is not the most recent one, or none at all, is 409 `nothing_to_undo` (listing `options: [\"swap\", \"fork\"]` and the `dormant_chains` when there are any). When newer turns were written after the truncation, undoing it is a swap: the original continuation becomes active and the newer one dormant, nothing is lost, and the answer says `swapped: true` with the `active_chain`.\n\nA control action: it bumps the story's timeline revision, and a turn generating while it commits is abandoned with 409 `timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "description": "Reactivate exactly what the most recent truncation discarded (undo is last in, first out). Naming `truncate_operation_id` is optional; a truncation that is not the most recent one, or none at all, is 409 `nothing_to_undo` (listing `options: [\"swap\", \"fork\"]` and the `dormant_chains` when there are any). When newer turns were written after the truncation, undoing it is a swap: the original continuation becomes active and the newer one dormant, nothing is lost, and the answer says `swapped: true` with the `active_chain`.\n\nA control action: it bumps the story's timeline revision, and a turn generating while it commits is abandoned with 409 `timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.\n\nReactivation check (FR-RATE-7): when a turn this would make active was last checked against a guardrail set that lacks a policy now in effect (a stricter rating since it was set aside, a policy added since, or no recorded set at all), the story is paused and those turns are checked first: 202 `{job_id, operation_id, status: checking}` with `Location` (the check, `GET /stories/{id}/content-rating/checks/{job_id}`). If every turn passes, the check applies this edit and ends `reactivated` with its answer as `outcome`; otherwise it ends `refused` with each violation by position and policy, and nothing changes. Turns already checked against the current set are not checked again, and when there are none to check the edit answers synchronously as described. `X-Epistrel-Expected-Revision` is checked when the request is made.",
         "operationId": "untruncate",
         "parameters": [
           {
@@ -40837,6 +40912,32 @@
               }
             },
             "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatingCheckStartedBody"
+                }
+              }
+            },
+            "description": "The turns it would make active are checked first; the story is paused (read the check at the `Location`).",
             "headers": {
               "Idempotency-Key": {
                 "description": "The request's key, echoed (generated if absent).",
@@ -40962,7 +41063,7 @@
     },
     "/stories/{story_id}/variants": {
       "get": {
-        "description": "Every chain of the story's variant tree: each turn variant continues the active variant of the turn before it, and a chain is a run of variants continuing one another with the same membership, named by the `{turn, variant}` of its first turn. The `active` chains make up the story; `dormant` ones are continuations a swap can bring back (a regenerated reply, a rewound tail newer turns were written over); `discarded` ones are rewound tails `untruncate` can reactivate.",
+        "description": "Every chain of the story's variant tree: each turn variant continues the active variant of the turn before it, and a chain is a run of variants continuing one another with the same membership, named by the `{turn, variant}` of its first turn. The `active` chains make up the story; `dormant` ones are continuations a swap can bring back (a regenerated reply, a rewound tail newer turns were written over); `discarded` ones are rewound tails `untruncate` can reactivate. A chain that is not active says `requires_check: true` when making it active would first check its turns against the story's current guardrails (FR-RATE-7).",
         "operationId": "variants",
         "parameters": [
           {

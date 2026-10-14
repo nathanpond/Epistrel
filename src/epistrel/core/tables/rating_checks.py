@@ -11,7 +11,8 @@ are kept for ``rating_check_retention_days`` (30). So this row holds its own ter
 - ``target_rating_id`` / ``target_rating_version``: the rating asked for and the version id the
   check evaluates (an edit of that rating mid-check restarts the check on the new version).
 - ``status``: ``checking`` while it runs (the story is paused), then ``applied``, ``refused``
-  or ``failed`` (the story has resumed).
+  or ``failed`` (the story has resumed); a reactivation check ends ``reactivated``,
+  ``refused`` or ``failed``.
 - ``progress``: ``{done, total}`` records checked.
 - ``violations``: ``[{position, policy_id, policy_name, code?}]`` in position order. A position
   names a turn (``{turn, variant, beat}``) or a record outside the turns (``{kind, id}``);
@@ -21,6 +22,13 @@ are kept for ``rating_check_retention_days`` (30). So this row holds its own ter
 - ``started_by``, ``started_at``, ``finished_at``; ``operation_id``: the request's committed
   ``control`` operation (the pause); ``checked_revision``: the story's timeline revision the
   evaluation read (a write that moved it since restarts the evaluation).
+
+- ``kind`` (#120): ``tightening`` (the above) or ``reactivation``: a check of the turns an
+  untruncate, swap or fork of a dormant continuation would make active, against the story's
+  current guardrails (``core.ratings.reactivation``). Its ``from_rating_id`` and
+  ``target_rating_id`` are both the story's rating, ``target_rating_version`` its version when
+  the check started, and ``result`` once ``reactivated`` is ``{operation, result}``: the edit
+  and what it answered.
 
 ``uq_rating_check_jobs_story_checking`` allows one running check per story.
 
@@ -57,8 +65,19 @@ class RatingCheckStatus(StrEnum):
     APPLIED = "applied"
     REFUSED = "refused"
     FAILED = "failed"
+    REACTIVATED = "reactivated"
+    """A reactivation check (#120) passed and the edit it held back was applied."""
 
 
+class RatingCheckKind(StrEnum):
+    TIGHTENING = "tightening"
+    """A rating change's history check (#118)."""
+    REACTIVATION = "reactivation"
+    """The turns an untruncate, swap or fork of a dormant continuation would make active
+    (#120)."""
+
+
+KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in RatingCheckKind) + ")"
 STATUS_CHECK = "status IN (" + ", ".join(f"'{s.value}'" for s in RatingCheckStatus) + ")"
 CHECKING_WHERE = "status = 'checking'"
 
@@ -80,7 +99,9 @@ rating_check_jobs = Table(
     Column("finished_at", TIMESTAMP(timezone=True), nullable=True),
     Column("operation_id", ulid_type(), nullable=True),
     Column("checked_revision", BigInteger, nullable=True),
+    Column("kind", Text, nullable=False, server_default=text("'tightening'")),
     CheckConstraint(STATUS_CHECK, name="status"),
+    CheckConstraint(KIND_CHECK, name="kind"),
 )
 
 Index("ix_rating_check_jobs_story_id", rating_check_jobs.c.story_id)
@@ -114,6 +135,7 @@ guardrail_check_results = Table(
 
 __all__ = [
     "VERDICTS",
+    "RatingCheckKind",
     "RatingCheckStatus",
     "guardrail_check_results",
     "rating_check_jobs",

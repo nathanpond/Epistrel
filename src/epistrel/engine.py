@@ -18,7 +18,7 @@ from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequenc
 from datetime import datetime
 from typing import Any, Protocol, overload
 
-from pydantic import SecretStr, TypeAdapter, ValidationError
+from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
 from sqlalchemy import func, select, true
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -87,6 +87,7 @@ from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, Tw
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
 from epistrel.core.ratings import change as rating_change
+from epistrel.core.ratings import reactivation
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
@@ -183,9 +184,19 @@ CODECS: dict[str, ResultCodec[Any]] = {
         revision_field=_CONFIG,
     ),
     "truncate": ResultCodec.of(timeline.Truncation),
-    "untruncate": ResultCodec.of(timeline.Untruncation),
-    "swap": ResultCodec.of(timeline.Swapped),
-    "fork": ResultCodec.of(fork.Forked, status=201),
+    # The edits that make turns active again (#120): 202 when their turns are checked first.
+    "untruncate": ResultCodec.of(
+        timeline.Untruncation | rating_change.RatingCheckStarted,
+        status=lambda result: 202 if isinstance(result, rating_change.RatingCheckStarted) else 200,
+    ),
+    "swap": ResultCodec.of(
+        timeline.Swapped | rating_change.RatingCheckStarted,
+        status=lambda result: 202 if isinstance(result, rating_change.RatingCheckStarted) else 200,
+    ),
+    "fork": ResultCodec.of(
+        fork.Forked | rating_change.RatingCheckStarted,
+        status=lambda result: 202 if isinstance(result, rating_change.RatingCheckStarted) else 201,
+    ),
     "regenerate": ResultCodec.of(RegenerateResult),
     "archive_story": ResultCodec.of(stories.StatusChange),
     "unarchive_story": ResultCodec.of(stories.StatusChange),
@@ -1477,18 +1488,59 @@ class Engine:
             material={"story_id": story_id, "body": _body(request)},
         )
 
+    async def _reactivation_guard(
+        self,
+        ctx: RequestContext,
+        edit: reactivation.Edit,
+        story_id: str,
+        request: BaseModel,
+        principal: str,
+    ) -> rating_change.RatingCheckStarted | None:
+        """#120's guard at the outer entry of an edit that makes turns active again: ``None``
+        when none of them lacks a policy now in effect (the edit runs), otherwise the started
+        check (the story is paused, and the job applies the edit if every turn passes)."""
+
+        async def start_job(conn: Any, then: reactivation.Continuation) -> str:
+            return await job_queue.enqueue(
+                conn,
+                rating_check_job.RATING_CHECK_KIND,
+                rating_check_job.RatingCheckPayload(then=then),
+            )
+
+        return await reactivation.guard(
+            self.db,
+            reactivation.Continuation(
+                operation=edit,
+                story_id=story_id,
+                args=request.model_dump(mode="json", exclude_none=True),
+                principal=principal,
+            ),
+            start_job=start_job,
+            expected_revision=ctx.expected_revision,
+        )
+
     async def untruncate(
         self,
         ctx: RequestContext,
         story_id: str,
         request: timeline.UntruncateRequest | None = None,
-    ) -> timeline.Untruncation:
+    ) -> timeline.Untruncation | rating_change.RatingCheckStarted:
         """Revert the most recent truncation (FR-STORE-18, LIFO): 409 ``nothing_to_undo``
-        without one; a swap (#66) when newer turns were written over it."""
+        without one; a swap (#66) when newer turns were written over it. When a turn it would
+        reactivate lacks a guardrail policy now in effect (FR-RATE-7, #120), the story pauses
+        and those turns are checked first (``RatingCheckStarted``, REST 202: read it with
+        ``get_rating_check``); the undo is applied only if they all pass."""
         principal = self.require_principal(ctx)
         request = request or timeline.UntruncateRequest()
 
-        async def run(ctx: RequestContext) -> timeline.Untruncation:
+        async def run(
+            ctx: RequestContext,
+        ) -> timeline.Untruncation | rating_change.RatingCheckStarted:
+            started = await self._reactivation_guard(
+                ctx, reactivation.Edit.UNTRUNCATE, story_id, request, principal
+            )
+            if started is not None:
+                return started
             return await timeline.untruncate(
                 self.db,
                 story_id,
@@ -1508,13 +1560,21 @@ class Engine:
 
     async def swap(
         self, ctx: RequestContext, story_id: str, request: variants.SwapRequest
-    ) -> timeline.Swapped:
+    ) -> timeline.Swapped | rating_change.RatingCheckStarted:
         """Make the chain ``request.to_variant_chain`` active and the current continuation
         dormant (FR-STORE-18,28; #66): membership only, reversible by swapping back. Swapping to
-        the active chain writes nothing; 409 ``unknown_chain`` for a chain that is not one."""
+        the active chain writes nothing; 409 ``unknown_chain`` for a chain that is not one.
+        When a turn it would activate lacks a guardrail policy now in effect (FR-RATE-7, #120),
+        those turns are checked first (``RatingCheckStarted``, REST 202), as for
+        ``untruncate``."""
         principal = self.require_principal(ctx)
 
-        async def run(ctx: RequestContext) -> timeline.Swapped:
+        async def run(ctx: RequestContext) -> timeline.Swapped | rating_change.RatingCheckStarted:
+            started = await self._reactivation_guard(
+                ctx, reactivation.Edit.SWAP, story_id, request, principal
+            )
+            if started is not None:
+                return started
             return await timeline.swap(
                 self.db,
                 story_id,
@@ -1534,13 +1594,22 @@ class Engine:
 
     async def fork(
         self, ctx: RequestContext, story_id: str, request: fork.ForkRequest
-    ) -> fork.Forked:
+    ) -> fork.Forked | rating_change.RatingCheckStarted:
         """Copy the story's corrected history through ``request.at_turn`` (along
         ``request.variant_chain``) into a new, independent story (FR-STORE-15, FR-CONC-10; #67).
-        Keyed per deployment, like story creation; the expected revision is the source's."""
+        Keyed per deployment, like story creation; the expected revision is the source's. A
+        dormant continuation promoted into the fork whose turns lack a guardrail policy now in
+        effect (FR-RATE-7, #120) is checked first (``RatingCheckStarted``, REST 202; the source
+        is paused): the fork is created by the check, as its ``outcome``, only if they pass."""
         principal = self.require_principal(ctx)
 
-        async def run(ctx: RequestContext) -> fork.Forked:
+        async def run(ctx: RequestContext) -> fork.Forked | rating_change.RatingCheckStarted:
+            if request.variant_chain is not None:
+                started = await self._reactivation_guard(
+                    ctx, reactivation.Edit.FORK, story_id, request, principal
+                )
+                if started is not None:
+                    return started
             return await fork.fork(
                 self.db,
                 story_id,
@@ -1554,8 +1623,10 @@ class Engine:
         )
 
     async def variants(self, ctx: RequestContext, story_id: str) -> list[variants.Chain]:
-        """The story's variant chains (``GET /stories/{id}/variants``, #66)."""
-        return await variants.list_chains(self.db, story_id)
+        """The story's variant chains (``GET /stories/{id}/variants``, #66); a chain that is
+        not active says whether making it active would first check its turns
+        (``requires_check``, #120)."""
+        return await reactivation.chains(self.db, story_id)
 
     async def regenerate(
         self,

@@ -28,6 +28,15 @@ retention sweep). A checkpoint that finds the check gone (the story was deleted)
 the run.
 It records no operation of its own: the change, the pause and the resume are recorded by
 ``core.ratings.change``.
+
+A **reactivation** check (#120, ``rating_check_jobs.kind = reactivation``) runs the same job
+kind with the held-back edit in its payload (``then``): after step 2 it plans the edit again and
+reads only the turns it would make active whose recorded guardrail set lacks a policy now in
+effect (``reactivation.read_pending``), evaluates them against the current policies, and
+``reactivation.settle`` stamps those that passed and refuses the edit if any failed (or runs
+again when the timeline or the policies moved). When all passed, it applies the edit itself
+while the story is still paused (``reactivation.apply``) and ends the check ``reactivated``
+with the edit's answer; an edit that is no longer possible ends it ``failed``.
 """
 
 from __future__ import annotations
@@ -42,12 +51,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import clock
 from epistrel.core.config_changes import read_guardrail_settings, read_settings
+from epistrel.core.errors import EpistrelError
 from epistrel.core.policies.model import ModelAssistedRule, Policy, Target
-from epistrel.core.ratings import change
+from epistrel.core.ratings import change, reactivation
 from epistrel.core.ratings.stamp import live_policies
 from epistrel.core.settings_schema import DEFAULT_TURN_DEADLINE_S
 from epistrel.core.tables import content_ratings
-from epistrel.core.tables.rating_checks import RatingCheckStatus
+from epistrel.core.tables.rating_checks import RatingCheckKind, RatingCheckStatus
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.jobs import queue
 from epistrel.orchestrator.jobs.types import ClaimedJob, JobContext, JobHandler, JobOutput
@@ -90,9 +100,12 @@ def bound() -> ModelAccessLayer | None:
 
 
 class RatingCheckPayload(BaseModel):
-    """The job carries nothing: its id is its ``rating_check_jobs`` row's."""
+    """A tightening's job carries nothing: its id is its ``rating_check_jobs`` row's. A
+    reactivation check's (#120) carries ``then``: the edit it holds back."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    then: reactivation.Continuation | None = None
 
 
 class _Fence:
@@ -146,6 +159,8 @@ async def _work(ctx: JobContext, guard: _Fence) -> JobOutput:
         waited = (clock.now() - check.started_at).total_seconds()
         if waited < WAIT_LIMIT_S:
             return JobOutput(requeue_in=WAIT_S, result={"waiting": "turn_in_flight"})
+    if check.kind == RatingCheckKind.REACTIVATION.value:
+        return await _reactivate(ctx, guard, check)
     async with ctx.snapshot() as conn:
         history = await change.read_history(conn, check.story_id)
         version = str(
@@ -214,6 +229,70 @@ async def _work(ctx: JobContext, guard: _Fence) -> JobOutput:
     summary: dict[str, Any] = {"status": outcome.value, "violations": len(result.violations)}
     summary["checked"], summary["cached"] = result.checked, result.cached
     return JobOutput(result=summary)
+
+
+async def _reactivate(ctx: JobContext, guard: _Fence, check: change.Check) -> JobOutput:
+    """A reactivation check (#120): evaluate the unchecked turns the held-back edit would make
+    active against the current policies, then apply the edit or refuse it
+    (``core.ratings.reactivation``)."""
+    payload = ctx.payload
+    assert isinstance(payload, RatingCheckPayload)  # noqa: S101 - the kind's payload model
+    then = payload.then
+    if then is None:
+        await reactivation.end(ctx.db, check, error=MissingContinuation("no edit to apply"))
+        return JobOutput(result={"status": RatingCheckStatus.FAILED.value})
+    try:
+        async with ctx.snapshot() as conn:
+            pending = await reactivation.read_pending(conn, then)
+            cast = await read_cast(conn, check.story_id)
+            threshold = (await read_settings(conn)).minor_age_threshold
+            cache = await change.load_cache(conn, check.story_id, [r.key for r in pending.records])
+    except EpistrelError as exc:
+        # The edit is no longer possible as asked (e.g. a turn in flight committed over it).
+        await reactivation.end(ctx.db, check, error=exc)
+        return JobOutput(result={"status": RatingCheckStatus.FAILED.value})
+    context = GuardContext(policies=pending.policies, cast=cast, threshold=threshold)
+    active = context.active
+    models = bound()
+    if models is None and any(isinstance(p.rule, ModelAssistedRule) for p in active):
+        raise NoModels("no Model Access Layer is bound for the rating_check job")
+    settings = await read_guardrail_settings(ctx.db)
+    buffered: dict[change.CacheKey, str] = {}
+
+    async def progress(done: int, total: int, verdicts: Mapping[change.CacheKey, str]) -> None:
+        buffered.update(verdicts)
+        if done % CHECKPOINT == 0 or done == total:
+            saved = await change.save_progress(ctx.db, check, done, total, buffered, guard)
+            buffered.clear()
+            if not saved:
+                raise _Gone
+
+    result = await change.evaluate_history(
+        active,
+        pending.records,
+        model_check=None if models is None else ModelPolicyCheck(models, context),
+        calls_per_record=settings.rating_check_model_calls_per_record,
+        cache=cache,
+        progress=progress,
+    )
+    verdict = await reactivation.settle(ctx.db, check, pending, result, guard=guard)
+    if verdict is reactivation.Verdict.RESTART:
+        return JobOutput(requeue_in=0.0, result={"status": verdict.value})
+    if verdict is not reactivation.Verdict.PASSED:
+        return JobOutput(result={"status": verdict.value, "violations": len(result.violations)})
+    try:
+        outcome = await reactivation.apply(ctx.db, check, then)
+    except EpistrelError as exc:
+        await reactivation.end(ctx.db, check, error=exc)
+        return JobOutput(result={"status": RatingCheckStatus.FAILED.value})
+    await reactivation.end(ctx.db, check, outcome=outcome)
+    return JobOutput(
+        result={"status": RatingCheckStatus.REACTIVATED.value, "checked": result.checked}
+    )
+
+
+class MissingContinuation(RuntimeError):
+    """A reactivation check's job carries no edit (it cannot happen through the Engine)."""
 
 
 async def _run(ctx: JobContext) -> JobOutput:

@@ -103,7 +103,7 @@ from epistrel.core.tables import (
     story_texts,
 )
 from epistrel.core.tables.audit_log import AuditKind
-from epistrel.core.tables.rating_checks import RatingCheckStatus
+from epistrel.core.tables.rating_checks import RatingCheckKind, RatingCheckStatus
 
 RATING_SETTING = "content_rating_id"
 """The story-scope ``config_changes`` setting of a rating change; old and new are rating ids."""
@@ -532,8 +532,11 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-async def story_image_records(conn: AsyncConnection, story_id: str) -> list[HistoryRecord]:
-    """The story's active images, each by its prompt (FR-IMG-5). M3 has no story images
+async def story_image_records(
+    conn: AsyncConnection, story_id: str, operation_ids: Sequence[str] | None = None
+) -> list[HistoryRecord]:
+    """The story's active images (or, given ``operation_ids``, those turns' images, for a
+    reactivation check, #120), each by its prompt (FR-IMG-5). M3 has no story images
     (``story_images`` arrives in M8, #272), so there are none."""
     return []
 
@@ -573,6 +576,49 @@ def scenario_records(snapshot: Mapping[str, Any] | None) -> list[HistoryRecord]:
     ]
 
 
+async def event_records(
+    conn: AsyncConnection, story_id: str, where: ColumnElement[bool]
+) -> list[HistoryRecord]:
+    """The player inputs (``text_input``) and rendered beats (``text_output``) of the story's
+    operations matching ``where``, in ``seq`` order: a turn's at ``{turn, variant, beat}``, a
+    position-less one's (genesis) at ``{kind: seed, id: <event id>}``."""
+    found = await conn.execute(
+        select(
+            events.c.id,
+            events.c.type,
+            events.c.payload,
+            events.c.character_id,
+            events.c.beat,
+            events.c.narrative_turn,
+            events.c.turn_variant,
+        )
+        .join(operations, operations.c.operation_id == events.c.operation_id)
+        .where(
+            events.c.story_id == story_id,
+            events.c.type.in_([PLAYER_INPUT, MESSAGE_RENDERED]),
+            where,
+        )
+        .order_by(events.c.seq)
+    )
+    records: list[HistoryRecord] = []
+    for row in found:
+        payload = dict(row.payload or {})
+        text = str(payload.get("text") or "")
+        people = [row.character_id] if row.character_id else []
+        people += [str(c) for c in payload.get("render_character_ids") or () if c not in people]
+        if row.narrative_turn is None:
+            position: dict[str, Any] = {"kind": "seed", "id": row.id}
+        else:
+            position = {
+                "turn": int(row.narrative_turn),
+                "variant": int(row.turn_variant or 1),
+                "beat": int(row.beat) if row.beat is not None else None,
+            }
+        target = Target.TEXT_INPUT if row.type == PLAYER_INPUT else Target.TEXT_OUTPUT
+        records.append(HistoryRecord(row.id, position, target, text, tuple(people)))
+    return records
+
+
 @dataclass(frozen=True, slots=True)
 class History:
     """A story's active history as read for a check, and the timeline revision it was read
@@ -599,41 +645,12 @@ async def read_history(conn: AsyncConnection, story_id: str) -> History:
     if story is None:
         raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
     revision = story.timeline_revision
-    found = await conn.execute(
-        select(
-            events.c.id,
-            events.c.type,
-            events.c.payload,
-            events.c.character_id,
-            events.c.beat,
-            events.c.narrative_turn,
-            events.c.turn_variant,
-        )
-        .join(operations, operations.c.operation_id == events.c.operation_id)
-        .where(
-            events.c.story_id == story_id,
-            events.c.type.in_([PLAYER_INPUT, MESSAGE_RENDERED]),
-            operations.c.status == OperationStatus.COMMITTED.value,
-            operations.c.membership == Membership.ACTIVE.value,
-        )
-        .order_by(events.c.seq)
+    records = await event_records(
+        conn,
+        story_id,
+        (operations.c.status == OperationStatus.COMMITTED.value)
+        & (operations.c.membership == Membership.ACTIVE.value),
     )
-    records: list[HistoryRecord] = []
-    for row in found:
-        payload = dict(row.payload or {})
-        text = str(payload.get("text") or "")
-        people = [row.character_id] if row.character_id else []
-        people += [str(c) for c in payload.get("render_character_ids") or () if c not in people]
-        if row.narrative_turn is None:
-            position: dict[str, Any] = {"kind": "seed", "id": row.id}
-        else:
-            position = {
-                "turn": int(row.narrative_turn),
-                "variant": int(row.turn_variant or 1),
-                "beat": int(row.beat) if row.beat is not None else None,
-            }
-        target = Target.TEXT_INPUT if row.type == PLAYER_INPUT else Target.TEXT_OUTPUT
-        records.append(HistoryRecord(row.id, position, target, text, tuple(people)))
     records.extend(scenario_records(story.scenario_snapshot))
     texts = (
         await conn.execute(
@@ -687,6 +704,7 @@ class Check:
     finished_at: datetime | None
     operation_id: str | None
     checked_revision: int | None
+    kind: str = RatingCheckKind.TIGHTENING.value
 
 
 def _check(row: Any) -> Check:
@@ -706,6 +724,7 @@ def _check(row: Any) -> Check:
         finished_at=row.finished_at,
         operation_id=row.operation_id,
         checked_revision=int(row.checked_revision) if row.checked_revision is not None else None,
+        kind=row.kind,
     )
 
 
@@ -1064,8 +1083,10 @@ async def reconcile(conn: AsyncConnection, where: ColumnElement[bool]) -> int:
 @dataclass(frozen=True, slots=True)
 class RatingCheckView:
     """A rating check's state (``GET /stories/{id}/content-rating/checks/{job_id}``): its
-    status (``checking``, ``applied``, ``refused``, ``failed``), progress, who started it and
-    when, the target; once applied the rating version and the story's ``config_revision``;
+    ``kind`` (``tightening``, or ``reactivation``, #120), status (``checking``, ``applied``,
+    ``reactivated``, ``refused``, ``failed``), progress, who started it and when, the target;
+    once applied the rating version and the story's ``config_revision``; once reactivated the
+    ``outcome`` (``{operation, result}``: the edit the check held back and what it answered);
     once refused every violation by position and policy; once failed the error's class."""
 
     job_id: str
@@ -1082,6 +1103,8 @@ class RatingCheckView:
     config_revision: int | None = None
     violations: tuple[dict[str, Any], ...] = ()
     error: dict[str, Any] | None = None
+    kind: str = RatingCheckKind.TIGHTENING.value
+    outcome: dict[str, Any] | None = None
 
 
 async def get_check(db: AsyncEngine, story_id: str, job_id: str) -> RatingCheckView:
@@ -1101,6 +1124,7 @@ async def get_check(db: AsyncEngine, story_id: str, job_id: str) -> RatingCheckV
             {"story_id": story_id, "job_id": job_id},
         )
     result = check.result or {}
+    reactivation = check.kind == RatingCheckKind.REACTIVATION.value
     return RatingCheckView(
         job_id=check.id,
         story_id=check.story_id,
@@ -1115,10 +1139,12 @@ async def get_check(db: AsyncEngine, story_id: str, job_id: str) -> RatingCheckV
         target={"rating_id": check.target_rating_id, "version": check.target_rating_version},
         from_rating_id=check.from_rating_id,
         operation_id=check.operation_id,
-        rating_version=result.get("rating_version"),
-        config_revision=result.get("config_revision"),
+        rating_version=None if reactivation else result.get("rating_version"),
+        config_revision=None if reactivation else result.get("config_revision"),
         violations=tuple(check.violations),
         error=check.error,
+        kind=check.kind,
+        outcome=dict(result) if reactivation and check.result is not None else None,
     )
 
 
@@ -1166,6 +1192,7 @@ __all__ = [
     "change_rating",
     "classify",
     "evaluate_history",
+    "event_records",
     "fail",
     "finish",
     "get_check",

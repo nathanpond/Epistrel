@@ -30,7 +30,7 @@ from epistrel.config import Settings
 from epistrel.core.db import make_engine
 from epistrel.core.enums import OperationKind
 from epistrel.core.errors import BudgetBelowSafetyMinimum, GuardrailViolation
-from epistrel.core.fork import ForkRequest
+from epistrel.core.fork import Forked, ForkRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import story_guidance
 from epistrel.core.settings_schema import StorySettings
@@ -708,6 +708,7 @@ async def test_i_18__summary(stub_settings: Settings, engine: AsyncEngine) -> No
         # A fork copies the segments through its turn and queues its own job for 3 and 4.
         await turn("line 6")
         forked = await lib.fork(AUTHOR, story, ForkRequest(at_turn=6))
+        assert isinstance(forked, Forked)
         copy = forked.story_id
         assert _shape(await segment_rows(engine, copy)) == _shape(found)
         assert {r.segment_id for r in await segment_rows(engine, copy)}.isdisjoint(

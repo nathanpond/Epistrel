@@ -134,7 +134,7 @@ from epistrel.core.db import make_engine
 from epistrel.core.deployment import SettingsPatch
 from epistrel.core.errors import EpistrelError
 from epistrel.core.feedback import FeedbackRequest
-from epistrel.core.fork import ForkRequest
+from epistrel.core.fork import Forked, ForkRequest
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
@@ -151,7 +151,7 @@ from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
 from epistrel.core.stories import AdHocCharacter, StorySpec
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
 from epistrel.core.tables.ownership import EntityType
-from epistrel.core.timeline import TruncateRequest, UntruncateRequest
+from epistrel.core.timeline import Swapped, TruncateRequest, UntruncateRequest, Untruncation
 from epistrel.core.variants import ChainRef, SwapRequest
 from epistrel.engine import Engine, operations
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
@@ -1708,7 +1708,9 @@ async def _variants(engine: Engine, story_id: str) -> dict[str, Any]:
 
 async def _swap(engine: Engine, story_id: str, turn: int, *, variant: int = 1) -> dict[str, Any]:
     request = SwapRequest.model_validate({"to_variant_chain": {"turn": turn, "variant": variant}})
-    return dump(SwappedBody.of(await engine.swap(CTX, story_id, request)))
+    done = await engine.swap(CTX, story_id, request)
+    assert isinstance(done, Swapped)
+    return dump(SwappedBody.of(done))
 
 
 async def _truncate(engine: Engine, story_id: str, to_turn: int) -> dict[str, Any]:
@@ -1717,12 +1719,16 @@ async def _truncate(engine: Engine, story_id: str, to_turn: int) -> dict[str, An
 
 
 async def _untruncate(engine: Engine, story_id: str) -> dict[str, Any]:
-    return dump(UntruncatedBody.of(await engine.untruncate(CTX, story_id, UntruncateRequest())))
+    done = await engine.untruncate(CTX, story_id, UntruncateRequest())
+    assert isinstance(done, Untruncation)
+    return dump(UntruncatedBody.of(done))
 
 
 async def _fork(engine: Engine, story_id: str) -> dict[str, Any]:
     request = ForkRequest(at_turn=1, name="Parity fork")
-    return dump(ForkedBody.of(await engine.fork(CTX, story_id, request)))
+    done = await engine.fork(CTX, story_id, request)
+    assert isinstance(done, Forked)
+    return dump(ForkedBody.of(done))
 
 
 async def _status(call: Awaitable[Any]) -> dict[str, Any]:

@@ -105,6 +105,9 @@ class CheckViolationBody(BaseModel):
 class RatingCheckBody(BaseModel):
     """A rating check: see ``GET /stories/{id}/content-rating/checks/{job_id}``."""
 
+    kind: str
+    """``tightening`` (a rating change's check) or ``reactivation`` (the turns an untruncate,
+    swap or fork of a dormant continuation would make active)."""
     job_id: str
     story_id: str
     status: str
@@ -119,10 +122,14 @@ class RatingCheckBody(BaseModel):
     config_revision: int | None
     violations: list[CheckViolationBody]
     error: dict[str, Any] | None
+    outcome: dict[str, Any] | None
+    """A reactivation check that ended ``reactivated``: ``{operation, result}``, the edit it
+    applied (``untruncate``, ``swap`` or ``fork``) and what it answered."""
 
     @classmethod
     def of(cls, view: RatingCheckView) -> RatingCheckBody:
         return cls(
+            kind=view.kind,
             job_id=view.job_id,
             story_id=view.story_id,
             status=view.status,
@@ -137,6 +144,7 @@ class RatingCheckBody(BaseModel):
             config_revision=view.config_revision,
             violations=[CheckViolationBody(**v) for v in view.violations],
             error=view.error,
+            outcome=view.outcome,
         )
 
 
@@ -175,7 +183,12 @@ CHECK_DESCRIPTION = (
     "never the text; the rating did not change. Failed: `error {class, message}` (a model that "
     "could not answer on the last attempt); the rating did not change. A check is kept "
     "`rating_check_retention_days` (30) after it ends. A job that is not one of the story's "
-    "checks is 404."
+    "checks is 404. A `reactivation` check (FR-RATE-7: an untruncate, swap or fork of a dormant "
+    "continuation whose turns lack a policy now in effect) checks those turns against the "
+    "story's current rating (`target`) and ends `reactivated` (they passed and the edit was "
+    "applied: `outcome {operation, result}` is what it answered), `refused` (with the "
+    "`violations`; nothing changed) or `failed` (the edit could no longer be made, or a model "
+    "could not answer)."
 )
 
 

@@ -14,6 +14,8 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
+from epistrel.core.ratings import change as rating_change
+from epistrel.core.ratings import reactivation
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID, MATURE_ID, TEEN_ID
 from epistrel.engine import RATING_CHECK_HOOK, _end_rating_checks
 from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
@@ -25,10 +27,12 @@ from epistrel.orchestrator.jobs.worker import (
     register_recovery_hook,
     unregister_recovery_hook,
 )
+from epistrel.orchestrator.policies.schemas import PolicyFields
 from tests import genesis_support as g
 from tests.catalog_support import dress_companion
 from tests.rating_change_support import (
     AUTHOR,
+    OPERATOR,
     Scratch,
     change_rating,
     check,
@@ -905,3 +909,370 @@ async def test_i_22__creation(pg_url: str) -> None:
         stub.script("generation", ["Linda smiles."])
         await played(c, other["story_id"], body(others["player"]))
         assert COMPANION_SECRET not in everything_sent(stub)
+
+
+# -- reactivation re-checks (#120) -----------------------------------------------------------
+
+
+class _EvaluationSpy:
+    """Wraps ``change.evaluate_history``: each call's policy ids and record positions."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.calls: list[tuple[set[str], list[dict[str, Any]]]] = []
+        original = rating_change.evaluate_history
+
+        async def spy(target: Any, records: Any, **kwargs: Any) -> Any:
+            self.calls.append(({p.id for p in target}, [dict(r.position) for r in records]))
+            return await original(target, records, **kwargs)
+
+        monkeypatch.setattr(rating_change, "evaluate_history", spy)
+
+    def turns(self, index: int = -1) -> list[tuple[int, int]]:
+        """The ``(turn, variant)`` pairs the call at ``index`` evaluated."""
+        return sorted({(p["turn"], p["variant"]) for p in self.calls[index][1] if "turn" in p})
+
+
+async def _edit(s: Scratch, story_id: str, path: str, payload: Any = None) -> Any:
+    return await s.client.post(f"/stories/{story_id}/{path}", json=payload, headers=WRITE)
+
+
+async def _truncated(s: Scratch, story_id: str, to_turn: int) -> None:
+    response = await _edit(s, story_id, "truncate", {"to_turn": to_turn})
+    assert response.status_code == 200, response.text
+
+
+async def _set_aside(s: Scratch, rating_id: str, *replies: str, keep: int = 1) -> tuple[str, str]:
+    """A story at ``rating_id`` with one turn per reply, truncated to ``keep``; its id and the
+    player's character id."""
+    story_id, ids = await _played_story(s, rating_id, *replies)
+    await _truncated(s, story_id, keep)
+    return story_id, ids[PLAYER]
+
+
+async def _tightened(s: Scratch, story_id: str, rating_id: str = TEEN_ID) -> None:
+    """Tighten the story's rating and run its check, which must apply (a clean active
+    history)."""
+    started = await change_rating(s.client, story_id, rating_id)
+    assert started.status_code == 202, started.text
+    await run_jobs(s.db)
+    assert (await check(s.client, story_id, started.json()["job_id"]))["status"] == "applied"
+
+
+async def _held(response: Any, story_id: str) -> str:
+    """The job id of an edit held back for its reactivation check (202, ``Location``)."""
+    assert response.status_code == 202, response.text
+    found = response.json()
+    assert found["status"] == "checking"
+    assert response.headers["Location"] == (
+        f"/stories/{story_id}/content-rating/checks/{found['job_id']}"
+    )
+    return str(found["job_id"])
+
+
+async def _ended(s: Scratch, story_id: str, job_id: str) -> dict[str, Any]:
+    paused = await story(s.client, story_id)
+    assert paused["status"] == "paused"
+    assert paused["pause"]["cause"] == "reactivation_check"
+    await run_jobs(s.db)
+    found = await check(s.client, story_id, job_id)
+    assert found["kind"] == "reactivation"
+    assert (await story(s.client, story_id))["status"] == "active"
+    return found
+
+
+async def _memberships(s: Scratch, story_id: str) -> list[tuple[int, int, str]]:
+    found = await rows(
+        s.db,
+        "SELECT narrative_turn, turn_variant, membership FROM operations "
+        "WHERE story_id = :s AND kind = 'turn' AND status = 'committed' "
+        "ORDER BY narrative_turn, turn_variant",
+        s=story_id,
+    )
+    return [(int(r[0]), int(r[1]), str(r[2])) for r in found]
+
+
+async def _stamp(s: Scratch, story_id: str, turn: int, variant: int = 1) -> Any:
+    return await scalar(
+        s.db,
+        "SELECT checked_guardrails FROM operations WHERE story_id = :s AND kind = 'turn' "
+        "AND narrative_turn = :t AND turn_variant = :v",
+        s=story_id,
+        t=turn,
+        v=variant,
+    )
+
+
+async def _forget_checks(s: Scratch, story_id: str) -> None:
+    """Clear the recorded guardrail set of the story's set-aside turns, as a turn that entered
+    the story inactive from outside the Engine (M7) has none: the rule must cover it by
+    construction, since a ``NULL`` stamp lacks every policy."""
+    async with s.db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE operations SET checked_guardrails = NULL WHERE story_id = :s "
+                "AND kind = 'turn' AND membership <> 'active'"
+            ),
+            {"s": story_id},
+        )
+
+
+async def _count(s: Scratch, table: str) -> int:
+    return int(await scalar(s.db, f'SELECT count(*) FROM "{table}"'))  # noqa: S608
+
+
+async def _no_guard(*_: Any, **__: Any) -> None:
+    """A test-only stand-in for ``reactivation.guard`` (no production switch exists)."""
+    return None
+
+
+@pytest.mark.part("M3", "FR-RATE-7")
+async def test_i_22__reactivation(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a tightening Explicit -> Teen that applied over a clean active history,
+    untruncating a set-aside explicit turn is refused with its violation, swapping back to a
+    chain holding one is refused, and promoting that dormant chain into a fork is refused (no
+    fork is created); each one paused the story and answered 202 with the check. A turn that
+    passed in a refused attempt is stamped and not checked again in the next. After a new
+    global policy is added, untruncating a turn played before it checks it against that
+    policy first, and the job applies the undo. A set-aside turn with no recorded guardrail
+    set is checked too.
+
+    Complements asserted: with the guard replaced by a no-op, the same untruncate, swap and
+    fork succeed; a turn already checked against the current set is untruncated synchronously
+    with no check, no job and no guardrail call; refusals change no membership and create no
+    story."""
+    async with rating_db(pg_url) as s:
+        dragons = await guard_rating(s)
+        spy = _EvaluationSpy(monkeypatch)
+        clean, explicit, wind = "A cat purrs by the fire.", "A dragon lands on the roof.", "Wind."
+
+        # The same set-aside explicit turn, without the guard first: the edits would succeed.
+        unguarded, _ = await _set_aside(s, EXPLICIT_ID, clean, explicit)
+        await _tightened(s, unguarded)
+        guard = reactivation.guard
+        monkeypatch.setattr(reactivation, "guard", _no_guard)
+        undone = await _edit(s, unguarded, "untruncate")
+        assert undone.status_code == 200, undone.text
+        assert (await _memberships(s, unguarded))[-1] == (2, 1, "active")
+        bystander, player = await _set_aside(s, EXPLICIT_ID, clean, explicit)
+        s.lib.models.stub.script("generation", [wind])
+        await played(s.client, bystander, body(player, "Again?"))
+        await _tightened(s, bystander)
+        chain = {"to_variant_chain": {"turn": 2, "variant": 1}}
+        stories_before = await _count(s, "stories")
+        forked = await _edit(s, bystander, "fork", {"variant_chain": {"turn": 2, "variant": 1}})
+        assert forked.status_code == 201, forked.text
+        assert await _count(s, "stories") == stories_before + 1
+        swapped = await _edit(s, bystander, "swap", chain)
+        assert swapped.status_code == 200, swapped.text
+        monkeypatch.setattr(reactivation, "guard", guard)
+
+        # Untruncate a set-aside explicit turn after the tightening: refused.
+        story_a, _ = await _set_aside(s, EXPLICIT_ID, clean, explicit)
+        await _tightened(s, story_a)
+        before = await _memberships(s, story_a)
+        job = await _held(await _edit(s, story_a, "untruncate"), story_a)
+        refused = await _ended(s, story_a, job)
+        assert refused["status"] == "refused"
+        assert refused["violations"] == [
+            {
+                "position": {"turn": 2, "variant": 1, "beat": 2},
+                "policy_id": dragons.id,
+                "policy_name": dragons.name,
+                "code": None,
+            }
+        ]
+        assert "dragon lands" not in str(refused).lower()
+        assert await _memberships(s, story_a) == before
+        assert spy.turns() == [(2, 1)]
+
+        # Swap back to a chain holding it, and promote that chain into a fork: refused.
+        story_b, player = await _set_aside(s, EXPLICIT_ID, clean, explicit)
+        s.lib.models.stub.script("generation", [wind])
+        await played(s.client, story_b, body(player, "Again?"))
+        await _tightened(s, story_b)
+        before = await _memberships(s, story_b)
+        assert (2, 1, "dormant") in before
+        listed = await s.client.get(f"/stories/{story_b}/variants", headers=READ)
+        flags = {(c["turn"], c["variant"]): c["requires_check"] for c in listed.json()["items"]}
+        assert flags[(2, 1)] is True
+        assert flags[(2, 2)] is False
+        job = await _held(await _edit(s, story_b, "swap", chain), story_b)
+        assert (await _ended(s, story_b, job))["status"] == "refused"
+        assert await _memberships(s, story_b) == before
+        stories_before = await _count(s, "stories")
+        fork_body = {"variant_chain": {"turn": 2, "variant": 1}}
+        job = await _held(await _edit(s, story_b, "fork", fork_body), story_b)
+        promoted = await _ended(s, story_b, job)
+        assert promoted["status"] == "refused"
+        assert promoted["outcome"] is None
+        assert [v["position"]["turn"] for v in promoted["violations"]] == [2]
+        assert await _count(s, "stories") == stories_before
+        assert await _memberships(s, story_b) == before
+
+        # A turn that passed in a refused attempt is not checked again.
+        story_c, _ = await _set_aside(s, EXPLICIT_ID, clean, "A cat sleeps.", explicit)
+        await _tightened(s, story_c)
+        job = await _held(await _edit(s, story_c, "untruncate"), story_c)
+        assert (await _ended(s, story_c, job))["status"] == "refused"
+        assert spy.turns() == [(2, 1), (3, 1)]
+        assert dragons.id in (await _stamp(s, story_c, 2))["rating"]
+        assert dragons.id not in (await _stamp(s, story_c, 3))["rating"]
+        calls = len(spy.calls)
+        job = await _held(await _edit(s, story_c, "untruncate"), story_c)
+        assert (await _ended(s, story_c, job))["status"] == "refused"
+        assert len(spy.calls) == calls + 1
+        assert spy.turns() == [(3, 1)]
+
+        # Already checked against the current set: synchronous, no check at all.
+        story_f, _ = await _set_aside(s, TEEN_ID, clean, "A cat naps.")
+        calls, jobs, guardrail = len(spy.calls), await _count(s, "jobs"), _guardrail_calls(s)
+        undone = await _edit(s, story_f, "untruncate")
+        assert undone.status_code == 200, undone.text
+        assert undone.json()["restored_operations"] >= 1
+        assert (await _memberships(s, story_f))[-1] == (2, 1, "active")
+        assert (len(spy.calls), await _count(s, "jobs")) == (calls, jobs)
+        assert _guardrail_calls(s) == guardrail
+
+        # A new global policy: the set-aside turn is checked against it first, then undone.
+        story_d, _ = await _set_aside(s, TEEN_ID, clean, "A cat naps.")
+        goblins = await s.lib.policies_create(
+            OPERATOR,
+            PolicyFields.model_validate(
+                {
+                    "scope": "global",
+                    "name": "no-goblins",
+                    "rule": {"type": "wordlist", "words": ["goblin"]},
+                    "message": "No goblins.",
+                }
+            ),
+        )
+        job = await _held(await _edit(s, story_d, "untruncate"), story_d)
+        undone_d = await _ended(s, story_d, job)
+        assert undone_d["status"] == "reactivated", undone_d
+        assert goblins.policy.id in spy.calls[-1][0]
+        assert dragons.id in spy.calls[-1][0]
+        assert undone_d["outcome"]["operation"] == "untruncate"
+        assert undone_d["outcome"]["result"]["restored_operations"] >= 1
+        assert (await _memberships(s, story_d))[-1] == (2, 1, "active")
+        assert goblins.policy.id in (await _stamp(s, story_d, 2))["global"]
+
+        # A set-aside turn with no recorded guardrail set is checked too.
+        story_e, _ = await _set_aside(s, TEEN_ID, clean, "A cat naps.")
+        await _forget_checks(s, story_e)
+        assert await _stamp(s, story_e, 2) is None
+        job = await _held(await _edit(s, story_e, "untruncate"), story_e)
+        assert (await _ended(s, story_e, job))["status"] == "reactivated"
+        assert spy.turns() == [(2, 1)]
+        assert (await _memberships(s, story_e))[-1] == (2, 1, "active")
+
+
+async def test_a_reactivation_check_that_passes_applies_a_swap_and_a_fork(pg_url: str) -> None:
+    """A dormant chain whose turn lacks the current policy but passes it: the swap is held for
+    its check and then applied by the job (the chain is active, the check's ``outcome`` is the
+    swap's answer), and a fork promoting a passing dormant chain is created by the job (its
+    answer is the outcome; the fork holds the chain as its active history; the source keeps
+    its memberships)."""
+    async with rating_db(pg_url) as s:
+        await guard_rating(s)
+        stub = s.lib.models.stub
+        swap_story, player = await _set_aside(s, EXPLICIT_ID, "A cat purrs.", "A cat sleeps.")
+        stub.script("generation", ["The wind turns."])
+        await played(s.client, swap_story, body(player, "Again?"))
+        await _tightened(s, swap_story)
+        chain = {"to_variant_chain": {"turn": 2, "variant": 1}}
+        job = await _held(await _edit(s, swap_story, "swap", chain), swap_story)
+        swapped = await _ended(s, swap_story, job)
+        assert swapped["status"] == "reactivated", swapped
+        assert swapped["outcome"]["operation"] == "swap"
+        assert swapped["outcome"]["result"]["active_chain"] == {"turn": 2, "variant": 1}
+        assert (2, 1, "active") in await _memberships(s, swap_story)
+        assert (2, 2, "dormant") in await _memberships(s, swap_story)
+        # Swapping back: the chain made dormant was checked against the current set at commit.
+        back = await _edit(s, swap_story, "swap", {"to_variant_chain": {"turn": 2, "variant": 2}})
+        assert back.status_code == 200, back.text
+
+        fork_story, player = await _set_aside(s, EXPLICIT_ID, "A cat purrs.", "A cat sleeps.")
+        stub.script("generation", ["The wind turns."])
+        await played(s.client, fork_story, body(player, "Again?"))
+        await _tightened(s, fork_story)
+        source = await _memberships(s, fork_story)
+        stories_before = await _count(s, "stories")
+        fork_body = {"variant_chain": {"turn": 2, "variant": 1}, "name": "Checked fork"}
+        job = await _held(await _edit(s, fork_story, "fork", fork_body), fork_story)
+        forked = await _ended(s, fork_story, job)
+        assert forked["status"] == "reactivated", forked
+        assert forked["outcome"]["operation"] == "fork"
+        result = forked["outcome"]["result"]
+        assert result["name"] == "Checked fork"
+        assert result["forked_from"]["variant_chain"] == {"turn": 2, "variant": 1}
+        assert await _count(s, "stories") == stories_before + 1
+        assert await _memberships(s, result["story_id"]) == [(1, 1, "active"), (2, 1, "active")]
+        assert (await story(s.client, result["story_id"]))["status"] == "active"
+        assert await _memberships(s, fork_story) == source
+
+
+async def test_a_held_edit_pauses_the_story_and_replays_its_check(pg_url: str) -> None:
+    """While the check runs the story refuses truth-changing calls with ``story_paused``
+    (``cause: reactivation_check``); the same request under the same ``Idempotency-Key``
+    replays the 202 and its job; an ``X-Epistrel-Expected-Revision`` that does not match is
+    409 before any check starts; a fork along the active chain is never checked."""
+    async with rating_db(pg_url) as s:
+        await guard_rating(s)
+        story_id, player = await _set_aside(s, EXPLICIT_ID, "A cat purrs.", "A dragon lands.")
+        await _tightened(s, story_id)
+        current = (await story(s.client, story_id))["timeline_revision"]
+        stale = await s.client.post(
+            f"/stories/{story_id}/untruncate",
+            headers={**WRITE, "X-Epistrel-Expected-Revision": str(current - 1)},
+        )
+        assert stale.status_code == 409, stale.text
+        assert stale.json()["error"]["code"] == "revision_conflict"
+        jobs = await _count(s, "jobs")
+        assert (await story(s.client, story_id))["status"] == "active"
+
+        keyed = {**WRITE, "Idempotency-Key": "key-120-untruncate"}
+        first = await s.client.post(f"/stories/{story_id}/untruncate", headers=keyed)
+        job = await _held(first, story_id)
+        assert await _count(s, "jobs") == jobs + 1
+        again = await s.client.post(f"/stories/{story_id}/untruncate", headers=keyed)
+        assert again.status_code == 202, again.text
+        assert again.headers.get("Idempotent-Replay") == "true"
+        assert again.json()["job_id"] == job
+        assert await _count(s, "jobs") == jobs + 1
+
+        refused = await respond(s.client, story_id, body(player, "Hello?"))
+        assert refused.status_code == 409, refused.text
+        error = refused.json()["error"]
+        assert error["code"] == "story_paused"
+        assert error["details"]["cause"] == "reactivation_check"
+        assert error["details"]["job_id"] == job
+        second = await _edit(s, story_id, "untruncate")
+        assert second.status_code == 409, second.text
+        assert second.json()["error"]["code"] == "story_paused"
+        assert (await _ended(s, story_id, job))["status"] == "refused"
+
+        active_fork = await _edit(s, story_id, "fork", {"variant_chain": {"turn": 1, "variant": 1}})
+        assert active_fork.status_code == 201, active_fork.text
+
+
+async def test_an_edit_that_became_impossible_ends_the_check_failed(pg_url: str) -> None:
+    """When the held-back edit can no longer be made when the job plans it again (here the
+    set-aside turns were made active behind its back), the check ends ``failed`` with the
+    error's class and the story resumes."""
+    async with rating_db(pg_url) as s:
+        await guard_rating(s)
+        story_id, _ = await _set_aside(s, EXPLICIT_ID, "A cat purrs.", "A cat sleeps.")
+        await _tightened(s, story_id)
+        job = await _held(await _edit(s, story_id, "untruncate"), story_id)
+        async with s.db.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE operations SET membership = 'active' WHERE story_id = :s "
+                    "AND membership = 'discarded'"
+                ),
+                {"s": story_id},
+            )
+        failed = await _ended(s, story_id, job)
+        assert failed["status"] == "failed"
+        assert failed["error"]["class"] == "NothingToUndo"
+        assert failed["outcome"] is None

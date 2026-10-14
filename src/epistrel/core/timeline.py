@@ -468,6 +468,18 @@ async def _plan_untruncate(
     )
 
 
+async def untruncate_activates(
+    conn: AsyncConnection, story_id: str, named: str | None
+) -> list[str]:
+    """The committed operations undoing the most recent truncation would make active (a
+    reactivation's or a swap's), as ``untruncate`` would plan it now: 409 ``nothing_to_undo``
+    as it would answer (#120's guard reads this before the edit runs)."""
+    planned = await _plan_untruncate(conn, story_id, named)
+    if isinstance(planned, _UntruncateSwap):
+        return list(planned.swap.payload.activated_operation_ids)
+    return list(planned.payload.operation_ids)
+
+
 async def _tail_swap(
     conn: AsyncConnection, story_id: str, tree: Tree, truncation: _Undoable
 ) -> SwapPlan | None:
@@ -891,4 +903,5 @@ __all__ = [
     "truncate",
     "undo_state",
     "untruncate",
+    "untruncate_activates",
 ]

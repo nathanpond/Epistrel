@@ -81,13 +81,15 @@ from sqlalchemy import text
 
 from epistrel.api import create_app
 from epistrel.api.auth import EXEMPT_ROUTES
-from epistrel.api.openapi import TAG_NAMES, dumps
+from epistrel.api.openapi import DOCUMENTED_BODIES, TAG_NAMES, dumps
+from epistrel.api.routes.stories import StorySettingsPatch
 from epistrel.config import Settings
 from epistrel.core.catalog.characters import CharacterCreate, PublishRequest
 from epistrel.core.catalog.personas import PersonaCreate
 from epistrel.core.catalog.scenario_models import ScenarioCreate
 from epistrel.core.db import make_engine, make_sync_engine
 from epistrel.core.deployment import SettingsPatch
+from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
 from epistrel.core.offboarding import OffboardingQueued, OffboardingRequest
@@ -422,6 +424,16 @@ MULTIPART_MODELS: dict[str, Any] = {"upload_media": MediaUpload}
 part, which the document's ``MULTIPART_BODIES`` component describes."""
 
 
+DOCUMENTED_MODELS: dict[str, Any] = {
+    "StorySettingsPatch": StorySettingsPatch,
+    "StorySpec": StorySpec,
+    "StoryFromScenario": StoryFromScenario,
+}
+"""The model behind each component ``DOCUMENTED_BODIES`` names: a handler that takes a raw JSON
+object has no body type to validate an example against, so the component's own model does
+(``POST /stories`` is a blank story or one from a scenario, #119)."""
+
+
 def _body_routes(app: FastAPI) -> dict[str, Any]:
     """``operation_id → the handler's body type`` for every route that takes a body (for a
     multipart upload, the type of its ``metadata`` part)."""
@@ -497,6 +509,9 @@ def _body_problems(
     annotation = bodies.get(operation_id)
     # A body that is one of several components (``POST /stories``: a blank story or one from a
     # scenario, #119) holds each of them to the same rules.
+    # A raw-object handler (``DOCUMENTED_BODIES``) validates each example against the model of
+    # the component that documents it, so no documented body goes unchecked.
+    raw = operation_id in DOCUMENTED_BODIES
     for name in names:
         component = components[name]
         if component.get("additionalProperties") is not False:
@@ -504,12 +519,17 @@ def _body_problems(
         examples = component.get("examples") or []
         if not examples:
             problems.append(f"{operation_id}: {name} has no example")
+        model = DOCUMENTED_MODELS.get(name) if raw else annotation
+        if raw and model is None:
+            problems.append(f"{operation_id}: no model is known for {name}'s examples")
+            continue
         for example in examples:
-            if annotation is not None and not isinstance(annotation, type(dict[str, Any])):
-                try:
-                    TypeAdapter(annotation).validate_python(example)
-                except Exception as exc:
-                    problems.append(f"{operation_id}: example does not validate ({exc})")
+            if model is None:
+                continue
+            try:
+                TypeAdapter(model).validate_python(example)
+            except Exception as exc:
+                problems.append(f"{operation_id}: {name}'s example does not validate ({exc})")
     return problems
 
 
@@ -537,6 +557,26 @@ def test_c_01__schema(dummy_dsn: str) -> None:
     assert schema_problems(broken, app) == [
         "component StoryCreatedBody lacks a title or description"
     ]
+
+
+def test_raw_object_body_examples_are_validated(dummy_dsn: str) -> None:
+    """Every example of a body a raw-object handler takes (``DOCUMENTED_BODIES``) is validated
+    against the model of the component that documents it: an invalid example of either
+    ``POST /stories`` body is reported (#119), and every documented component has a model.
+
+    Complement asserted: the served document reports nothing."""
+    app = create_app(auth_settings(dummy_dsn, model_adapter="stub"))
+    served = app.openapi()
+    assert schema_problems(served, app) == []
+    for documented in DOCUMENTED_BODIES.values():
+        names = (documented,) if isinstance(documented, str) else documented
+        assert set(names) <= set(DOCUMENTED_MODELS), names
+    for name, field in (("StorySpec", "characters"), ("StoryFromScenario", "slots")):
+        invalid = json.loads(dumps(served))
+        _components(invalid)[name]["examples"][0][field] = "not a collection"
+        found = schema_problems(invalid, app)
+        assert len(found) == 1, found
+        assert found[0].startswith(f"create_story: {name}'s example does not validate"), found
 
 
 def _generated() -> list[Any]:

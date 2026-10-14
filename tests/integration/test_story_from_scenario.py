@@ -20,8 +20,12 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from tests import genesis_support as g
+from tests import scenario_support as scenarios
 from tests.auth_support import auth_settings
+from tests.catalog_support import character as catalog_character
+from tests.profile_support import PROFILES, profile_body
 from tests.respond_support import body as respond_body
 from tests.respond_support import played, respond_client
 from tests.story_support import create, story_body
@@ -29,6 +33,8 @@ from tests.story_support import create, story_body
 pytestmark = pytest.mark.integration
 
 ROLES = (g.role("mother"), g.role("player", kind="player"))
+DEFAULT_PROFILE = LITE_PRESET_ID
+"""The deployment's default engine profile (the seeded Lite preset)."""
 
 
 @pytest.fixture
@@ -144,12 +150,37 @@ async def test_request_shape_errors(client: httpx.AsyncClient, engine: AsyncEngi
         assert await g.counts(engine) == counted
 
 
-async def test_unpublished_scenario_is_refused(client: httpx.AsyncClient) -> None:
-    """A scenario with no published version starts no story (422 ``not_published``)."""
+async def test_unpublished_scenario_is_refused(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    """A scenario with no published version starts no story (422 ``not_published``), and
+    neither does a published one whose open role is filled with a catalog character that was
+    created but never published; each refusal writes nothing.
+
+    Complement asserted: the same request with a published character succeeds."""
     created = await client.post("/catalog/scenarios", json=g.scenario_body(), headers=g.WRITE)
     assert created.status_code == 201, created.text
+    counted = await g.counts(engine)
     status, code, _ = await g.refused(client, g.from_scenario(created.json()["id"]))
     assert (status, code) == (422, "not_published")
+    assert await g.counts(engine) == counted
+
+    draft = await client.post(
+        "/catalog/characters",
+        json=catalog_character("Nell Draft", definition={"true_age": 41}),
+        headers=scenarios.WRITE,
+    )
+    assert draft.status_code == 201, draft.text
+    scenario_id = await _scenario(client)
+    request = g.from_scenario(scenario_id, slots={"mother": g.catalog_slot(draft.json()["id"])})
+    counted = await g.counts(engine)
+    status, code, details = await g.refused(client, request)
+    assert (status, code) == (422, "not_published")
+    assert g.report_codes(details) == ["not_published"]
+    assert await g.counts(engine) == counted
+    mara = await g.catalog_character_id(client, "Mara Venn")
+    made = await g.create_from(client, {**request, "slots": {"mother": g.catalog_slot(mara)}})
+    assert made["applied"] is True
 
 
 async def test_several_errors_answer_the_first_by_precedence(
@@ -334,6 +365,27 @@ async def test_a_scenario_story_plays_a_turn(client: httpx.AsyncClient) -> None:
     assert turn["timeline_revision"] == 3
 
 
+async def test_the_recommended_profile_is_the_story_profile(client: httpx.AsyncClient) -> None:
+    """A scenario that recommends an assignable engine profile creates its story under that
+    profile when the request names none: the creation answer and the story read agree.
+
+    Complement asserted: a request naming the deployment default overrides the
+    recommendation."""
+    profile = await client.post(PROFILES, json=profile_body(), headers=g.WRITE)
+    assert profile.status_code == 201, profile.text
+    profile_id = profile.json()["id"]
+    assert profile_id != DEFAULT_PROFILE
+    mara = await g.catalog_character_id(client, "Mara Venn")
+    scenario_id = await _scenario(client, recommendation={"engine_profile_id": profile_id})
+    request = g.from_scenario(scenario_id, slots={"mother": g.catalog_slot(mara)})
+    made = await g.create_from(client, request)
+    assert made["engine_profile"]["id"] == profile_id
+    read = await client.get(f"/stories/{made['story_id']}", headers=g.READ)
+    assert read.json()["engine_profile"]["id"] == profile_id
+    chosen = await g.create_from(client, {**request, "engine_profile_id": DEFAULT_PROFILE})
+    assert chosen["engine_profile"]["id"] == DEFAULT_PROFILE
+
+
 async def test_an_unassignable_recommended_profile_falls_back(client: httpx.AsyncClient) -> None:
     """A scenario that recommends a profile that does not exist creates its story under the
     deployment default, with the warning ``profile_unavailable``; a request naming an unknown
@@ -343,7 +395,7 @@ async def test_an_unassignable_recommended_profile_falls_back(client: httpx.Asyn
     request = g.from_scenario(scenario_id, slots={"mother": g.catalog_slot(mara)})
     made = await g.create_from(client, {**request, "projection": "full"})
     assert [w["code"] for w in made["report"]["warnings"]] == ["profile_unavailable"]
-    assert made["engine_profile"]["id"] == "00000000000000000000PRF001"
+    assert made["engine_profile"]["id"] == DEFAULT_PROFILE
     status, code, details = await g.refused(
         client, {**request, "engine_profile_id": "00000000000000000000PRF999"}
     )

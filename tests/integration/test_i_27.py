@@ -33,9 +33,10 @@ async def test_i_27__atomic(settings: Settings, engine: AsyncEngine) -> None:
     """A story created from a scenario that fills every group: the creation commits as one
     genesis operation; the story's snapshot of the scenario holds every field of the published
     version, exactly; turn 1 is the opening narration (an authored narration beat, no
-    character); truncating to 0 leaves the genesis state, the cast and the snapshots, with
-    turn 1 discarded. The profile it would run under leaves a recommended capability unmet, so
-    the request without ``ignore_warnings`` creates nothing and answers the reports.
+    character, naming the characters of the roles the opening has present); truncating to 0
+    leaves the genesis state, the cast and the snapshots, with turn 1 discarded. The profile it
+    would run under leaves a recommended capability unmet, so the request without
+    ``ignore_warnings`` creates nothing and answers the reports.
 
     Complements asserted: the held request wrote no row; the confirmed one did."""
     async with rest(settings, engine) as client:
@@ -116,6 +117,9 @@ async def test_i_27__atomic(settings: Settings, engine: AsyncEngine) -> None:
             )
         ]
         assert (row.role, row.channel) == ("narration", "narration")
+        present = g.opening_cast(body, made)
+        assert len(present) == 2
+        assert await g.opening_present(engine, story_id) == present
 
         def genesis_state() -> str:
             return (

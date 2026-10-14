@@ -187,6 +187,28 @@ async def refused(client: httpx.AsyncClient, body: dict[str, Any]) -> tuple[int,
     return response.status_code, error["code"], error["details"]
 
 
+def opening_cast(body: dict[str, Any], made: dict[str, Any]) -> list[str]:
+    """The ids of the created characters whose roles the scenario ``body``'s opening names as
+    present, in cast order."""
+    present = set(body["starting_state"]["opening"]["roles_present"])
+    return [c["id"] for c in made["characters"] if c["role_id"] in present]
+
+
+async def opening_present(engine: AsyncEngine, story_id: str) -> list[str]:
+    """The character ids turn 1's opening narration records as present (its
+    ``message_rendered`` payload's ``present_character_ids``; absent means none)."""
+    async with engine.connect() as conn:
+        found = await conn.scalar(
+            text(
+                "SELECT e.payload->'present_character_ids' FROM events e "
+                "JOIN operations o ON o.operation_id = e.operation_id "
+                "WHERE e.story_id = :s AND o.narrative_turn = 1 AND e.type = 'message_rendered'"
+            ),
+            {"s": story_id},
+        )
+    return list(found or [])
+
+
 def report_codes(details: dict[str, Any]) -> list[str]:
     report = details["report"]
     return [e["code"] for e in report["errors"]]
@@ -205,6 +227,8 @@ __all__ = [
     "create_from",
     "from_scenario",
     "headers",
+    "opening_cast",
+    "opening_present",
     "player",
     "published_scenario",
     "refused",

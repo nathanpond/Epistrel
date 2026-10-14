@@ -382,8 +382,10 @@ async def test_u_26__creation(pg_url: str) -> None:
         made = await g.create_from(client, g.from_scenario(twenty, slots=_filling(19)))
         assert len(made["characters"]) == 20
         lowered = g.from_scenario(twenty, slots=_filling(16), max_characters_at_start=16)
+        counted = await g.counts(engine)
         status, code, _ = await g.refused(client, lowered)
         assert (status, code) == (422, "cast_limit_exceeded"), "17 slots over 16"
+        assert await g.counts(engine) == counted
         lowered["slots"] = _filling(15)
         assert len((await g.create_from(client, lowered))["characters"]) == 16
         wide_body = g.scenario_body(cast={"roles": _npcs(23), "max_characters_at_start": 24})
@@ -391,5 +393,7 @@ async def test_u_26__creation(pg_url: str) -> None:
         override = g.from_scenario(wide, slots=_filling(23), max_characters_at_start=24)
         assert len((await g.create_from(client, override))["characters"]) == 24
         await set_cast_limits(client, ceiling=20)
+        counted = await g.counts(engine)
         status, code, _ = await g.refused(client, override)
         assert (status, code) == (422, "cast_limit_exceeded"), "the ceiling caps the override"
+        assert await g.counts(engine) == counted

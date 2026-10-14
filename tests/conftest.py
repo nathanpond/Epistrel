@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.db import make_engine, make_sync_engine, normalize_url
-from tests.auth_support import ERASURE_LEDGER_DIR, auth_settings
+from tests.auth_support import ERASURE_LEDGER_DIR, auth_settings, note_session_database
 from tests.perf.census import CENSUS, installed
 
 pytest_plugins = ("pytester",)
@@ -141,6 +141,7 @@ def pg_url() -> Iterator[str]:
     if override:
         url = normalize_url(override)
         command.upgrade(alembic_config(url), "head")
+        note_session_database(url)
         yield url
         return
 
@@ -154,6 +155,7 @@ def pg_url() -> Iterator[str]:
     try:
         url = container.get_connection_url()
         command.upgrade(alembic_config(url), "head")
+        note_session_database(url)
         yield url
     finally:
         container.stop()

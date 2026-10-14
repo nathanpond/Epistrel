@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import inspect
+import secrets
 from typing import Any
 
 import pytest
@@ -39,16 +40,21 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core import fork as fork_module
+from epistrel.core.db import make_engine
 from epistrel.core.enums import OperationKind
 from epistrel.core.erasure import guard
+from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.erasure.erase import term_hashes
 from epistrel.core.erasure.index import SUBJECT_WRITERS, mentions
+from epistrel.core.erasure.ledger import LEDGER_FILE
 from epistrel.core.media.assets import DECLARED_FIELD
 from epistrel.orchestrator.jobs.queue import CommitOutcome
 from tests import erasure_support as e
 from tests import genesis_support as g
 from tests import media_support as media
 from tests import scenario_support as scenarios
+from tests.auth_support import ERASURE_LEDGER_DIR
+from tests.conformance.conftest import migrated_database
 from tests.event_support import rows, scalar
 from tests.model_support import config_key
 from tests.respond_support import body, respond, respond_client
@@ -452,6 +458,37 @@ async def test_a_fork_carries_the_story_ledger(
             "SELECT count(*) FROM erasure_ledger WHERE applied_at IS NULL AND copied_from IS NULL",
         )
         assert pending == 0
+
+
+async def test_a_scratch_database_erasure_stays_out_of_the_session_ledger(
+    pg_url: str, erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """A catalog erasure on a scratch database (``migrated_database``) writes that database's own
+    ledger file, never the session's (#125): before, it wrote ``ERASURE_LEDGER_DIR`` and the next
+    app on the session database reconciled it in as a pending entry that never settled, which
+    failed the pending count above (found by the M3 group C gate, from C-15's operation-stages
+    test). Complement: the session database's apps keep the session's ledger."""
+    assert erasure_settings.erasure_ledger_dir == ERASURE_LEDGER_DIR
+    session_file = ERASURE_LEDGER_DIR / LEDGER_FILE
+    with migrated_database(pg_url, f"epistrel_scratch_ledger_{secrets.token_hex(4)}") as url:
+        scratch = e.erasure_settings(url)
+        own = scratch.erasure_ledger_dir
+        assert own != ERASURE_LEDGER_DIR
+        assert e.erasure_settings(url).erasure_ledger_dir == own  # every app on it shares it
+        db = make_engine(scratch)
+        try:
+            async with respond_client(scratch, db) as (client, _):
+                done = await e.erase(client, "catalog_character", await e.linda(client))
+        finally:
+            await db.dispose()
+        assert done["erasure_id"] in (own / LEDGER_FILE).read_text(encoding="utf-8")
+    session_lines = session_file.read_text(encoding="utf-8") if session_file.exists() else ""
+    assert done["erasure_id"] not in session_lines
+    assert not own.exists()  # dropped with its database
+    # The session database's reconcile has nothing of it to take in.
+    await erasure_ledger.mark(engine, erasure_ledger.LedgerFile(ERASURE_LEDGER_DIR))
+    found = "SELECT count(*) FROM erasure_ledger WHERE id = :i"
+    assert await scalar(engine, found, i=done["erasure_id"]) == 0
 
 
 async def test_a_fork_retries_when_an_erasure_commits_under_it(

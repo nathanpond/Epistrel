@@ -7,7 +7,41 @@ leak it. ``story_id`` is plain and NOT NULL (no foreign key; story deletion enum
 
 ``definition`` is free text the Lite pipeline renders verbatim; structured catalog characters
 arrive in M3. ``safe_fallback_text`` is the character's line when every regenerated reply fails
-its guardrails (#68).
+its guardrails (#68). ``source_catalog_id``/``source_catalog_version`` name the catalog entry and
+version a character was created from (FR-CAT-3,9; #103; written by #119's genesis): provenance by
+identifiers only, with no foreign key, so archiving, editing or deleting the entry never touches
+the story.
+
+#114 adds four columns:
+
+- ``persona_id`` and ``persona_snapshot`` (FR-CAT-6): a player character's persona, as a plain
+  identifier (``null`` for an ad-hoc persona) and a copy of it as it was when the story was
+  created (``{persona_id, name, gender, age, description, snapshotted_at}``, written by #119's
+  genesis, ``core.catalog.personas.snapshot``). Editing or deleting the saved persona never
+  touches it. Only a player character holds one (``ck_characters_persona_player``).
+- ``images``: the media asset ids of a character added in the story (FR-CAT-7), in order, by
+  reference. ``core.media.assets.MEDIA_REFERENCE_SOURCES`` counts them, so an asset a story
+  character shows survives its retirement until the story goes.
+- ``promoted_to``: the catalog entries promoted from the character (FR-CAT-8), oldest first, as
+  plain ids: the one link a promotion leaves on the character.
+
+#115 adds ``deflection_style`` (FR-GUARD-7): how the character refuses or changes the subject,
+in its own voice (at most ``DEFLECTION_STYLE_MAX`` characters; ``null`` for none). The Lite
+prompt renders it with the character's author notes, so a reply regenerated after a guardrail
+violation (#68) stays in character. It is set when the character is created: from the request
+(a story's cast, a character added later), or by #119's genesis from the catalog definition's
+``definition.deflection_style``.
+
+#119 adds ``role_id`` (the scenario role a character of a story created from a scenario fills;
+``NULL`` otherwise) and ``character_snapshots``: one row per catalog character a story was
+created with (FR-SCN-9, FR-CAT-3,9), keyed ``(story_id, character_id)``, holding the catalog id
+and version, the version's whole ``content``, when it was published and the rating version it
+was published under. Like ``characters`` it is a story table with no foreign key: archiving,
+editing or deleting the catalog entry never touches it, story deletion enumerates it and a fork
+copies it. Ad-hoc characters and the player's persona get no row (the persona's copy is
+``persona_snapshot``). A catalog-sourced ``characters.definition`` holds the snapshot's private
+definition rendered as prose author notes (``core.genesis.render.definition_notes``, #122) so
+Lite turns read one text, as they read an ad-hoc character's; the snapshot stays the record.
 """
 
 from __future__ import annotations
@@ -25,11 +59,14 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 from epistrel.core.tables.base import metadata, ulid_type
 
 TRUE_AGE_MIN = 0
 TRUE_AGE_MAX = 150
+DEFLECTION_STYLE_MAX = 2_000
+"""The longest deflection style, for a story character and a catalog definition alike."""
 
 characters = Table(
     "characters",
@@ -49,8 +86,31 @@ characters = Table(
         nullable=False,
         server_default=text("transaction_timestamp()"),
     ),
+    Column("source_catalog_id", ulid_type(), nullable=True),
+    Column("source_catalog_version", Integer, nullable=True),
+    Column("persona_id", ulid_type(), nullable=True),
+    Column("persona_snapshot", JSONB, nullable=True),
+    Column("images", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("promoted_to", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("deflection_style", Text, nullable=True),
+    Column("role_id", Text, nullable=True),
     CheckConstraint(f"true_age BETWEEN {TRUE_AGE_MIN} AND {TRUE_AGE_MAX}", name="true_age"),
+    CheckConstraint(
+        "(persona_id IS NULL AND persona_snapshot IS NULL) OR is_player", name="persona_player"
+    ),
 )
 
 Index("uq_characters_story_name", characters.c.story_id, func.lower(characters.c.name), unique=True)
 Index("uq_characters_story_ordinal", characters.c.story_id, characters.c.ordinal, unique=True)
+
+character_snapshots = Table(
+    "character_snapshots",
+    metadata,
+    Column("story_id", ulid_type(), primary_key=True),
+    Column("character_id", ulid_type(), primary_key=True),
+    Column("source_catalog_id", ulid_type(), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("content", JSONB, nullable=False),
+    Column("published_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("content_rating_version_id", ulid_type(), nullable=True),
+)

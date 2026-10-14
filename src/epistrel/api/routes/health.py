@@ -16,6 +16,16 @@ queued job (``null``: nothing overdue). Status:
 ``content_logging`` is ``true`` while operator-only content debug logging is on in this process
 (``EPISTREL_CONTENT_DEBUG_LOGGING``, NFR-SEC-4; #74), so turning it on is visible.
 
+``checks.ffmpeg`` and ``checks.ffprobe`` say whether the tools that extract a video's poster and
+probe a video answered ``-version`` (``ok`` or ``missing``; checked once, at start-up or at the
+first probe, #107). Neither changes the status: without ffmpeg only a video uploaded without a
+poster is refused (422 ``poster_required``).
+
+``checks.erasure_pending`` counts the erasure ledger's entries this database has not applied yet
+(#125: a restored backup that predates them; their stories are refused until they are
+reapplied); while it is above zero the status is ``degraded``. ``null`` when the database does
+not answer.
+
 Ages use the database's own ``now()``. An app that was never started (no engine) reports ``ok``
 with the database ``skipped``.
 """
@@ -33,6 +43,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.config_changes import read_section
+from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.settings_schema import WorkerHealthSettings
 from epistrel.observability.logging import content_logging_active
 from epistrel.orchestrator.jobs import health as worker_health
@@ -56,13 +67,18 @@ class WorkersCheck(BaseModel):
 
 
 class HealthChecks(BaseModel):
-    """Each check: the database, the workers, and the oldest overdue timer and job (seconds;
-    `null`: nothing overdue)."""
+    """Each check: the database, the workers, the oldest overdue timer and job (seconds;
+    `null`: nothing overdue), whether ffmpeg and ffprobe (video posters and probes) are
+    there (`missing` never changes the status), and the erasure ledger's entries not applied
+    to this database yet (`erasure_pending`; above zero: `degraded`)."""
 
     database: Literal["ok", "error", "skipped"]
     workers: WorkersCheck = WorkersCheck()
     oldest_overdue_timer_s: float | None = None
     oldest_overdue_job_s: float | None = None
+    ffmpeg: Literal["ok", "missing"] = "missing"
+    ffprobe: Literal["ok", "missing"] = "missing"
+    erasure_pending: int | None = None
 
 
 class HealthResponse(BaseModel):
@@ -91,6 +107,7 @@ async def check(engine: AsyncEngine) -> HealthResponse:
             try:
                 settings = await read_section(conn, WorkerHealthSettings)
                 snap = await worker_health.snapshot(conn, settings, registered_tasks())
+                pending = await erasure_ledger.pending_count(conn)
             except Exception as exc:
                 if isinstance(exc, TimeoutError | asyncio.CancelledError):
                     raise
@@ -100,12 +117,13 @@ async def check(engine: AsyncEngine) -> HealthResponse:
         _warn("database", exc)
         return HealthResponse(status="unavailable", checks=HealthChecks(database="error"))
     return HealthResponse(
-        status="degraded" if snap.degraded(settings) else "ok",
+        status="degraded" if snap.degraded(settings) or pending else "ok",
         checks=HealthChecks(
             database="ok",
             workers=WorkersCheck(alive=snap.alive, last_heartbeat_s=snap.last_heartbeat_s),
             oldest_overdue_timer_s=snap.oldest_overdue_timer_s,
             oldest_overdue_job_s=snap.oldest_overdue_job_s,
+            erasure_pending=pending,
         ),
     )
 
@@ -125,4 +143,6 @@ async def health(request: Request, response: Response) -> HealthResponse:
         result = await check(engine)
     if result.status == "unavailable":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-    return result.model_copy(update={"content_logging": content_logging_active()})
+    tools = await request.app.state.epistrel.posters.status()
+    checks = result.checks.model_copy(update={"ffmpeg": tools.ffmpeg, "ffprobe": tools.ffprobe})
+    return result.model_copy(update={"checks": checks, "content_logging": content_logging_active()})

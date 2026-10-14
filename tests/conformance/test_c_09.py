@@ -1,5 +1,6 @@
-"""C-09: secrets handling (docs/04), the M2 part: model API keys never appear in story data,
-idempotency results, or telemetry (NFR-SEC-3).
+"""C-09: secrets handling (docs/04): model API keys never appear in story data, idempotency
+results, or telemetry (the M2 part, NFR-SEC-3), nor in feedback exports (the M3 part, #126:
+``test_c_09__exports``).
 
 A canary key is configured over ``/admin/model-config`` and used for real calls against a local
 OpenAI-compatible server, alongside story writes, failed calls and refused requests. Then every
@@ -17,7 +18,9 @@ from typing import Any
 
 import httpx2 as httpx
 import pytest
-from sqlalchemy import text
+from cryptography.fernet import Fernet
+from pydantic import SecretStr
+from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.engine import Engine
@@ -25,7 +28,17 @@ from epistrel.orchestrator.models.config import KeyBox
 from epistrel.orchestrator.models.errors import ModelUnavailable
 from epistrel.orchestrator.models.prompts import example_instance
 from epistrel.orchestrator.models.registry import DELIVERED
-from tests.auth_support import auth_settings, bearer
+from tests.auth_support import CREDENTIAL_A, auth_settings, bearer
+from tests.event_support import rows as db_rows
+from tests.feedback_support import (
+    cases_of,
+    export,
+    export_content,
+    played_story,
+    rate,
+    scratch_feedback,
+    set_deployment,
+)
 from tests.model_support import (
     OPERATOR_HEADERS,
     admin_client,
@@ -194,3 +207,67 @@ async def test_c_09(pg_url: str, engine: AsyncEngine, caplog: pytest.LogCaptureF
         f"decrypted: {canary[:14]}…" for canary in canaries
     )
     assert {f"Bearer {canary}" for canary in canaries} <= sent
+
+
+# -- M3: feedback exports (#126) ---------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "NFR-SEC-3")
+async def test_c_09__exports(pg_url: str, caplog: pytest.LogCaptureFixture) -> None:
+    """No secret reaches a feedback export: with a model API key stored for the generation
+    purpose, and canaries planted as the service credential, the configuration key and the
+    database URL's password, the exported file, the export's record and list, the export log
+    row and the log lines of the export hold none of them.
+
+    Complement asserted: the export holds the rated cases (the search reads real content), and
+    the stored key is really there, decrypted in-process."""
+    caplog.set_level(logging.DEBUG)
+    api_key = f"sk-canary-{secrets.token_hex(12)}"
+    credential = f"cred-canary-{secrets.token_hex(12)}"
+    key = Fernet.generate_key().decode()
+    password = f"pw-canary-{secrets.token_hex(6)}"
+    url = make_url(pg_url)
+    canaries = [api_key, credential, key, password]
+    async with scratch_feedback(
+        pg_url,
+        config_key=SecretStr(key),
+        service_credentials=[CREDENTIAL_A, credential],
+    ) as (client, lib, db):
+        planted = lib.settings.model_copy(
+            update={"database_url": SecretStr(url.set(password=password).render_as_string(False))}
+        )
+        lib.settings = planted
+        await put_key(client, "generation", api_key)
+        played = await played_story(client)
+        rated = await rate(
+            client, played.story_id, played.message_id, {"rating": 1, "text": "Wrong ferry."}
+        )
+        assert rated.status_code == 201, rated.text
+        await set_deployment(client, feedback_export=True)
+        caplog.clear()
+        written = await export(client)
+        assert written.status_code == 201, written.text
+        export_id = written.json()["export_id"]
+        downloaded = await export_content(client, export_id)
+        record = await client.get(f"/admin/feedback/exports/{export_id}", headers=bearer())
+        listed = await client.get("/admin/feedback/exports", headers=bearer())
+        logged = await db_rows(db, "SELECT t::text AS row FROM feedback_export_log t")
+        cases = cases_of(downloaded)
+        stored = await db_rows(
+            db, "SELECT api_key_ciphertext FROM model_config WHERE purpose = 'generation'"
+        )
+
+    hits: list[str] = []
+    hits.extend(find(canaries, "export file", downloaded.content.decode()))
+    for response in (written, record, listed):
+        hits.extend(find(canaries, f"response {response.request.url.path}", response.text))
+    hits.extend(find(canaries, "export log", "\n".join(r.row for r in logged)))
+    hits.extend(find(canaries, "log records", log_text(caplog.records)))
+    assert hits == []
+
+    assert [(c["rating"], c["text"]) for c in cases] == [(1, "Wrong ferry.")]
+    keybox = KeyBox(SecretStr(key))
+    (ciphertext,) = [r.api_key_ciphertext for r in stored]
+    assert keybox.decrypt(ciphertext, purpose="generation").get_secret_value() == api_key
+    assert caplog.records, "nothing was logged, so the log search proves nothing"

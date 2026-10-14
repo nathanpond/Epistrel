@@ -133,6 +133,9 @@ class Chain:
     membership_tx: datetime | None
     parent: ChainRef | None
     """The chain this one diverges from (``None`` for a chain starting at turn 1)."""
+    requires_check: bool = False
+    """Whether making this (not active) chain active would first check its turns against the
+    story's current guardrails (#120: one of them lacks a policy now in effect)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +201,12 @@ class Tree:
             if len(kids) != 1 or kids[0].membership is not start.membership:
                 return nodes
             nodes.append(kids[0])
+
+    def segment_of(self, turn: int, variant: int) -> list[Node]:
+        """The nodes of the chain that starts at ``(turn, variant)`` (none for an unknown
+        node)."""
+        start = self.nodes.get((turn, variant))
+        return [] if start is None else self._segment(start)
 
     def chains(self) -> list[Chain]:
         found: list[Chain] = []

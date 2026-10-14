@@ -7,8 +7,9 @@ before its operation begins (``acquire``) and gives it back inside the transacti
 or fails it (``Operation`` calls ``release``). No database lock is held across model calls
 (FR-CONC-2): the slot is a durable marker, and a lease that ran out (a crash) is reclaimed by
 the next request, which marks the dead turn ``failed`` (or, for a queued turn, puts it back in
-the queue; after ``MAX_RUNS`` interrupted runs it fails). The lease is ``turn_deadline`` +
-``LEASE_SLACK_S``, renewed by the running turn (``renewing``), so a live turn never loses it.
+the queue; after ``MAX_RUNS`` interrupted runs it fails). The lease is the turn's deadline (its
+story's effective ``budgets.deadline_ms``, #113) + ``LEASE_SLACK_S``, renewed by the running
+turn (``renewing``), so a live turn never loses it.
 
 ``turn_concurrency`` (a ``stories`` column, prospective) decides what a second turn gets:
 
@@ -46,10 +47,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.enums import OperationKind, OperationStatus
 from epistrel.core.errors import EpistrelError, StoryBusy, StoryNotFound
 from epistrel.core.idempotency import QUEUE_OWNER_PREFIX
+from epistrel.core.profiles.effective import StoryProfile, effective_configuration
 from epistrel.core.settings_schema import (
     DEFAULT_TURN_QUEUE_MAX,
     StorySettings,
-    TurnBudgetDefaults,
     TurnConcurrency,
     TurnQueueDefaults,
 )
@@ -59,7 +60,9 @@ from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 logger = logging.getLogger(__name__)
 
 LEASE_SLACK_S = 10.0
-"""The turn slot's lease is the story's ``turn_deadline`` plus this."""
+"""The turn slot's lease is the story's turn deadline plus this."""
+CALL_CAP = "budgets.model_calls"
+"""The profile setting that caps a turn's model calls (#113)."""
 lease_override_s: float | None = None
 """Fault tests set a short lease here (``epistrel.testing.faults``); ``None`` in production."""
 MAX_RUNS = 3
@@ -123,15 +126,21 @@ wakeups = Wakeups()
 
 @dataclass(frozen=True, slots=True)
 class Concurrency:
-    """What a story's next turn runs under, read when the request starts (prospective)."""
+    """What a story's next turn runs under, read when the request starts (prospective): its
+    concurrency settings, and its effective configuration's budgets (#113)."""
 
     mode: TurnConcurrency
     queue_max: int
     turn_deadline: float
+    """The turn's deadline in seconds: ``budgets.deadline_ms`` / 1000."""
     max_model_calls_per_turn: int | None = None
-    """The story's own call cap (#69; ``None``: the deployment's, else the Lite formula)."""
-    deployment_max_calls: int | None = None
-    """The deployment's default call cap (#69; ``None``: the Lite formula)."""
+    """The turn's call cap, ``budgets.model_calls`` (#69; ``None``: the Lite formula)."""
+    calls_source: str = "formula"
+    """Where the call cap comes from: ``story`` (its overrides), ``profile`` (its profile's
+    version), ``deployment`` (the deployment's ``profile_defaults``), or ``formula`` when it is
+    ``null``."""
+    configuration: StoryProfile | None = None
+    """The story's effective configuration as read (the turn runs under it, #113)."""
 
     @property
     def lease_s(self) -> float:
@@ -149,20 +158,17 @@ def turn_queue_defaults(document: Mapping[str, Any] | None) -> TurnQueueDefaults
         return TurnQueueDefaults()
 
 
-def turn_budget_defaults(document: Mapping[str, Any] | None) -> TurnBudgetDefaults:
-    """The deployment's ``max_model_calls_per_turn`` (#69) in a ``deployment_state.settings``
-    document; an invalid stored value falls back to the default (a warning names only the key)."""
-    values = {k: v for k, v in (document or {}).items() if k in TurnBudgetDefaults.model_fields}
-    try:
-        return TurnBudgetDefaults.model_validate(values)
-    except ValidationError:
-        logger.warning("invalid turn budget defaults %s; using the defaults", sorted(values))
-        return TurnBudgetDefaults()
-
-
 async def read_concurrency(db: AsyncEngine | AsyncConnection, story_id: str) -> Concurrency:
-    """The story's ``turn_concurrency``, effective ``turn_queue_max``, ``turn_deadline`` and
-    call caps (#69); 404 for an unknown story."""
+    """The story's ``turn_concurrency`` and effective ``turn_queue_max``, and its effective
+    configuration with the turn's deadline and call cap from it (#69, #113); 404 for an unknown
+    story."""
+    if isinstance(db, AsyncConnection):
+        return await _read_concurrency(db, story_id)
+    async with db.connect() as conn:
+        return await _read_concurrency(conn, story_id)
+
+
+async def _read_concurrency(conn: AsyncConnection, story_id: str) -> Concurrency:
     query = select(
         stories.c.settings,
         stories.c.turn_concurrency,
@@ -172,23 +178,26 @@ async def read_concurrency(db: AsyncEngine | AsyncConnection, story_id: str) -> 
         .scalar_subquery()
         .label("deployment"),
     ).where(stories.c.id == story_id)
-    if isinstance(db, AsyncConnection):
-        row = (await db.execute(query)).one_or_none()
-    else:
-        async with db.connect() as conn:
-            row = (await conn.execute(query)).one_or_none()
+    row = (await conn.execute(query)).one_or_none()
     if row is None:
         raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+    configuration = await effective_configuration(conn, story_id)
     settings = StorySettings.from_row(
         row.settings, turn_concurrency=row.turn_concurrency, turn_queue_max=row.turn_queue_max
     )
     queue_max = settings.turn_queue_max or turn_queue_defaults(row.deployment).turn_queue_max
+    budgets = configuration.settings.budgets
     return Concurrency(
         mode=settings.turn_concurrency,
         queue_max=queue_max or DEFAULT_TURN_QUEUE_MAX,
-        turn_deadline=settings.turn_deadline,
-        max_model_calls_per_turn=settings.max_model_calls_per_turn,
-        deployment_max_calls=turn_budget_defaults(row.deployment).max_model_calls_per_turn,
+        turn_deadline=budgets.deadline_ms / 1000,
+        max_model_calls_per_turn=budgets.model_calls,
+        calls_source=(
+            "formula"
+            if budgets.model_calls is None
+            else configuration.source_of(CALL_CAP) or "deployment"
+        ),
+        configuration=configuration,
     )
 
 

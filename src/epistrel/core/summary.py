@@ -2,6 +2,13 @@
 be compressed next, and which segments a prompt includes. Deterministic; the model calls are the
 Orchestrator's ``lite_summary`` job.
 
+- **Settings** (``read_summary_settings``, #113). The verbatim window
+  (``memory.rolling_summary.window_messages``), the summary's token cap
+  (``memory.rolling_summary.compress_threshold_tokens``) and whether there is a summary at all
+  (``memory.rolling_summary.enabled``) come from the story's effective configuration
+  (``core.profiles.effective``), read when the job (or the scheduler deciding to enqueue it)
+  starts; the chunk is the story's ``lite_summary_chunk``, else the deployment's. With the
+  rolling summary off there is never work: no job is enqueued and the prompt has no summary.
 - **Grid.** Level-0 segments cover whole turns on a fixed grid from turn 1:
   ``lite_summary_chunk`` transcript rows at two rows per turn (default 10 rows = 5 turns:
   turns 1-5, 6-10, …), so a chunk never splits a turn and a rebuilt or forked story chunks the
@@ -13,15 +20,15 @@ Orchestrator's ``lite_summary`` job.
   only merged segments wholly before N count, so their children stand in). The included
   segments are the contiguous run from turn 1; ``covered_to`` is where that run ends, and every
   transcript row after it is **verbatim**: the prompt sends all of them, and never fewer than
-  the latest ``lite_window_messages`` rows (``core.turns``), so nothing between the summary and
+  the latest ``window_messages`` rows (``core.turns``), so nothing between the summary and
   the window is ever dropped.
 - **Work** (``summary_state``). A chunk is compressible when it is wholly older than the
-  trailing ``lite_window_messages`` verbatim rows (no row of its turns is in the window) and
-  every turn in it is present. The summary is **over its cap** when its estimated tokens
-  (``len(text) // 4``, no tokenizer) exceed ``lite_summary_max_tokens`` with more than one
+  trailing ``window_messages`` verbatim rows (no row of its turns is in the window) and every
+  turn in it is present. The summary is **over its cap** when its estimated tokens
+  (``len(text) // 4``, no tokenizer) exceed ``compress_threshold_tokens`` with more than one
   segment; then the two oldest adjacent segments of the lowest level merge into one of the
   next level (``merge_pair``), across levels when no two adjacent segments share one.
-  ``needs_work`` is either; it implies more than ``lite_window_messages`` verbatim rows.
+  ``needs_work`` is either; it implies more than ``window_messages`` verbatim rows.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.config_changes import read_lite_defaults
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
+from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import lite_summary_segments, operations, stories, transcript_messages
 
@@ -65,12 +73,14 @@ def grid_end(start: int, chunk_turns: int) -> int:
 
 @dataclass(frozen=True, slots=True)
 class SummarySettings:
-    """The story's effective summary settings: the deployment's Lite defaults with the story's
-    overrides (all prospective: read when a job or a turn starts)."""
+    """The story's effective summary settings (see the module docstring; all prospective: read
+    when a job or a turn starts)."""
 
     window_messages: int
     chunk_rows: int
     max_tokens: int
+    enabled: bool = True
+    """Whether the story has a rolling summary (``memory.rolling_summary.enabled``)."""
 
     @property
     def chunk_turns(self) -> int:
@@ -78,13 +88,16 @@ class SummarySettings:
 
 
 async def read_summary_settings(conn: AsyncConnection, story_id: str) -> SummarySettings:
+    """The story's summary settings (see the module docstring)."""
     defaults = await read_lite_defaults(conn)
     raw = await conn.scalar(select(stories.c.settings).where(stories.c.id == story_id))
     story = StorySettings.from_row(raw)
+    summary = (await effective_configuration(conn, story_id)).settings.memory.rolling_summary
     return SummarySettings(
-        window_messages=story.lite_window_messages or defaults.lite_window_messages,
+        window_messages=summary.window_messages,
         chunk_rows=story.lite_summary_chunk or defaults.lite_summary_chunk,
-        max_tokens=story.lite_summary_max_tokens or defaults.lite_summary_max_tokens,
+        max_tokens=summary.compress_threshold_tokens,
+        enabled=summary.enabled,
     )
 
 
@@ -224,7 +237,7 @@ class SummaryState:
 
     @property
     def needs_work(self) -> bool:
-        return bool(self.chunks) or self.over_cap
+        return self.settings.enabled and (bool(self.chunks) or self.over_cap)
 
 
 async def summary_state(conn: AsyncConnection, story_id: str) -> SummaryState:

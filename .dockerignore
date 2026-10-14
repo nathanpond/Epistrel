@@ -20,6 +20,7 @@ dist/
 build/
 *.egg-info/
 .DS_Store
+var/
 docker-compose.yml
 Dockerfile
 .dockerignore

@@ -61,6 +61,11 @@ RESPONSE_FIELDS = {
     "budget",
     "queued_ms",
     "first_call_offset_ms",
+    "fingerprint",
+    "capabilities",
+    "quality_status",
+    "profile",
+    "config_revision",
 }
 
 

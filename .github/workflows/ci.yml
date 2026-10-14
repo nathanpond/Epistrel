@@ -94,7 +94,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # M3's suite (1883 tests) reached 45 % in 20 minutes on the runner, against 12-16 minutes for
+    # M2's whole run: 60 leaves headroom while a faster CI run is triaged.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -106,7 +108,11 @@ jobs:
           python-version: "3.14"
           enable-cache: true
       - run: uv sync --frozen
+      # The video poster and probe tests run ffmpeg and ffprobe (#107), and fail without them: the
+      # image installs Debian's ffmpeg, the runner Ubuntu's. A separate GPL program, never linked.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       # Integration tests start pgvector/pgvector:pg16 through testcontainers on the runner's Docker.
+      # The S3 adapter's tests start MinIO the same way (tests/conftest.py MINIO_IMAGE).
       # Coverage is gated on epistrel.core only (the deterministic layer); the flags live here and in
       # the README, not in pytest's addopts, so a plain `uv run pytest` stays fast locally.
       # `live_model` tests (E-06, P-08) need a real endpoint; the model matrix tool runs them

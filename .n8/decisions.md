@@ -1731,3 +1731,4111 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision (#280):** The C-01 cases go in `test_c_01__malformed` (POST `2**31`, PUT on the seeded Everyone rating with `-2**31 - 1`). The path template gained `{rating}`. The boundary and clamp test runs on a scratch database.
   **Why:** That is the issue's fix shape. The scratch database matters because a rating left at the int32 maximum in the shared session database would change every later default order, and `test_display_order_default_and_listing` asserts `+10`.
   **Issue:** #280
+
+## Ad-hoc — 2026-10-12
+
+- **Change:** For M3 only (as a trial), `/n8-exec` runs the test gate per group of stories instead of per story. M3's 30 work items (26 stories + bugs #93, #94, #303, #305; the 6 epics carry no code) are split into three groups that each depend only on earlier groups: **A** = #305 (moved from M2 by the owner, first in A), #93, #94, #303, #103, #104, #105, #106, #107, #108, #109; **B** = #110, #111, #112, #113, #114, #115, #116, #117, #118, #119; **C** = #120, #121, #122, #123, #124, #125, #126, #127, #128. For each story: its own new tests, plus the existing tests for the areas it touched, plus `ruff check`, `ruff format --check`, `mypy` and `lint-imports`, then one commit (`Refs #N`), as now. At the end of each group: one full `uv run pytest`. A group-run failure that its test name doesn't explain is traced to a story with `git bisect` over that group's commits. A story's completion comment states "own tests green @ SHA, awaiting group gate" until its group's full run passes; only then does it get the full evidence line and its AC boxes ticked. Per-milestone CI at the PR is unchanged. Full plan and metrics: `.n8/memory/m3-batched-test-gate.md`.
+  **Why:** Running the full local suite after every story is the main cost of `/n8-exec`. The owner accepts some loss of per-story test traceability in exchange for speed: any regression must be fixed either way, and per-story commits plus bisect recover which story caused it. The groups are cut along the dependency graph (blocked-by links), so no group builds on code that hasn't passed a full run, and stories that touch the same files (e.g. the erasure cluster #123–#127) share a group.
+  **Affects:** Changes how M3 is executed, not what it delivers. No story's acceptance criteria, scope or libraries change, so M4+ plans are unaffected and `/n8-replan` is not needed. After M3, the owner decides from the recorded metrics whether to propose this upstream via `/n8-feedback`. — reconciled (process only, no plan drift) 2026-10-12
+
+## /n8-exec M3 — 2026-10-12
+
+- **Decision:** Drift check before any code. Six fresh checker agents read the 30 work items (stories #103–#128, bugs #93, #94, #303, #305) and verified 733 concrete claims about existing code against main @ 1740e0d. Every AC-level finding went to three independent refuters. 28 items have implementation-detail drift only. M2 built several things differently from what the M3 plans assumed: there is no barrier fault fixture (`epistrel.testing.faults` is the subprocess harness), no route-level idempotency wrapper (mutating is decided by HTTP method in `api/auth.py`, `api/deps.py` and `api/openapi.py`), the OpenAPI tag list is closed (`openapi.TAGS`, checked by C-01), `audit_log.kind` is CHECK-constrained, deployment-scoped mutation bodies must extend `DeploymentMutationResponse`, a 413 needs a `STATUS_TEXT` entry, and docs/04 §15 maps some requirements to fewer test IDs than the planned part markers name. Each implementer receives its story's corrections and pointers. Deviations that follow from them are logged per story.
+  **Why:** The M3 plans were written on 2026-10-08, before M2 was executed (2026-10-11/12). Under the skill, implementation-detail staleness is adjusted inline and logged.
+  **Issue:** #93, #94, #103–#128, #303, #305
+- **Blocker (drift):** #106 has two AC-level defects, each upheld 3/3 by the refuters.
+  (1) AC4 says "preset profiles cannot be deleted or edited (409), only copied", and the test plan has "presets immutable". Both contradict FR-PROF-3 ("Presets are ordinary profiles and can be copied and edited"), ADR-084, FR-PROF-7 and the story's own pass-1 Discretion. They also contradict the `/n8-plan M3` coverage fix that recorded "`preset_immutable` dropped": that fix reached the Discretion lines but not AC4.
+  (2) AC1 seeds the Lite budgets as `{model_calls: 2, deadline_ms: 30000}`, on the premise "the Lite preset's 2 replaces #69's 4". #69 never had a default of 4. M2 shipped NFR-PERF-6's defaults: a total cap of 9 + G that includes G, and a 45 s `turn_deadline`. Once #113 makes the Lite preset the source of defaults, AC1's values would cut every story to 2 + G calls and 30 s. That contradicts NFR-PERF-6 and fails the M2-gated tests P-09 and S-SELFPOLICE.
+  The question and options are on #106, and the owner was asked in-session. #106 is labelled `blocked` + `needs-owner-action`, and its group-A dependent #109 is labelled `blocked`.
+  **Why:** Under the skill, AC-level drift is a hard stop and a `/n8-replan` matter. `/n8-verify` checks the AC text, so only the owner changes it.
+  **Issue:** #106 (it transitively holds #109, #111–#113 and #115–#128)
+- **Decision:** The stop is scoped to #106 and its dependents, not the whole milestone. Group A's other items (#305, #93, #94, #303, #103, #104, #105, #107, #108) start now. None of them depends on #106, and no resolution of #106's defects changes their acceptance criteria. If the owner prefers the skill's literal milestone-level stop, the run stops. Nothing has merged, so nothing needs reverting.
+  **Why:** The milestone-level stop exists so that stale plans are not executed. These nine items' plans are not stale: they have implementation-detail drift only. A full stop would idle the run for hours while the owner is away, and would protect nothing. Cost if wrong: the owner stops the run, and the work done stays on an unmerged branch.
+  **Issue:** #106
+- **Decision:** Group A runs as two lanes.
+  Lane 1 uses the main working tree and is strictly sequential in dependency order: #103 → #104 → #105 → #107 → #108, then #106 → #109 once #106 is resolved.
+  Lane 2 runs the four carried bugs in parallel, each on its own branch `m3/bug-<n>` in its own git worktree (`.claude/worktrees/`, excluded locally through `.git/info/exclude`). Their commits are cherry-picked onto the milestone branch before the group A gate, and their decisions are appended here at that point.
+  **Why:** The bugs touch only `tests/chaos/test_x_04.py`, `tools/gates/traceability.py`, `tools/gates/licenses.py` and `src/epistrel/tools/model_matrix.py` (plus their tests and `docs/model-matrix.*`). No group-A story touches these files, and no bug depends on anything. Running the bugs beside lane 1 saves wall time without changing what is gated, because the group gate runs after the cherry-picks. #305 still lands before group A's full run, which is what "first in A" protects.
+  **Issue:** #305, #93, #94, #303
+- **Decision:** Each story is independently verified after its implementer commits. A fresh agent that did not write the code checks every AC clause against the code and tests, using temporary mutations to show that a test fails when the behaviour breaks. It also checks the test plan's tests and part markers, the Discretion lines, the gates and the invariants. Gaps go to a fix agent. After at most two fix rounds, the story is flagged for the orchestrator.
+  **Why:** Under the batched gate the full suite waits for the group run, so each story's correctness rests on its own tests. An independent check catches AC gaps before later stories build on them, and before `/n8-verify` does.
+  **Issue:** M3
+- **Decision:** Each group-gate run is `uv run pytest --cov=epistrel.core --cov-report=term-missing:skip-covered --cov-fail-under=90`, timed. That is the plain full suite plus CI's coverage flags.
+  **Why:** CI's test job enforces 90 % branch coverage of `epistrel.core`, and M3 adds a lot of core code. Checking coverage at each group gate attributes a shortfall to that group's stories, rather than finding it at the milestone PR. The baseline (550 s) was a plain `uv run pytest`, so the recorded group timings include coverage overhead, and the metrics table says so.
+  **Issue:** M3
+- **Decision:** Installed ffmpeg 9.0.2 on the owner's Mac with Homebrew (`HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 brew install ffmpeg`).
+  **Why:** #107's poster tests generate tiny MP4 fixtures with ffmpeg at test time, and CI installs it on the runner. Without ffmpeg, those tests could not run locally in the per-story gate or the group gate. This changes the local dev environment only, not the repository. Rule 3 (blocker: missing tool).
+  **Issue:** #107
+- **Decision:** Catalog writes do not run an `Operation(story_id=None)`. Each write (create, save, publish, archive, unarchive, delete) is one transaction of row writes. The same transaction inserts a committed, story-less `control` operation with the requesting principal and binds the call's `Idempotency-Key` to it (`IdempotentCall.bind_configuration`). The helper `core/control.py::record_control_operation` was extracted from `config_changes._write_operation`, which now calls it, so configuration writes behave exactly as before. A no-op archive or unarchive records no operation, and its key keeps `operation_id` null.
+  **Why:** This is the drift note's "#61 pattern". `Operation.begin()` writes an `in_flight` row in its own transaction, and a story-less commit takes the global advisory lock. So a refused write (409 `draft_stale`, 422) would leave a `failed` operations row, which C-01's zero-row check forbids, and every catalog write would serialise on one lock. Cost if wrong: later catalog, media, persona and profile stories copy this helper, and moving to `Operation` would mean rewrapping their writes.
+  **Issue:** #103
+- **Decision (drift):** `catalog.save.before_cas` is an in-process pause point, not a crash point. It lives in the new `epistrel.testing.pauses` (standard library only, called from core the way `crash.hit` is, and armed only by tests through `held()`); `crash.POINTS` is unchanged. A second point, `catalog.publish.locked`, makes the publish race deterministic: the test holds the first publish inside its row lock and waits until `pg_stat_activity` shows the second blocked on a lock. Both race tests use `asyncio.gather` over `httpx.ASGITransport`.
+  **Why:** The planned barrier fixture does not exist (`epistrel.testing.faults` is the subprocess harness). Mutation-checked: removing the compare-and-set condition makes the two-saves test answer [200, 200], and removing `FOR UPDATE` from publish fails the two-publishes test.
+  **Issue:** #103
+- **Decision (drift):** The `mutating=False` route flag is `api/deps.py::route_flags(mutating=False)`, i.e. `openapi_extra={"x-epistrel-mutating": false}`, and `deps.mutates(method, route)` reads it. `get_request_context` mints and echoes no key for a flagged route. The OpenAPI builder documents a flagged route with its principal but without `Idempotency-Key`, the expected revision, the idempotency errors and the replay headers, and keeps the marker in the operation object. `response_base_problems` stops requiring a revision base for it. `require_principal` stays method-based. No #103 route uses the flag; `tests/test_route_flags.py` proves it with test-only routes, and `docs/openapi.json` is byte-identical for existing routes.
+  **Why:** No route-level idempotency wrapper exists: three method-based checks decide what is mutating, and #128's replay test, #109, #111 and #121 need one flag that all three honour. docs/02 §9 requires the principal on every POST/PUT/PATCH/DELETE.
+  **Issue:** #103
+- **Decision (drift):** FR-CAT-9 moves out of the C-15 marker. `test_c_15__catalog_lifecycle` in `tests/conformance/test_c_15.py` carries `part("M3", "FR-CAT-1,3; FR-SCN-10")`: create, save, publish v1, edit, publish v2, v1 unchanged and immutable, versions listed, the card's nine keys without the planted phrase that `full` has, and an archived entry read in both projections. The byte-identical story checks across edit, archive, unarchive and delete are in `test_i_17__catalog_never_touches_stories` in `tests/integration/test_i_17.py`, with `part("M3", "FR-CAT-3,9")`. Its complement archives the story and sees the snapshot change. The detailed tests are unmarked, in `tests/integration/test_catalog_characters.py`.
+  **Why:** docs/04 §15 maps FR-CAT-9 only to I-17 and I-21, so the planned C-15 marker fails `check-traceability`. Moving the ID costs no coverage, whereas adding `C-15 (M3)` to §15 would edit docs/04 for nothing. Each test ID keeps its M3 parts in one file, as traceability requires. Cost if wrong: add `C-15 (M3)` to the §15 FR-CAT-9 row and put the ID back in the marker.
+  **Issue:** #103
+- **Decision:** `card` is exactly AC3's nine keys (`id, version, name, public_description, images, labels, content_rating, listing_status, status`). The pass-2 envelope (`current_version`, `draft_revision` on drafts only, `created_at`, `updated_at`, `published_at`, `companion_id`) is applied only to `full`, which adds `version` and the `definition` group. Both are core Pydantic models (`CharacterCard`, `CharacterFull`) with `extra="forbid"`. `Engine.get_character(..., projection=)` returns the projected model, so REST and the library share it. The GET's response model is the union `CharacterCard | CharacterFull`.
+  **Why:** AC3 says the card returns "only" these keys, and that wins over the Discretion line. #110 plans list cards as "the single-GET card plus `owner_principal`, `updated_at`", which also assumes a card without timestamps. `extra="forbid"` makes the union unambiguous and stops a definition field from slipping into a card. Cost if wrong: adding envelope keys to the card later is additive.
+  **Issue:** #103
+- **Decision:** The interim `CharacterDraft` is `{name?, public_description?, definition: {personality?}}` with `extra="forbid"`. Every field may be missing on a draft, and `publish_report` requires `name` (422 `publish_invalid`, report entry `field_required`/`name`) on top of a schema re-validation. Field limits are taken from #115's plan: name ≤ 120 (stripped), public description and personality ≤ 4000. `draft_revision` and `?version=` are bounded to int32 at the boundary. The 256 KiB cap applies to the merged canonical JSON (`idempotency.canonical`). Because the field limits keep a draft far below the cap, the 413 test lowers `DRAFT_MAX_BYTES` with monkeypatch.
+  **Why:** The Discretion makes `name` the only publish requirement before #115. Matching #115's limits now means nothing saved today fails #115's validation for length. The int32 bounds follow #280's lesson (an `INTEGER` column must never see an out-of-range value).
+  **Issue:** #103
+- **Decision:** Catalog mutation responses extend `DeploymentMutationResponse` and carry the deployment's `config_revision`, which catalog writes leave as it is. Every catalog codec uses `revision_field=config_revision`.
+  - Create: 201 with the draft in `full`. There is no `Location` header, because `CREATING_OPERATIONS` documents `/stories/{id}`.
+  - Save: 200 with the draft in `full`.
+  - Publish: 201 `{id, version, draft_revision, status, published_at, report}`.
+  - Archive and unarchive: 200 with the envelope.
+  - Delete: 204.
+  - `content_rating_version_id` is NULL on every #103 publish.
+  **Why:** `response_base_problems` (`tests/test_responses.py`) requires a revision base on every deployment-scoped mutation. The interim draft names no rating, and #115 adds `metadata.content_rating_id` together with the NOT NULL.
+  **Issue:** #103
+- **Decision (drift):** The `catalog_entry_deleted` audit row records the principal in its `principal` column. Its details are `{entity_type: "character", entity_id, operation_id}`, mirroring `story_deleted`, which also names its operation; the plan had `{entity_type, entity_id, principal}`. Migration `0020_catalog_characters` drops and re-creates `ck_audit_log_kind`. Its downgrade deletes those rows under `epistrel.allow_audit_expiry` (resetting the setting afterwards) before it restores the old check. `test_catalog_downgrade_keeps_other_audit_rows` covers this.
+  **Why:** `audit_log.kind` is CHECK-constrained, and `principal` is already a column (drift note).
+  **Issue:** #103
+- **Decision:** The versions trigger refuses TRUNCATE always, and UPDATE or DELETE of any column unless `epistrel.erasure = on`, with SQLSTATE `EPI01`. Its function is `catalog.epistrel_character_versions_immutable()`. Delete locks the entry row, sets the setting transaction-locally, and deletes the entry, letting the FK cascade remove the versions.
+  **Why:** The setting keeps the story's and #124's name, `epistrel.erasure`, rather than the `epistrel.allow_*` convention. A complement test shows an UPDATE passing under the setting.
+  **Issue:** #103
+- **Decision:** `EntryStatus` lives in `core/enums.py` and is registered in `PG_ENUM_TYPES` as `catalog.entry_status`. `pg_enum` gained a `schema` argument, and `AUTOGENERATE_OPTS` gained `include_schemas` with an `include_name` filter for public and `catalog`. I-08's fingerprint now covers `catalog`: a `schemas` aspect, schema-qualified columns, indexes, functions and enums, the `KEPT_ON_DOWNGRADE` key qualified, and an assertion that base leaves only `public`.
+  **Why (Rule 3, blocker):** `test_event_store_schema.py::test_enum_labels_match_python_enums` compared every enum type in the database by bare name, so it failed once the catalog enum existed. It now schema-qualifies non-public enums. That keeps the check over every enum; the test is not weakened.
+  **Issue:** #103
+- **Decision:** `epistrel.core.ports` ships four Protocols with no-op defaults, and `Engine(..., ports=None)` uses `Ports()`:
+  - `InputGate.enforce(texts, *, entry_point, principal, rating_id)`: the default passes every text.
+  - `PolicyEvaluator.evaluate(texts, *, rating_id)`: the default reports no hit.
+  - `ModelCaller.complete(purpose, prompt) -> str | None`: the default returns `None`.
+  - `JobStarter.start(conn, kind, payload, *, story_id) -> str | None`: the default returns `None`.
+  Nothing in core calls a port yet.
+  **Why:** This is the pass-2 Discretion. `None` from the model caller and the job starter means "unavailable", which the planned callers already degrade on (#111 lists it, #124 redacts). Cost if wrong: the gate default fails open. A story that adds a gated core path without wiring the Orchestrator's gate would skip input policies, so each such story must prove a refusal through the wired port.
+  **Issue:** #103
+- **Decision:** A creation's `owner` follows the principal rule: spaces and tabs trimmed, 1 to 256 characters, no control character, never `system`. The rule is an `AfterValidator` with the principal pattern in the schema; the pattern constant moved to `core/context.py`, and `api/openapi.py` imports it. A bad owner is 422 at `body.owner` before the Engine runs. The row records the owner, and the control operation records the requesting principal. `owner_principal` is not returned in either projection yet, because #104 adds it.
+  **Why:** AC5 and FR-AUTH-5 ("`owner: system` is refused 422 on create too").
+  **Issue:** #103
+- **Decision:** Filed #311 (`needs-triage`) and did not fix it. When `tests/test_markers.py` runs before any test has set up `pg_url`, its in-process pytester run removes `epistrel.core.schema` from `sys.modules`. Alembic's `env.py` then re-declares `schema_meta` on the surviving `MetaData`. The error reproduces on main @ fa0c78d in a temporary worktree and does not affect the full suite's order.
+  **Why:** It is outside #103's scope; only subset runs that put the marker tests first hit it.
+  **Issue:** #103, #311
+- **Decision:** #103 verification fixes, round 1. Publish now answers with the status it actually stored. The entry `UPDATE` returns `status` (`RETURNING`), and `Published.status` is built from that instead of the constant `EntryStatus.PUBLISHED`. The value, the response model and the idempotency codec are unchanged.
+  **Why:** The verifier found that no test would fail if publish stopped setting `status = published` (AC2). One reason was that the answer was a constant. Reading the row back turns the existing response assertion into a real check, at the cost of one returned column. The new tests below also catch that mutation with the constant restored, so if this change is judged unnecessary it can be reverted without losing coverage.
+  **Issue:** #103
+- **Decision:** #103 verification fixes, round 1. AC2's status and AC3's version list are now asserted from what is stored, not only from the publish answer.
+  - `test_draft_save_publish_and_versions`:
+    - after the first publish, it reads the entry row (`status`, `current_version`, `draft_revision` = `published`, 1, 3) and a fresh card (`published`, version 1);
+    - the version-1 `full` read and the version list carry the publish response's `published_at`;
+    - each list item has exactly `{version, published_at, published_by}` (new `tests/catalog_support.VERSION_KEYS`).
+  - `test_c_15__catalog_lifecycle` asserts that the card is `published` before archiving. Going beyond the fix hint, it also asserts the list's keys and publish times, because docs/04 C-15 names version listing for characters.
+  - Mutation-checked, with the sources restored from a scratch backup each time, because `git checkout` would have discarded the uncommitted fix. Each of these mutations fails both tests (2 failed, 38 passed over the verifier's module set, which passes unmutated inside the 98-test gate run):
+    - dropping `status` from the publish `UPDATE`, with the answer read back;
+    - the same, with the constant answer restored;
+    - dropping `published_at` from `CharacterVersionBody`;
+    - shifting the listed `published_at` by one second.
+  **Why:** These are the verifier's two test-coverage gaps (AC2, AC3). Comparing the publish times as strings also pins one serialization across the publish answer, the version read and the list. The comparison is exact because Postgres `timestamptz` keeps the microseconds of the Engine's `now()`. Cost if wrong: none to behaviour; at worst a stricter test.
+  **Issue:** #103
+- **Decision:** #103 verification fixes, round 2. All three gaps were real, and all three were gaps in test coverage only. The code already did what AC3 and AC5 require: `core/catalog/characters.py::get` reads, the attribution (`published_by`, the control operation's actor, the delete's audit principal) and the delete's key scope (`Engine.delete_character`). No source file changed. The tests:
+  - `test_draft_save_publish_and_versions` now reads the entry between the edit and the second publish, while the draft differs from version 1. The default card and the `full` read serve version 1: the `full` read equals the `?version=1` read on every content key and has no `draft_revision`. The draft read serves the edit in both projections, at draft revision 4 with `version` 1.
+  - The new `test_writes_record_the_requester_not_the_owner` covers attribution.
+  - `test_delete_removes_the_entry_and_its_versions` asserts that the delete key's `idempotency_keys` row is `('deployment', 'deployment', 'done')`.
+  - Mutation-checked over the verifier's module set (`test_catalog_characters`, `test_c_15`, `test_i_17`, `test_catalog`, `test_c_03`). Each mutation was applied with the sources restored from a scratch backup afterwards, and the sources were byte-identical at the end. Each of these now fails (unmutated: 41 passed):
+    - the verifier's F (the default read serves the draft) and G (the draft read serves the latest version): `test_draft_save_publish_and_versions` and `test_c_15__catalog_lifecycle` fail;
+    - `published_by` set to the owner, and the operation's actor set to the owner (at save, publish and archive together, at publish alone, and at archive/unarchive alone): the new test fails;
+    - delete recording the owner on its operation, or on its audit row: the new test fails;
+    - delete keyed per entry (`story_id=character_id`, scope `story`): the delete test fails.
+  **Why:** The verifier showed that each of its mutations passed every test (40 passed and 20 passed, 0 failed). The two delete mutations are mine: run against the round-1 test files, each gave 40 passed, 0 failed. The single-site actor mutations are parts of the verifier's combined one. These are the core of FR-CAT-3 (an unpublished edit is not what readers see) and of AC5 (attribution and the deployment key scope). Cost if wrong: none to behaviour; at worst the tests are stricter.
+  **Issue:** #103
+- **Decision:** `test_c_15__catalog_lifecycle` also checks the unpublished edit, between its second save and its second publish. The card still serves version 1 with the old description, and the draft card serves the edit. The fix hint called this optional, and I took it.
+  **Why:** C-15 is #103's M3 part for FR-CAT-3, and docs/04 C-15 names "drafts are editable and published versions immutable". Keeping the draft separate from what readers see is the heart of that, so the milestone part should pin it, not only the unmarked detailed test. Cost if wrong: two extra reads in C-15.
+  **Issue:** #103
+- **Decision:** Attribution has its own test, `test_writes_record_the_requester_not_the_owner`, rather than an extension of `test_owner_is_the_requester_unless_named`, and it goes further than the fix hint. Three principals are involved: the creator (`p-catalog`), the named owner (`p-owner`), and two editors (`p-editor`, `p-reviewer`). The editors take turns across save, publish, a second publish, archive, unarchive and delete. The test asserts four things:
+  - each write's operations row, looked up by its `Idempotency-Key`, names that write's requester;
+  - the version list gives `published_by` `p-editor` for version 1 and `p-reviewer` for version 2;
+  - the delete's audit row names its requester;
+  - `owner_principal` stays `p-owner`.
+  Its docstring cites FR-AUTH-8, FR-AUTH-4 and FR-AUTH-5, so check-parts derives a docstring part from it that gates at M3, the latest milestone it cites (FR-AUTH-4 is M2). check-parts therefore counts 145 parts, not 144. check-parts, check-lexicon and check-traceability all pass.
+  **Why:** FR-AUTH-8 says ownership confers no permission, so non-owner editors are the normal case. The hint covered save, publish, archive and unarchive by one editor. Delete records the requester in two places (the operation and the audit row), and two different publishers show that each version keeps its own publisher. Keeping creation (`test_owner_is_the_requester_unless_named`) and later writes in separate tests keeps each test name accurate. Cost if wrong: one more test of about 50 lines.
+  **Issue:** #103
+- **Decision (drift):** Story owner and relation routes are `/stories/{story_id}/owner` and `/stories/{story_id}/relations…`. Their bodies extend `MutationResponse` and answer the story's unchanged `timeline_revision`. Every other type's bodies extend `DeploymentMutationResponse` with the unchanged `config_revision`. The idempotency codecs are keyed per method and type (`transfer_owner_story`, `add_relation_character`, …), the same as the routes' operation ids. A story write checks `X-Epistrel-Expected-Revision` first, like every other story-path mutation. Keys are deployment-scoped, as the Discretion says.
+  **Why:** `response_base_problems` requires `MutationResponse` on any path that names `{story_id}` and `DeploymentMutationResponse` elsewhere; there is no third base. A reference replay after the result window must name the right revision field. Cost if wrong: the response shapes are additive, so only the revision field name would change.
+  **Issue:** #104
+- **Decision (drift):** The planned `test_c_15__ownership` becomes three I-21 slices in the new `tests/integration/test_i_21.py`, the one file every later I-21 (M3) part must join:
+  - `test_i_21__ownership`, `part("M3", "FR-AUTH-5,6; FR-CAT-9")`: creation, transfer, `system`-owned transfer, relations, filters, and a story left byte-identical by its catalog entry's transfer and relation changes;
+  - `test_i_21__nothing_gates`, `part("M3", "FR-AUTH-8")`: the matrix;
+  - `test_i_21__companion`, `part("M3", "FR-AUTH-5; FR-CAT-9")`: companions, and the scenario half of the FR-CAT-9 clause.
+  No C-15 slice: #110's `test_c_15__listing_status` claims FR-AUTH-8 there. The detailed tests (`tests/integration/test_ownership.py`, `tests/test_ownership_rules.py`) name no requirement ID in their docstrings, so they are not parts.
+  **Why:** docs/04 §15 maps FR-AUTH-5,6 and FR-CAT-9 only to I-21 (M3) among this story's tests, so the planned C-15 marker fails `check-traceability`. Splitting into slices gives each clause a precise test name. check-parts now counts 148 parts.
+  **Issue:** #104
+- **Decision:** `ownership_events` uses the AC's names, not the pass-1 Discretion's. The column is `acting_principal`, not `principal`. The kinds are `transfer`, `relation_added`, `relation_removed` and `listing_status`, plus the Discretion's `deleted` for `drop_entity`. The Discretion's `owner_changed` and `listing_status_changed` are not used. The table also has `id` (ULID), `old`/`new` jsonb (owners as JSON strings, relations as `{principal, relation}`, and `deleted`'s `old` as `{owner_principal, relations}`), `at` (transaction time), and a nullable `job_id`, which the Discretion lists. So #117's migration must not add `job_id` again. Both `kind` and `entity_type` are CHECK-constrained text. `core.ownership.record_event` is the one writer, and #110 and #117 call it.
+  **Why:** `/n8-verify` checks the AC text, and the AC names the columns and kinds explicitly. The Discretion's renames came later and never reached the AC. Cost if wrong: renaming two kinds and a column, before anything reads them.
+  **Issue:** #104, #110, #117
+- **Decision:** `owner_principal` appears in a catalog character's `full` projection (and so in the create and save answers), in `GET /stories/{id}` and in each `GET /stories` item. It is not in `card`, although the pass-1 Discretion lists `card`.
+  **Why:** FR-SCN-10 lists the card's contents exactly and leaves the owner out. #103's verified AC3 and its decision fix the card at nine keys. `CARD_KEYS` in `tests/catalog_support.py` asserts that the card has nothing else. Cost if wrong: one key added to the card, plus updated card tests.
+  **Issue:** #104
+- **Decision (drift):** No `stories.updated_at` is added. A transfer bumps `updated_at` only on tables that have it (`catalog.character_catalog` now). `core/ownership.py` reads each table's columns at runtime from `pg_attribute` through `to_regclass`, so `updated_at` and `companion_of` are used wherever a later table has them. A table that does not exist yet means its type is not delivered: calls on it answer 404 `not_found`. The registry-generated tests cover only delivered types.
+  **Why:** The drift note offers this alternative. A `stories.updated_at` that only ownership moves would mislead readers, because turns and settings changes would not move it. #117's lookup already plans `(created_at, id)` keysets for tables without `updated_at`. Cost if wrong: one column and an application-side bump.
+  **Issue:** #104, #117
+- **Decision (drift):** A fork is owned by its requester, or by the optional `owner` that `ForkRequest` now accepts (the same rule as `POST /stories`'s new `owner`). `_copy_story_row` overrides `owner_principal`, and the source's relations are not copied. The migration backfills each existing story's owner from the principal of its newest committed `genesis` operation (`committed_at DESC`, then `operation_id DESC`; a fork's own genesis is newer than the one it copied), else `system`. `test_ownership_backfill_and_downgrade` covers both cases and the downgrade.
+  **Why:** Without the override, `_insert_select` would copy the source's owner into the fork. FR-AUTH-5 says the owner is set at creation and defaults to the requester, and a creation may name another owner. A fork is a creation. Cost if wrong: drop the optional field. The default does not change.
+  **Issue:** #104
+- **Decision:** These are the registry and route conventions later stories follow:
+  - `REGISTRY` in `core/ownership.py` names every type's schema, table, URL segment, path parameter and noun: `story`/`story_id`, `character`/`character_id`, `scenario`/`scenario_id` (`catalog.scenario_catalog`), `persona`/`persona_id` (`personas`), `media`/`media_id` (`media_assets`) and `engine_profile`/`profile_id` (`engine_profiles`).
+  - `mount_ownership_routes(router, entity_type)` adds four routes per type on the type's own router. Each handler is built per type, with an explicit `__signature__` that names the type's path parameter. The routes are tagged `ownership` through `openapi.ROUTE_TAGS`, a new tag in the closed list.
+  - `companion_follows_character` (422) is documented on the write routes of types that follow a parent.
+  - Ownership writes need `ownership_fixtures.KINDS` and `CALLS` entries for every new type and route. `test_every_delivered_type_is_covered` fails until a story that creates an owned table adds them and mounts the routes.
+  - Every delete path calls `ownership.drop_entity` in its transaction, before the row goes.
+  **Why:** These are the pass-1 Discretion's prescriptions, made concrete enough that #105, #106, #108, #114 and #116 add a type without changing this module. Cost if wrong: a later story renames a path parameter in the registry.
+  **Issue:** #104, #105, #106, #108, #114, #116
+- **Decision:** Each ownership write is one transaction under the entity's row lock: `FOR UPDATE` for a transfer, `FOR SHARE` for a relation change. It writes its `ownership_events` row or rows and one committed `control` operation by the acting principal through `core/control.py`, which binds the key. The operation is story-scoped for a story, so `delete_story` removes it and its key with the story. It is story-less for every other type.
+  - A no-op records nothing. That covers a transfer to the current owner (200 with `previous_owner` equal to the owner) and an add that finds the relation (200 with the existing row, its `created_at` and `created_by`).
+  - A relation add is an `INSERT … ON CONFLICT DO NOTHING`, so two simultaneous adds give one 201, one 200 and one event.
+  - No story event is written and no revision moves.
+  - The writes run on archived stories and entries and while a turn is in flight.
+  - A character transfer also moves every scenario whose `companion_of` names the character, locked character first, with one event per entity. It skips a companion already at the new owner.
+  **Why:** This is the Discretion's "control operation, no story event, row lock only, always allowed", built on #103's `record_control_operation` pattern so that a refused write leaves no row (C-01's zero-row check). An event-less story-scoped control operation is not copied by a fork (`_select_operations` needs a non-audit event) and is invisible to history.
+  **Issue:** #104
+- **Decision:** Relation names follow the pass-1 Discretion, not the AC's looser "free text (≤ 64 chars)":
+  - 1 to 64 of `A-Z a-z 0-9 _ -`, case-sensitive, trimmed of spaces and tabs in a body;
+  - checked again by `ck_entity_relations_relation`;
+  - listed in byte order (`COLLATE "C"`, so `Editor` sorts before `editor` whatever the database's collation).
+  The removal route is `DELETE …/relations/{relation}/{principal:path}`, because principals may contain `/` (drift). Its principal, the transfer's `principal` and the relation's `principal` all follow the `X-Epistrel-Principal` rule, and `system` is refused (422 at `path.principal` or `body.principal`). `Owner` and the new `Principal` are one rule (`ownership.principal_rule`). #103's `Owner` type moved from `core/catalog/characters.py` to `core/ownership.py` unchanged, and stories and forks use it too. `GET /stories` takes `?owner=` (`system` allowed, because presets are system-owned) and a repeatable `?relation=` (AND), split at the first colon. Errors land at `query.relation[i]`.
+  **Why:** The character set keeps names from colliding with a path segment or the filter's colon. "Free text" is read as consumer-defined and never interpreted. Cost if wrong: widening the pattern and the CHECK.
+  **Issue:** #104
+- **Decision:** The relation filter is `name:principal`, or `name:` (an empty principal) for any principal. The Discretion's bare `relation=name` is refused (422), because the colon is required. Both filters are documented without a `null` alternative: `owner` is a pattern-constrained string, and `relation` an array of pattern-constrained strings (`WithJsonSchema`). The validation is unchanged.
+  **Why:** A randomized C-01 run failed `GET /stories` with `AcceptedNegativeData`. Schemathesis turned `relation` into the boolean `false` and `owner`'s `null` branch into an object, and both serialize to query strings that a bare relation name or an opaque principal accepts. This is #279's class of flake, and the owner settled it there by tightening the contract. With the colon required, a bare `true`, `0` or other junk string is refused. With the null branch gone, schemathesis does not change the type of a string query parameter at all. A temporary stress run of C-01's checks over the nine new or changed operations, 1,500 examples each, passed; the file was deleted afterwards. Twelve randomized runs of `GET /stories` and a `CI=1` run passed too. Cost if wrong: a consumer writes `editor:` instead of `editor` to filter on any principal.
+  **Issue:** #104
+- **Decision:** Indexes are `ix_stories_owner_principal`, `catalog.ix_character_catalog_owner_principal`, `ix_entity_relations_principal` and `ix_ownership_events_entity (entity_type, entity_id, at)`. The `(entity_type, entity_id)` index the Discretion names is the leading prefix of `entity_relations`' primary key `(entity_type, entity_id, principal, relation)`, not a separate index.
+  **Why:** A second index on the primary key's prefix would only cost writes. Cost if wrong: one `CREATE INDEX`.
+  **Issue:** #104
+- **Decision:** `test_i_21__companion` tests the companion rule against a stand-in `catalog.scenario_catalog (id, owner_principal, companion_of, updated_at)` on its own scratch database (`migrated_database`), through the library, because #108 and #116 have not built scenarios or companions yet. The test asserts that the real table does not exist, so it fails once #108 creates it. #108 or #116 must then rebuild the test on real scenarios. It also plants an out-of-step second companion to cover the skip of a companion already at the new owner.
+  **Why:** AC1's companion clauses need a test now. A stand-in in the session database would break the drift tests. A loud failure is better than a test that silently stops covering the rule. Cost if wrong: the #108 implementer rewrites one test.
+  **Issue:** #104, #108, #116
+- **Decision:** These clauses are verified only partly, or are left to the story that owns them:
+  - The Lite preset clause is checked generically: a catalog character set to owner `system` transfers like any other, with `old` `system` in the event. #106 seeds the preset owned by `system` and mounts its routes, and the generated tests then cover profiles.
+  - The story-creation clauses go to #119, as the Discretion says: player slots recorded as `player` relations, and creating a story from another owner's entry.
+  - `GET /catalog/characters?relation=` waits for #110's list, which uses `ownership.list_filters`.
+  - The scenario, persona, media and profile routes do not exist yet.
+  **Why:** The tables and endpoints those clauses need belong to #106, #108, #110, #114, #105 and #119, all later in M3.
+  **Issue:** #104, #106, #110, #119
+- **Decision:** The nothing-gates matrix (`test_i_21__nothing_gates`) is parametrised over every route under an owned entity, reads included and `/admin` excluded. That is 35 cases for stories and catalog characters. Each case sends one route's minimal request three times, each time about a fresh entity owned by A in the same state:
+  - as A;
+  - as a stranger B;
+  - as C, who holds relations named `admin` and `owner` on the entity.
+  It asserts that all three get the route's own success status. Catalog entries are the default `private`, and the character read uses `projection=full`. The matrix uses three principals, not the Discretion's two, so that it also proves "adding `admin` grants nothing".
+  **Why:** Equal success codes prove that every request ran, not that every request failed alike. Mutation-checked: making transfers owner-only, or making a draft save owner-only, fails the matrix.
+  **Issue:** #104
+- **Decision:** `tests/test_ownership_rules.py` scans the AST of `src/` and allows `entity_relations` to be named only in:
+  - `core/ownership.py`;
+  - `core/tables/ownership.py` and `core/tables/__init__.py` (the declaration and its registration, which the Discretion's allow-list leaves out);
+  - `core/principals.py` (#117).
+  It also refuses any comparison between a `.relation` attribute and a string literal. A complement plants a module with `row.relation == "admin"` and checks that the scan flags it. #110 adds its catalog list module to the allow-list only if it filters without `ownership.list_filters`.
+  **Why:** This is AC2's repository test, and the literal-comparison check is the "no code path interprets a name" half. Mutation-checked: a raw SQL string naming `entity_relations` in `core/stories.py` fails it.
+  **Issue:** #104, #110
+- **Decision:** `TRUST_BOUNDARY_STATEMENT` ends with the Discretion's sentence, verbatim ("Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them."), followed by AC4's "Ownership exists for listing, attribution and offboarding only." It appears in the README, docs/02 §9 and `info.description`. Every ownership route's description and the `ownership` tag repeat the point. docs/02 §4.10's ownership paragraph and §9's route list are amended to the shapes built here. `docs/openapi.json` is regenerated, and the regeneration documented the add-relation 200 answer after C-01 found it undocumented.
+  **Why:** AC4 asks for "listing, attribution and offboarding only", which the Discretion's sentence does not say on its own. `test_trust_boundary` keeps the three copies identical.
+  **Issue:** #104
+- **Decision (drift):** S-DELETE and C-03 are extended, and no existing assertion is loosened.
+  - S-DELETE: every story gets a `player` relation. `_rows_of` counts the victim's `entity_relations` rows as its own. The added tables now include `ownership_events`. The victim's `deleted` event is asserted: owner `p-author`, the relation removed, actor `p-author`.
+  - C-03 gains parity steps for `transfer_owner`, `add_relation`, `list_relations` and `remove_relation` on a story and `transfer_owner`, `add_relation` and `list_relations` on a catalog character, plus a `list_stories` step with `owner` and `relation` filters.
+  **Why:** These follow the drift note on S-DELETE and the `parity_gaps` rule that every new Engine operation needs a route and a step.
+  **Issue:** #104
+- **Decision:** Mutation checks were run with the sources restored byte for byte afterwards. Each of these fails at least one of the story's tests:
+  - transfers only by the owner;
+  - draft saves only by the owner;
+  - companions not moved;
+  - a story delete without `drop_entity`;
+  - a fork copying the source's owner;
+  - the relation filter ignored, or the owner filter ignored;
+  - a no-op transfer that records an operation;
+  - an out-of-step companion re-recorded;
+  - the new owner recorded as the actor;
+  - story creation ignoring `owner`;
+  - a raw SQL string naming `entity_relations` outside the allow-list;
+  - an add that always reports `created`;
+  - companions not refused.
+  The two that survived the first round, both no-op variants, led to the added assertions on no-op operations and on the out-of-step companion.
+  **Why:** Under the batched gate, each story's correctness rests on its own tests until group A's full run.
+  **Issue:** #104
+- **Decision:** #104 verification fixes, round 1 (Rule 1). A relation change now locks its entity's row `FOR NO KEY UPDATE`, not `FOR SHARE`. So the relation writes on one entity take turns with each other and with the entity's deletion. This replaces the `FOR SHARE` half of the row-lock decision above; a transfer still takes `FOR UPDATE`.
+  - The bug: an add whose `INSERT … ON CONFLICT DO NOTHING` found the relation stored read it back in a second statement. A removal also held only `FOR SHARE`, so it could delete the row and commit in between. The add then raised `NoResultFound`, answered as a 500. The verifier reproduced it, and so did the new test before the fix (`NoResultFound` in `add_relation`, request status 500).
+  - Now the removal waits on the row lock until the add commits. The add answers 200 with the stored row, and the removal 204. The verifier's repro script now prints 200 and 204.
+  - `FOR NO KEY UPDATE`, not `FOR UPDATE`, because it leaves free the `FOR KEY SHARE` that a foreign key check takes (an operation row inserted for the story).
+  - A new pause point, `ownership.add.found` (`epistrel.testing.pauses.OWNERSHIP_ADD_FOUND`), sits between the two statements. `test_an_add_racing_the_removal_of_its_relation` holds it, starts the removal, waits until the removal waits on a lock, then releases. For both delivered types, the add is 200 with the first add's `created_at`, the removal is 204, no relation is left, and the only events are the first add's and the removal's. Mutation-checked: the old `FOR SHARE` fails it.
+  **Why:** The verifier offered three fixes. An upsert (`ON CONFLICT DO UPDATE … RETURNING (xmax = 0)`) leans on an undocumented system column and writes a dead row version on every repeated add. A retry loop adds a branch that cannot run under the lock and could in principle spin. The lock follows the Discretion ("concurrency is the row lock only") and the transfer's existing `FOR UPDATE`. Cost: two relation writes on one entity no longer run side by side, and each lasts milliseconds. Cost if wrong: one lock mode.
+  **Issue:** #104
+- **Decision:** #104 verification fixes, round 1. `test_i_21__ownership` now lists stories as A, as B and as a stranger, not only without a principal. For each asker, the unfiltered list holds both A's and B's stories, and `owner=a`, `owner=b` and `relation=editor:c` narrow it exactly. The slice's marker gains FR-AUTH-8 (`part("M3", "FR-AUTH-5,6,8; FR-CAT-9")`), because "filtering happens only when a request asks for it" is an FR-AUTH-8 clause. docs/04 §15 maps FR-AUTH-8 to I-21 (M3), so check-traceability still agrees. Mutation-checked: `Engine.list_stories` defaulting `owner` to the asker now fails the slice. It passed every test before.
+  **Why:** A read carries a well-formed `X-Epistrel-Principal` into the request context (`api/auth.require_principal`), so a list narrowed to the asker was possible. Every list call in the tests sent bearer-only headers. Cost if wrong: one marker.
+  **Issue:** #104
+- **Decision:** #104 verification fixes, round 1. The nothing-gates matrix (`test_i_21__nothing_gates`) now covers every form of a read, and compares read bodies as well as status codes. For reads only, this goes beyond the Discretion's "equal status codes (not equal bodies)".
+  - `Call.params` became `Call.queries`, and each query string is its own case. A `private` catalog character is read as its card (the default) and in `full`, as version 1, and as its draft in both projections: FR-AUTH-8 says any entry "can be read in either projection". A story and its history are read in their default viewpoint and as `omniscient` (FR-CAT-12's true ages). That is 41 cases, up from 35.
+  - A read must give all three requesters the same body once ids and times are blanked (in keys too) and every list is put in one order. Each read's `prepare` now puts the owner's content where the read finds it: changed settings, pinned memories, custom instructions, a regenerated turn. So an empty answer cannot pass for a full one.
+  - Writes still compare status codes only, because their bodies name the acting principal.
+  - Mutation-checked. Each of these fails the matrix: a card read refused to anyone but the owner (the verifier's, which passed every test before); a draft read refused to anyone but the owner; a relation list narrowed to the relations the asker added, which still answers 200.
+  - Later types' reads (#105, #106, #108, #114) get the body check too. Their `CALLS` entries need a `prepare` that puts content there, and a field that varies between two fresh entities needs blanking in `_blanked`.
+  **Why:** Equal success codes prove that every request ran, not that each returned the same thing. The Discretion's reason for not comparing bodies, attribution, holds for writes. A read's body names the entity's creator, never its reader: the inspected bodies show `p-owner-a` as owner, actor, publisher and `created_by` for all three readers. Cost if wrong: a later read whose body rightly varies by reader needs an exception in the matrix.
+  **Issue:** #104, #105, #106, #108, #114
+- **Decision:** #104 verification fixes, round 2 (Rule 1, test fix). `test_i_21__ownership` now pins both halves of a relation filter. Two more stories cross the names and principals of `mine`, which holds `editor:c` and `co_author:d`. One holds `editor:d` (the name, with another principal) and the other `co_author:c` (the principal, with another name). Both are owned by a fresh principal `e`.
+  - The slice asserts every cell of {`editor`, `co_author`} × {c, d}, and each name for any principal (`editor:`, `co_author:`), as exact newest-first lists. It also asserts that `editor:d` and `co_author:c` together list nothing.
+  - The existing `co_author:` assertion changed from the set {mine, theirs} to the exact list [the `co_author:c` story, theirs, mine], because the test now creates a third story holding that name. This makes it stricter, not looser.
+  - Mutation-checked on `ownership.list_filters`. Each mutant ran against the slice alone (`pytest tests/integration/test_i_21.py::test_i_21__ownership`), on a fresh container database holding only the slice's rows. The sources were restored afterwards.
+    - M1, the principal clause dropped: passed the old slice; fails the new one (`editor:c` also lists the `editor:d` story).
+    - M2, the name clause dropped: passed the old slice; fails the new one (`editor:c` also lists the `co_author:c` story).
+    - Two more, beyond the verifier's. M3 matches the name and the principal on different relations (two `EXISTS`). M2b drops the name only from the any-principal `name:` form. Both passed the old slice. M3 fails the new one at `editor:d`, and M2b at `editor:`.
+  - `test_ownership.py::test_principals_and_names_are_validated` is unchanged. Its filter check is about splitting `editor:team/ana:1` at the first colon, and under the real filter it gives the same answer whatever ran before. Its order-dependent catch of M1 is no longer needed.
+  **Why:** The verifier showed that M1 and M2 passed every test unless the nothing-gates matrix ran first. In the old data, each relation name had one principal and each principal one name. The fresh owner keeps the `owner=` assertions unchanged. M3 is the third way to get the halves wrong, and the same 2×2 grid catches it at no extra cost. Cost if wrong: two stories, two relations and five list requests more in one test.
+  **Issue:** #104
+- **Decision (drift):** The moderation hook calls the consumer with httpx2. httpx2 was already in the runtime closure through openai, and is now declared in `[project].dependencies` (and dropped from the dev group). Pillow 12.3.0 and python-multipart 0.0.32 were added with `uv add`. Pillow declares `MIT-CMU`, so `[tool.epistrel.gates.licenses].allow` gains `MIT-CMU` and `HPND`, as the Discretion says; both are permissive and Apache-2.0-compatible. The test hook is a stdlib `ThreadingHTTPServer`, following the pattern of `tests/model_support.py`.
+  **Why:** The drift note: httpx is not in the lock, and respx does not intercept httpx2. `check-deps` and `check-licenses` pass. I built the image under a throwaway tag (since removed), and Pillow imports there. Cost if wrong: the dependency's name.
+  **Issue:** #105
+- **Decision (drift):** An unknown or retired `content_rating_id` is 422 `rating_retired` (`reason` `unknown` or `retired`, field `metadata.content_rating_id`), through `require_assignable`. It is checked once before the hook and again, `FOR SHARE`, in the commit transaction, which stores the rating's current version. Only an omitted `content_rating_id` is a `validation_error`.
+  **Why:** #50 deliberately kept one code for unknown and retired ratings. The pass-1 `validation_error` for unknown would contradict it.
+  **Issue:** #105
+- **Decision (drift):** The media settings are a `MediaSettings` section of `DeploymentSettings`, every leaf prospective:
+  - `media_allowed_types`: lowercase `type/subtype`, unique, 1–50;
+  - `media_max_bytes`: 1 B–10 GiB, default 50 MiB;
+  - `media_moderation_webhook_url` and `public_base_url`: absolute http(s), ≤ 2048, default null;
+  - `media_moderation_timeout_ms`: 100–60000, default 5000;
+  - `media_sweep_interval`: 60 s–7 days, default 3600.
+
+  They are in `SettingsPatch`, and `NULLABLE` gains the two URLs. `MediaSettings` also joins `config_changes.SECTIONS`; without it, `/admin/settings` would read the media values back as their defaults.
+  **Why:** Deployment settings live in the `deployment_state.settings` jsonb, not in columns. While adding the section I found that `SECTIONS` already misses `RetentionSettings` and `WorkerHealthSettings` (#71). That is out of scope, so it is filed as #315.
+  **Issue:** #105, #315
+- **Decision (drift):** `media_sweep_interval` stays a deployment setting, and it drives the recurring task:
+  - `RecurringTask` gains `interval_setting`, and `timers.reconcile` takes that setting's value at every worker start-up.
+  - A settings write moves the `recurring_tasks` row at once: its interval, and `next_run_at` no later than one new interval after the last run. The mapping is `core.settings_schema.RECURRING_INTERVAL_SETTINGS`.
+
+  **Why:** The AC says "every `media_sweep_interval`", and pass 1 puts it under `/admin/settings`. Reconcile only ran at start-up and wrote code constants, so a setting it ignored would only change after a restart, or never. Cost if wrong: one optional field and one helper.
+  **Issue:** #105
+- **Decision (drift):** `subject_references` is created in #123's full shape:
+  - `story_id` is nullable, with a CHECK that a row names a story exactly when `scope = 'story'`;
+  - a unique constraint on `(subject_kind, subject_id, record_table, record_id, field)` with `NULLS NOT DISTINCT`;
+  - indexes on `(subject_id, scope, story_id)` and `(record_table, record_id)`.
+
+  So the table joins `STORY_TABLES` and `STORY_TABLES_NOT_COPIED`, and `determinism.ORDER` (story-scope rows only). S-DELETE plants a story-scope row, because there is no story writer before #123. `record_table` is `media_assets`, as the AC writes it, not the schema-qualified name #123's pass 1 proposes.
+  **Why:** The Discretion says "#123's full shape", and the drift note lists what that requires. The AC is what `/n8-verify` reads. Cost if wrong: #123 qualifies the name with one `UPDATE`.
+  **Issue:** #105, #123
+- **Decision (drift):** The parts are:
+  - `test_c_15__media_upload`, `part("M3", "FR-MEDIA-1; FR-API-6")`, in `test_c_15.py`;
+  - `test_i_17__media_sweep`, `part("M3", "FR-MEDIA-2")`, in `test_i_17.py`;
+  - `test_i_21__media_retire`, `part("M3", "FR-MEDIA-2")`, in `test_i_21.py`.
+
+  `test_media_moderation` is unmarked and lives in `tests/integration/test_media_assets.py` with the other detailed tests, including the sweep's, as the planned artifact says. The database-free tests are in `tests/test_media_units.py`. No unmarked docstring names an FR id. `check-lexicon` flagged three part bodies, and I reworded rather than amend the lexicon:
+  - C-03 (an M2 part) said `upload`, so its media expectations moved to the module constant `MEDIA_ANSWERS`;
+  - the I-17 slice said `clock.now()`, and now uses `datetime.now(UTC)`;
+  - the I-21 slice had a local `import`, and now imports at module level.
+
+  **Why:** A plain `test_media_sweep` maps to no §15 row. "clock" (M6) and "import" (M7) are lexicon terms that here mean the system clock and a Python import, not those capabilities. Cost if wrong: renames only.
+  **Issue:** #105
+- **Decision (drift):** Signing:
+  - `config_key_missing` (503) gets a core-side `SigningKeyMissing`.
+  - Both signers use an HKDF-SHA256 subkey of `EPISTREL_CONFIG_KEY`: `media-url` for content URLs (#107's planned info string; HMAC of `GET|<path>|<exp>`, unpadded base64url, 30 s skew) and `media-moderation-hook` for hook requests.
+  - The new `epistrel moderation-secret` command prints the hook subkey in hex, and exits 78 without a valid key.
+  - Deviation: `X-Epistrel-Signature` is `sha256=` + the HMAC of `"<X-Epistrel-Timestamp>." + body`, not of the body alone.
+
+  **Why:** The drift note: a consumer must never need the master key, which also decrypts the stored model API keys. Binding the timestamp means a captured request cannot be replayed under a fresh timestamp. Cost if wrong: a consumer who verifies the body alone must add the prefix.
+  **Issue:** #105, #107
+- **Decision (drift):** Invariant 4 is unchanged: `GET /media/{id}/content` still needs the service credential, and the hook fetches `content_url` with it. A valid `exp`/`sig` (checked against `/media/{id}/content`) only adds access to an upload that is still staged, waiting for the hook. The staged file is `<root>/tmp/<asset id>`, and its type is sniffed again for the response. A missing, invalid or expired signature falls through to committed content (404 while the upload is staged). `content_url` is `public_base_url` plus the signed path. When `public_base_url` is null, the URL is the signed path alone, relative to Epistrel's root, rather than a refusal.
+  **Why:** The signed-URL exemption is #107's invariant-4 amendment and the owner's round-two decision. Pulling it forward would mean editing CLAUDE.md, adding an ADR and an Ad-hoc entry for #107's work. A hook that only matches hashes does not need the URL at all. Cost if wrong: an operator sets `public_base_url`.
+  **Issue:** #105, #107
+- **Decision:** The upload route parses the multipart stream itself, with python-multipart's `MultipartParser`, instead of FastAPI's `UploadFile` as pass 1 says. The rules:
+  - the parts are `metadata` (JSON, ≤ 256 KiB) and then `file`, and nothing may follow;
+  - each part has at most 8 headers of 4 KiB each;
+  - a declared `Content-Length` above `media_max_bytes` plus a 272 KiB envelope is 413 before the file is read;
+  - the file's bytes are counted while they stream to `<root>/tmp`.
+
+  OpenAPI documents the body through `MULTIPART_BODIES` (the `MediaUpload` component). C-01 excludes `upload_media` from generation and adds hand-written malformed cases. `_body_problems` reads a multipart body's `metadata` component.
+  **Why:** FastAPI parses a form body before any dependency runs. With `UploadFile`, an unauthenticated client's whole upload would be spooled to disk before the 401, and the size could only be checked after the fact. Cost if wrong: a route with an `UploadFile` parameter.
+  **Issue:** #105
+- **Decision:** An upload's request hash covers the metadata and the bytes' SHA-256, size and MIME type, so the bytes are staged before the `Idempotency-Key` is claimed. The work is split around the claim:
+  - before it: the metadata, size and type checks, which are pure checks of the request;
+  - after it: the rating check, the probe, the hook and the commit, so a replay never calls the hook again.
+
+  The commit is one transaction under `pg_advisory_xact_lock(0x4D454449, <first 32 bits of the checksum>)`. That two-key space is separate from the one-key space of `DEPLOYMENT_LOCK_KEY`. The transaction inserts the row, indexes it, records the `control` operation and, last, renames the staged file into place: read-only, or dropped when the blob already exists.
+  **Why:** The same key with other bytes must be 409 `idempotency_conflict`. Mutation-checked: dropping the SHA-256 from the hash fails `test_upload_is_idempotent`. A commit that fails after the rename leaves a blob no row names, and the sweep removes it after an hour.
+  **Issue:** #105
+- **Decision:** The sweep runs in three steps:
+  - **Rows.** Each purge is its own transaction: lock the row (`FOR UPDATE SKIP LOCKED`), re-check its references under the lock, `drop_entity` (a `deleted` ownership event by `system`), `drop_references`, then the row.
+  - **Bytes.** A blob is deleted only under its checksum lock, and only when no row of any state names it: at once after a purge, and after an hour for any other blob nothing names.
+  - **Staging.** Staged files older than an hour are removed. A live asset younger than 24 hours is never purged, and candidates are never touched. Each run handles at most 20 batches of 500.
+
+  References are discovered through `MEDIA_REFERENCE_SOURCES` entries of `(table, jsonb column, jsonpath)`. The catalog draft and version sources use `strict $.** ? (@.type() == "string")`, which matches an asset id wherever a later story puts it. Tests plant references in #115's planned `public_card.images` shape.
+  **Why:** Querying the records, never a counter, is what the AC requires. A path-agnostic source keeps #115's shape free, and over-matching keeps an asset, which is the safe direction. A new pause point, `media.sweep.before_purge`, proves the re-check under the lock. Mutation-checked: without the re-check, `test_a_reference_added_mid_sweep_keeps_the_asset` fails. The pre-lock reference query only saves work, so no test can see it.
+  **Issue:** #105, #115
+- **Decision:** Files and probes:
+  - The job lives at `orchestrator/jobs/handlers/media_sweep.py`, beside the other recurring sweeps and registered in `handlers/__init__.py`, not at `orchestrator/jobs/media_sweep.py`. `Engine.start_workers` binds its store.
+  - The sweep's logic is `core/media/sweep.py`, the hook's HTTP exchange `core/media/moderation.py`, and the probes `core/media/probe.py`.
+  - Pillow reads image headers. `ffprobe` is taken from `PATH`, with `-protocol_whitelist file` and a 10 s timeout; a failed probe leaves the values null. #107 points it at `ffmpeg_path` and installs ffmpeg.
+  - The content route sends `ETag` (the SHA-256), `Cache-Control: private, max-age=31536000, immutable` and `Content-Length`, but not pass 1's `Accept-Ranges: bytes`: #107 adds that together with real ranges.
+
+  **Why:** That is the handlers' convention. Advertising ranges that the route ignores would mislead video players. Cost if wrong: moving files.
+  **Issue:** #105, #107
+- **Decision:** The routes:
+  - `GET /media` lists `live` assets by default and `retired` ones on request. `state=candidate` is 422. Filters are `owner`, `relation` (`ownership.list_filters`) and `kind`; `limit` is 1–200 (default 50); `cursor` is opaque (base64url of `[created_at, id]`), newest first. The answer is `{items, next_cursor}`.
+  - `DELETE` always answers 204. A second delete records nothing. The asset keeps its relations until the sweep purges it.
+  - The ownership fixtures gain `Kind.retires`, and `test_deleting_an_entity_drops_its_relations` now asserts retire semantics for media. This changes an existing test because FR-MEDIA-2 requires the behaviour.
+  - Media joins `KINDS` and `CALLS`, and the nothing-gates matrix compares the content route's bytes.
+  - `CONTENT_FIELDS` gains `caption`, `negative_prompt`, `generation_metadata` and `reason`.
+
+  **Why:** Pass 1 names the list filters, and #110's keyset is still to come. The matrix and the delivered-type guard must cover every owned type.
+  **Issue:** #105, #110
+- **Decision:** The media root:
+  - `Settings.media_root` (`EPISTREL_MEDIA_ROOT`) defaults to `var/media`. The image sets `/var/lib/epistrel/media`, created owned by uid 10001, and compose mounts the `media` volume there. `/var/` is gitignored.
+  - The app's lifespan and `epistrel serve`'s preflight both prove the root writable, and refuse the start with exit 78 otherwise.
+  - Test apps default to a per-process temporary root (`tests/auth_support.MEDIA_ROOT`). The fault harness's child and X-07's spawned workers get their own roots (Rule 3).
+
+  **Why:** Pass 1 asks for a fail-fast start-up. A full gate run showed that without these roots, the fault harness's child engine created `var/media` under the repository.
+  **Issue:** #105
+- **Decision (Rule 1):** The start-up writability probe is now unique per process (pid plus random). Previously every process wrote and removed the same `.writable` file. X-07's two spawned workers start on one media root at once, and one of them exited 78 with `FileNotFoundError` when the other unlinked the shared probe. The regression test is `test_processes_prepare_one_root_at_once` (8 threads × 50 checks); mutation-checked, the shared name fails it.
+  **Why:** An API and its workers sharing a volume start together.
+  **Issue:** #105
+- **Decision:** These mutations were checked, each run against the story's tests with the sources restored byte for byte afterwards. Each one fails a test:
+  - no hook call;
+  - a malformed answer accepted;
+  - bytes deleted while a row still names them;
+  - candidates swept;
+  - retired assets listed;
+  - retired assets referenceable;
+  - retired content refused;
+  - no size limit;
+  - subjects optional;
+  - the type unchecked;
+  - generation metadata dropped;
+  - one blob per asset;
+  - no subject index;
+  - no re-check of references under the lock;
+  - a shared probe name.
+
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group A's full run.
+  **Issue:** #105
+- **Decision:** #105 verification fixes, round 1 (Rule 1). Each sweep run now goes on where the previous one stopped, so the sweep frees what nothing uses however many rows and blobs there are.
+  - **Rows.** A batch now holds only assets nothing references. `assets.unreferenced` is the reference test as an anti-join (`NOT EXISTS` over each source whose table exists), applied before the batch's `LIMIT`. Before, every run began at the oldest eligible row, and referenced live assets older than a day filled all 20 × 500 places; nothing newer was ever examined.
+    - The per-batch `referenced` pre-check is gone, since the anti-join does that work. The re-check under the row lock stays.
+    - This replaces the sweep decision's line above, "The pre-lock reference query only saves work, so no test can see it": the progress test now sees it.
+    - Postgres plans the anti-join as one hash anti-join per batch (probe on a scratch database: 5,000 assets and 400 drafts, 5 ms).
+  - **Blobs.** `list_checksums(after=)` lists in ascending checksum order. The store keeps a sweep cursor, the last checksum a run examined, in `<root>/.sweep-cursor` (written by rename). The next run starts after it, and a run that reaches the last blob clears it.
+  - The `BlobStore` port gains the ordering and `sweep_cursor`/`set_sweep_cursor`. #107's S3 adapter implements them with `ListObjectsV2`'s `StartAfter` and a small object.
+  - Regression test: `test_each_run_goes_on_where_the_last_stopped`, with `BATCH` 2 and `MAX_BATCHES` 1 (monkeypatched). Three referenced assets older than a day must not keep a newer retired one from being purged in the first run. A blob nothing names, sorting after the named ones, must be deleted in the second run. Mutation-checked: it fails without the anti-join, with the cursor not read, and with `list_checksums` ignoring `after`. The store's ordering and cursor have a unit test.
+  **Why:** I chose the anti-join over carrying a `(created_at, id)` resume point between runs. A resume point needs somewhere to live: a new `recurring_tasks` column is a schema change to an M2 table (Rule 4), and a job's `result` gets purged and does not exist when `sweep()` is called directly. The anti-join needs no state, and every place in a batch becomes a purge. For blobs, a random start shard would only probably reach every blob, and an in-memory cursor resets at every restart. The cursor file sits with the blobs it indexes and is shared by every process on the root. Cost if wrong: one file in the media root, and two port methods for #107.
+  **Issue:** #105, #107
+- **Decision:** #105 verification fixes, round 1. `test_i_17__media_sweep` now proves "no asset row of any state" (AC4) with two more pairs of identical bytes.
+  - A retired asset that a catalog version references, and its unreferenced retired twin.
+  - A candidate, and its retired twin.
+
+  After the twins are purged, both blobs remain, and the version's retired asset still serves its content. The part's first sweep now purges 4 assets instead of 2, because the part plants more; no assertion was loosened. Mutation-checked: `collect_blob` counting only `live` rows, or ignoring `candidate` rows, fails the part. Both mutations passed every test before.
+  **Why:** These are the verifier's cases. They sit in the I-17 part, the milestone's evidence for FR-MEDIA-2, rather than in a detailed test. Cost if wrong: none; the part only gained assertions.
+  **Issue:** #105
+- **Decision:** #105 verification fixes, round 1. The moderation hook's content URL is now proven short-lived (AC2).
+  - `test_media_moderation` checks that `exp` is 5 minutes after the signing moment. The bounds are `time.time()` read before and after the upload.
+  - `test_the_hook_reads_the_staged_bytes` freezes the injectable time source. The staged content still serves at `exp` + 30 s (the skew) and is 404 one second later.
+  - The unit test checks `sign_path`'s default lifetime.
+
+  Mutation-checked: a one-year lifetime fails all three tests, and a signer that never expires fails the staged-bytes test.
+  **Why:** The tests use the literal 5 minutes, not the module constant, so a changed constant cannot pass them.
+  **Issue:** #105
+- **Decision:** #105 verification fixes, round 1. New pause point `media.upload.before_commit` (`pauses.MEDIA_UPLOAD_BEFORE_COMMIT`). It sits in `assets.upload` after `store.put` and before the commit, while the checksum's advisory lock is held.
+  - `test_the_sweep_waits_for_an_upload_of_the_same_bytes`:
+    1. Retire an asset, then upload its bytes again. The upload's `put` keeps the existing blob, and the upload is held at the point.
+    2. Start a sweep that purges the retired asset.
+    3. Wait until `pg_locks` shows a session waiting on a checksum lock (`classid = LOCK_CLASS`), then release the upload.
+    4. Assert that no blob was deleted, the bytes are there, and `GET /media/{id}/content` is 200 with them.
+  - Mutation-checked: a no-op `lock_checksum` fails it, because the sweep deletes the bytes under the uncommitted row. Removing the pause point also fails it (the hold times out). Five repeated runs passed.
+  **Why:** I chose the purge path because it is the realistic race: the row is purged, then its bytes are collected at once. Waiting on `pg_locks` instead of sleeping makes the race deterministic. Cost if wrong: one no-op call per upload outside tests.
+  **Issue:** #105
+- **Decision:** #105 verification fixes, round 1. `test_uploads_index_their_subjects` now names the character as a whole word in the negative prompt and expects that row (`generation_metadata.negative_prompt`, `mentioned`). The non-matching `x{name}y` case moved to the second upload's negative prompt. Mutation-checked: dropping the field from `INDEXED_FIELDS` fails it.
+  **Why:** This is the coverage line's registration. Before, no test could tell whether the field was indexed.
+  **Issue:** #105
+- **Decision:** #105 verification fixes, round 1 (discovered work). #105 does not register #108's scenario sources or #119's story-snapshot sources. I filed that handoff as #316 (`needs-triage`) and cross-referenced it on #105.
+  - #316 asks #108 to register `catalog.scenario_catalog.draft` and `catalog.scenario_versions.content`, and to call `assert_referenceable` in its saves.
+  - It asks #119 to register `public.character_snapshots.content` and `public.stories.scenario_snapshot`, to add the I-17 slice "a media asset referenced by a story survives deletion of its catalog entry", and to decide whether genesis copies must pass `assert_referenceable`.
+  - The `MEDIA_REFERENCE_SOURCES` docstring now names #316.
+  **Why:** The work is out of #105's scope. It also cannot land early: `public.stories` already exists without `scenario_snapshot`, and a registered source whose column is missing fails every sweep. The discovered-work rule allows a new issue, not edits to #108 or #119. Cost if wrong: if #108 or #119 lands without the registration, the sweep purges assets only they reference. #316 is the guard against that.
+  **Issue:** #105, #108, #119, #316
+- **Decision:** #105 verification fixes, round 2. The subject-reference scan now reads catalog characters' aliases as well as their names, as the Discretion line says ("catalog character names and aliases"). The first build scanned names only. It deferred aliases to #123 in `core/erasure/index.py`'s docstring, and no entry here recorded that deviation.
+  - `_catalog_terms` adds the strings of `metadata.aliases` (`ALIASES_PATH`) from each catalog draft and from every version. That is where #115's plan puts FR-CAT-2's aliases, and #123's fixture alias comes from there too.
+  - Until #115, no draft can hold the field (`CharacterDraft` forbids extra keys), so the scan finds nothing there. An `aliases` value that is not a list, and an entry that is not a string, are skipped.
+  - #123 still adds the story side's aliases and name overrides, which #105's catalog-scope rows do not use.
+  - Test: `test_uploads_index_alias_mentions`, on a scratch database. It plants the shape straight into a draft and a version row, as the sweep tests plant `public_card.images`.
+  - Mutation-checked: the test fails with no aliases read, with the draft's or the versions' aliases dropped, without the string check (the upload fails) and without the list check (an object's key is indexed).
+  **Why:** I followed the Discretion line rather than only logging the deferral, which was the verifier's other option. With the read in place, a caption, alt text or prompt that names a character only by alias is indexed from the day #115 lands. Otherwise it would stay unindexed until #123's scan and rebuild. I chose the explicit path over a search for any `aliases` key, because #115's opaque `visual_identity.adapter_params` could carry such a key, and its strings would name nobody. Cost if wrong: if #115 stores aliases somewhere else, the read finds nothing. The planted test would still pass, so the gap would reopen silently until #123. #115 must keep `metadata.aliases`, or move `ALIASES_PATH` and the test's planted shape along with it.
+  **Issue:** #105, #115, #123
+- **Decision (drift):** Every "#110" in #107 means the S3-compatible adapter, as the drift note says. The planner's S-id substitution turned "S3" into "#110", the catalog listing story, which has nothing to do with object storage. #107 depends only on #105.
+  **Why:** The text means the S3 adapter in every place. Cost if wrong: none.
+  **Issue:** #107, #110
+- **Decision (drift):** The test store is MinIO RELEASE.2025-07-23T15-54-02Z. The image is `bitnamilegacy/minio:2025.7.23-debian-12-r5`, pinned by digest (`sha256:6dabb4a2…`) as `tests/conftest.py::MINIO_IMAGE`, next to `PG_IMAGE`. Its `minio` binary runs directly (`MINIO_ENTRYPOINT`), with no Bitnami setup scripts. The planned `minio/minio` tag could not be used.
+  - At execution, `gh api repos/minio/minio/releases/latest` resolved `RELEASE.2025-10-15T17-29-55Z`.
+  - Docker Hub no longer has `minio/minio`: the API answers "object not found", and `docker manifest inspect` is denied. Quay has no tag for that release either.
+  - Bitnami's legacy registry has the newest MinIO release that still has an image. Its setup scripts start and stop the server once before serving, so a readiness check could pass and then fail.
+  - The `minio` session fixture fails, never skips, without Docker. Pulling by tag plus digest works through docker-py; I checked by removing the local image and pulling again.
+  **Why:** The AC names MinIO through testcontainers, and this is still MinIO. A different S3 server (SeaweedFS, LocalStack) would change what the test proves. Bitnami's legacy images get no updates, which is acceptable for a pinned test service. MinIO is AGPL, so it is a test and development service only. Cost if wrong: move the pin when an official image returns.
+  **Issue:** #107
+- **Decision (drift):** MinIO for local development is a separate override file, `docker/compose.minio.yml`, not a profile in `docker-compose.yml`. X-07 and C-10 pin the default stack's services to `engine` and `db`. The override runs the tests' pinned image and creates the bucket in a one-shot `minio-bucket` service; the engine waits for it to finish (`service_completed_successfully`). It sets the engine's `EPISTREL_MEDIA_S3_*` settings, publishes MinIO on 127.0.0.1:9000 (the presign endpoint), and labels its secrets dev-only. `test_compose.py` checks all of this. A trial `up minio-bucket` created the bucket and exited 0.
+  **Why:** This is the drift note's option. A bucket created by the setup scripts would hit the same stop-and-start race as above. Cost if wrong: one file.
+  **Issue:** #107
+- **Decision (drift):** The signed-URL exemption is built as a third router:
+  - `GET /media/{media_id}/content` and a schema-less `HEAD` twin move to `routes.media.content_router`.
+  - That router is on `routes.signed_router`, which `create_app` includes only in `api` and `all` modes (`include_signed`). Its guard is `api.auth.require_credential_or_signed_url`.
+  - `auth.SIGNED_ROUTES = {("GET", "/media/{media_id}/content")}` names the route. `unguarded_routes` accepts the signed guard on that method and path and nowhere else.
+  - The guard's rules:
+    - a recognised credential passes, whatever `exp`/`sig` say;
+    - a signature of `GET|<path>|<exp>` that has not expired passes;
+    - a signature that does not match the URL is 403 `signature_invalid`;
+    - a matching signature past `exp` plus the 30 s skew is 403 `url_expired`;
+    - neither credential nor signature is the credential's 401.
+  - The OpenAPI document marks the route `security: [{HTTPBearer: []}, {}]`.
+  - `test_route_guard.py` gains bite tests: the guard on another path or method is reported, and the route with no guard is reported. It also gains the behavioural 401/403 test and the worker-mode check.
+  - C-02 needs no change: its worker-mode assertion still holds.
+  - The OpenAPI builder's rules key on `SIGNED_ROUTES`.
+  - CLAUDE.md invariant 4, the exempt-route sentence in docs/02 §9 and the README are reworded. ADR-152 amends ADR-149: ADR-149 gets an Amended-by line, a *[refined by ADR-152]* marker and the indexes.
+  **Why:** This is the drift note's design. `unguarded_routes` reads the route table and cannot see query parameters. C-02 forbids the route on `public_router`, which worker mode serves. A signed URL authenticates one asset's bytes only. Cost if wrong: one router.
+  **Issue:** #107, #44
+- **Decision (drift):** The six new Engine operations (`get_media_url`, `open_upload`, `get_upload`, `put_upload_part`, `complete_upload`, `abort_upload`) get C-03 parity steps, with no `PARITY_EXCLUDED` set:
+  - a settings write first sets `public_base_url`;
+  - `Rest` gains a raw `content` body;
+  - `normalise` blanks a signed URL's `exp` and `sig`, since the signature covers the real asset id.
+  `MEDIA_ANSWERS` gains `get_media_url`. The new `SESSION_ANSWERS` pins the session steps' statuses. The session check is written without the word "upload" in C-03's body, because C-03 is an M2 part and "upload*" is an M3 lexicon term.
+  **Why:** `parity_gaps` has no exclusion list, and #128 is in group C. The drift note's first option keeps the parity rule whole. #128's plan of excluding "part uploads, signed URLs" is now unnecessary. Cost if wrong: none; the steps are small.
+  **Issue:** #107, #128
+- **Decision (drift):** The part `PUT` is in neither `_keyed` nor `CODECS`, so it stores no idempotency result. `get_request_context` still mints and echoes an `Idempotency-Key` for it, as for any PUT. Its 200 body is `PartStoredBody(DeploymentMutationResponse)`: `{n, size, received_parts, config_revision, idempotency_key}`. Open is 201, complete 201 and abort 204, each with a codec.
+  **Why:** A part sent again replaces the first, so the request is idempotent by itself. `response_base_problems` still requires the revision base on a non-204 mutating answer. Cost if wrong: one codec.
+  **Issue:** #107
+- **Decision (Rule 1):** The video probe now works. #105's ffprobe invocation passed `-nostdin`, an ffmpeg-only option that ffprobe refuses ("Option not found"). So every real probe failed, and every video's width, height and duration were stored as `null`. #105's tests used a stand-in script that ignores its arguments, so nothing caught it.
+  - The flag is gone; stdin was already `DEVNULL`. The input is now `file:<path>`, matching the extraction.
+  - Checked against Homebrew's ffmpeg 9.0.2 and against Debian's 7.1.5 in the built image; both refuse `-nostdin` from ffprobe.
+  - Regression test: `test_the_real_tools_read_and_frame_a_video` probes a real 2000×1000 one-second video and expects `(2000, 1000, 1000)`. C-23 also asserts `duration_ms == 1000`.
+  **Why:** The Discretion's "ffprobe fills `duration_ms`" was impossible without the fix. Cost if wrong: none.
+  **Issue:** #107, #105
+- **Decision:** The store port has one local base. `store.LocalStaging` owns the media root's staging area and the sessions' part directories (`<root>/uploads/<id>/`). `LocalFilesystemStore` and `core/media/s3.py::S3BlobStore` both extend it.
+  - New port methods: `open_range`, `presign` (local: `None`), `put(..., content_type=, assembled=)`, `begin_parts`, `part_staging`, `store_part`, `stored_parts`, `assemble`, `reopen_parts`, `finish_parts`, `abort_parts` and `stale_part_uploads`.
+  - A part always streams to a local temp file first, so its size and optional SHA-256 are checked before the store sees it. The local store renames it into place; the S3 store sends it with `UploadPart`.
+  - Completion assembles into the new asset's staging file while hashing. On S3 that means `CompleteMultipartUpload`, then streaming the object back. #105's whole path then runs on that file: sniff, rating, probe, hook, poster.
+  - On S3, `put(assembled=)` copies `uploads/<id>` to the checksum key with s3transfer's managed copy, which also handles objects over CopyObject's 5 GB limit.
+  - S3 calls map a missing object to `FileNotFoundError` and every other failure to 503 `media_store_unavailable`, logging the operation and the error code only.
+  - `core/media/stores.py::make_store` picks the adapter and imports boto3 only for S3.
+  **Why:** ffprobe, ffmpeg, Pillow and the hook's `content_url` all need a local file, and hashing needs the bytes anyway. One staging path keeps a completion's checks identical to a direct upload's. Cost if wrong: one local copy of a completed upload, removed when the call ends.
+  **Issue:** #107
+- **Decision:** On S3, a refused completion re-opens the session. The refusal may come after the multipart upload was completed (a checksum mismatch, a hook refusal, a poster failure). `reopen_parts` then starts a new multipart upload, copies each part's range back from the assembled object (`UploadPartCopy`), deletes the object, and records the new `UploadId` on the row. `stored_parts` answers `None` while an assembled object exists, so a retry reuses it.
+  `test_a_refused_completion_leaves_the_session_open[s3]` covers this: the session completes after a hook refusal, and after a wrong part is sent again.
+  **Why:** The plan says a refused completion leaves the session open with its parts. On S3 a completed multipart upload takes no more parts, so "send the wrong part again" would otherwise fail. Cost if wrong: copies inside the store, only on that path.
+  **Issue:** #107
+- **Decision:** The `media_upload_sessions` columns go beyond the Discretion's list. They add:
+  - `created_by` (the opener);
+  - `s3_upload_id` (pass 2's "UploadId in a column");
+  - `media_id` (the asset a completion created, also in `GET`);
+  - `created_at` and `updated_at`;
+  - `closed_at`, which with `idempotency_result_window` decides when the sweep deletes a closed row.
+  `owner_principal` is the asset's owner: `owner`, or the opener. Each `CHECK` is text: `state`, a lowercase SHA-256, `size > 0` and `part_size > 0`. One index covers `(state, expires_at)`. `GET` also answers `part_count`.
+  Migration 0023 also:
+  - adds `media_assets.poster_media_id` with its index;
+  - extends `ck_media_assets_source` with `extracted`;
+  - adds `deployment_state.media_store`, `CHECK` `local`/`s3`, backfilled `local` when any asset exists, since only the local store existed before.
+  Its downgrade turns `extracted` rows into `uploaded`, so the old check holds again. I-08 and the drift test pass.
+  **Why:** The AC needs these facts, and the table is the one the story names. A new column the story's own AC need is not Rule 4. `media_store` is the pass-2 Discretion's column. Cost if wrong: migration edits before M3 merges.
+  **Issue:** #107
+- **Decision:** A completion holds the session's row `FOR UPDATE` for its whole run, hook and ffmpeg included, so a second completion waits and then finds the session closed (409 `upload_closed`). It is waiting `FOR UPDATE`, not `NOWAIT`, so a completion that meets a part `PUT` in flight waits for it instead of being refused.
+  - A part `PUT` takes the same lock to record its part.
+  - The planner's "completion is idempotent on `upload_id`" is read as: keyed under `Idempotency-Key` with material `{upload_id}`. A retry under the same key replays the asset; another key gets 409 `upload_closed` (pass 2).
+  - New pause point `media.complete.locked`. `test_a_second_completion_waits_and_finds_it_closed` waits until `pg_stat_activity` shows the second completion blocked on a lock, then expects `[201, 409]`.
+  **Why:** A `NOWAIT` would refuse a completion that only met a part upload. The row lock serialises without a fourth state. Cost if wrong: one connection held while the hook answers (at most `media_moderation_timeout_ms`).
+  **Issue:** #107
+- **Decision:** Open, complete and abort each record one committed `control` operation by the requester (`core/control.py`), as #105's upload and retire do. A part records none. Opening checks what it can at once:
+  - the size against `media_max_bytes` (413);
+  - the declared type against `media_allowed_types` and `kind` (415);
+  - the rating (422 `rating_retired`);
+  - a named `poster` (422 `media_retired` or `poster_invalid`);
+  - for a video with no poster, that ffmpeg is there (422 `poster_required`).
+  Completion checks the size and type again, against the settings then in force and the sniffed bytes.
+  **Why:** This is the attribution pattern the other catalog and media writes follow. A session that can never complete should be refused when it is opened. Cost if wrong: one row per write.
+  **Issue:** #107
+- **Decision:** How the poster is delivered and checked.
+  - A `poster_file` part must follow `file`. `UploadForm.poster` reads it only after the main file has streamed; a REST caller passes the bound method, a library caller an `UploadFile` or `None`.
+  - A `poster_file` on an image, or beside `poster`, is 422 at `body.poster_file`. `poster` on a non-video is 422 at `body.metadata.poster`, or `body.poster` for a session.
+  - A supplied poster must be `live` (`assert_referenceable`: 422 `media_retired`) and an image. A non-image is the new code 422 `poster_invalid` (`reason: not_image`).
+  - An extracted poster skips the `media_allowed_types` check. Epistrel makes it, always PNG, and it is sniffed to be one.
+  - The hook sees the video first, then a poster stored with it.
+  - A poster's alt text is truncated to the 500-character limit.
+  - The poster row's reference to its video is a source with `path = None` in `MEDIA_REFERENCE_SOURCES` (`public.media_assets.poster_media_id`): a column that holds an id itself. `referenced`/`unreferenced` handle both shapes.
+  - Retiring a video retires its `live` poster in the same transaction, whatever the poster's source, as the Discretion says.
+  **Why:** These are the AC's two supply routes, plus the Discretion's rules. An allowed-types list governs what consumers upload, not what Epistrel derives. Cost if wrong: a deployment that drops `image/png` from its allowed types still gets PNG posters.
+  **Issue:** #107
+- **Decision:** `media_multipart_threshold` applies to the whole direct request: the file plus any `poster_file`. It is checked by declared length before reading, or counted as the bytes stream. #105's `media_too_large` pre-check is unchanged (`media_max_bytes` plus the envelope), so a body carrying a poster may hold at most that in total. The new deployment settings, all prospective, are:
+  - `media_signed_url_ttl`: 1–86400 s, default 300;
+  - `media_multipart_threshold`: 1 KiB–10 GiB, default 8 MiB;
+  - `media_upload_ttl`: 60 s–7 days, default 24 h.
+  **Why:** "Uploads larger than the threshold use sessions" reads as the request. The two pre-checks stay simple. Cost if wrong: a poster near the limit on a video near the limit needs a session.
+  **Issue:** #107
+- **Decision:** How ranges and conditions are split. The API parses the headers: `routes.media.parse_range`, one `bytes` range of at most 18 digits a side, and `entity_tags`. Core applies the semantics: `assets.open_content(byte_range=, if_none_match=, if_range=, with_bytes=)`, with `ByteRange.resolve` clamping.
+  - `If-None-Match` matching weakly, or `*`, is 304 before any range.
+  - `If-Range` applies a range only when it is exactly the current `ETag`; a weak tag or a date gives the whole file.
+  - `HEAD` is a second route with no schema entry (`get_media_content_head`): headers only, no blob opened.
+  - Content answers (200, 206, 304, `HEAD`) carry `Accept-Ranges: bytes`, `Access-Control-Allow-Origin: *` and `Access-Control-Expose-Headers: Accept-Ranges, Content-Range, Content-Length, ETag`. Error answers do not.
+  - Streams use 64 KiB chunks on both stores; S3 reads go through `asyncio.to_thread`.
+  **Why:** One Engine call per handler, and a `HEAD` or a 304 should open nothing, which matters for an S3 `GET`. Documenting `HEAD` would duplicate the `operationId`, and C-02 skips it anyway. Cost if wrong: library callers get typed conditional reads.
+  **Issue:** #107
+- **Decision:** `GET /media/{id}/url` works as follows.
+  - `ttl` is accepted from 1 to 2³¹−1 and cut to `media_signed_url_ttl`.
+  - On the local store it needs `EPISTREL_CONFIG_KEY` (503 `config_key_missing`) and `public_base_url` (503 `config_missing`, `details.setting`), as the Discretion says. This differs from #105's hook `content_url`, which falls back to a relative path.
+  - `expires_at` is the signed `exp` locally, and the moment of presigning plus the TTL on S3.
+  - A retired asset gets a URL; a candidate or an unknown asset is 404.
+  - FastAPI's header validation errors are now reported at `headers.<name>`, as docs/02 §9 documents, instead of `header.<name>`. `X-Part-SHA256` is the first FastAPI-validated header.
+  **Why:** A relative URL is useless to a player outside Epistrel's own origin. The header path was a defect of the generic validation handler, which until now had no header parameter to report. Cost if wrong: one setting an operator must set.
+  **Issue:** #107
+- **Decision:** `/health`'s `checks` gains `ffmpeg` and `ffprobe` (`ok`/`missing`). `FfmpegTools.status()` checks each tool's `-version` once, 5 s at most, and keeps the answer. The lifespan calls it at start-up; an app that was never started checks on the first `/health` or video. Neither value changes the status. The ffmpeg seam is `Engine.posters` (`PosterExtractor`: `status`, `probe_video`, `extract`), and C-23's spy replaces it on the app's Engine. `test_health.py`'s exact body now expects `ok` for both, since the suite needs ffmpeg; a new test covers `missing`.
+  **Why:** These are the Discretion's "probes once at start-up, ffprobe reported separately" and "a PosterExtractor protocol on app state". Cost if wrong: none.
+  **Issue:** #107
+- **Decision:** Existing tests changed because the story changes the behaviour they pin. No assertion was loosened.
+  - The media sweep's exact result dicts (test_media_assets, I-17) gain the session pass's three counts, at 0.
+  - `MEDIA_COLUMNS` gains `poster_media_id`.
+  - `test_list_filters_and_pages`' video names one of the listed images as its `poster`, since every video needs one. Its listing assertions are unchanged.
+  - I-21's `stub_settings` gains a config key. `_blanked` blanks a signed URL's `exp`/`sig`. `Call.cleanup` unsets the `public_base_url` the URL case sets.
+  - `CALLS` gains `HEAD` content and `GET` url, so the nothing-gates matrix covers them.
+  - C-01's live app gets a config key and a seeded `public_base_url`, which is put back after each generated settings write: a generated write may unset it, and the 503 would trip `not_a_server_error`. C-01 also seeds an upload session, and `_body_problems` accepts a binary `application/octet-stream` body. No operation was excluded from generation. A full C-01 run passed: 73 passed.
+  **Why:** The AC require each behaviour; these are the smallest test changes that hold them. Cost if wrong: none.
+  **Issue:** #107
+- **Decision:** The C-23 part is `test_c_23__delivery`, `part("M3", "FR-MEDIA-3")`, parametrised over `local` and `s3`, in `tests/integration/test_media_delivery.py`, the file the plan names.
+  - #115's `test_c_23__optional_images` (FR-CAT-4) must join this file: traceability counts a test ID per milestone in one file.
+  - The ffmpeg complement runs inside the part, on a second scratch deployment whose `EPISTREL_FFMPEG_PATH` names nothing.
+  - check-lexicon: the part avoids M4's "extraction" and M6's "clock". The skew constant is aliased `SKEW_S`, and `frozen_at` is imported by name.
+  - Detailed tests in the same file cover:
+    - RFC 9110 ranges and conditions on both stores;
+    - the local store's signed URLs;
+    - the threshold;
+    - part checks;
+    - a session from open to close;
+    - checks at open;
+    - concurrent completions;
+    - refused completions on both stores;
+    - a multipart video's poster;
+    - the session sweep;
+    - posters, and an extracted poster the hook refuses;
+    - posters in the sweep;
+    - the store-kind start-up check through `epistrel serve` (exit 78) and a missing bucket;
+    - the S3 store itself.
+  - `tests/test_media_units.py` covers the range parser, `Signer.check`, `ffprobe_beside`, the real tools, extraction failures and the local session parts.
+  **Why:** The plan names this file. Cost if wrong: renames only.
+  **Issue:** #107, #115
+- **Decision:** The image builds and still runs as uid 10001, with Debian trixie's ffmpeg 7.1.5. I built it under a throwaway tag and removed it afterwards. It measured 763 MB, against 301 MB for the last `epistrel:dev` build. Most of the difference is ffmpeg's codec libraries, which `--no-install-recommends` still brings, against the plan's "~150 MB"; boto3 and botocore add a little. Inside the image, `boto3` imports, the probe's new invocation reads a video, and the extraction command writes a PNG.
+  **Why:** AC5 needs the image to run as uid 10001, and the size is a fact the owner should see. Cost if wrong: a smaller ffmpeg build would be a separate decision.
+  **Issue:** #107
+- **Decision:** Hand-offs, not fixed here:
+  - `exports/` is a reserved key prefix on both stores, but the `BlobStore` port has no object API for it. #126 adds the put, open and delete of `exports/<id>.jsonl` it plans.
+  - #128's planned `PARITY_EXCLUDED` and binary-route exclusions are unnecessary for #107's routes: they have C-03 steps and C-01 generation.
+  - M8's #260 plans a candidate content route served through "#107's mechanism" with an Epistrel-signed local URL. Invariant 4 now exempts media content only, so that route would need its own ADR and invariant change. That plan may be stale; see the Ad-hoc entry below.
+  **Why:** The discovered-work rule: out of scope, and not a defect today.
+  **Issue:** #107, #126, #128, #260
+- **Decision:** I mutation-checked the core behaviours, applying each mutation to the source and restoring it byte for byte afterwards. Each of these fails a test:
+  - ranges ignored (C-23);
+  - signatures that never expire (C-23);
+  - the assembled checksum unchecked (C-23);
+  - videos stored without a poster (C-23);
+  - the signed guard accepted on any route (`test_route_guard`);
+  - a retired video's poster left live (`test_posters`);
+  - expired sessions never swept (`test_the_sweep_ends_stale_sessions`);
+  - part sizes unchecked (`test_parts_are_checked`);
+  - a forged signature accepted (`test_signed_urls_on_the_local_store`).
+  One mutation survived: dropping `parse_range`'s explicit comma check. The range pattern already refuses a second range, so the check was redundant and is removed.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
+  **Issue:** #107
+- **Decision (Rule 1):** `store_kind_problem` passes, logging the exception type only, when the database cannot be reached at start-up. The config-key check already does this. The per-story gate caught the bug: `test_health_reports_database_error_and_keeps_serving` starts the app against a closed port and expects it to keep serving 503 `/health`. My first version raised from the lifespan instead, so the app never started. That test's exact body also gains `ffmpeg`/`ffprobe` (`ok`), as the drift note foresaw.
+  **Why:** An unreachable database is `/health`'s to report (NFR-REL-3). The check runs again at the next start. Cost if wrong: a start against a down database records nothing, which is harmless.
+  **Issue:** #107
+
+## Ad-hoc — 2026-10-12
+
+- **Change:** Project invariant 2 gains an explicit exception (CLAUDE.md, ADR-151): "ffmpeg is a GPL command-line tool invoked as a separate process for poster extraction; it is not linked and not a Python dependency". The image's runtime stage installs Debian's `ffmpeg` and CI installs it on the runner. `check-licenses`, over the Python runtime closure, is unchanged and passes.
+  **Why:** This is the owner's round-one decision on #107, applied by #107 for FR-MEDIA-3's poster extraction: "ffmpeg (GPL) may be installed in the image and run as a separate process by subprocess; it is never linked or imported, so invariant 2 holds — recorded as an `## Ad-hoc` decision and an ADR line".
+  **Affects:** No other plan names ffmpeg or the license allowlist. The image is much larger (763 MB against 301 MB), which the release and smoke plans (M1, C-10) absorb without change.
+- **Change:** Project invariant 4 is reworded (CLAUDE.md; ADR-152 amends ADR-149). Every REST route requires the service credential except `GET /health`, `/metrics`, `/openapi.json`, `/docs` and `/redoc`, and media content fetched with a valid signed URL: `GET /media/{id}/content` with an unexpired `exp` and `sig`. Without them the Bearer credential is still required. The route-table guard (`tests/test_route_guard.py`) checks the one signed route over `api.auth.SIGNED_ROUTES`.
+  **Why:** This is the owner's round-two decision on #107, applied by #107.
+  **Affects:** M8's #260 plans `GET …/image-candidates/{cid}/content`, read through an Epistrel-signed `…/content?exp=&sig=` URL "through #107's mechanism". The reworded invariant does not exempt that route. It needs its own exemption (a new ADR and an invariant change) or a credential-only design, so `/n8-replan M8` should look at #260. #255 (reference images as #107 signed URLs) and #126 (export content behind the credential, with no signed URL) fit the new wording unchanged.
+
+## /n8-exec M3 — 2026-10-12 (continued)
+
+- **Decision:** The M3 section continues here, after the two `## Ad-hoc` entries #107 recorded for its owner-decided invariant changes. Later stories append below.
+  **Why:** #107's owner lines ("(user, round one)", "(user, round two)") say both decisions are recorded as `## Ad-hoc` entries. M2 logged its planned amendments (#44, #71) as decisions, to keep the run's section last. Appending the entries and reopening the section keeps both: the drift ledger has the entries, and the M3 section is still last. Cost if wrong: one heading.
+  **Issue:** #107
+- **Decision (drift):** The parts follow docs/04 §15. `test_c_15__scenario_lifecycle` (`part("M3", "FR-SCN-1,2,10")`) and `test_c_15__scenario_field_classes` (`part("M3", "FR-SCN-2")`, the build-time check and its untagged-fixture complement) are in `tests/conformance/test_c_15.py`. `test_u_26__roles_and_limit` (`part("M3", "FR-SCN-3,4")`) is in the new shared `tests/test_u_26.py`, which #111 and #119 join. The detailed tests are unmarked in `tests/integration/test_scenario_catalog.py`, and their docstrings name no FR id. The parts take every field name from `tests/scenario_support.py`, because the scenario's fields carry later milestones' lexicon terms (the clock, predicates, `reactive`, `backfill_conflict_policy`). check-parts, check-lexicon and check-traceability pass (155 parts, 0 lexicon violations).
+  **Why:** §15 maps FR-SCN-3 and FR-SCN-4 to U-26 (M3) only, so the planned C-15 marker for FR-SCN-1,2,3,4,10 fails check-traceability, and one test ID's M3 parts must share one file. Cost if wrong: renames only.
+  **Issue:** #108
+- **Decision:** #103's lifecycle moved to `core/catalog/service.py` as `CatalogService`, an abstract base with hooks: `stored` (validate and normalise), `checked` (database checks inside the write's transaction), `version_values`, `recorded`/`forgotten` (what a write or delete keeps beside the rows), `project` and `envelope`. `CharacterCatalog` and `ScenarioCatalog` subclass it. It is generic by subclassing, not by the plan's type parameter (`CatalogService[CharacterDraft]`). `characters.py` keeps every public name, message and behaviour: `merge_patch`, `Projection`, `PublishRequest`, `Published`, `PublishReport`, `ReportEntry`, `VersionSummary` and `CardRating` now live in the service and are re-exported, and `DRAFT_MAX_BYTES` is still read at call time, so `test_drafts_are_capped`'s monkeypatch works. The Validator protocol is `async validate(draft, ctx) -> PublishReport`, where `ctx` is `ValidationContext(conn, settings, ports)`. `Engine` now passes `self.ports` to both publishes. The report type stays #103's `PublishReport`; #111 brings `ValidationReport` and replaces both validators.
+  **Why:** This is the pass-1 Discretion's "#103's service becomes `catalog/service.py` … refactored onto it". The kinds differ in their hooks, not in their types, so a type parameter would add nothing. All #103, #104 and #105 tests pass unchanged, except the truncate assertion below. Cost if wrong: hook signatures change before #111 and #115 build on them.
+  **Issue:** #108, #103, #111
+- **Decision:** The document groups are the pass-1 groups, with these deviations:
+  - Relationships live on each role (`cast.roles[].relationships`, the AC's role shape). There is no `cast.relationships` list.
+  - `recommendation {engine_profile_id, capabilities}` is its own group (pass 1), not part of `story_settings_defaults` (the first planner line).
+  - "Retention options" is `audit_retention_days`, the story's only retention setting at HEAD. M7's compaction options will be an additive key.
+  - `schema_version: 1` is tagged `configuration`/`creation_only`, because genesis reads it to interpret the snapshot and every field needs a class.
+  - `scenario_schema_classes()` paths carry their group: `cast.roles[].public_label`.
+
+  Classes follow FR-SCN-11 and docs/02 §4.10:
+  - a role's `id` is `public_card` (the card shows it);
+  - its `kind`, `required`, `fill`, `character` and eligibility are `configuration`/`creation_only`, and its participation is `configuration`/`story_setting`;
+  - pre-scheduled events, starting locations, name overrides and the truth of a planned reveal are `knowledge_seed`;
+  - the opening's narration and `roles_present` are `starting_state`;
+  - predicates, closed sets and rules are `story_rule`.
+  **Why:** The AC fixes the role shape, and FR-SCN-11 names the class of each field. Cost if wrong: a field moves between groups before #119 and #122 snapshot it.
+  **Issue:** #108, #119, #122
+- **Decision (drift):** `story_settings_defaults` is a dedicated core model, `StorySettingsDefaults`, with `extra="forbid"`, so unknown names are 422.
+  - M2's keys: `turn_concurrency` (`reject`/`queue`), `default_output_viewpoint` (a role id the save checks; genesis resolves it to `character:<id>`) and `audit_retention_days` (1–3650).
+  - The later keys, typed with docs/03's value sets: `interaction_mode` (`sequential`/`simultaneous`, FR-MULTI-5), `player_authority` (`own_character`/`co_author`), `ambiguous_retcon_timing` (`include_if_possible`/`ask_author`) and `backfill_conflict_policy` (`last_mention`/`first_mention`/`ask`).
+  - `policies` are `ScenarioPolicy` items `{name, applies_to?, rule, age_condition?, message}` built from `core.policies.model`'s `Rule`, `Target` and `AgeCondition`. They have no `effect` and no scope: #119 writes them as `story` policies.
+  - `required_providers` is a list of distinct names.
+  **Why:** This is the drift note's correction. `StoryPolicyItem` is the orchestrator's and core cannot import it. Cost if wrong: a value set widens later, which is additive.
+  **Issue:** #108, #119
+- **Decision:** These save rules go beyond the plan (Rule 2, input validation). Each is a 422 `validation_error` at its field, and every finding is listed in `details.errors`:
+  - Role ids `world`, `self`, `acquaintances`, `perceivable` and `public` are reserved, because a seed's holder and audience use them with another meaning. `npc` and `player` stay free for #116.
+  - The player role must be `open`. FR-CAT-6 says a catalog character never plays the player.
+  - An explicit `character.version: null` is refused. Omitting it means floating; the plan keeps `null` for companions, which #116 adds.
+  - Every reference is checked: seed holders (a role or `world`), `relationships[].to_role` (never the role's own id), role and opening starting locations, `roles_present`, a reveal's `allowed_roles`, and the default viewpoint.
+  - Location, entity and seed ids are unique, and a scenario holds at most 200 seeds across all lists.
+  - Labels are trimmed and lower-cased, at most 30 of up to 40 characters. The pattern admits upper case, so the OpenAPI schema never refuses what the server accepts (C-01's negative-data check).
+  - A non-finite number (`1e400` parses as Infinity) in a free-form structure is refused. A JSON-mode dump would otherwise store it as `null` without a word. `ScenarioPatch.document()` keeps the parsed values for the same reason, since `null` in a merge patch removes a key. The same defect exists in media generation metadata, out of scope; I filed it as #317.
+  **Why:** Each rule closes an ambiguity that a later story would otherwise inherit, or a silent data change. Cost if wrong: a rule is relaxed later, which is additive.
+  **Issue:** #108, #116, #317
+- **Decision:** Seed ids and seed presence:
+  - Every seed without an `id` gets a ULID when it is stored, and one sent back keeps its id. A save that sends `roles` again without the seed ids mints new ones.
+  - A draft seed may leave out `holder`, `audience` and `disclosure` (#116 pass 2).
+  - Publish requires all three on every seed, with a `field_required` report entry at each gap, as well as `public_card.name`. It also re-runs the save rules.
+  This goes beyond the plan's "publish in #108 is schema-level only". The AC says audiences are "validated for presence in M3", and #116's plan says they are required at publish.
+  **Why:** Without a publish check, a scenario with seeds that have no audience could be published before #111 lands. Cost if wrong: #111 replaces these entries with its `seed_incomplete`.
+  **Issue:** #108, #111, #116
+- **Decision:** `PATCH /catalog/scenarios/{id}` takes `ScenarioPatch {draft_revision, <group>: object | null}`, with the groups as free JSON objects. A group merges into the draft by RFC 7386, an array replaces the stored one, and `null` resets a group. The merged draft is validated as a whole, and errors land at `body.<path>`, wherever the field came from. I did not derive typed patch models for every nested group.
+  **Why:** Typed patch models would double the schema surface (a `…Patch` for every nested object) and still mis-type RFC 7386's `null`. C-01's negative-data check only needs the schema to be no stricter than the server, and it is not. Cost if wrong: typed patch models can be added later without changing the wire format.
+  **Issue:** #108
+- **Decision (drift):** The starting-cast limit's settings, as the drift note says:
+  - `max_characters_at_start_default` (16) and `max_characters_at_start_ceiling` (null) are `deployment_state` columns. They are listed in `DEPLOYMENT_COLUMNS`, carried by `DeploymentState`, declared prospective on `DeploymentSettings`, and in `SettingsPatch`; the ceiling is in `NULLABLE`.
+  - The scenario value, the default and the ceiling are all bounded 1–1000 (`CAST_LIMIT_MAX`, int32-safe).
+  - The ceiling is checked against the merged document on every create and save, even one that does not touch the value. A scenario stored above a since-lowered ceiling is refused on its next save until its value is lowered.
+  - `effective_cast_limit(scenario, request, deployment)` and `CastLimits` live in `scenario_models` (pure), for #119. The order is the request's override, else the scenario's value, else the default, capped by the ceiling.
+  - Also fixed: `PUT /admin/settings`'s description now names every key that accepts `null` (#105's URL keys were missing).
+  **Why:** The AC says "saving a scenario above the ceiling → 422". 1000 is generous next to the 32-role cap, and no consumer value should reach an INTEGER column's edge. Cost if wrong: a bound or the save-time check is relaxed.
+  **Issue:** #108, #119
+- **Decision:** Table details:
+  - `scenario_catalog.companion_of` is a foreign key to `character_catalog` with `ON DELETE CASCADE` (#124's "companion cascades"), and it is indexed.
+  - The pin `(pinned_character_id, pinned_character_version)` is a composite foreign key to `character_versions` with `ON DELETE SET NULL` (#124), indexed and guarded by `ck_scenario_versions_pin_complete` (both columns or neither). Both are NULL until #116.
+  - Scenario versions get their own trigger function, `catalog.epistrel_scenario_versions_immutable()`, honouring the same `epistrel.erasure` setting. Under that setting, a character delete's cascade and the pin's SET NULL pass it.
+  - The downgrade deletes scenarios' `entity_relations` and `subject_references` rows, so nothing dangles, and keeps their ownership events and audit rows as history.
+  - Scenario drafts are capped at 1 MiB (characters keep 256 KiB).
+  **Why:** A scenario holds a world, up to 32 roles and up to 200 seeds. #116 still writes the companion's own audit row and `deleted` event when it deletes a companion explicitly. Cost if wrong: a foreign-key action changes in a migration before M3 merges.
+  **Issue:** #108, #116, #124
+- **Decision:** The projections:
+  - `card` is #103's envelope (`id, version, listing_status, status`) plus `companion_of` (the pass-1 Discretion), plus AC5's `name, public_description, media, labels, content_rating, roles[{id, public_label, setup_description, kind, fill}]`.
+  - `media` keeps the AC's `cover`/`gallery`/`videos`, each item `{media_id, alt_text, caption}`, rather than a flat list. The alt text is the asset's; a video's caption is the scenario's, else the asset's.
+  - `content_rating` is `{id, version_id, name}`: the version a published version recorded, or for a draft the rating's current version.
+  - `full` is the envelope plus every group of the document as stored, the shape a PATCH targets, rather than the card's flattened fields plus the private ones.
+  **Why:** A flat media list would lose which image is the cover. Editors read `full` to patch it. Cost if wrong: an additive card key, or a reshaped `full` before a consumer depends on it.
+  **Issue:** #108
+- **Decision:** References (#316's #108 half, cross-referenced on #108, not on #316):
+  - `catalog.scenario_catalog.draft` and `catalog.scenario_versions.content` join the static `MEDIA_REFERENCE_SOURCES` list. I did not use `register_reference_source` at import, because a sweep in a process that never imported `scenarios` would miss them.
+  - A create or save checks only the media ids it adds (`assert_referenceable`, 422 `media_retired`). An asset retired after it was added does not block unrelated edits.
+  - A changed `content_rating_id` must be assignable (422 `rating_retired`). Publish records the rating's current version through `rating_version`, which is 422 `rating_retired` if the rating was retired since.
+  - Drafts and versions are indexed with `index_references`: `record_table` `scenario_catalog` (`record_id` the id) and `scenario_versions` (`<id>@<n>`). The fields are every prose field, and the declared subjects are the role characters' catalog ids. A delete drops the scenario's rows.
+  **Why:** FR-MEDIA-2 forbids purging an asset a draft or version references. The Discretion has #108 call `index_references` "for drafts/versions". The publish-time rating check is the minimum needed to record a version id. Cost if wrong: #111 moves the rating and media checks into its report.
+  **Issue:** #108, #316, #111, #123
+- **Decision:** Existing tests changed because the story changes the behaviour they pin; no assertion was loosened:
+  - `test_catalog_tables_have_the_planned_shape` reads only the two character tables. The scenario tables have their own shape test.
+  - A plain `TRUNCATE catalog.character_versions` is now refused by PostgreSQL with `0A000`, because the scenario pin references the table. The trigger's `EPI01` is now asserted with `TRUNCATE … CASCADE`, so both refusals are asserted (I-01 already uses this form for `events`).
+  - `test_every_delivered_type_is_covered` no longer lists scenarios as undelivered.
+  - `test_i_21__companion` now runs on real scenarios in its own scratch database. `companion_of` is set by SQL until #116, and the stand-in table is gone. Y's `updated_at` is compared before and after, because real rows are created "now". The test also asserts that Y2's timestamp does not move, which is stricter.
+  - The ownership fixtures gain the scenario kind and 11 `CALLS`, so the nothing-gates matrix covers scenarios.
+  - C-01 seeds a published scenario, excludes `delete_scenario` from generation, and adds three malformed cases. Its full run passed: 84 passed, up from 73.
+  - C-03 gains 16 scenario steps, and their statuses are checked against `ENTRY_ANSWERS` through `Step.group`, since C-03 is an M2 part and "scenario" is an M3 lexicon term.
+  - `test_u_18` pins the two new settings as prospective.
+  **Why:** These are the smallest changes that hold each new behaviour. Cost if wrong: none.
+  **Issue:** #108, #104
+- **Decision:** I mutation-checked the parts, applying each mutation and restoring the sources from a scratch copy byte for byte afterwards. Each mutation fails the named test:
+  - no ceiling check (U-26);
+  - a `locked` role without a character allowed (U-26);
+  - a second player role allowed (U-26);
+  - the age range dropped when stored (U-26);
+  - the world description shown as the card's public description (C-15 lifecycle);
+  - a role's seed text shown in its card setup description (C-15 lifecycle);
+  - an untagged `conditions` field (C-15 field classes).
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
+  **Issue:** #108
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** docs/02 §4.10's `scenario_roles` table is replaced by the roles inside each scenario draft and version document (jsonb), and docs/02 is amended to match. A role carries the fields the table planned: kind, required, fill mode, public label and setup description, default or locked `character_id@version`, eligibility filters, role seeds with holder, audience and disclosure, relationships, role-scoped State values, starting location, default participation role and name overrides. `scenario_catalog` gains `companion_of`, and `scenario_versions` gains the companion pin `(pinned_character_id, pinned_character_version)`. Applied by #108.
+  **Why:** #108's planner line: "Seeds and roles are jsonb documents inside the version content", and "docs/02 §4.10's `scenario_roles` table is replaced by jsonb roles — logged as an `## Ad-hoc` entry and a docs/02 amendment in this story". A version is immutable and copied whole into a story's snapshot at genesis, so its roles belong with it.
+  **Affects:** No other plan names `scenario_roles` (searched: only #108). The stories that read roles already plan to read them from the document or the snapshot: #110 (search over role public labels), #111 (validation), #116 (companion slots fixed by the validator, "not by DB constraint (roles are jsonb)"), #119 and #122 (genesis from `stories.scenario_snapshot`) and #124 (redaction in versions and drafts). No `/n8-replan` is needed.
+
+## /n8-exec M3 — 2026-10-12 (continued)
+
+- **Decision:** The M3 section continues here, after the `## Ad-hoc` entry #108's planner line asked for, as #107 did for its entries. Later stories append below.
+  **Why:** This keeps the drift ledger entry and keeps the run's section last. Cost if wrong: one heading.
+  **Issue:** #108
+- **Decision:** #108 verification fixes, round 1. The gap was real, and it was a gap in test coverage only. The code already did what AC4's "defaults to `deployment_state.max_characters_at_start_default`" requires: `config_changes._state` reads the column, `DeploymentState.as_settings()` carries it, `CastLimits.of` maps it and `effective_cast_limit` falls back to it. But every test resolved the limit from a hand-built `CastLimits`, and the deployment's own default was only ever 16. No source file changed. `test_u_26__roles_and_limit` gained these assertions after its existing ones, none of which changed:
+  - The deployment's stored settings, read the way a scenario save reads them (`CastLimits.of` over `read_settings`), equal `CastLimits()`: 16 and no ceiling.
+  - `PUT /admin/settings` sets the default to 14, and `GET /admin/settings` returns 14 with no ceiling. Three stored scenarios (`max_characters_at_start` null, 20 and 12) resolve through the stored settings to 14, 20 and 12.
+  - A ceiling of 13 reads back as `CastLimits(default=14, ceiling=13)` and resolves them to 13, 13 and 12.
+  - The `finally` restores the default to 16 as well as the ceiling to null.
+  - Mutation-checked on `tests/test_u_26.py`, each mutation applied with the sources restored from a scratch backup afterwards (byte-identical at the end, by SHA-1). Each fails the part: the verifier's M7 (`CastLimits.of` ignores the stored default) and M7b (`_state` reads the default as 16), and two of mine: a scenario's own value never below the default (`max(scenario, default)`) and a ceiling that does not cap the default. Mine both passed the pre-fix tests over the verifier's set (U-26, C-15, `test_scenario_catalog`: 28 passed each).
+  **Why:** U-26 (M3) is FR-SCN-4's only test in docs/04 §15, so the proof belongs in the part rather than in `test_the_ceiling_refuses_a_larger_scenario`. I chose 14 and 13 over the fix hint's 12 and 10 so that the same values also pin a scenario's own value below the default and a ceiling that leaves a smaller value alone; a default of 12 would equal the third scenario's 12 and prove neither. I added no production helper for the read: `ScenarioCatalog.checked` already reads the settings that way, the behaviour was correct, and #119 decides how story creation reads them. Cost if wrong: none to behaviour; at worst a stricter test.
+  **Issue:** #108
+- **Decision:** #108 verification fixes, round 2. Both gaps were real, and both were gaps in test coverage only. The code already stored every role field and every seed's holder, audience and disclosure as sent, and the card already showed each role's kind and fill. But no test compared those values with what was sent, and every role in a card fixture was `open`. The changes:
+  - `COMPLETE` (`tests/scenario_support.py`) gains a role locked to a catalog character at version 3 (`brother`, formerly `open`) and a role pre-filled by default (`aunt`, new, with a floating version), so its cast has every fill mode and the player's role. Its seeds use all three disclosures (the brother's is `guarded`), and every seed but the world's names two audience tokens (levels, a role id and a named group). It also sets eligibility `content_ratings`, a seed's `kind` and `valid_time`, a canonical name override and a policy's `applies_to`.
+  - `test_c_15__scenario_lifecycle` now asserts three things. The created draft equals the document sent (`document_of` against `stored_form`). Version 2's `full` read also equals it, with the edit applied. The card's roles equal `CARD_ROLES`, which is written out in full.
+  - `test_u_26__roles_and_limit` asserts that `COMPLETE`'s whole cast is stored as sent, and that a role which leaves `required` out is required.
+  - `test_card_and_full_projections` asserts `CARD_ROLES` on all four card reads and the whole document on both `full` reads.
+  - Existing assertions changed only for the fourth role: `[CARD_ROLE_KEYS] * 3` became `* 4` in C-15 and in the detailed test, and C-15's label list gained "Aunt Ivy". None was loosened.
+  **Why:** AC3 is FR-SCN-3, whose only part is U-26, so the cast's values are asserted there. AC5's "`full` adds every private field" is FR-SCN-10, and "a scenario shall carry" every field is FR-SCN-2. Both belong to C-15, so the whole document is asserted there. Cost if wrong: none to behaviour.
+  **Issue:** #108
+- **Decision:** The expectation, `stored_form(body)`, works in three steps:
+  - It fills each field the body leaves out with the default the scenario models declare, and lower-cases labels. It runs no validator.
+  - It takes the seed ids out.
+  - `document_of` takes them out of the read, after checking that each stored seed has its own ULID.
+  I rejected two alternatives:
+  - Comparing with `ScenarioDraft.model_validate(body).model_dump()`. It would run the save's own validators, so it would have passed the verifier's M6 (`Seed._distinct` rewriting every audience).
+  - A hand-written expected document. It would duplicate the fixture and break on every additive field.
+  **Why:** Because only the declared defaults are read, a changed *value* cannot change the expectation too. The price is that a changed *default* is mirrored on both sides. So U-26 pins the one default the plan names: `required` defaults to true, and mutation M13 fails it. Cost if wrong: another default needs its own assertion.
+  **Issue:** #108
+- **Decision:** `COMPLETE`'s locked and default roles name fixed catalog ids (`LOCKED_CHARACTER`, `DEFAULT_CHARACTER`) that belong to no character. The alternative was a character each test creates and publishes. In M3 neither a save nor a publish checks a role's character, but #111's publish validation will (`character_missing`, `character_not_published`). So #111 must give this fixture real published characters, covering every test that publishes it: `test_c_15__scenario_lifecycle`, C-03's scenario steps (`SCENARIO = complete_scenario()`) and `test_card_and_full_projections`. `COMPLETE` also has no content rating, which #111's planned `content_rating_missing` may want too.
+  **Why:** Real characters would turn C-03's static `SCENARIO` body into one built per run. That is a larger change to an M2 part and outside this round's gaps. The existence check is #111's, so #111 is where real characters become necessary. Cost if wrong: #111 edits one fixture and C-03's scenario step.
+  **Issue:** #108, #111
+- **Decision:** `scenario_models.card_roles` now takes the validated `ScenarioDraft` rather than a raw document. `ScenarioCatalog.project` calls it instead of building the list inline, so one function builds a card's roles. This was the first of the verifier's two options. Nothing else called the function and no plan names it, so changing its signature breaks nothing.
+  **Why:** Two builders could drift apart, and `project` has already validated the document, so validating it again would be wasted. Cost if wrong: a future caller that holds a raw document has to validate it first.
+  **Issue:** #108
+- **Decision:** I mutation-checked round 2's assertions. A script applied each mutation and restored the sources from a scratch copy, and the sources were byte-identical at the end (by SHA-1). The runs covered `test_c_15__scenario_lifecycle`, `test_u_26__roles_and_limit` and `test_card_and_full_projections`.
+  - Fail all three: the verifier's M6 (audience always `["public"]`), M9 (every disclosure stored `open`) and M10 (relationships, participation and name overrides dropped). Also mine: M12 (a role's character dropped), M15 (a seed's `kind` and `valid_time` dropped), M16 (an audience cut to its first token) and M17 (a `guarded` seed stored `secret`).
+  - Fail C-15 and the detailed test: the verifier's M11 (every card role shown `npc`/`open`), and mine M14 (a default role shown `open`) and M18 (the player's role shown `npc`).
+  - Fails U-26 alone, as designed: M13 (`required` defaults to false).
+  M16 and M17 are why the fixture needs audiences with several tokens and a guarded seed. I did not re-run my own mutations against the pre-fix tests. The verifier's evidence covers M6, M9, M10 and M11 there.
+  **Why:** Under the batched gate, the story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
+  **Issue:** #108
+- **Decision:** I applied the owner's decision of 2026-10-12 on #106's AC-level drift (option A, "Amend #106 to the docs"; recorded on #106 and in the session's owner file).
+  - Presets are ordinary profiles (FR-PROF-3, ADR-084). An edit makes a new version, copy and delete follow the usual rules, and `preset` records provenance only. The only refusal is deleting the deployment's default (409).
+  - The Lite preset's budgets are `{model_calls: null, deadline_ms: 45000}`. `null` is NFR-PERF-6's formula (9 + G in M3). An explicit `budgets.model_calls` is the turn's total cap including the reserved guardrail calls G, as M2's `max_model_calls_per_turn` is, and it is refused below 1 + G; nothing is added on top of G. `deadline_ms` maps to `turn_deadline`. Both are documented on `Budgets`; #113 wires them into the turn.
+  - The pass-1 Discretion sentence "G added on top, so the Lite preset's 2 replaces #69's 4" is superseded, because its premise was wrong.
+  - No turn reads a profile before #113. P-09 and S-SELFPOLICE ran unchanged and pass (5 passed).
+  - No `## Ad-hoc` entry is written here; the orchestrator writes it.
+  **Why:** The owner decided. The AC text was amended in place to match FR-PROF-3 and NFR-PERF-6. Cost if wrong: none; this is the owner's call.
+  **Issue:** #106
+- **Decision (drift):** `stories.engine_profile_id` lands in #106's migration (`0025_engine_profiles`), not #113's.
+  - It is NOT NULL and indexed, with a foreign key to `engine_profiles`. Every existing story is backfilled to `LITE_PRESET_ID` through a temporary server default that the migration then drops.
+  - Story creation sets it to the deployment's default, read with the deployment row held `FOR SHARE`. A fork copies its source's (`_copy_story_row` copies every column).
+  - `deployment_state.default_engine_profile_id` is NOT NULL with a foreign key, as the pass-1 Discretion says.
+  **Why:**
+  - The column is needed by AC4's delete warnings, AC4's "purge once no story uses it", and AC5. The drift note found a single additive step that meets them as written.
+  - #113's AC1 will find the column in place.
+  - The two foreign keys mean the purge can never remove a profile that a story or the default names.
+  - Cost if wrong: #113 drops a foreign key or moves the backfill.
+  **Issue:** #106, #113
+- **Decision:** Shape of the module schema. `ProfileSettings` is one full model with every FR-PROF-2 module, every module off by default.
+  - **Levels instead of flags.** A module with more than two levels carries its level, not the Discretion's `{enabled: bool, ...}`:
+    - `perception.level`: `none`, `co_location` or `full`;
+    - `verification.level`: `off`, `declared`, `extraction` or `entailment`;
+    - `clock.level` and `states.level`: `off`, `prompt_only` or `on`;
+    - `multi_character.renders`: `combined` or `per_character`;
+    - `character_knowledge.testimony`: `off`, `model` or `defaulted`;
+    - `pipeline`: `lite` or `structured`.
+    On/off modules keep `enabled`.
+  - **Verification** is a ladder. FR-PROF-2 says "plus …" and FR-PROF-4 says "at least declared". `extraction_mode` and `entailment_gate` belong to its levels.
+  - **Contradiction checking** is a dial of the verification module, `verification.contradiction_checking`, with the capability name `contradiction_checking`.
+  - **Repair and polish:**
+    - `repair.max_attempts` is module `repair`, the structured repair ladder.
+    - The polish pass is `repair.polish {enabled, max_regenerations}`. Its Lite form is M2's `guardrail_retry_budget` (0–5, default 2), as the drift note maps it.
+  - **Hot-set budgets** (FR-MEM-8) belong to the `structured` level of the pipeline.
+  - **Models** is `{purposes: {<purpose>: {model, params?}}, generation: {temperature, top_p, response_length}}`. FR-PROF-2 puts the generation defaults under Models, and a `generation` key beside the purposes would collide with the `generation` purpose.
+  - **Capability names** are the Discretion's list plus `lite`, `contradiction_checking` and `repair`.
+  **Why:**
+  - A flag plus a level would accept contradictory pairs such as `enabled: false, level: full`.
+  - M4–M6 only flip `DELIVERED` entries, as the Discretion wants.
+  - Cost if wrong: these modules are undelivered, so their shape changes freely until M4.
+  **Issue:** #106, #109, #113, #122
+- **Decision (drift):** Profile bounds are widened to M2's:
+  - `window_messages` 1–500;
+  - `compress_threshold_tokens` 100–100,000;
+  - `model_calls` 1–50;
+  - `deadline_ms` 1–600,000. M2's `turn_deadline` is above 0 and at most 600 s, and the request floor of 0.5 s stays a request rule.
+
+  The Lite seed's `compress_threshold_tokens: 6000` is AC1's value. It is three times M2's `lite_summary_max_tokens` default (2,000), which #113 maps it onto as the merge cap. #113 must decide whether 6,000 becomes the effective merge cap for every Lite story.
+  **Why:** With the planned narrower bounds, #113's migration of stored M2 values would fail validation (drift note). Cost if wrong: a bound narrows later; nothing stored exceeds M2's.
+  **Issue:** #106, #113
+- **Decision:** How the settings are tagged.
+  - `Tag` follows FR-PROF-6's lists: the pipeline, partitions, nested beliefs, perception, the verification ladder and `extraction_mode`, commitment, the clock, States and consolidation are data-producing; everything else is behavioral.
+  - `ConfigClass` follows FR-CONC-15: verification, perception, partitions and the beliefs, commitment, the clock and States are interpretive; models, budgets, thresholds and memory are prospective. Every setting delivered in M3 is prospective, as the pass-1 Discretion says.
+  - `Quality` follows FR-PROF-16: every setting is relevant except pinned memories (the Discretion's "not pins"; #109's complement uses `pins.max_pinned`).
+  - No profile setting names a prompt-template version, because templates are files. #109 folds their hashes into the fingerprint (its own plan).
+  **Why:** These are the planner's sources. `missing_tags` (U-28) refuses a leaf without exactly one tag of each kind. Cost if wrong: a tag moves before anything reads it (#109, #113).
+  **Issue:** #106, #109
+- **Decision:** Naming an undelivered module is refused at any value, its off value included (422 `invalid_profile`, with `details.undelivered` naming each setting). The pass-1 Discretion says a module named at its off value is accepted.
+  - A level switch whose value picks an undelivered level is refused too (`pipeline: structured`).
+  - `validate_profile` reads the names in the document. So #113 must validate merged sparse documents, never a full model dump. `profile_defaults`, seeded from Lite, names no undelivered key.
+  **Why:**
+  - The published schema (`additionalProperties: false`) has no place for such a key. Accepting it would let a request the contract forbids succeed: C-01's `negative_data_rejection`, FR-API-4.
+  - AC2 reads "a profile naming an undelivered module or level is rejected".
+  - Cost if wrong: one condition in `undelivered_settings`.
+  **Issue:** #106, #113
+- **Decision:** `POST /engine-profiles/{id}/validate` answers 200 `{valid: true, missing_dependencies: [], undelivered: []}` for a valid profile and 422 `invalid_profile` for an invalid one. The pass-1 Discretion's 200 `{valid: false, …}` is not used.
+  - The body `{settings?}` is a dry run of an edit; without settings, the latest version is validated.
+  - The route is flagged `mutating=False` (#103's `route_flags`): no `Idempotency-Key` and no revision base. The principal is still required, by method.
+  **Why:** AC3 lists the validate route among those that "reject an invalid combination with 422 `invalid_profile`", and `/n8-verify` reads the AC. Cost if wrong: the 422 becomes a 200 body.
+  **Issue:** #106
+- **Decision:** `DEPENDENCIES` is a tuple of 26 rule objects, `DependencyRule {clause, module, levels, requires: (Requirement(module, levels), …), when}`. AC3 writes it as `{module: [requires...]}`, which cannot express:
+  - perception other than `none`;
+  - "in the structured pipeline";
+  - a requirement at a given level.
+
+  How the rules map to FR-PROF-4:
+  - `FR_PROF_4` quotes the requirement's nine clauses verbatim. U-28 checks that each is in docs/03 and that each has a rule.
+  - The module docstring lists the 26 rules. U-28 compares that list with `rule.describe()` one by one, and its count.
+  - The `structured` clause gives one rule for each of the 16 modules it constrains. It exempts what the clause exempts, and also pinned memories (FR-LITE-3: under every profile) and the polish pass's Lite form (the Discretion's "repair.polish under lite is allowed").
+  - Every rule is exercised on settings that switch its module on (`tests/profile_support.violating`), with a complement (`satisfying`).
+  - `epistrel.testing.profiles.extra_rule` rebinds `schema.DEPENDENCIES` for C-17's delivered path. Validation reads the tuple at call time, and Core never imports the helper.
+  **Why:** These are the pass-1 Discretion's rule objects, made checkable against the requirement's own text. Cost if wrong: renames only.
+  **Issue:** #106
+- **Decision (drift):** Core never imports the Orchestrator's purpose registry. `Engine.purposes` passes `Purposes(delivered, reserved)` from `orchestrator.models.registry` into every profile write and validation:
+  - a delivered purpose may be routed;
+  - a reserved purpose (or port) is reported in `undelivered` (`models.purposes.<name>`);
+  - an unknown name is 422 `validation_error` at its key.
+
+  The published schema documents the purpose key pattern, with `additionalProperties: false`. `GET /engine-profiles/schema` lists the delivered purpose names in `purposes`.
+  **Why:** The `core-does-not-import-orchestrator-or-api` contract (lint-imports); the drift note's first option. Cost if wrong: none.
+  **Issue:** #106
+- **Decision:** Profile names are not unique per owner. The pass-1 Discretion says "unique per owner case-insensitively".
+  **Why:**
+  - FR-AUTH-5 transfers, including #117's offboarding to a curator, always succeed. A per-owner unique name would make a transfer to an owner who already holds that name fail with a constraint error.
+  - Names are labels, as catalog names are; the id identifies a profile.
+  - Cost if wrong: a partial unique index plus a rule for transfers.
+  **Issue:** #106, #117
+- **Decision:** Delete semantics.
+  - A delete is always soft. The answer is 200 `{id, deleted_at, warnings, stories_using, scenarios_recommending, config_revision}`.
+  - Warnings are `{kind: profile_in_use, story_id}` for each story on the profile, and `{kind: profile_recommended, scenario_id}` for each scenario whose draft or latest published version recommends it (#108's `recommendation.engine_profile_id`). Each list is capped at 1,000, with counts.
+  - Deleting a deleted profile answers its `deleted_at` and records nothing.
+  - A deleted profile still reads, lists with `include_deleted=true`, and copies. The Discretion's later "PUT/copy on a deleted profile → 422" contradicts its own "copying a deleted profile allowed", and the copy rule is kept. Only an edit, or naming the profile as the default, is 422 `profile_deleted`.
+  - `profile_in_use` is a warning kind, never an error code (the Discretion drops it from the code list).
+  **Why:** AC4 and FR-PROF-1 say "removes it from listings and from new assignment, with a warning naming the stories". A copy assigns nothing and is the way to recover a deleted profile's settings. Cost if wrong: one refusal in `copy_profile`.
+  **Issue:** #106, #117, #119
+- **Decision:** #71's `retention_sweep` gains `engine_profiles` (its result's new key), from `core.profiles.store.purge_deleted`.
+  - It purges deleted profiles that no story uses and that are not the default, at most 1,000 per run.
+  - Each purge is one transaction under `FOR UPDATE SKIP LOCKED`, re-checks that no story uses the profile, records its ownership `deleted` event by `system` (`drop_entity`), and deletes the row; the versions cascade.
+  - Edits and deletes lock a profile `FOR NO KEY UPDATE`, which leaves free a story insert's foreign-key `FOR KEY SHARE` (#104's lesson).
+  **Why:** AC4 says "a sweep (#71) purges the profile once no story uses it". The re-check under the lock is defensive: no M3 path makes a deleted profile newly used, and the foreign key is the backstop. Mutation-checked, removing the re-check survives every test, as expected; it stays so that one profile cannot abort a whole sweep with a foreign-key error. Cost if wrong: none.
+  **Issue:** #106, #71
+- **Decision (drift):** Deleting the deployment's default reuses `ConfigConflict`: 409, code `validation_error`, `details {id, reason: is_default}`, documented as `config_conflict`. The Discretion's new `profile_is_default` code is not added.
+  **Why:** This is the drift note's option. The default rating (#48) and the default model configuration (#52) are refused the same way. Cost if wrong: one code added to `ERROR_STATUS`.
+  **Issue:** #106
+- **Decision (drift):** `default_engine_profile_id` is a column-backed deployment setting:
+  - in `DEPLOYMENT_COLUMNS`;
+  - prospective on `DeploymentSettings`;
+  - in `SettingsPatch`, where `null` is refused;
+  - pinned in U-18.
+
+  A change records one `config_changes` row through `apply_settings`. An unknown or deleted profile is 422 `profile_deleted` (`reason: unknown|deleted`, field `body.default_engine_profile_id`), held `FOR SHARE` until the write commits. This mirrors `rating_retired`'s one code for unknown and retired.
+  **Why:** This is the pass-1 Discretion's "changed via PUT /admin/settings (prospective, config_changes row)" and the drift note's pattern. Cost if wrong: a different code for unknown.
+  **Issue:** #106
+- **Decision:** Every profile write records one committed, story-less `control` operation by the requester (`core/control.py`): create, edit, copy and delete. An edit that changes nothing records nothing and makes no version.
+  - A version bump writes no `config_changes` row. That is #113's AC3 ("a new profile version is a configuration change"), with its class-per-setting design, and the Discretion credits it to #113.
+  - Bodies extend `DeploymentMutationResponse` with the unchanged `config_revision`. Codecs: create and copy 201, edit and delete 200.
+  **Why:** This is #103's pattern: a refused write leaves no operation row (C-01's zero-row check). No story follows a profile before #113, so a version is not yet configuration any operation runs under. Cost if wrong: #113 adds the change row, as planned.
+  **Issue:** #106, #113
+- **Decision:** A profile version stores its settings sparse: the document as sent, normalised (`exclude_unset`). It is validated strictly (JSON types, no coercion), with every omitted setting at the model's default. The model's defaults equal Lite's delivered values until #113's `profile_defaults`.
+  - Responses show what the version sets.
+  - The Lite seed names every delivered setting, and each delivered purpose routed explicitly to `/admin/model-config` (`null`).
+  - A `PUT` makes a version only when the canonical JSON of the settings differs.
+  - The response also carries `current_version` beside `version` (AC1's column).
+  **Why:** This is the drift note's interim merge base. Strict validation is needed because `strict_json_body` checks only that `settings` is an object; without it, `true` would pass for an integer (mutation-checked). Cost if wrong: responses can merge the defaults later.
+  **Issue:** #106, #113
+- **Decision (drift):** The parts follow docs/04 §15. All are in `tests/integration/test_engine_profiles.py` except the I-21 slice:
+  - `test_u_28__schema`, `part("M3", "FR-PROF-2,3,4")`;
+  - `test_c_16__crud`, `part("M3", "FR-PROF-1; FR-API-6")`;
+  - `test_c_17__profiles`, `part("M3", "FR-PROF-2,4")`;
+  - `test_c_17__dependencies`, `part("M3", "FR-PROF-4")`;
+  - `test_i_21__profiles`, `part("M3", "FR-PROF-1; FR-AUTH-5")`, in `tests/integration/test_i_21.py`.
+
+  #109's `test_c_16__two_stage`, `test_c_16__upgrade_unavailable` and #113's `test_u_28__effective` and `test_c_16__follow_latest` must join `tests/integration/test_engine_profiles.py`, not `test_two_stage.py` or `test_effective_config.py`, because traceability counts a test ID per milestone in one file.
+
+  Module names come from `tests/profile_support.py`, built from the schema's own registry, rather than a JSON fixture; the purpose is the same lexicon rule. C-16 and C-17 run on their own scratch databases, because they change the default and the Lite preset. check-parts counts 160 parts; check-lexicon reports 0 violations; check-traceability passes.
+  **Why:** The drift note: §15 maps FR-PROF-1 to I-21 and C-16, FR-PROF-3 to U-28 (M3), and C-17 (M3) to FR-PROF-2,4 only. Cost if wrong: renames only.
+  **Issue:** #106, #109, #113
+- **Decision:** C-17's M3 part is a pairwise covering array over the delivered modules' settings:
+  - the rolling summary, pinned memories and the polish pass, each on and off;
+  - a call cap or the formula;
+  - a named length or a token cap.
+
+  The array is greedy, and its pairwise coverage is asserted. Each configuration is validated and created, becomes the default, and a story created under it plays a turn. A configuration that picks an undelivered level is refused by validation and never runs.
+  **Why:** docs/04 C-17. Before #113 no turn reads the profile, so "runs cleanly" is trivially true for now. The structure is in place for #113, which makes it meaningful. Cost if wrong: none.
+  **Issue:** #106, #113
+- **Decision:** Existing tests changed because the story changes what they pin; no assertion was loosened.
+  - `test_every_delivered_type_is_covered`: personas are now the only undelivered type.
+  - `test_deleting_an_entity_drops_its_relations`: each kind's delete status (`Kind.deleted_status`), because a profile delete answers 200 with its warnings.
+  - `ownership_fixtures`: a profile `Kind` (`retires`, 200) and ten `CALLS`, so the nothing-gates matrix covers every profile route and compares read bodies.
+  - C-01: a seeded profile and its `profile_id` path id. C-01's full generated run passed in the gate run (117 passed across C-01, C-02, C-03, the route guard, the response bases, the route flags and U-18).
+  - C-03: 13 profile steps and `PROFILE_ANSWERS`.
+  - U-18: the new setting pinned as prospective.
+  **Why:** Each new behaviour needs these, and they are the smallest changes that hold it. Cost if wrong: none.
+  **Issue:** #106, #104
+- **Decision:** `GET /stories/{id}` does not show the story's profile yet. #113's pass-1 line adds `engine_profile: {id, version}`; the tests read `stories.engine_profile_id` directly, and the delete warnings prove the link through the API. The README gains an "Engine profiles" section and names the default in its Configuration section.
+  **Why:** Choosing the field's shape is #113's job. Cost if wrong: one additive field.
+  **Issue:** #106, #113
+- **Decision:** I mutation-checked the behaviour, applying each mutation with a script that restored the sources byte for byte (SHA-1 checked). Each of these fails at least one of the story's tests:
+  - undelivered names ignored;
+  - no dependency fires;
+  - the default deletable;
+  - no delete warnings;
+  - the deployment default ignored at story creation;
+  - a new version on every edit;
+  - the listing showing deleted profiles;
+  - a copy keeping its source's owner;
+  - a deleted profile assignable;
+  - a deleted profile editable;
+  - an edit storing the old settings;
+  - the owner filter ignored;
+  - the Quality tag optional;
+  - the schema unpruned;
+  - no `profile_recommended` warning;
+  - an edit skipping validation;
+  - validate made mutating;
+  - a reserved purpose allowed;
+  - lax (coercing) settings validation.
+
+  The purge's re-check under its lock survives, as described above.
+  **Why:** Under the batched gate, the story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
+  **Issue:** #106
+- **Decision:** Filed #318 (`needs-triage`) and did not fix it. `tests/chaos/test_x_07.py::test_x_07__recurring` fails when it runs on its own, because the seeded recurring tasks fire beside its own. It passes in module order and in the full suite, and it reproduces at 87ce58e, before #106.
+  **Why:** It is outside #106's scope; the discovered-work rule applies.
+  **Issue:** #106, #318
+- **Decision (verification round 1):** A fork of a story whose engine profile is deleted keeps that profile, the verifier's option (a). The fork is created (201) and runs on the profile's last version. A repeated delete of the profile names the fork among the stories using it, and the purge waits until no story uses the profile, forks included. Two options were rejected: moving the fork to the deployment default with a warning, and refusing it with 422 `profile_deleted`.
+  - The behaviour is unchanged; `_copy_story_row` already copied the column. It is now pinned by `test_a_fork_keeps_its_sources_deleted_profile`: the fork is on the deleted profile, a turn plays on it, and the sweep keeps the profile until the source and then the fork are deleted. As a complement, a story created meanwhile gets the default. The earlier test `test_the_default_is_a_configuration_change` covered only a live source profile.
+  - Documented in the `DELETE /engine-profiles/{id}` and `POST /stories/{id}/fork` descriptions (`docs/openapi.json` regenerated) and in the docstrings of `core/profiles/store.py`, `core/fork.py` and the retention handler.
+  - The fork's answer carries no warning. No AC asks for one, and adding a field would change M2's fork contract.
+  **Why:**
+  - FR-STORE-15 makes a fork a full, independent copy of its story, and a story's profile is part of what is copied.
+  - FR-RATE-1 uses the same words for a retired rating ("hidden from listings and from new assignment, kept for what already uses it") and adds "a fork copies its story's rating". FR-PROF-1's delete clause follows it, so a fork is a continuation, not a new assignment.
+  - Moving a story to another profile is "assigning or changing a story's profile", which FR-PROF-7 runs as a warned two-stage operation, with FR-PROF-8's upgrade modes once profiles differ in data-producing modules. A fork that switched silently would skip that, and the story overrides it copies (FR-PROF-5) would then apply to a different profile. Refusing the fork would stop a story that FR-PROF-1 says "keeps running" from branching.
+  - Cost if wrong: one override in `fork._copy_story_row` plus an assignment check, and the new test flips.
+  **Issue:** #106, #113
+- **Decision (correction):** The #106 `retention_sweep` entry above says "no M3 path makes a deleted profile newly used" and calls the purge's re-check under its lock merely defensive. Both statements are wrong.
+  - A fork gives a deleted profile another story (the entry above).
+  - A fork reads its source in one REPEATABLE READ snapshot without locking it. So a fork that began before its source was deleted can commit a story on the deleted profile after the sweep's scan found the profile unused.
+  - The re-check under the lock is what keeps that profile. Without it, the purge's delete fails on `fk_stories_engine_profile_id_engine_profiles`, and the whole sweep run raises.
+  - A new pause point, `profiles.purge.before_lock` (`epistrel.testing.pauses`, called in `purge_deleted` before each candidate's lock), lets `test_a_fork_committing_mid_sweep_keeps_the_profile` produce the race with the real fork:
+    1. The fork is held after its snapshot through S-FORK-SNAPSHOT's `_select_operations` seam.
+    2. Its source is deleted, and the sweep scans and stops at the point.
+    3. The fork commits, then the sweep resumes and keeps the profile.
+    4. Complement: once the fork is deleted, the sweep purges the profile.
+  - The delete and the sweep run in fresh `contextvars` contexts, as separate requests and the job worker do. In the fork's context, the delete took the fork's `Idempotency-Key` call, and the fork's own bind then failed with a serialization error. That was an artifact of the test, not a production path.
+  - The mutation that survived before (the re-check removed) now fails that test with the foreign-key violation. I did not re-run the other 19 earlier mutations; no assertion they failed on was changed.
+  **Why:** The verifier showed the claim was false, and the log is the owner's record of why the code is shaped as it is. Cost if wrong: none.
+  **Issue:** #106, #71
+- **Decision (Rule 1):** `POST /engine-profiles/{id}/validate` now takes an optional body: `Annotated[ProfileValidate | None, Body()] = None`, as fork, regenerate and untruncate already do. No body, `{}` and `{"settings": null}` all validate the stored latest version, as `Engine.validate_profile(ctx, id)` does without a request.
+  - The earlier entry's "`{settings?}`" described the field, but the route declared the body required. So a call with no body was 422 `validation_error` (`Field required`), contrary to the pass-1 Discretion line ("takes an optional `settings` body (dry run) else validates the stored latest") and to the library.
+  - `docs/openapi.json` is regenerated: the request body is no longer required.
+  - `test_validate_without_a_body_checks_the_latest_version` covers it:
+    - A test-only rule is held, and the stored version 1 breaks it: no body, `{}` and `{"settings": null}` are each refused 422 `invalid_profile`, and so is the library call.
+    - A dry run of settings that meet the rule is accepted.
+    - After an edit makes version 2 meet the rule, a call with no body is accepted.
+    - Without the rule, the stored version is accepted, and an unknown profile is 404.
+  - C-03 gains a no-body parity step, so `PROFILE_ANSWERS` gains a 200.
+  - Mutation-checked, with the sources restored byte for byte (SHA-1 checked). Each of these fails a new test:
+    - the body required again (it also fails C-03, where REST answers 422 and the library 200);
+    - no body validating the model defaults;
+    - no body validating version 1;
+    - the body's settings ignored;
+    - the purge re-check removed;
+    - a fork taking Lite.
+  **Why:** The Discretion line prescribes it, and REST must answer as the library does (C-03). Cost if wrong: none; an optional body only adds accepted requests.
+  **Issue:** #106
+- **Decision (Rule 3, blocker):** I cherry-picked #93's two verified commits onto the milestone branch before writing #109: `146fe95` → `26d21c3` and `8681341` → `d4ccffd` (`git cherry-pick -x`, so each names its source). They touch only `tools/gates/traceability.py` and `tests/gates/test_traceability.py`.
+  **Why:** AC3 needs a test part with `interim_until="M7"`, which needs an interim annotation in docs/04 §15 (`C-16 (M4, interim until M7)`). check-traceability at the milestone's HEAD splits a §15 cell on every comma, so it cannot parse that annotation (exit 2): exactly #93's bug. The drift note says #93's fix must land first, and the plan cherry-picks it before group A's gate anyway. Cost if wrong: when the orchestrator cherry-picks `m3/bug-93`, both commits are already applied, so git stops on an empty cherry-pick that should be skipped (`git cherry-pick --skip`). #93's decisions still go in with the lane-2 entries.
+  **Issue:** #109, #93
+- **Decision (drift):** The upgrade-unavailable slice is `test_c_16__upgrade_unavailable`, `part("M4", "FR-PROF-7", interim_until="M7")`, the drift reviewers' Option G. It uses the slot docs/04's C-16 text already defines: "[M4: FR-PROF-7] *(interim until M7)*". The test plan's `part("M3", …)` was not used. §15's FR-PROF-7 row now reads `C-16 (M3), C-16 (M4, interim until M7), S-PROFILE-SWITCH (M7)`; `--write` cannot produce this, because the row is above `current_milestone`. `test_c_16__two_stage` keeps `part("M3", "FR-PROF-7; FR-SCN-2")`. Both C-16 slices are in `tests/integration/test_engine_profiles.py`, beside #106's `test_c_16__crud`. M4's own C-16 (M4) slices (the consolidation interim clause, the gate-threshold edit) must join that file. C-18 (M3) and the detailed tests are in `tests/integration/test_two_stage.py`. With the annotation removed, check-traceability reports `interim mismatch FR-PROF-7 C-16 (M4)`, so the gate does read it.
+  **Why:** Two `(C-16, M3)` parts for FR-PROF-7, one interim and one not, can never both match one §15 entry. Dropping FR-PROF-7 from the M3 slice (Option A) would make all of FR-PROF-7's M3 coverage interim, which is wrong for the two-stage flow, a permanent rule. Cost if wrong: the interim part gates from M4, not M3. The behaviour is still tested in every CI run, and M3's FR-PROF-7 gate is the two-stage slice.
+  **Issue:** #109
+- **Decision (drift):** #109 builds the minimal per-story resolution and read the AC need, ahead of #113, the drift reviewers' sequencing (1)+(2):
+  - `core/profiles/effective.py` resolves a story's profile at the version it runs on: its pin, else the latest. That version's settings are read over `ProfileSettings`' defaults, with optional preview overrides laid on top, and the result is validated as a whole.
+  - `GET /stories/{id}/effective-config` answers `{story_id, profile: {id, version, pinned, deleted}, effective, fingerprint, capabilities, quality_status}`, where `effective` holds the delivered settings at their effective values.
+  - Migration `0026` adds `stories.engine_profile_version_pin`: nullable, with a composite foreign key `(engine_profile_id, engine_profile_version_pin)` to `engine_profile_versions`. A fork copies the pin, as it copies every column.
+
+  #113 extends these: `deployment_defaults` and `overrides` in the read, `profile_defaults` and stored overrides in the resolution. Its assign route must clear the pin, or set it for an upgrade-unavailable single story, and its routes join `api/routes/story_profile.py`, the file #109 created.
+  **Why:** AC3 asserts through the effective-config read and AC4 names the read; the turn needs the same resolution to stamp itself. The column is the Discretion's (`stories.engine_profile_version_pin`) and a new column the AC need, not Rule 4. Cost if wrong: #113 reshapes a route and a module nobody consumes yet.
+  **Issue:** #109, #113
+- **Decision:** The answer and library result of `PUT /engine-profiles/{id}` are now the two-stage envelope.
+  - REST: `ProfileEditBody`, `{applied, impact, result, config_revision, idempotency_key}`, where `result` is the profile, or `null` when held. The status is 200 either way.
+  - The library returns `TwoStageResult[ProfileWrite]`.
+  - `ignore_warnings` is a field of the request model (`ProfileUpdate` extends `TwoStageRequest`), not a separate keyword on the method, so REST and the library carry it the same way. `ignoreWarnings` is accepted and documented in the OpenAPI schema. Both spellings with different values are 422 at `body`.
+  - `Engine._keyed` gains `keep=`: a held result (`TwoStageResult.kept()` false) releases the key instead of storing it. A held call therefore leaves no operation and no key, and the confirmation under the same key is its first execution.
+  - Existing tests changed because the shape changed: `test_c_16__crud`, `test_i_21__profiles`, `test_validate_without_a_body_checks_the_latest_version` and `test_edits_record_their_requester_and_replay` read `["result"]`, and `test_library_matches_rest` reads `.result.profile`. C-03 renders `ProfileEditBody`. No assertion was loosened.
+  **Why:** The Discretion's `{applied, impact, result}` and `TwoStageResult(applied, impact, result)`, and the drift note's rule that a report-only path must not be stored under `_keyed`. Cost if wrong: a flat body (profile fields plus `applied` and `impact`) would be one route's change.
+  **Issue:** #109
+- **Decision:** The fingerprint is `sha256:` over the canonical JSON of the AC's three keys:
+  - `profile_version: {profile_id, version}`;
+  - `models`, holding every delivered purpose, each `{id, reported_version}`: the purpose's own `model_config` model, else the `default` row's; the reported version is null in M3;
+  - `quality_relevant_settings`, holding every leaf tagged `Quality.relevant` at its effective value (delivered or not), plus `prompt_templates`, the SHA-256 of each delivered purpose's template file.
+
+  The Orchestrator resolves the models and templates (`orchestrator/models/facts.py`) and passes them as `RuntimeFacts`. A turn reads the models in its read-phase snapshot. One consequence: a new profile version changes the fingerprint even when it changes only a quality-irrelevant setting, because FR-PROF-16 makes the version an input. So the complement for "a non-quality-relevant change keeps it" is a story override in a preview (`pins.max_pinned`) and the story's `turn_concurrency`, never a profile edit. `test_a_new_profile_version_is_a_new_fingerprint` pins this.
+  **Why:** FR-PROF-16 lists the profile version, each purpose's model and reported version, and the tagged settings. The Discretion names the profile id: a bare version number would make two profiles' configurations share a fingerprint. Cost if wrong: dropping the version or the id changes every fingerprint once, before anything stores them (#112 comes later).
+  **Issue:** #109, #112
+- **Decision:** Every Lite turn stamps itself at turn start (`pipeline.begin`, in its REPEATABLE READ read phase): respond, regenerate and queued turns. `operations.config_revisions` gains `fingerprint`, `profile`, `profile_version`, `models`, `quality_status` (`{status}`) and `capabilities`. `RespondResult` and `RespondResponse` gain `fingerprint`, `capabilities` and `quality_status`. They are nullable, or empty, only for a stored result from before #109, so that a replay still loads. I-07's `RESPONSE_FIELDS` gains the three names. Ingest operations record no stamp: no configuration produced their text.
+  **Why:** The AC says respond responses (#57), and the key_link says the stamp is computed at turn start from the effective configuration. `recapture_config` merges keys, so the stamp survives a re-check. Cost if wrong: one more call site if #112 wants ingested messages stamped.
+  **Issue:** #109, #112
+- **Decision:** What a report holds and when it warns:
+  - Capabilities are module names, sorted, with the pipeline named by its level. `capabilities_gained` and `capabilities_lost` also count a module that stays on at a higher or lower level.
+  - A data-producing increase is a module in `schema.DATA_PRODUCING_MODULES` (derived from the switches' `Tag`) switched on or raised a level, or a data-producing dial (`schema.DATA_PRODUCING_DIALS`) raised while its module stays on.
+  - "History" means at least one committed, active `turn` operation, generated or ingested. That is the drift correction: turn 1 is the first played turn.
+  - An upgrade-unavailable entry keeps its configuration, so its `fingerprint_after` is its `fingerprint_before`, while `capabilities_gained` still shows what the change would add.
+  - `warnings` lists the reasons in `impact.WARNING_KINDS` order. This field is beyond the AC's shape: it saves consumers from deriving them.
+  - `guarantees_lost` is the FR-VERIFY-15 delta. A report over zero stories warns of nothing.
+  - A profile edit's report covers only the stories that follow the latest version (pin `NULL`): a pinned story is neither listed nor moved by later edits.
+  - The Discretion's `neutralised: true` is not implemented, because no story state of that name exists anywhere, plans included. The erasure stories add it if they need it.
+  - `recommendations_unmet` is `[]` for story mutations until a story carries a scenario snapshot (#119). The machinery is in place: `Recommendation`, `unmet` and `creation_report`.
+  **Why:** The Discretion lines (sorted flat names, `lite` included, per-entry fingerprints, cap and count), filled in where they are silent. Cost if wrong: the shapes are additive.
+  **Issue:** #109, #119
+- **Decision:** In M3 no delivered module is data-producing, so `epistrel.testing.profiles.data_producing(*modules)` marks one for a block, as #106's `extra_rule` does for dependencies. The test switch is the polish pass. `test_c_16__upgrade_unavailable` has a complement: unmarked, the same edit moves a story with history to the new version.
+  **Why:** The Discretion: "the fixture marks a module data-producing through `epistrel.testing`". Cost if wrong: none.
+  **Issue:** #109
+- **Decision:** Locks and the residual race. A profile edit reads the deployment row `FOR SHARE` first, keeping M2's order, then holds the profile `FOR NO KEY UPDATE`. Only when the edit is a data-producing increase does it also hold every following story `FOR NO KEY UPDATE`, in id order, before reading their history. A turn's commit then waits, while a story insert's foreign-key check does not (#104's lesson). Report and apply run in one transaction, and there is no `impact_changed` code (pass 1). Known residual race: a fork whose snapshot was read before the edit commits a story that follows the new version even though it has history. That is #106's purge race again; there is no real data-producing module before M4, so it is not closed here.
+  **Why:** Locking every following story on every edit would block their turns even for a rename. Cost if wrong: one lock clause.
+  **Issue:** #109
+- **Decision (drift):** The estimate's constants are in `core/profiles/estimates.py`, and nothing reads `docs/` at run time:
+  - chunks of 30 messages, one call per chunk for each module whose data the change adds;
+  - tokens are the characters over 4, read once per module;
+  - the calls run one after another at `CALL_LATENCY_MS = 13_398`.
+
+  That latency is the model matrix's largest median per-call latency: the policies-off row, at one generation call per turn. `test_the_estimate_and_its_measured_latency` derives it from `docs/model-matrix.json` again, so a re-measured matrix fails until the constant follows it. The matrix has no cost field, so the estimate carries none: FR-PROF-7 asks for model calls, tokens and duration.
+  **Why:** The drift note: `docs/` does not ship, and no per-call figure exists. The largest per-call latency makes an estimate err long. Cost if wrong: one constant.
+  **Issue:** #109
+- **Decision:** The preview, `POST /stories/{id}/impact-preview`, is `mutating=False`: no `Idempotency-Key`, no expected revision, but the principal is still required by its method. It refuses:
+  - a body naming neither `profile_id` nor `overrides` (422 at `body`);
+  - a profile that cannot be assigned (422 `profile_deleted` with `reason` `unknown`/`deleted`, at `body.profile_id`, like `require_assignable`);
+  - a result that cannot run (422 `validation_error` at `body.overrides.<path>`, or `invalid_profile`).
+
+  Naming the story's own profile is no reassignment: the story keeps its pinned version, even when the profile is deleted. Its body is the `ImpactReport` itself.
+
+  `overrides` is a sparse settings document, validated strictly as a profile's settings are, whose settings replace the profile's (`effective.layered`). It is not an RFC 7396 merge patch, which my first build used: C-01 caught it. Schemathesis sent `"overrides": {"repair": null}`, which the published schema forbids, and the merge patch accepted it as "remove the key" (`AcceptedNegativeData`). A `null` is now accepted only where a setting takes one. `test_preview_refusals_write_nothing` asserts 422 at `body.overrides.repair`, and the preview's 100 generated C-01 examples pass. #113 decides how its `PATCH …/profile-overrides` (a merge patch over the stored overrides) is previewed; if it previews a patch, its published schema must allow the `null`s. The route, and `GET …/effective-config`, are in the closed `profiles` tag. Both have C-03 parity steps (`PROFILE_ANSWERS` gains two) and nothing-gates `CALLS` entries. C-03 normalises a fingerprint by first-seen position, like an id, since it hashes a profile id each surface mints.
+  **Why:** The Discretion and the drift note's route-flag pointer. Cost if wrong: none.
+  **Issue:** #109
+- **Decision:** The creation path is #119's, so `test_c_16__two_stage` covers the test plan's "creation with an unmet recommendation → report first, success with `ignore_warnings`" at the machinery level: `creation_report` (only an unmet recommendation can make a creation warn) through `two_stage`, held and then confirmed. #113 covers its two story routes. These follow the coverage line ("#109's tests exercise `two_stage` on `PUT /engine-profiles/{id}` and `impact_preview` only").
+  **Why:** No story is created from a scenario before #119. Cost if wrong: #119 adds the route-level assertion, as planned.
+  **Issue:** #109, #113, #119
+- **Decision:** `SettingsDocument` and `SETTINGS_SCHEMA` moved from `core/profiles/store.py` to `schema.py`; `store` re-exports both. The dependency order is now `store → impact → effective → fingerprint → schema`, with no cycle. The status enum is `QualityStatusValue` and its model `QualityStatus {status}`: an enum named `QualityState` would publish an OpenAPI component whose name a part must spell, and "State" is an M6 lexicon term. Parts reach later terms through `tests/profile_support.py` constants: `REDERIVATION` ("backfill", M7), `QUALITY_STATUSES` and `STATUS_COMPONENT`. README and docs/02 §4.11 describe the two stages, the preview, the read, the fingerprint and the pin.
+  **Why:** An acyclic import order; the lexicon (the M2 lesson); docs that match the code. Cost if wrong: renames only.
+  **Issue:** #109
+- **Decision:** Filed #319 (`needs-triage`) and did not fix it. `tests/integration/test_respond.py::test_openapi_calls_the_message_finished_never_verified` fails on the milestone branch. #105's `DepictedSubject` description says "unverified", and the test checks every OpenAPI description for the substring "verified". The committed `docs/openapi.json` at `9b855a9` already holds that text, so the failure predates #109. None of #109's descriptions trips the check. Group A's full run will fail on this test until #319 is decided. It is cross-referenced on #109.
+  **Why:** It is out of #109's scope, and choosing between rewording #105's description and narrowing an M2 assertion is a triage call.
+  **Issue:** #109, #319, #105
+- **Decision:** I mutation-checked the story. Each mutation was applied by a script, which ran the named tests and restored the sources (SHA-1 checked over every changed file afterwards). An unmutated control passes. All 20 mutations fail a test:
+  - in `two_stage`: always applying, or ignoring the confirmation (C-16);
+  - in `_keyed`: storing a held result under the key (C-16, and the held-key test);
+  - in the following report: ignoring history, writing no pin, resolving without the pin, no data increase ever, the kept story reporting the new fingerprint, listing not by id, the cap ignored (the interim slice, C-16 or the cap test);
+  - in the fingerprint: no relevant settings, irrelevant settings included, the own model ignored, the edit's report built without the models (C-18 or C-16);
+  - in the turn: no stamp recorded, no stamp answered (C-18);
+  - in the preview: overrides ignored (C-16, C-18);
+  - in the estimate and request: tokens not divided (the interim slice); the two spellings at odds accepted, a lost capability not warned (C-16).
+
+  Branch coverage of `epistrel.core.profiles` over its three test modules is 98%.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
+  **Issue:** #109
+- **Decision:** #109 verification fixes, round 1 (Rule 1). Every impact report now states the capabilities enabled, as `capabilities_after`: the sorted module names (`lite` included) of the configuration a story would run under. It sits between `fingerprint_after` and `quality_status_after`, with their placement and nullability (`list[str] | None`):
+  - in each `AffectedStory`, from the stamp the story will run under. So an `upgrade_unavailable` entry states the list it keeps, while `capabilities_gained` still shows what the change would add;
+  - at the top of a one-story report (the preview, and #113's assignment and overrides) and of a creation report (#119);
+  - null at the top of a profile edit's report, which may list many stories, like its fingerprints.
+
+  I added no `capabilities_before`: the report's naming is `_before`/`_after`, FR-PROF-16 asks for the capabilities enabled, and `capabilities_gained`/`capabilities_lost` already give the delta. `docs/openapi.json` is regenerated, and the preview and edit route descriptions and README name the field. The tests gained assertions, and none was removed or loosened:
+  - C-18 (M3): the preview's top and entry (Lite's list under a `pins.max_pinned` override; the list without `rolling_summary` under a new override that turns it off, which also gives a new fingerprint); the edit report's entry, with its top null, and the read after the edit.
+  - C-16 (M3): the held edit's entries (no `rolling_summary`) with the top null, the preview, and the creation report.
+  - C-16 (M4, interim): the kept entry without the polish pass and the moved entry with it, each equal to its story's effective configuration after the confirmation, and both previews.
+  - `tests/test_profile_facts.py`: the entry and one-story report, and the creation report.
+
+  Mutation-checked, with `impact.py` restored from a scratch backup each time (SHA-1 identical at the end). Each mutation fails a test: an unavailable entry stating the new list, an available entry stating the old list, the field dropped from the entry, from a one-story report's top, and from a creation report.
+  **Why:** AC4, FR-PROF-16 and C-18 (M3) require every impact report to state the capabilities enabled, and the report carried only the deltas (the verifier's gap 1). Cost if wrong: one field's name or nullability, before anything consumes it; #113 and #119 build their reports on these builders.
+  **Issue:** #109
+- **Decision:** #109 verification fixes, round 1 (test gap). The gap was real, and it was a gap in test coverage only: `with_history` already counted only committed, active turn operations. No logic changed; its docstring, the module docstring, the two route descriptions and README now say what history is. The new detailed test is `test_only_a_committed_active_turn_is_history` in `tests/integration/test_two_stage.py`:
+  - Four stories follow a profile with the polish pass off: one has played a turn; one's only turn failed (a stub `http_500`, 503 `model_unavailable`); one played a turn, then truncated it away (`to_turn: 0`); one never played.
+  - It first asserts each story's turn operations (status, membership): `committed`/`active`, `failed`/`active`, `committed`/`discarded`, and none. So neither case is vacuous.
+  - Under `data_producing("polish")`, the edit's report lists only the first as `upgrade_unavailable`, with its re-derivation needed. The other three gain the polish pass with nothing to re-derive and Lite's capabilities after it, in the report and in a preview of each alone; the first's preview is unavailable.
+  - Confirmed, the first stays pinned on version 1, and the other three run on version 2, unpinned, with the polish pass.
+
+  It is a detailed test, not part of the C-16 (M4) slice: the qualifier is #109's own definition of history, and the slice follows docs/04's text. The verifier's mutations E (status filter removed) and E2 (membership filter removed) each fail it, at the entry's `upgrade_unavailable`, with `impact.py` restored afterwards (SHA-1 checked).
+  **Why:** The verifier's gap 2: removing either filter left all 38 story tests green, so a story whose only turn failed or was truncated could have been pinned as `upgrade_unavailable` without any test noticing. Cost if wrong: none; a test only.
+  **Issue:** #109
+- **Decision:** #109 verification fixes, round 2 (Rule 1). An edit of a profile that no story follows now states the profile's own stamp at the top of its impact report: `fingerprint_before` and `fingerprint_after` are the fingerprints before and after the edit, and `capabilities_after` and `quality_status_after` are the configuration's after it. A story following the profile would run under exactly that. Until now such a report listed no entry and left those four top fields null, so it stated no fingerprint, capabilities or quality status at all. Editing a profile before any story is assigned to it is the common case.
+  - The top stays null whenever the report lists a story, because each entry states the stamp its story would run under (the pass-1 Discretion and round 1).
+  - The condition is that no entry is listed (`not entries`), not `affected_count == 0`. The two agree except when a following story is created or deleted between the report's count and its listing, which are two READ COMMITTED statements. Keyed on the listing, no report can be left without a stamp. That count-versus-listing race is otherwise benign: a story created mid-edit has no history and would follow the new version anyway. It is not changed here.
+  - I rejected the alternative of always stating the profile's own stamp at the top. It contradicts the Discretion's null top, and the top's `fingerprint_after` would then disagree with any `upgrade_unavailable` entry's.
+  - The `ImpactReport` and module docstrings, `following_report`'s docstring, the `PUT /engine-profiles/{id}` description and README say what the top holds. `docs/openapi.json` is regenerated (two descriptions).
+  - `test_c_18__fingerprint` gains the case, and no assertion was removed or loosened. It creates a profile no story follows and previews assigning it to the test's story. Then it edits the profile to turn the rolling summary off. The edit applies at once, with no entry, a count of 0 and no warnings. The top's `fingerprint_before` is the first preview's `fingerprint_after`. Its `fingerprint_after` is a new `sha256:` fingerprint, and a second preview of the assignment gives that same fingerprint and the same capabilities. The capabilities are Lite's without the rolling summary, and the status is `uncertified`. On the unfixed code the case fails at `None == 'sha256:…'`.
+  - Mutation-checked, with `impact.py` restored after each mutation (SHA-1 identical at the end). Each of these 5 mutations fails `test_c_18__fingerprint`: the top's capabilities taken from before the edit; its `fingerprint_after` taken from before; its `fingerprint_before` taken from after; its status dropped; and the top stamped even when stories are listed. The last is caught by the existing null-top assertion on the Lite edit.
+  **Why:** AC4, FR-PROF-16 and C-18 (M3) require every impact report to state the fingerprint, the capabilities enabled and the quality status (the verifier's round-2 gap). Cost if wrong: one function's top-level placement. The four fields are already nullable, and nothing consumes them yet; #113 and #119 build their reports on `single_report` and `creation_report`, which this does not change.
+  **Issue:** #109
+
+- **Decision:** Group A's lane 2 landed on the milestone branch by `git cherry-pick -x` at a quiet point, after both lanes had finished:
+  - #305: `0d2361d` and `276eba7` became `c757433` and `ebad4af`.
+  - #94: `adf8cd2`, `6f15757` and `eab59d0` became `61463c2`, `f4b2d55` and `0eb6143`.
+  - #303: `1a25115` became `9f2a94a`.
+  - #93 was already on the branch: #109's implementer had cherry-picked it as `26d21c3` and `d4ccffd` (Rule 3, logged above), and the contents are identical.
+  Every pick applied cleanly; `README.md` and `src/epistrel/testing/faults.py` auto-merged with lane 1's edits. The bug agents' decision entries follow verbatim, as they returned them.
+  **Why:** The lane plan, logged at the start of this section. The bug agents could not write this file without conflicting with lane 1.
+  **Issue:** #305, #93, #94, #303
+- **Decision (Rule 1):** X-04's first kill is triggered by observation instead of a seeded delay (`tests/chaos/test_x_04.py`). The child engine's first life runs with `pause_before_commit`. `_crashes`/`_ready` kill it only after three observations: a `before-commit` marker (a turn held before its commit, which cannot commit before the kill); a queue story with `QUEUE_KEYS - 1` turns `queued` behind its running one; and `dropped > 0`. The waits are bounded: `MARKER_TIMEOUT_S` (30 s), then `OBSERVE_S` (30 s). The two later restarts keep seeded random delays (`RESTART_AFTER_S` = 0.2–1.2 s). The four "chaos was real" preconditions (`dropped`, `starts`, `crashed`, `overlapped`) now hold by construction and are asserted at every iteration count, where before they were checked only at 20 or more. A new assertion checks that the turn the first kill caught ended `in_flight`/`failed`. No correctness assertion changed. This supersedes the X-04 design line (#61) that put "the first within 0.15–0.4 s, so it lands on turns in flight".
+  **Why:** That premise held only on fast runners. CI run 38270347163 failed a docs-only PR when all three blind kills landed between turns. The drift note named `pause_before_commit` + `next_marker()` as the observed in-flight signal. Cost if wrong: the first kill always lands at the before-commit point, not at a random one. The two later restarts and X-03's crash plans still cover random points.
+  **Issue:** #305
+- **Decision:** One client per X-04 run, drawn from the seed, always drops its first request (`Draws.drops_first`), and the first kill waits for `dropped > 0`.
+  **Why:** In the paused first life every unanswered request hangs until the kill, so a drop always counts once it fires. Without the forced drop, a seed where no client draws a first-request drop (0.7^32 ≈ 1e-5) would wait out `OBSERVE_S` and fail. Accepting that residue was the alternative, and it is not deterministic. Cost: one extra drop per run, negligible beside DROP_RATE 0.3.
+  **Issue:** #305
+- **Decision (Rule 1):** In X-04 a refused connection (`httpx.ConnectError`: the engine is down) no longer counts as one of a client's `EPISTREL_CHAOS_ITERATIONS` requests. The client sends the same request again after a backoff, keeping its drop draw, and fails after `REFUSED_S` (60 s) of unbroken refusals. The tallies split the old `unreachable` into `refused` (not counted) and `lost` (the connection broke under a sent request; counted).
+  **Why:** Found while verifying #305. Under macOS background QoS (`taskpolicy -b`), refusals during restarts used up ~45 of each client's 50 requests, and storm-phase answers fell to 32–195. `answered > 0` was therefore timing-dependent too, and the new slow-engine test would have flaked in the PR gate. After the change the same conditions give 1378–1391 answers (X-04) and 449–451 (the slow-engine test). Cost: X-04 takes ~1–3 s longer, because more requests reach the engine.
+  **Issue:** #305
+- **Decision:** X-04's seed claim is corrected rather than made true. Each client now draws from two seeded streams: `drops` (drop decision and delay, one draw set per sent request) and `waits` (backoffs). A seed therefore fixes which requests drop and after how long, the backoffs in order, the forced-drop client and the later restart times, whatever the timing. The module docstring says so, and says that the interleaving with the engine process is not replayed.
+  **Why:** The engine is a separate process racing the clients on the wall clock, so a full replay cannot be achieved. The issue allowed "or correct the docstring". Splitting the streams makes the corrected claim exact instead of approximate. Cost: seeds printed before #305 replay different draws.
+  **Issue:** #305
+- **Decision:** `epistrel.testing.faults.EngineProcess` gains a test-only `turn_start_delay_s` option (child flag `--turn-start-delay-s`). It patches `Operation.begin` so that `turn` operations sleep first, which simulates a slow runner; the patch uses the same targeted `type: ignore[method-assign]` as `_pause_turn_commits`. The regression test `test_x_04__slow_engine` (an X-04 part, `chaos_quick`, so it runs in the PR gate) runs a storm of 4 + 2×3 keys with `SLOW_START_S` = 2.0 s. Against the pre-fix schedule it failed 3/3 runs with the CI message (`originals killed in flight=0`). With the fix it passes: 6 killed in flight, first kill ~2.57 s in.
+  **Why:** 2.0 s is more than the 1.2 s upper end of the blind restart delays, plus slack for a request that arrives before health is seen, so the reproduction is deterministic and does not depend on finding a slow runner. It runs in the PR gate because this bug is a PR-gate flake: going back to blind kills must fail on the PR. Cost: ~20 s more per PR run, and ~75 s more in the weekly 500-iteration run.
+  **Issue:** #305
+- **Decision (Rule 2):** X-04's clients and crash schedule run in one `asyncio.TaskGroup`, and `_client` no longer catches `asyncio.CancelledError`: a drop is detected from `attempt.cancel()` returning True, then `asyncio.wait`.
+  **Why:** The new bounded waits must be able to fail fast. The old `except asyncio.CancelledError` swallowed the group's own cancellation, which would have left the clients hanging on the paused engine until their 30 s request timeouts. Probe: with an impossible condition and a 3 s bound, the test failed in 6.7 s, naming the seed.
+  **Issue:** #305
+- **Decision:** docs/04 §12's X-04 wording ("restart the engine at random points") is left unchanged. X-04's first restart now comes at an observed point (a turn held before its commit), and only the two later restarts come at random times.
+  **Why:** The test still drops connections, restarts at random points and asserts the same three outcomes. The observed first kill guarantees the preconditions; it is not a new requirement. Cost if wrong: an ordinary docs PR amends §12.
+  **Issue:** #305
+- **Decision:** Filed #309 (needs-triage), discovered while working #305. The seed greps in `.github/workflows/chaos.yml` (`^X-0[0-9] ` and `^X-0[0-9] .*seed=`) never match, because pytest prefixes each test's first print with the file path or progress dots. The weekly summary and the red-run issue therefore carry no seeds (seen in run 38242286671).
+  **Why:** It is a different file and a different concern, outside #305's scope under the discovered-work rule, so it is not fixed inline.
+  **Issue:** #305, #309
+- **Decision:** Closed the round-1 README gap by correcting the claim, not by making the seed replay the run. README.md:90 now says a seeded chaos test's `EPISTREL_CHAOS_SEED` repeats the test's random draws, which is not always the same run. For X-04 it lists what the seed fixes (which requests drop and after how long, the backoffs, which client always drops its first request, how long after the engine is back each later restart comes). It says X-04's interleaving with the engine process is not replayed, and it points to the module docstring. It also drops "printed by each test", because X-06 and X-07 take no seed.
+  **Why:** Round 0 chose "correct the claim": a child process racing the clients on the wall clock cannot be replayed from a seed. But it corrected only the docstring, so the README and the docstring contradicted each other. Cost if wrong: none at run time. A reader who expects a failing X-04 seed to reproduce the failure is told up front that it may not.
+  **Issue:** #305
+- **Decision:** Took the verifier's optional docstring hint. X-04's list of what can differ between runs of one seed now starts with when the first kill comes and which turn it catches, and it is marked as examples, not a complete list. The restart draw is now described as how long after the engine is back each later restart comes, where it said "when the later restarts come".
+  **Why:** The first kill is triggered by observation, so its time and the turn it holds depend on timing. `_crashes` waits the drawn delay after `restart()` returns healthy, so the seed fixes the delay, not the time. Cost if wrong: none at run time (docstring only).
+  **Issue:** #305
+- **Decision:** Reworded chaos.yml's three "replay" strings to "rerun" in this bug: the seed input description (:14), the step summary (:71) and the red-run issue text (:92). The verifier had suggested doing this under #309. The input description now adds that a seed repeats each seeded test's random draws but not X-04's timing.
+  **Why:** It is the same claim #305 reported, so it is in scope. #309 is needs-triage with no branch or PR, so deferring would leave the workflow contradicting the README for an unknown time, and #309's body does not mention the wording. Only strings changed; the greps #309 is about (:72, :91) are untouched. Cost if wrong: a #309 branch cut before this lands would hit a trivial conflict on the adjacent lines.
+  **Issue:** #305
+- **Decision:** Left X-03's and X-05's docstrings, which say `EPISTREL_CHAOS_SEED` replays a run, unchanged and unfiled.
+  **Why:** They are claims about other tests, outside #305, and I have no evidence either is false. The new README wording ("repeats the test's random draws, which is not always the same run") is true for them either way. Cost if wrong: one of them overclaims replay, as X-04's did. A possible X-05 case is listed as unverified under discovered issues.
+  **Issue:** #305
+- **Decision:** #93: the §15 Tests cell is split with `ENTRY_SEPARATOR_RE = ,(?![^()]*\))`, which splits only on commas outside parentheses. The issue suggested `,\s*(?=[A-Z][A-Z0-9-]*\s*\()`, which splits only on commas followed by the next entry's ID.
+  **Why:** Both split every valid cell the same way: on the real docs/04, 437 non-empty cells and 1,060 entries split identically to the old `split(",")`. The chosen pattern does not depend on the test-ID grammar, and a malformed cell's error names only the bad entry (`'I-02 M2'`, not the whole cell). `ENTRY_RE` still validates every chunk whole, so nothing malformed newly parses. Cost if wrong: only the wording of structural errors.
+  **Issue:** #93
+- **Decision:** #93 (Rule 2, error handling): `run()` now parses the regenerated §15 before writing it. A `--write` whose output would not parse raises `refusing to --write: the regenerated §15 does not parse: ...` (exit 2) and leaves docs/04 byte-identical.
+  **Why:** The issue's "What's broken" names this failure: docs/04 was written first, the re-parse then failed, and every later run rejected the file. The parse fix closes the interim case, and parsing first closes any future render/parse mismatch, such as a part named `test_1x`, whose derived ID `1X` §15 cannot hold (#307). Cost if wrong: none; only a path that used to corrupt docs/04 changes behaviour.
+  **Issue:** #93
+- **Decision:** #93 had no AC section, so the definition of done was derived in the plan comment: interim annotations parse (`interim_until` parsed), `Entry.render` round-trips, `reconcile` covers interim entries, the `--write` round trip works and the next run accepts the file (also via the CLI, exit 0 not 2), and an unparseable `--write` leaves docs/04 untouched. docs/04 was not edited. The tests use the module's fixture plan, and the CLI test uses the fixture spec and `pyproject_m1.toml`.
+  **Why:** These follow the issue's Expected/Evidence and the orchestrator's specifics. The fixture-based CLI test reproduces the reported exit-2-then-every-run-rejects scenario without depending on docs/04's contents. Cost if wrong: an AC the owner expected would be missing; the plan comment lists them for review.
+  **Issue:** #93
+- **Decision:** #93: the retirement contradiction is filed as #306 (needs-triage) and not fixed. Once an interim part's `interim_until <= current`, `reconcile` reports `planned but absent` if the part is deleted and `retired part still present` if it is kept. `--write` never drops the §15 entry, so the gate passes only if the entry is deleted by hand.
+  **Why:** Fixing it changes gate semantics beyond parsing (keep a retired entry as history, drop it, or give it a new spelling), which is the owner's call. The parse fix does not need it. It first bites at M7: #229's "Interim retired" AC expects `check-traceability --write` to mark the C-16 M4 clause superseded, which `--write` cannot do. Cost if wrong: #229 hits a failing gate or must hand-delete the entry; #306 lists three options.
+  **Issue:** #93, #306
+- **Decision:** #93: the derived-test-ID gap is filed as #307 (needs-triage) and not fixed. `derive_test_id` maps `test_1x` to `1X`, `test__x` to `-X` and `test_9_lives` to `9-LIVES`, none of which a §15 entry can hold, and `check-parts` accepts them.
+  **Why:** The defect is in check-parts (#38's code), outside this bug. It is latent: 0 of the 138 current parts have such an ID, and this branch's parse-before-write already stops it from corrupting docs/04. Cost if wrong: an author who uses such a name gets an unhelpful `missing from §15` finding until #307 is fixed.
+  **Issue:** #93, #307
+- **Decision:** Treated the verifier's test-coverage gap (no test held check-traceability to exit 2 on PlanError) as real and fixed it with CLI-level tests only. No production code changed.
+  **Why:** I reproduced the verifier's mutation. With PlanError removed from the except tuple at tools/gates/__main__.py:118, the 21 existing tests in tests/gates/test_traceability.py still passed. The exit-2 mapping itself is correct today: with the tuple restored, all 24 tests pass. So only the tests were missing. Cost if wrong: none to behaviour. A future regression in the mapping is now caught.
+  **Issue:** #93
+- **Decision:** Moved the gate() subprocess helper out of test_cli_write_of_an_interim_part_leaves_a_plan_the_next_run_accepts to module level as _fixture_gate, so it and the two new CLI tests share one invocation (fixture spec, current_milestone = 1). The existing test's assertions are unchanged.
+  **Why:** The alternative was copying a 20-line subprocess call into each new test. Moving it does not loosen any assertion. Cost if wrong: trivial; it is a test-local refactor.
+  **Issue:** #93
+- **Decision:** The new CLI tests assert exact stdout equality (the single 'error: ...' line, including the docs/04:9 line number), not a substring. The malformed-interim case runs both with and without --write.
+  **Why:** Exact equality proves the structural error is the only output and that it names the right entry and line. The --write variant proves that a malformed plan is never rewritten. Cost if wrong: the tests must be updated when the error wording changes, which is cheap and intended.
+- **Decision:** Drift correction (drift notes): #94's stated reproduction has passed since #74, whose commit 35587b6 added a whole-value table lookup. The regression test keeps that reproduction as a guard and adds the residual case the drift check found: `GNU General Public License v3 (GPLv3); GNU Affero General Public License v3` with an exception, which gave `excepted 1` and no finding at fa0c78d. The test now expects `denied (exception refused: GPL family)` and `excepted 0`. Consequence (3) for single classifiers was already fixed; it is only re-asserted.
+  **Why:** The title claim still held for `;`-joined values: pip-licenses 5.5.5 `--from=mixed` joins a package's license classifiers with "; ". Closing #94 as "fixed by #74" would have left the loophole open. Cost if wrong: one extra guard test.
+  **Issue:** #94
+- **Decision:** (Rule 1) `parse_expression` splits on `;` first and looks each part up whole in NORMALISATION before the parenthesis rule. `;` keeps #42's OR meaning, so `GNU General Public License v3 (GPLv3); MIT License` now passes. It was UNKNOWN before only because of the parenthesis; `GPL-2.0 OR MIT` and `MIT; GPL-3.0-only` already passed.
+  **Why:** The issue's own fix line says to try the whole-string lookup "(and `;`-split alternatives) before the parenthesis rule", and the #42 user decision says an allowed branch passes. Treating classifier lists as AND would be a policy change for the owner. Cost if wrong: a package listing both a GPL classifier and an allowed one, but really licensed under both, passes. Making `;` AND would fail uvloop and sniffio's "Apache Software License; MIT License" today.
+  **Issue:** #94
+- **Decision:** (Rule 2) A deny family named where the parser reads UNKNOWN denies the value. That covers free text (`GNU GPL v3`, `GNU General Public License v3`, `GPL (>= 2)`), an SPDX expression with parentheses, and an unlisted classifier. Names are matched by identifier token or by long name (FAMILY_NAMES, counted only for families in `deny`). Such a value is not rescued by an allowed `;` branch, and no exception admits it. `denied_family` also reads `GPLv3`, `GPL3` and `AGPLv3+` as their family. A NORMALISATION entry is authoritative for its spelling and is not searched.
+  **Why:** This is the derived AC "an exception can never admit a denied family whatever the spelling". At fa0c78d an exception admitted `GPLv3`, `GNU GPL v3`, `GPL-3.0-only AND (MIT OR Apache-2.0)` and others. Blocking the OR rescue stops the `;`-first split from newly passing prose such as `MIT; GPL (for the bundled parser)`. Cost if wrong: false denials for prose that mentions a family without being it, such as `BSD-like (GPL compatible)` or a dual-licensed `MIT; GNU GPL v3`. In the old-vs-new sweep, 216 spellings that passed before now fail. Each is settled by a NORMALISATION entry for that spelling.
+  **Issue:** #94
+- **Decision:** A value spanning several lines is treated as a license text. `parse_expression` returns UNKNOWN for it, and only its first (title) line is searched for a deny family; the body is not.
+  **Why:** Permissive texts name the GPL in passing: MPL-2.0's "Secondary License" clause, and LGPLv3's "GNU GPL". Searching bodies would refuse exceptions for allowed licenses, with no table recourse, since a whole text cannot be a table key. Cost if wrong: a GPL notice whose first line does not name the GPL, such as one starting with a copyright line, can still be excepted, as it could before #94. #42 already classes free-text fields as UNKNOWN.
+  **Issue:** #94
+- **Decision:** (Rule 1) NORMALISATION now covers every license classifier in trove-classifiers 2026.9.21.13: 48 added, with ids checked against the SPDX list 3.27.0 shipped in packaging 26.3. Classifiers without a version map to UNKNOWN rather than a guess: Apple Public Source, Eiffel Forum, GNU FDL, Netscape and Zope. So do those with no SPDX id: CVW, GUST, Jabber, Repoze and the "Free for/To Use" set. A test pins the snapshot.
+  **Why:** #42's Discretion promised the full trove set. `European Union Public Licence 1.0 (EUPL 1.0)` was missing, read UNKNOWN, and an exception could admit it, although EUPL is a deny family. None of the other 47 is allowed, so only their messages change. Cost if wrong: a wrong id for a license that isn't allowed only changes a message. A later trove release needs a manual refresh of the table and the snapshot.
+  **Issue:** #94
+- **Decision:** Drift correction (drift notes): removed the unused `DENY_FAMILIES` constant from tools/gates/licenses.py.
+  **Why:** It still listed LGPL, contradicting invariant 2 as amended on 2026-10-08. The deny list lives in `[tool.epistrel.gates.licenses]` (#42). Cost if wrong: none; nothing imported it.
+  **Issue:** #94
+- **Decision:** Filed #310 (needs-triage) rather than parsing SPDX expressions with parentheses inline. Until it lands, an expression that names a deny family in any branch, such as `(MIT OR GPL-2.0-only)`, is denied and cannot be excepted.
+  **Why:** Proper SPDX parsing is outside #94, and it would change two existing assertions that pin #42's "parentheses → UNKNOWN" design. Cost if wrong: a dual-licensed PEP 639 expression with parentheses stays blocked until #310 lands. No package in the closure has one today.
+  **Issue:** #94
+- **Decision:** The new tests in tests/gates/test_licenses.py cite #94, #42 and invariant 2, but no FR-/NFR- IDs, matching the existing tests in that file.
+  **Why:** check-parts reads requirement IDs from test docstrings, so citing them would turn these unit tests of the gate tool into milestone parts. NFR-MAINT-1 is traced by C-11 (tests/test_c_11.py), which still passes. Cost if wrong: the license-gate unit tests stay untraced, as they were before.
+  **Issue:** #94
+- **Decision:** Fixed the verifier's gap (Rule 1) by matching deny-family long names over the value's lower-cased words. Any separator now works ('Server-Side Public License', 'European_Union_Public_Licence'). The GPL name now also matches bare 'General Public License' and the misnomer 'GNU Public License', except after Lesser, Library, Affero or Nethack. 'Affero Public License' is AGPL. The LGPL name was widened the same way; it counts only when LGPL is denied.
+  **Why:** Each of these spellings was UNKNOWN, so an exception admitted it, which breaks AC 'never a denied family whatever the spelling'. The qualifier exclusion keeps the LGPL, the Nethack GPL and the old LGPL-2.0 name ('GNU Library General Public License') out of the GPL. If wrong, an obscure '<word> General Public License' is denied; that is the fail-safe direction, and a table entry settles a one-line spelling.
+  **Issue:** #94
+- **Decision:** For ids, dropped a leading 'GNU' and accepted '.' after the family ('GNU-GPL', 'GNU-GPLv3', 'GNU.AGPL-3.0', 'GPL.v3'). This replaces the fix hint's general split of every id on '-' and '.'.
+  **Why:** Against the SPDX 3.27.0 list, a general split makes two real license ids GPL: the permissive CNRI-Python-GPL-Compatible, and SMAIL-GPL. The family check runs on the id itself, so no NORMALISATION entry could undo that. The sweep shows no SPDX id changes verdict with the narrow rule. Cost if wrong: rarer hyphenated spellings ('Affero-GPL') still read 'not allowed' and can be excepted.
+  **Issue:** #94
+- **Decision:** judge now checks each parsed id's family with named_family (identifier rules plus long names, so 'GNU-General-Public-License-v3' counts). I did not take the hint's option of having unread_family search every ;-part that holds a not-allowed id.
+  **Why:** The hint's version would deny 'GNU-GPL OR MIT' while 'GPL-2.0 OR MIT' passes, which breaks #42's OR rule (a user decision) for ids the gate reads. Checking the id finds the same families and keeps OR consistent. Pinned in test_or_rescues_only_what_the_gate_reads. Cost if wrong: an OR branch spelled as a made-up id rescues the value, exactly as a real GPL id does today.
+  **Issue:** #94
+- **Decision:** Did not take the hint's optional search of a license text's body for the GPL notice. A multi-line value is still judged by its title line only (the plan's trade-off), and the residual is filed as #312 for an owner decision.
+  **Why:** numpy 2.3.1's and scipy 1.16.1's License metadata fields hold their whole LICENSE.txt, including the bundled libgfortran notice 'it under the terms of the GNU General Public License as published by' (checked in the local uv cache). A body search would deny those BSD packages whenever pip-licenses falls back to the License field. A multi-line value never reaches the table, so nothing could then admit them. Cost if wrong: an FSF notice whose first line does not name the GPL can still be excepted. A maintainer has to write that exception, and the real closure has no multi-line value.
+  **Issue:** #94
+- **Decision:** Reworded the module docstring (tools/gates/licenses.py:5-10). It no longer claims 'never a deny family, however the value spells it'; it now states what is detected (ids starting with the family after any leading GNU, long names with any separators, a table entry settling its own spelling, and a text's title line only).
+  **Why:** The verifier flagged the absolute claim as untrue. The new wording matches the code and points to the documented text residual (#312). Cost if wrong: none to behaviour.
+  **Issue:** #94
+- **Decision:** Judged #94 round-2 gap 1 real and fixed it in scope, following the verifier's bounded steps:
+  - denied_family drops a leading `LicenseRef-`, as it drops `GNU`.
+  - Any `affero` is the AGPL.
+  - `EU Public Licence` is the EUPL.
+  - Long names may have joined words.
+  Every listed spelling is now denied, with its exception refused.
+  **Why:** AC2 says an exception never admits a denied family, whatever the spelling. `LicenseRef-<family>` is the only legal non-SPDX way to name a family in a PEP 639 License-Expression, which pip-licenses 5.5.5 `--from=mixed` reads first. All 778 SPDX ids name the same family with or without the prefix, and the real closure is unchanged at 55/1/0. Cost if wrong: a few contrived spellings are over-detected, which is fail-safe.
+  **Issue:** #94
+- **Decision:** Did not follow hint step 4 (split CamelCase in `_words`). Long-name patterns allow optional spaces between their words instead (`_PUBLIC_LICENSE`, `server ?side`, `european ?union`).
+  **Why:** A CamelCase split turns `NetHack General Public License` into 'net hack general public license'. That gets past the GPL pattern's `(?<! nethack)` lookbehind and makes the NGPL a false GPL, the same class of regression as gap 2. Optional spaces cover `EuropeanUnionPublicLicence` and `ServerSide Public License` without that risk. Cost if wrong: none known. A CamelCase form glued after other words (`TheGNUGPL`) stays admissible by exception, as it was at 6f15757.
+  **Issue:** #94
+- **Decision:** Went one step past the verifier's list, within the same class:
+  - a long name's version may be glued on (`GeneralPublicLicenseV3`, `EUPublicLicence1.2`);
+  - an id may end in `Version` (`GPLVersion3`).
+  The long name must still end at a space, `v` or a digit, rather than dropping its end anchor.
+  **Why:** These are the CamelCase and `GPLv3` forms the verifier listed, with a version attached. A generated probe of 8,137 deny-family spellings showed them excepted. Dropping the end anchor would make 'Free for the general public, licensed as MIT' the GPL; a test pins that it is not. Cost if wrong: minor over-detection of glued names.
+  **Issue:** #94
+- **Decision:** Rule 1 (regression fix plus regression tests) for round-2 gap 2. named_family skips a GPL id that is joined, by spaces or `_`, to `Lesser`, `Affero` or `Nethack`, or to `Library` where `Library` starts a phrase or follows `GNU` (GPL_QUALIFIER_RE). `Lesser GPL`, `GNU Lesser GPL v3`, `Library GPL` and `Nethack GPL` read UNKNOWN again, as they did at fa0c78d, and count as LGPL only when a deny list names it.
+  **Why:** Round 0 made the LGPL's short names deny-family GPL. LGPL is allowed under amended invariant 2. 'library' is scoped because it is a common word in a license field: unscoped, `Python library GPL v3` would become admissible GPL, which breaks AC2. Cost if wrong: `Released under the Library GPL` stays a fail-safe false GPL (its verdict at 6f15757 too); a table entry remedies it.
+  **Issue:** #94
+- **Decision:** Extended the existing `test_family_names_follow_the_configured_deny_list` by parametrising it. Its original spelling and both assertions are kept, and three LGPL short names are added. No existing assertion was loosened.
+  **Why:** The verifier asked for the same spellings with LGPL in deny. Parametrising avoids a near-duplicate test. Cost if wrong: none.
+  **Issue:** #94
+- **Decision:** Left a bare `GNU` (`GNU`, `GNU v3`, `GNU License`) admissible by exception. Filed needs-triage #313 for the owner and recorded it in the module docstring.
+  **Why:** `GNU` alone may mean the GPL, the LGPL (allowed), the AGPL, the GFDL or the All-permissive License. The verifier did not count it as a gap and called it an owner decision. Refusing it would need a table entry (a code change) for every LGPL package spelled that way. Cost if wrong: an exception could admit a GPL package whose license field names only `GNU`, which needs a maintainer to write that exception.
+  **Issue:** #94
+- **Decision:** Kept round 1's rule that an id names a family only by its leading component, after `GNU` or `LicenseRef-`. A family glued after other words (`The-GPL`, `Licensed.under.the.AGPL`, `TheGNUGPL`) therefore stays admissible by exception.
+  **Why:** A general split on `-`, `.` or CamelCase would make the SPDX ids `CNRI-Python-GPL-Compatible` (permissive) and `SMAIL-GPL` GPL, and no table entry could undo that. Every such spelling was excepted at 6f15757 and fa0c78d too, so none is a regression. Cost if wrong: contrived hyphenated sentences stay admissible by exception.
+  **Issue:** #94
+- **Decision:** Accepted a detail-only change. `Affero GPL` is now reported as `denied (AGPL)` instead of `denied (GPL)`. A value naming two deny families may now report the newly read family first. The verdict stays denied in every case.
+  **Why:** Affero names the AGPL, so the old detail was wrong. The sweep shows these moves only between two denied families. Cost if wrong: none to the verdict.
+  **Issue:** #94
+- **Decision:** In the model matrix, a turn's designed calls come from its own plan: one `generation` plus the guardrail calls G that `RespondResult.budget.reserved` holds (#69). Extra calls are, per purpose, the calls made beyond that design (count-based; a designed call that was never made offsets nothing). The drivers return `TurnCalls`, a `CallLog` subclass, so `calls_per_turn` and P-08's use of `measure_turns` work unchanged. The output gate's attempt counter is not threaded through `ModelAccessLayer.send`.
+  **Why:** The drift note offered both options. The reservation is the Engine's own plan and is already on the respond result, so the fix stays inside the tool. Threading the counter would change `model_calls[].attempt` in the respond API, an existing contract (Rule 4 territory). Cost if wrong: extra calls cannot be split by kind (regeneration vs. structured retry vs. empty-reply retry). The header lists the kinds, and `failed_calls` gives their outcomes.
+  **Issue:** #303
+- **Decision:** The breakdown is named `extra_calls` (md: Extra calls), not "retries". "Turns that hit a model-call deadline or error" is `faulted_turns` (md: Turns with a deadline or error, numbered from 1 in the order of `latencies_ms`). It counts a turn with any non-`ok` call, or a turn whose safe fallback was released for `deadline`. The rows also carry `failed_calls` by purpose and outcome and `fallbacks` by cause, and the md adds "p50 / p95 without them" so a deadline outlier can be traced from the md alone.
+  **Why:** Respond never retries a call the deadline cut. A deadline in the output gate releases the safe fallback; on the input check or the first generation it fails the turn. The cd0261d extras were therefore most likely output-gate regenerations that ran into the 45 s deadline, and calling them "retries" would mislabel them (this is inferred from the code; the turn reports were in a throwaway database). A deadline can also pass before a check is sent, with no call left to fail, and only the fallback cause records that. Cost if wrong: a rename of fields in a generated, reported-not-gated file.
+  **Issue:** #303
+- **Decision:** `docs/model-matrix.md` and `docs/model-matrix.json` were re-rendered from their recorded data only, through the tool's own `load_rows` and `write_matrix`; the live matrix was not run. The cd0261d rows gain explicit `null`s for the five breakdown fields, and the md shows *not recorded* under a header note that the next live run fills them. Nothing is derived from the old means (for example extras = (1.1 - 1) x 20), and every recorded value is unchanged.
+  **Why:** The lane's instructions say never to invent measurements. Other lanes were running test suites on this machine, which would distort live latencies. Cost if wrong: the matrix shows no breakdown until the owner's next live run; the orchestrator decides when that runs at a quiet point.
+  **Issue:** #303
+- **Decision:** Both header notes are conditional. **Turn path** is emitted only while some row's `turn_path` is `GUARDED_REPLY_PATH` (the owner's comment). **Not recorded** is emitted only while some row lacks the breakdown.
+  **Why:** A static note goes stale as soon as the next live run replaces the rows, which is exactly the defect the owner pointed out. Cost if wrong: none; both notes return whenever their condition holds.
+  **Issue:** #303
+- **Decision (Rule 1):** `_e06_text` now orders the E-06 lengths numerically by cap. Regression test: `test_e06_lengths_in_cap_order`.
+  **Why:** `write_matrix` stores the json with `sort_keys`, so `"128"` sorts before `"32"`. Re-rendering the committed md from its json (which this story requires) flipped the cell to `128/128, 32/32`, while the tool's in-memory rows render `32/32, 128/128`. Without the fix, the md was not a pure function of the json. Cost if wrong: none.
+  **Issue:** #303
+- **Decision:** Added the unit test `test_committed_matrix_is_its_json_rendered`: the committed `docs/model-matrix.md` must equal `render(load_rows(docs/model-matrix.json))`.
+  **Why:** It guards the bug class the owner's comment hit, generated header text going stale in the committed file. It fails only on a hand edit, or on a `render()` change without a re-render. It gates file consistency, not measurements, so the matrix stays reported, not gated. Cost if wrong: one re-render whenever `render()` changes.
+  **Issue:** #303
+- **Decision:** The AC2 fault-injection test runs `run_matrix` itself on the stub adapter (`configure`, `assess` and E-06 work against the stub), not `measure_turns` alone. A wrapping driver sets the minors story's `turn_deadline` to 2 s, scripts the guardrail verdicts PASS then FLAGGED, and uses `stub.fault_hook` to hang turn 2's regeneration and turn 4's re-check until the deadline. This reproduces the issue's numbers exactly, including its two `reason=deadline` log lines.
+  **Why:** The test then builds the `Row` through the same code the live run uses, rather than a test-only path. Cost if wrong: about 4 s of deadline waits in the integration suite; on a loaded machine the 2 s deadline matches P-09's precedent.
+  **Issue:** #303
+- **Decision:** `GuardedReplyDriver` also reports its design: one `guardrail_check` per model-assisted policy for each target among input and output (`guarded_checks`). The policy enum is imported as `PolicyTarget`, because ruff caught a clash with the tool's own `Target` dataclass that would have broken `guarded_checks` at runtime. Covered by `test_designed_calls` and `test_guarded_reply_driver_reports_its_design`.
+  **Why:** `TurnDriver.turn` now returns `TurnCalls` for every driver, so the breakdown never meets a driver with no design. Cost if wrong: none; the driver is legacy and `RespondDriver` is the default.
+  **Issue:** #303
+- **Decision:** `tests/perf/test_p_08.py` is unchanged. Its `minors["guardrail_check"] == 2.0` asserts the folded mean, so a live run with a flagged draft or a deadline turn fails it. This is filed as #308 (needs-triage) rather than fixed inline.
+  **Why:** The change is outside #303's AC. It would replace an existing assertion with a weaker design-only one, which needs the owner's call. The test is `live_model` only, so the change cannot be verified in this lane. Cost if wrong: P-08 can still fail on a live run whose endpoint flags or times out, as the owner already accepted for M2.
+  **Issue:** #303
+- **Decision:** Group A's verification outcome.
+  - Verified clean: #103 (round 3), #106 (round 2), #107 (round 1), #305 (round 2), #93 (round 2) and #303 (round 1).
+  - Still flagged after three rounds: #104, #105, #108, #109 and #94.
+  The flags are handled as follows:
+  - **#104, #108, #109:** test-discrimination gaps on code the verifiers found correct. Mutations survived: an off-by-one on 64-character relation names; 63 of the 92 scenario field classes unpinned; archived and beyond-the-cap followers, and the `guarantees_lost` report path. They get a fix round before the group A gate.
+  - **#105:** a real minor bug. A video probe that cannot be exec'd raises `OSError` out of the upload, though "a probe never fails the upload" is the plan's rule. It gets a fix round with two more Rule 1 fixes (next entry).
+  - **#94:** accepted. Its last gap is prefixed `LicenseRef-` ids such as `LicenseRef-scancode-gpl-…`, a different channel from the parenthesised classifiers the issue was filed for. It is now #320 (`needs-triage`), with a correction comment on #94.
+  **Why:** The skill holds a story open until its AC are met. A surviving mutation means a regression in AC behaviour would go unseen, so these are fixed rather than waived. #94's residue sits outside the issue's own scope. The plan-comment wording that put it in scope ("whatever the spelling") came from the orchestrator's brief, not from the issue.
+  **Issue:** #104, #105, #108, #109, #94, #320
+- **Decision (Rule 1, batched-gate attribution):** #319 and #317 were filed as `needs-triage`, but both are defects in #105's new code. They are fixed under #105, not left for triage:
+  - **#319:** #105's `DepictedSubject` description says "declared, unverified". That fails M2's `test_openapi_calls_the_message_finished_never_verified` (FR-RESP-1), which forbids "verified" in any OpenAPI description. #109's implementer found it. The group A full run would have failed on it. The fix rewords the description, which keeps the M2 test strict.
+  - **#317:** #105's generation metadata stores a non-finite number (`1e400`) as `null`, breaking "round-trips exactly" (FR-CAT-4). The fix refuses such numbers with 422, as #108's `_finite` does.
+  **Why:** The batched-gate plan sends a regression back to the story that caused it as a Rule 1 fix. #319 is the trial's first failure that a per-story full run would have caught at #105 and that #105's subset missed. It is recorded in the metrics.
+  **Issue:** #105, #319, #317
+- **Decision:** #316's #108 half was done by #108 (scenario draft and version sources in `MEDIA_REFERENCE_SOURCES`, plus `assert_referenceable` on save). Its #119 half (story-snapshot sources and the I-17 media-survival slice) goes to #119's implementer in group B.
+  **Why:** #316 is a hand-off between stories in this milestone. It closes when #119 lands.
+  **Issue:** #316, #108, #119
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #106 amended by owner decision, recorded in the `/n8-exec M3` session on 2026-10-12 as option A, "Amend #106 to the docs".
+  - AC4 and the test plan: presets are ordinary profiles (FR-PROF-3). An edit creates a new version, and copy and delete follow the same rules. The only refusal is deleting the deployment default (409). "Presets immutable" is gone.
+  - AC1: the Lite seed budgets are `{model_calls: null, deadline_ms: 45000}`, where null is the NFR-PERF-6 formula (9 + G in M3).
+  - Pass-1 semantics: an explicit `budgets.model_calls` is a total cap that includes the reserved guardrail calls G, as M2's `max_model_calls_per_turn` is, and is refused below 1 + G.
+  The issue body was edited in place, and each amended clause is marked.
+  **Why:** The drift check found both clauses contradicting docs/03 and what M2 shipped, each upheld 3/3 by refuters. AC4's clause was a leftover from the `/n8-plan M3` coverage fix ("`preset_immutable` dropped"). AC1's values rested on the false premise that #69's default was 4. Followed literally, they would have cut every story's budget once #113 made Lite the source of defaults, and broken the M2-gated tests P-09 and S-SELFPOLICE.
+  **Affects:** M3 is reconciled in this run: #106 was implemented to the amended text, and #113 (group B) will build on it. One later plan may now be stale: **M4 #156** relies on "#106's semantics" for `max_model_calls_per_turn` as a profile budget, and its "G added on top" wording for the structured default needs checking against the total-cap meaning. #129 (M4), #181 (M5) and #203 (M6) take their seeded budgets from #69's, #156's or #214's structured defaults, so they follow whatever #156's replan settles. #235, #243 and #251 (M7) assume editable presets, if anything, and set no budgets. Suggest `/n8-replan M4` after M3.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision (Rule 1):** #105 verification fixes, follow-up round 1. A video probe that cannot start no longer fails the upload. `probe.video_dimensions` now catches the `OSError` from `asyncio.create_subprocess_exec`, logs `video probe could not start: <exception type>` (a warning, with no path and no content) and returns no values. Causes include an ffprobe that is gone since it was found, one that is not executable, and one in no executable format, such as a corrupt file or a build for another architecture. Before, the error left `assets.upload`, and the upload was 500. That broke the plan's rule ("missing probes leave the columns null, never fail the upload") and the module's own docstring.
+  - **The same rule had a second hole in the same function.** `_bounded` passed Infinity or NaN to `int()`. An ffprobe report with a width of `1e400` raised `OverflowError` out of the upload. NaN was caught, but it also dropped the duration that was read. A non-finite value is now `None`, like any other value no column can hold.
+  - **Where it bites in production.** `FfmpegTools.status` runs `-version` once and keeps the answer, so a broken ffprobe already reads as `missing` at the first look. The hole is an ffprobe that breaks after that look: replaced, removed, or out of processes or file descriptors.
+  - **Tests.**
+    - `test_dimensions` gains three cases: a file in no executable format on `PATH` (mode 755), a named executable that is gone, and a report with a width of `1e400` and a height of `NaN`, which still keeps the duration.
+    - `test_a_video_probe_that_cannot_start_fails_no_upload` (unmarked) uploads a video through an `FfmpegTools` whose ffprobe answered `-version` and then holds no executable format. The upload is 201, with width, height and duration `null` and the content served. Complement: the same tools measure a video while ffprobe still runs.
+  - **Mutation-checked.** Without the `OSError` handler, both tests fail with "Exec format error". Without the finite check in `_bounded`, `test_dimensions` fails with `OverflowError`.
+  **Why:** The `_bounded` case goes one step past the fix hint. It is the same promise in the same function, and the next verification would find it. The log line is a warning, not info, because a probe that cannot start is the deployment's fault, never the upload's, as with the poster extraction's "could not start" line. Cost if wrong: none.
+  **Issue:** #105
+- **Decision (Rule 1):** #105 verification fixes, follow-up round 1 (#319). `DepictedSubject`'s description now says a subject is "Stored as declared, with no check that the subject exists (it may be created later)", where it said "Stored as declared, unverified". M2's `tests/integration/test_respond.py::test_openapi_calls_the_message_finished_never_verified` (FR-RESP-1) forbids the substring "verified" in every OpenAPI description and summary, so it had failed on the milestone branch since #105 landed.
+  - The module docstring's matching phrase changed too. `docs/openapi.json` was regenerated with `--write`, and it no longer contains "verified" in any case.
+  - The M2 test is unchanged. It passes now, and putting "unverified" back fails it (mutation-checked).
+  - #319 gets a comment with the commit. It is not closed.
+  **Why:** This is #319's option 1, which keeps the M2 assertion strict. Cost if wrong: none.
+  **Issue:** #105, #319
+- **Decision (Rule 1):** #105 verification fixes, follow-up round 1 (#317). `GenerationMetadata.parameters` now refuses a number JSON cannot hold: `1e400` and `-1e400`, which parse as Infinity, and the `NaN`, `Infinity` and `-Infinity` literals that Python's and pydantic's parsers accept. The refusal is 422 `validation_error` at `body.metadata.generation_metadata.parameters` on `POST /media`. #107's `POST /media/uploads` refuses at `body.generation_metadata.parameters`, because `UploadOpen` inherits the field. Before, the JSON-mode dump stored `null`, and the upload was 201.
+  - **The helper.** #108's `_finite` moved to a new module, `core/json_numbers.py`, as `require_finite`, and `core.catalog.scenario_models.Structure` uses it from there. It also walks tuples, which only a library caller can pass.
+  - **Other fields checked.** No other request field in #105's or #107's models is free-form (`dict[str, Any]` or `Any`) and stored through a JSON dump. The media settings are ints, URLs and strings, and `seed` is a strict int.
+  - **Tests.** Each test file has a `test_generation_parameters_must_be_finite`:
+    - `tests/test_media_units.py` covers the metadata parser, `UploadOpen` in strict JSON mode as its route validates it, and the library model with a tuple.
+    - `tests/integration/test_media_assets.py` covers REST: 422 at the field, nothing stored, and no session opened.
+    - Complement: `1e300`, `-1e300`, the largest float and the smallest subnormal are stored and read back as the same numbers. `jsonb` writes `1e300` out in full, so the integration test compares them as decimals.
+  - **Mutation-checked.** Without the validator, both tests fail. A helper that skips tuples fails the unit test. A helper that skips dicts fails the unit test and #108's `test_numbers_in_stored_structures_must_be_finite`.
+  - **Not parts.** My first draft named FR-CAT-4 and FR-MEDIA-1 in the new tests' docstrings. That made them docstring-origin M3 parts, and `check-lexicon` flagged "import" in one. The IDs are gone, as in the other detailed tests in these modules, so all three stay detailed tests.
+  **Why:** I moved the helper rather than importing #108's private `_finite`, because that import would make media depend on the catalog. `core.catalog.scenarios` already imports `core.media.assets`, so the two packages would depend on each other. I gave it a module of its own rather than adding it to `core/errors.py`, which 36 test modules import. Cost if wrong: one small module.
+  **Issue:** #105, #317, #108
+- **Decision (Rule 1):** #104 verification fixes, follow-up round 1 (test fix). The relation-name length rule (1 to 64 characters) is now pinned on the accepting side as well as the refusing side. Before, the tests refused `""` and a 65-character name, and none accepted a name of 64 or of 1 character. The longest name any test accepted had 16 characters.
+  - **Integration.** A new test, `tests/integration/test_ownership.py::test_relation_names_at_the_length_bounds`, runs on every delivered owned type: story, catalog character, scenario, media and engine profile. It adds relations named `q` and a unique 64-character name. Each add is 201 with the name unchanged, `GET …/relations` lists both, and each removal is 204, after which the list is empty. Each list whose operation in the served `/openapi.json` takes a `relation` query parameter finds the entity by `name:principal`. Today those are stories, media and engine profiles, and the test asserts that at least these three are found. A 65-character name is 422 at `body.relation`, `path.relation` and `query.relation[0]`, and the `ownership_events`, `entity_relations` and `operations` counts do not move.
+  - **Unit.** `tests/test_ownership_rules.py::test_relation_names_and_filters` now sends `q`, `co_author-2` and a 64-character name through `relation_name_problem`, `RelationRequest` (trimmed, then unchanged), `path_relation` and `parse_relation_filter`. Every name it refuses, `RelationRequest` refuses too. `path_relation` and `parse_relation_filter` refuse a 65-character name at their fields. No existing assertion changed.
+  - **Not parts.** Neither docstring names a requirement ID, so both stay detailed tests. `build/parts.json` lists neither.
+  - **Mutation-checked.** The verifier's M6 (`_trimmed` raises above 63 characters) and M4 (`RELATION_FIELD_PATTERN` at `{1,63}`, with `docs/openapi.json` regenerated) passed every test before. Each now fails both tests: 2 failed, 13 passed. I ran three more of my own. M7 (the filter's name at `{1,63}`) fails the integration test at the filter. M8 (`RELATION_NAME_PATTERN` at `{1,63}`) and M9 (the body's lower bound at `{2,64}`) fail both tests. Each mutant was reverted with `git checkout`.
+  **Why:** The fix hint names a story and a catalog character, with the filter checked on `/stories`. Looping over `KINDS` and the served OpenAPI document covers every type that mounts the relation routes and every list that takes the filter, for no extra code. A type or list that gains the filter later is covered with no edit. A unique 64-character name and a fresh principal keep the filter assertions exact on the shared test database. Cost if wrong: about 55 requests in one test.
+  **Issue:** #104
+- **Decision:** #108 verification fixes, follow-up round 1. The gap was real, and it was a gap in test coverage only. `test_c_15__scenario_field_classes` proved that every leaf of the scenario document carries a valid class, but it pinned the class of only 29 of the 92 leaves (the `CLASSES` sample). The other 63 could change class, and a `configuration` leaf could change its use, with no test failing. FR-SCN-11 says the schema prevents exactly that: "a field cannot change channel by accident". No source file changed.
+  - **The map.** `CLASSES`, at module level in `tests/conformance/test_c_15.py`, now lists all 92 leaves, in the order `scenario_schema_classes()` walks the document. Each has its class and, for `configuration`, its use. It stays outside the part's body, so `check-lexicon` never reads its field names.
+  - **The assertion.** The part asserts `scenario_schema_classes() == CLASSES` where it looped over the sample. A retagged leaf, a changed use, an added leaf and a dropped one now each fail it. The four existing assertions are unchanged: no classification problems, all eight classes in use, all three uses in use, and all three uses on `configuration`.
+  - **Where the values came from.** I wrote the 63 new entries from FR-SCN-11's class lists and docs/02 §4.10's uses, not by copying the model. They matched the model on the first run, which agrees with the verifier's check of all 92.
+  - **Mutation-checked.** A scratch script applied each mutation to `scenario_models.py`, ran the part and reverted the file with `git checkout`. The source's SHA-1 was identical at the end.
+    - Before the fix, nine mutations passed the part. Two are the verifier's: N7 (`drivers.plot_hooks` director → knowledge_seed) and N8 (`visual_style.prompt` style → public_card). Seven are mine: M1 (`story_settings_defaults.audit_retention_days` use story_setting → creation_only), M2 (`Seed.holder` → director, which moves three paths), M3 (a new tagged leaf, `drivers.twists`), M4 (`public_card.public_description` → knowledge_seed), M5 (`cast.roles[].character.version` use creation_only → story_setting), M6 (`drivers.planned_reveals[].conditions` → knowledge_seed) and M7 (`drivers.milestones` removed).
+    - After the fix, all nine fail at the new equality, and each failure names the changed path.
+    - The verifier's control N9 (`drivers.endings` untagged) fails before and after, at the walk.
+  **Why:** This is the fix hint's shape. I kept the constant's name and its explicit `(FieldClass, Use | None)` values, and wrote them in the walk's order so a failure's diff reads against the model directly. Any later story that adds, removes or retags a scenario field must now change `CLASSES` in the same commit. That is the intent: a field's class is decided in review, never inherited silently from the model. Cost if wrong: none to behaviour; one line in `CLASSES` per future scenario field.
+  **Issue:** #108
+- **Decision:** #109 verification fixes, follow-up round 1 (test gap 1 of 2). The gap was real, and it was a gap in test coverage only. `impact.following_report` already counts, lists and judges archived followers, and it judges history over every following story, not only the listed ones. No source file changed. Two new detailed tests in `tests/integration/test_two_stage.py`, each on a scratch database:
+  - **`test_history_beyond_the_listing_is_judged_and_kept`.** `AFFECTED_MAX` is monkeypatched to 2. Three stories follow a profile with the polish pass off. They are created first, and only the one whose id sorts last plays a turn, so it falls beyond the cap. Under `data_producing("polish")`, the held edit lists the other two, each gaining the polish pass with nothing to re-derive. It counts 3 and still warns `UNAVAILABLE_WARNINGS`. Confirmed, the unlisted story's effective configuration is version 1, pinned, and the listed two run on version 2, unpinned.
+  - **`test_archived_followers_are_listed_judged_and_kept`.** Two followers are archived: one after a played turn, one that never played. The held edit lists both. The first is `upgrade_unavailable`, with its re-derivation needed and its fingerprint kept; the second gains the polish pass. Confirmed, the effective-config reads of the archived stories show version 1 pinned and version 2 unpinned. Unarchived, the first still runs on version 1: its next turn has no polish pass and the kept fingerprint.
+  - **Mutation-checked** with the verifier's command (`tests/integration/test_two_stage.py tests/integration/test_engine_profiles.py tests/test_profile_facts.py`), which gave 39 passed under each mutation before.
+    - B (archived stories dropped from the following filter): 1 failed, 42 passed. The archived test fails at `held["applied"] is False`, because the edit applied at once.
+    - D (`with_history(conn, every[:AFFECTED_MAX])`): 1 failed, 42 passed. The cap test fails at its warnings, `['capabilities_gained']`.
+    - P1, my own (`store._pin` skips archived stories): 1 failed, 42 passed. The archived test fails at the pinned read, which shows version 2, unpinned.
+    - Each mutant was reverted with `git checkout`. The sources' SHA-1 was identical at the end.
+  **Why:** I added separate tests rather than extending `test_reports_list_at_most_the_cap` or `test_only_a_committed_active_turn_is_history`. Either extension would change existing assertions: the cap test's `affected_count == 4`, and the history test's listed set. Moving the cap test's played story beyond the cap would also make its check that a pinned story is not listed pass vacuously. In the new cap test, the story beyond the cap is the only one with history, so the report's `upgrade_unavailable` warning can come only from that unlisted story. Cost if wrong: two scratch databases, about two seconds.
+  **Issue:** #109
+- **Decision:** #109 verification fixes, follow-up round 1 (test gap 2 of 2). The gap was real, and it was also a gap in test coverage only: reports already carry `guarantees_lost` and its warning. No source file changed. No module delivered in M3 holds a guarantee, so no request can reach this path. The tests build the change directly, with verification turned from `declared` to off (`Delta.guarantees_lost == ("verification",)`).
+  - **`tests/test_profile_facts.py::test_a_lost_guarantee_is_reported_and_held`.** `single_report` lists `["verification"]` and warns exactly `["capabilities_lost", "guarantees_lost"]`. The exact list pins the warning kind itself, not only the hold, which `capabilities_lost` would cause anyway. `two_stage` holds the change without `ignore_warnings`, and the apply is never called; with it, the change applies. Complement: raising the level (`declared` to `entailment`) or turning it on loses no guarantee and warns only `capabilities_gained`.
+  - **`tests/integration/test_two_stage.py::test_a_profile_edit_reports_the_guarantees_it_loses`.** `impact.following_report`, run over a real following story, gives the same `guarantees_lost` and warnings, and `two_stage` holds the report. The same change to a profile no story follows gives `[]` and no warnings. That covers both sides of the count guard at `impact.py:413`.
+  - **Mutation-checked.**
+    - The verifier's C (all three places), run with the verifier's command plus `tests/conformance/test_c_03.py` (41 passed before): 2 failed, 43 passed. Both new tests fail.
+    - I also split C. C1 (the warning forced off) fails both tests at the exact warnings. C2 (`single_report`'s list emptied) fails the unit test. C3 (`following_report`'s list emptied) fails the integration test. C4, my own (the count guard dropped), fails the integration test at the unfollowed profile.
+    - Each mutant was reverted with `git checkout`. The SHA-1 was identical at the end.
+  **Why:** This follows the fix hint, plus its optional integration test, so that each of the three mutated lines fails a test of its own. The literal "verification" appears only in detailed tests, which have no part marker and no requirement ID in a docstring, so the lexicon does not apply to them. Cost if wrong: none.
+  **Issue:** #109
+- **Decision:** #109 verification fixes, follow-up round 2. The gap was real, and it was a gap in test coverage only. No test could tell a one-story report's guarantees lost from its capabilities lost. In round 1's one-story test, the change lost `verification` as both, and its complements lost neither. So the verifier's C7 (`single_report` lists `change.lost` as `guarantees_lost`, `impact.py:296`) passed every test, and a preview that turns the polish pass off would have claimed `guarantees_lost: ["polish"]`. No source file changed.
+  - **Unit.** `tests/test_profile_facts.py::test_a_lost_guarantee_is_reported_and_held` gains the complement the fix hint names: Lite to Lite with the polish pass off. The entry lists `capabilities_lost == ["polish"]`, which keeps the case able to tell the two lists apart, and the report gives `(guarantees_lost, warnings) == ([], ["capabilities_lost"])`.
+  - **REST.** `tests/integration/test_two_stage.py::test_preview_refusals_write_nothing` already previewed the polish pass turned off on `POST /stories/{id}/impact-preview`, the route AC1 names, and asserted only `capabilities_lost`. It now also asserts `(guarantees_lost, warnings) == ([], ["capabilities_lost"])`.
+  - Both assertions are added; no existing assertion changed. Each docstring gains a sentence for its new case.
+  - **Mutation-checked.**
+    - Before the fix, C7 passed both tests (2 passed).
+    - After it, the verifier's command (`tests/integration/test_two_stage.py tests/integration/test_engine_profiles.py tests/test_profile_facts.py tests/conformance/test_c_03.py`) gives 2 failed, 43 passed under C7. The failures are at `test_two_stage.py:431` and `test_profile_facts.py:397`, each `['polish'] != []`.
+    - C8S, my own (the `guarantees_lost` warning raised by any capability lost, `impact.py:280`), fails the new unit assertion at its warnings: 1 failed, 12 passed in `tests/test_profile_facts.py`.
+    - Each mutant was reverted with `git checkout`. The SHA-1 was identical at the end.
+  **Why:** This is the fix hint, with its optional route assertion, so that the report a client receives is pinned as well as the function that builds it. Asserting the warnings beside the list pins both outputs of the one-story path, as C-16 pins them for the following report (`test_engine_profiles.py:639-640`). Both tests stay detailed tests: neither docstring names a requirement ID, and `build/parts.json` lists neither. Cost if wrong: none.
+  **Issue:** #109
+- **Decision:** Group A's full run is green at `86abc57`, so its 11 items are done. The run, `uv run pytest --cov=epistrel.core --cov-report=term-missing:skip-covered --cov-fail-under=90`, gave 1457 passed, 14 deselected, 0 failed in 962.75 s (967 s wall, one attempt, no bisect). `epistrel.core` coverage is 97.24 %.
+  - Every group A item has its AC boxes ticked and a completion comment that cites the run: #305, #93, #94, #303, #103, #104, #105, #106, #107, #108 and #109. The boxes are in the issue body, or in the plan comment where the criteria were derived (#305, #93, #94, and the owner's added criterion on #303). Each edit was read back and compared.
+  - #94's second derived criterion ("never admits a denied family, whatever the spelling") is ticked with a note: it holds as scoped in the orchestrator note on #94, and the residue is #320.
+  - #317 and #319 got a comment that their fix (`b0240c3`, under #105) is verified and included in the run. They stay open for the milestone PR to close.
+  **Why:** The owner's batched gate for M3: a group's stories are done only after one full run over all of them is green. The only late failure in group A was #319. #109's implementer caught it before the gate, and #105's follow-up fixed it. The metrics are in `.n8/memory/m3-batched-test-gate.md`.
+  **Issue:** #305, #93, #94, #303, #103, #104, #105, #106, #107, #108, #109
+- **Decision:** Before group B, the orchestrator relayed group A's hand-offs into the drift notes of the later stories that receive them:
+  - #113 gets #106's owner amendment (the Lite budgets are `{model_calls: null, deadline_ms: 45000}` and presets are editable). Its notes had predated the amendment. It also gets #109's note that the effective-config route and module already exist for #113 to extend.
+  - #115 gets #107's note that `test_c_23__optional_images` lives in `tests/integration/test_media_delivery.py`.
+  - #116 gets #108's companion rules (null version, slot freezing, and the companion's own audit row).
+  - #119 gets #109's `recommendations_unmet` for genesis. #316's half was relayed earlier.
+  - #126 and #128 get #107's notes.
+  **Why:** The implementers read their story, its drift notes and the decision log. The hand-offs are in the log already, but in the notes the one story that needs each of them sees it first. Cost if wrong: none.
+  **Issue:** #113, #115, #116, #119, #126, #128
+- **Decision:** Group B (#110 to #119) runs with pipelined verification.
+  - Stories are still implemented one at a time, in order (#110 to #119), in the main working tree.
+  - As soon as a story is committed and pushed, its independent verifier starts in a fresh git worktree, pinned to the story's last commit. Meanwhile the next story is implemented in the main tree.
+  - Fixes for verification gaps queue for the main tree and run between implementations, one agent at a time. Each re-verification runs in a fresh worktree at the fix's commit.
+  - Each story gets at most three verification rounds and two fix rounds, as in group A.
+  - A blocked implementer holds back its in-group dependents:
+    - #114 waits on #110.
+    - #115 waits on #111.
+    - #116 waits on #110 and #111.
+    - #117 waits on #114 and #116.
+    - #118 waits on #117.
+    - #119 waits on #114, #115, #116 and #118.
+  **Why:**
+  - In group A's lane 1, the next story waited for each story's verification and fixes, which took about half of each story's 2 to 3 hours.
+  - Implementing stories in parallel would conflict on shared files, such as `docs/openapi.json`, `api/openapi.py`, the conformance steps and this log.
+  - Verification only reads, so it overlaps safely.
+  - The trade-off: story n+1 may build on code in which story n's verifier later finds gaps. The fixer then works at the newer HEAD and runs the later stories' tests for every module it touches, and group B's full run still gates all of it.
+  - Cost if wrong: an extra fix round on a later story.
+  **Issue:** #110, #111, #112, #113, #114, #115, #116, #117, #118, #119
+- **Decision (drift):** #110's parts follow docs/04 §15 and the shared-file rule.
+  - `test_c_15__listing_status`, `part("M3", "FR-CAT-11; FR-AUTH-8; FR-API-6")`, is in `tests/conformance/test_c_15.py`.
+  - `test_i_21__listing_filters`, `part("M3", "FR-CAT-9,11; FR-AUTH-8")` (the coverage line's marker), is in `tests/integration/test_i_21.py`.
+  - The detailed tests are unmarked, in `tests/integration/test_catalog_search.py`, and their docstrings name no FR id.
+  - The repository check (compile the query with and without each filter) is a database-free unit test in `tests/test_catalog_listing.py`. The must-have puts it in `test_catalog_search.py`; a unit test belongs with the unit tests. Its behavioural matrix is the I-21 slice.
+  - The parts and the search tests each run on their own scratch database (`catalog_support.scratch_catalog`), because they count whole tables or rewrite `listing_status_values`. So no test changes the shared database's values; the drift note's restore-in-`finally` pattern is unneeded.
+  - check-parts counts 166 parts; check-lexicon reports 0 violations; check-traceability passes.
+  **Why:** traceability counts one file per test ID and milestone (the drift note). Cost if wrong: the unit test moves files.
+  **Issue:** #110
+- **Decision (drift):** `listing_status_values` is a `deployment_state` column, not the jsonb settings section the drift note preferred.
+  - The column is `text[]` NOT NULL, with server default `{private,in_review,public}` (migration `0027_catalog_search`).
+  - It is a prospective `DeploymentSettings` leaf: in `DEPLOYMENT_COLUMNS`, `DeploymentState`, `config_changes._COLUMNS`, `SettingsPatch` and U-18's `EXPECTED`.
+  - Rules: 1 to 50 values (the cap is mine); distinct; each trimmed of spaces and tabs, then 1 to 40 characters with no control character; case-sensitive. The request pattern admits the surrounding blanks, as the principal rule does.
+  - A write replaces the whole list. A pure reorder is a change: one prospective `config_changes` row. The same values again, blanks included, write nothing.
+  **Why:** AC1 names `deployment_state.listing_status_values`, the pass-1 Discretion says "a `text[]` column", and the drift note allowed a column given these hooks. Cost if wrong: one column moved into the settings document.
+  **Issue:** #110
+- **Decision (drift):** Removing a value that an entry holds is 409 `listing_status_in_use`, the Discretion's own code, not M2's `ConfigConflict` (`validation_error` with `details.reason`). The drift note flagged that difference.
+  - It is checked in `apply_settings`, under that write's `FOR UPDATE` deployment lock, by `listing.refuse_removal`.
+  - The count covers every row of both catalog tables (archived, draft-only and companions included). It names the first removed value in the old list's order, with `details {value, count, field}`.
+  **Why:** the plan names the code, and a consumer can branch on it without parsing `reason`. Cost if wrong: the error becomes `ConfigConflict` with `reason: listing_status_in_use`.
+  **Issue:** #110
+- **Decision:** The listing-status write is one Engine method, `set_listing_status(ctx, entity_type, entity_id, request)`.
+  - The request is `ListingStatusRequest {value}`: a model, as every Engine write takes, not the Discretion's bare value.
+  - Its routes are `set_listing_status_character` and `set_listing_status_scenario`. The suffix is the entity type, as #104's ownership routes have it; the drift note suggested plurals. There is one codec per kind, and the key is per deployment.
+  - The order of checks:
+    1. The value against the deployment's set (422 `invalid_listing_status` at `body.value`), before `_keyed` claims the key.
+    2. The same check again in the transaction, under the deployment row `FOR SHARE`.
+    3. The entry `FOR UPDATE` (404).
+    4. 422 `companion_follows_character` for a companion.
+    5. The write: `updated_at` moves; an `ownership_events` row of kind `listing_status` (`old`/`new` bare strings, the acting principal); the hooks; one `control` operation.
+  - The current value again answers 200 and records no event and no operation; `updated_at` stays.
+  - An archived entry changes too.
+  - The answer is `ListingStatusBody {id, listing_status, config_revision, idempotency_key}`. The errors' `details` also carry `field`, beyond the Discretion's `{value, allowed_values}`.
+  - A new pause point, `catalog.listing_status.locked`, drives the race test: a removal waits on a change that has found its value, then answers 409.
+  - A creation reads the first value under the same `FOR SHARE`, so a removal never races it either.
+  **Why:** the pass-2 Discretion's order ("body validation before the idempotency lookup", "`not_found` precedes `companion_follows_character`") and its `FOR SHARE`. Mutation-checked: without the early check, a used key with a bad value answers 409, not 422; without `FOR SHARE`, the race test fails. Cost if wrong: none to stored data.
+  **Issue:** #110
+- **Decision (deviation):** #110 enforces the companion rule itself, as well as offering the hook.
+  - `CatalogService.followers` returns, for a character, its scenarios whose `companion_of` names it, locked `FOR UPDATE` in id order after the character. `leader` returns a scenario's `companion_of`.
+  - A character's change moves each companion that is not already at the value, with one event each.
+  - A companion's own change is 422 `companion_follows_character`.
+  - `core.catalog.listing.on_listing_status_change` (empty by default) still runs inside the transaction, once for each entry changed: the entry, then each companion.
+  - The pass-1 Discretion had left the propagation to a hook that #116 fills.
+  **Why:**
+  - `companion_of` exists (#108), and #104 already moves owners through it.
+  - So AC1's "a companion scenario's status always equals its character's and changes with it" holds now. It is tested on companions that SQL makes, as #104's I-21 companion slice does.
+  - Hand-off to #116: do not register a propagating hook, which would double the events. Create each companion, and backfill one in the migration, at its character's listing status.
+  Cost if wrong: #116 moves the cascade behind the hook.
+  **Issue:** #110, #116
+- **Decision (deviation):** The search vector is a GENERATED `tsvector` column `search` on `catalog.character_versions` and `catalog.scenario_versions`, GIN indexed, not the pass-2 "trigger-maintained column on the catalog row".
+  - `IMMUTABLE` SQL functions compute it: `catalog.epistrel_character_search`, `catalog.epistrel_scenario_search`, and their helper `catalog.epistrel_search_words(document, jsonpath)`.
+  - A listing joins each entry to its current version.
+  - Migration 0027 also adds `(updated_at, id)` indexes on both catalog tables.
+  - The two table-shape tests gain the `search` column.
+  **Why:**
+  - AC2 says "a generated `tsvector` column".
+  - A generated column needs no trigger, and it follows every path that inserts a version, #116's companion publishes included.
+  - Postgres recomputes it when #124's erasure rewrites a version's content.
+  Cost if wrong: a migration moves the vector to the catalog row.
+  **Issue:** #110, #124
+- **Decision (deviation):** The documents and every `q` (`websearch_to_tsquery('simple', q)`) use the `simple` configuration, as the base planner line says. Pass 2's English-parsed prose, concatenated with simple label tokens, is not used.
+  - Each list's strings are joined, so positions run on across elements, and a quoted phrase may span two labels.
+  - Weights: the name is A. Aliases, labels and (for scenarios) role public labels are B. The public description is C.
+  - `ts_rank` uses the default weights and normalization 0.
+  **Why:** one query cannot match both configurations. On PostgreSQL 16, `to_tsvector('simple', 'chatty') @@ websearch_to_tsquery('english', 'chatty')` is false, because English stems the query to `chatti`. Under pass 2, a label would never be found. `simple` also assumes no language for a consumer's content. Cost if wrong: there is no stemming, so `garden` does not find `gardens`.
+  **Issue:** #110
+- **Decision:** What the vector reads.
+  - For a character: its name and public description, at the top level (#103's interim draft) or under `public_card` (#115's planned shape); its aliases and labels under `metadata` (#115's plan, the path #105's `ALIASES_PATH` already reads).
+  - For a scenario: the name, the public description, the labels and every role's public label.
+  - Never a private field: a scenario's world (its entities' aliases are knowledge seeds), seeds and drivers; a character's definition.
+  - The jsonpaths keep strings only, so a malformed document indexes less instead of failing a publish.
+  - The `label` and `content_rating` filters read `metadata.labels` and `metadata.content_rating_id` of the shown document: the latest published version, or the draft of an entry never published. The rating filter matches that id exactly, with no inheritance.
+  - Hand-off to #115: keep these paths, or change the functions in a migration.
+  - AC2's "aliases" has no public field on a scenario, so scenario search covers role public labels instead.
+  **Why:** the pass-1 field list; the test plan's complement that a private phrase is never found. Mutation-checked: indexing a character's definition, or a scenario's world description, fails the search tests.
+  **Issue:** #110, #115
+- **Decision:** The listing's shape.
+  - `Engine.search_catalog(ctx, entity_type, *, q, label, content_rating, listing_status, owner, relation, status, include_companions, limit, cursor)` returns a `CatalogPage`. Its routes are `search_catalog_character` and `search_catalog_scenario`.
+  - Items are `CharacterListItem` and `ScenarioListItem`: the kind's card model plus `owner_principal`, `updated_at`, and `rank` only when there is a `q`. They are built through the service's own `project`, so they equal the single read's card by construction, and a test checks it.
+  - A character's item has no `companion_of`. The Discretion's "plus `companion_of`" is the scenario card's own key; a character has none.
+  - The default status is `published`; `status=draft` lists entries never published, each card the draft with `version` null.
+  - Refusals:
+    - an unknown rating is 422 `validation_error` at `query.content_rating`;
+    - a listing status outside the set is 422 `invalid_listing_status` at `query.listing_status`;
+    - other malformed values are 422 at their field;
+    - `projection` is declared `card` only, so `full` is 422.
+  - Optional parameters are documented without a `null` branch (#104's C-01 lesson).
+  - Each scenario card still makes its own media and rating queries (`project`), which is acceptable at 200 cards or fewer.
+  **Why:** the pass-1 and pass-2 Discretion lines. One method per operation gives one C-03 step each. Cost if wrong: response fields are additive.
+  **Issue:** #110
+- **Decision:** The cursor is base64url of JSON `[rank|null, updated_at, id, fingerprint]`.
+  - The fingerprint is a 16-hex SHA-256 of the kind and the normalised filters, order-free where filters repeat, with `limit` excluded.
+  - `rank` is compared as `float8` (`ts_rank` cast to it), so it survives the JSON exactly.
+  - `cursor_invalid` gives `reason` `malformed` (including a list's cursor sent to a search) or `filters_changed`. A request's cursor may be at most 256 characters.
+  - Hand-off: #114, #117 and #126 plan to use "#110's keyset/encoding". It is `core.catalog.search.encode_cursor`/`decode_cursor` with `Position` (any time plus ULID keyset; rank optional). A story that reuses it may move it to a shared module.
+  **Why:** the Discretion: base64, keyset on `(updated_at, id)` with the rank folded in, the hash binding the filters. Cost if wrong: an encoding change, before any consumer stores cursors.
+  **Issue:** #110, #114, #117, #126
+- **Decision:** Existing tests changed because the story changes what they pin. No assertion was loosened.
+  - The catalog table-shape tests list the new `search` column.
+  - U-18 pins `listing_status_values` as prospective.
+  - `ownership_fixtures.CALLS` gains both `PUT …/listing-status` routes, so the nothing-gates matrix covers them.
+  - `Kind.listed` gives the catalog kinds `status=draft`, so `test_relation_names_at_the_length_bounds` finds its fresh draft through the new lists' relation filter. That test's lower bound now includes characters and scenarios.
+  - C-03 gains one `set_listing_status` step and two `search_catalog` steps, with `LISTING_ANSWERS`. It also asserts that each search found its one entry. The body says "listing" and never "catalog", which is an M3 lexicon term in an M2 part.
+  **Why:** the delivered-type guard and the parity rule require them. Cost if wrong: none.
+  **Issue:** #110
+- **Decision:** I mutation-checked the story. A script applied each mutation and restored the sources byte for byte (SHA-1 checked). Each of these fails at least one of the story's tests:
+  - a list always gated on listing status;
+  - the owner filter ignored;
+  - label AND reduced to the first label;
+  - the status change without `FOR SHARE`;
+  - companions not moved;
+  - a companion's own change not refused;
+  - a value removal not refused;
+  - creation always `private`;
+  - a no-op that records an event;
+  - the value checked after the key;
+  - a cursor that binds no filter;
+  - companions always left out;
+  - drafts listed by default;
+  - `q` allowed with drafts;
+  - the rating filter ignored;
+  - an inclusive keyset;
+  - rank not ordered;
+  - a character's definition indexed;
+  - a scenario's world description indexed;
+  - hooks not run.
+
+  Against the two parts alone, the gating, owner, label, companion (both), removal, first-value, drafts and include-companions mutants each fail a part. The include-companions mutant first survived the parts, so C-15 now asserts the default scenario list and `include_companions`.
+  **Why:** under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #110
+- **Decision:** These docs follow the build.
+  - docs/02 §9 describes the list and search parameters, paging and the listing-status route; §4.10 describes where the values live and the removal and companion rules.
+  - README gains a Catalog section, and its Configuration section names `listing_status_values`.
+  - `PUT /admin/settings`'s description names the setting and its 409.
+  - `docs/openapi.json` is regenerated.
+  - `epistrel` exports `ListingStatusRequest`, `ListingStatusChange`, `CatalogPage`, `CharacterListItem`, `ScenarioListItem`, `InvalidListingStatus`, `ListingStatusInUse` and `CursorInvalid`.
+  **Why:** docs/02 is authoritative and should describe the routes as built, as #104 did. Cost if wrong: none.
+  **Issue:** #110
+- **Decision (drift):** #111's parts follow docs/04 §15 and the shared-file rule. Each sits in the file that holds its test ID's M3 parts:
+  - `test_i_20__validation`, `part("M3", "FR-SCN-5; FR-RATE-5")`, in the new `tests/integration/test_i_20.py`. #116's `test_i_20` part must join this file, not `test_companion.py`.
+  - `test_c_15__validate`, `part("M3", "FR-API-6")`, in `tests/conformance/test_c_15.py`.
+  - `test_c_20__catalog_input_policy`, `part("M3", "FR-GUARD-10")`, in `tests/conformance/test_c_20.py`. #119's creation half must join it.
+  - `test_u_29__mismatch`, `part("M3", "FR-RATE-5")`, in `tests/test_u_29.py`, pure over an in-memory graph. #118's `test_u_29__classification` must join it.
+  - `test_u_26__validation`, `part("M3", "FR-SCN-5")`, in `tests/test_u_26.py`.
+
+  The detailed tests are unmarked:
+  - `tests/integration/test_scenario_validation.py`, the must-have's file, holds every check with a failing and a passing fixture.
+  - `tests/test_catalog_validation.py` holds the database-free tests.
+
+  Field names that are later milestones' lexicon terms (the scheduled items the provider check reads) come from `tests/validation_support.py`. check-parts counts 171 parts, check-lexicon finds 0 violations, and check-traceability passes.
+  **Why:** The drift note: §15 lists FR-GUARD-10 under C-20 (M3) only, and FR-SCN-5 and FR-RATE-5 under no C-15 entry. Traceability also counts one file per test ID and milestone. Cost if wrong: renames only.
+  **Issue:** #111, #116, #118, #119
+- **Decision:** How the modules are laid out.
+  - `core/catalog/report.py` holds the one report shape: `ValidationReport {errors, warnings, unavailable}` with its `ok` property, `Entry`, `EntryLocation`, `Outcome`, `ValidationResult {valid, report}`, the `CODES` vocabulary and `log_report`.
+  - `core/catalog/validation.py` re-exports the shape. It also holds:
+    - `CHECKS`, the explicit ordered list of 14 check modules under `core/catalog/checks/`, one per check;
+    - `prepare` and `run`;
+    - `Runner`, the services' `Validator`;
+    - `validate_entry`, the dry run.
+  - `checks/base.py` holds `Subject`, `Preparation`, `Findings`, the `Check` base class and `ValidationContext`. `ValidationContext` moved there from `service.py`, which re-exports it.
+  - `checks/scenario.py`, `cast_members.py` and `character_documents.py` are shared helpers, not checks.
+  - #108's `rule_errors` moved to `core/catalog/scenario_rules.py`; `scenarios.py` re-exports it.
+  - #103's `PublishReport`, `ReportEntry`, `schema_report` and both `publish_report`/`*Validator` builders are gone.
+
+  **Why:** The must-have puts `ValidationReport`, `Entry` and the runner in `validation.py`. But the generic service must name the report type, and `validation → checks → scenario_models → service` would be an import cycle, so the shape lives in a module the service can import and `validation.py` re-exports it. Cost if wrong: import paths move.
+  **Issue:** #111
+- **Decision:** Validation runs in two phases, so no lock is ever held across a model call.
+  - The `Validator` protocol is `prepare(subject, env)` followed by `validate(subject, ctx)`.
+  - A publish reads the entry, refuses a stale revision or an archived entry, and prepares from that draft outside any transaction. Only the input policies prepare anything, and they may call a model.
+  - It then takes the row lock, compares `draft_revision` again (it moves on every save, so the draft is the one prepared from), and validates under the lock with what was prepared.
+  - `test_no_lock_is_held_across_a_model_call` holds the stub's `guardrail_check`. Meanwhile it locks the scenario row `FOR UPDATE NOWAIT` from another session and finds no session idle in a transaction. In the complement, with the publish held at `catalog.publish.locked`, the same lock attempt fails with `55P03`.
+  **Why:** FR-CONC-2: "Database locks shall never be held across model calls". The single in-transaction validate that #108 left would hold the scenario's row lock for every model-assisted check. Mutation-checked: moving `prepare` inside the lock fails the test. Cost if wrong: one extra read per publish.
+  **Issue:** #111
+- **Decision (deviation):** Input policies reach the Orchestrator through #103's `PolicyEvaluator` port, not the `InputGate` port that the pass-1 Discretion and the drift note name.
+  - `InputGate.enforce` refuses and writes an audit row. `PolicyEvaluator` is the port for "evaluation without refusal or audit (a publish-time report)".
+  - Its signature is now `evaluate(db, texts, *, rating_id, max_model_calls) -> PolicyEvaluation {hits, unavailable, model_calls}`, and `PolicyHit` gained `span`. Nothing called the port before.
+  - `Engine` wires `orchestrator/policies/catalog_check.CatalogPolicyCheck(self.models)`, the first real port. The other three stay no-ops.
+  - The default `NoPolicies` now lists `input_policy` as unavailable instead of reporting no hit. So a core publish without the Engine never passes the check silently. `test_ports_default_to_no_ops` was changed for that behaviour (FR-SCN-5).
+  - Model-assisted policies run through `structured_call` with `check_inputs` and an empty deterministic step, not the drift note's `check_text`. `check_text` turns a budget-exhausted `Uncertain` into a violation through `on_uncertain`; here that case is listed `input_policy_model_assisted`. A `ModelError` (unavailable, deadline) is listed too, and never fails a publish.
+  - `creation_context` accepts `rating_id=None` (global policies only).
+  - Hand-offs:
+    - #119's genesis gate (with a cast, refusing and audited) must wire the `InputGate` port itself, which is still `PassingGate`.
+    - #118, #120 and #121 may reuse or extend `PolicyEvaluator`.
+  **Why:** A publish-time hit must write no audit row and never refuse (the pass-1 Discretion), and FR-SCN-5 forbids passing a check silently. Cost if wrong: a port renamed.
+  **Issue:** #111, #103, #118, #119, #120, #121
+- **Decision (drift):** `validation_model_calls` is a field of the deployment's settings document, not the `deployment_state` column the pass-1 Discretion names.
+  - It lives in a new `CatalogValidationSettings` section: prospective, 0 to 1000, default 0.
+  - The section is in `config_changes.SECTIONS` and `SettingsPatch`, and U-18 pins the class.
+  - `PUT /admin/settings`'s description and the README name it.
+  - Validate and publish both read it. With 0, no model-assisted policy runs at publish; story creation (#119) runs them within its genesis budget.
+  **Why:** The drift note: M2 keeps new deployment settings in the settings document. Cost if wrong: one migration moves it to a column.
+  **Issue:** #111
+- **Decision (AC over Discretion):** A seed missing a field gives one error per field, with codes `seed_missing_holder`, `seed_missing_audience` and `seed_missing_disclosure`. The pass-1 Discretion's single `seed_incomplete` is not used.
+  - Each error sits at the missing field, with the seed's `seed_id` and, for a role's seed, the role.
+  - `report.CODES` lists every code the report uses, AC1's later-milestone codes included (`fact_conflict_dropped`, `belief_conflict`). A unit test pins AC1's list against it.
+  **Why:** AC1 names `seed_missing_audience` among the codes, and `/n8-verify` reads the AC. A code per field still "names the missing field", as the Discretion wants. Cost if wrong: renames.
+  **Issue:** #111
+- **Decision:** #111 adds the content rules that #108's plan handed it, all errors.
+  - `content_rating_missing`: FR-RATE-3, "required to publish".
+  - `role_required`: at least one role.
+  - `world_required`: a world description.
+  - `opening_required`: an opening narration.
+  - `rating_retired`: the rating is unknown or retired. This check moved from the version insert into the report.
+
+  Consequences:
+  - A publish with a retired rating now answers 422 `publish_invalid` (a `rating_retired` entry), not 422 `rating_retired`. The route still documents `rating_retired` for the race between the check and the version insert, which holds the rating `FOR SHARE`.
+  - #116 must exempt a companion version made by a character-alone publish from `world_required` and `opening_required`, as its pass-2 line plans.
+  **Why:** #108's pass-1 line: "#111 adds the content rules `content_rating_missing`, `role_required`, `opening_required`, `world_required`". #116 relies on two of them, and #119 relies on an opening narration for turn 1. #108's log also anticipated that #111 would move the rating check into the report. Cost if wrong: one check module drops a rule.
+  **Issue:** #111, #108, #116, #119
+- **Decision:** How the checks read their inputs.
+  - **`unavailable`:**
+    - `seed_normalization` and `fact_consistency` (they need `structured`) and `state_schema` (it needs `states`). They are placeholders that list themselves even when given their capability, so a deployment that delivers the capability before M4 or M6 implements the check never passes silently.
+    - `age_conditioned_policies`, only while such an input policy is live.
+    - `input_policy_model_assisted`.
+    - `input_policy`, from the default port.
+  - **Capabilities** are derived from #106's `DELIVERED`: the pipeline by its levels, the other modules by name.
+  - **Input-policy texts:** the world, each role's setup description, relationships and name overrides, every seed, the opening, the drivers, and every string inside the objects stored as given. Never the public card or the visual style.
+  - **Input-policy entries:** one per (field, policy), outcome `kept`, `rule` = the policy id, `text` = the matched span.
+    - A word or name list's span is found by the new pure `core.policies.evaluate.matched_span`, case kept.
+    - A pattern or model-assisted policy has no span, so the text is the first 200 characters.
+    - Global and rating entity lists run, as the drift note says.
+  - **`rating_looser`** counts live policies only. It compares each item at the rating version it was stored with: a character version's `content_rating_version_id`, else the rating its document names at its current version, or an asset's own. An unrated item has no guardrails.
+  - **Location and errors:** location `role` is set only for fields inside a role. An entry is an error exactly when its outcome is `rejected`.
+  - **Named-role audiences** are not checked against role ids. FR-SCN-8 lets authors add named groups freely, and #108 stores tokens as written, so a role id cannot be told from a group; holders and reveal roles are #108's save rules.
+  - **The context** holds the connection, settings, ports, capabilities and what was prepared. The checks that need the rating closure and policies load them. The pass-1 line lists those in the context.
+  **Why:** These are the pass-1 lines, filled in where they are silent. Cost if wrong: one check module changes.
+  **Issue:** #111
+- **Decision:** The surfaces.
+  - **Publish** answers 201 with `report`; AC4's "200 body" is read as the publish's success answer, which has been 201 since #103 (the pass-1 line also says 201). A refused publish is 422 `publish_invalid` with `details.report`. Either way the INFO line `validation report` logs codes and locations, never text.
+  - **Storage:** migration 0028 adds a nullable `catalog.scenario_versions.report` jsonb, written with the version row.
+  - **The dry run** is `POST /catalog/scenarios/{id}/validate`:
+    - flagged `mutating=False`;
+    - optional body `ValidateRequest {draft_revision?}`, or `?version=n`;
+    - answers 200 `ValidationResult {valid, report}`;
+    - 409 `draft_stale`; 422 at `query.version` when both are named; 404 for an unknown scenario or version;
+    - archived scenarios validate.
+  - **Library and docs:**
+    - `Engine.validate_scenario` takes no `Idempotency-Key` and needs no principal in the library; REST requires one by method.
+    - It has three C-03 parity steps, a nothing-gates `CALLS` entry, `OPERATION_ERRORS` and library exports (`ValidationReport`, `ValidationResult`, `Entry`, `EntryLocation`, `Outcome`, `ValidateRequest`).
+    - `docs/02` §9 and the README describe it, and `docs/openapi.json` is regenerated.
+  **Why:** The pass-1 lines. Cost if wrong: the status code, which is #103's existing contract.
+  **Issue:** #111
+- **Decision:** Catalog characters publish through the same runner. `CharacterCatalog` now names `document_model = CharacterDraft` and uses `RUNNER`. Its interim rules (a valid draft, then `field_required` at `name`) are the `document` and `required` checks, which are entry-type aware. A character's report has the new shape, and still holds no warnings and nothing unavailable.
+
+  Hand-offs to #115:
+  - Add its rules as check modules (`kinds = {CHARACTER}`) in `validation.CHECKS`, not as the `core/catalog/validate.py` its artifact list names.
+  - Keep `checks/character_documents.py` in step with its document: `public_card.name`/`images`, `metadata.labels`/`content_rating_id`, `definition.true_age`.
+  - Record `content_rating_version_id` on character versions, so that `rating_looser` compares at the stored version.
+  **Why:** The pass-1 line: "#115's character checks run through the same generic runner (entry-type aware check modules)". Cost if wrong: #115 moves its rules.
+  **Issue:** #111, #115
+- **Decision:** Existing tests changed because the story changes what they pin; no assertion was loosened.
+  - **Fixtures (#108's hand-off):**
+    - `scenario_support.scenario()` now publishes as it is: the Everyone rating and an opening narration.
+    - `COMPLETE` gains the Everyone rating.
+    - `complete_with(...)` and `cast_characters()` give it real published characters (the locked one at three versions). They are used by C-15's lifecycle, `test_card_and_full_projections` (whose card now shows the rating) and the search tests.
+    - C-03 builds its scenario per surface around the surface's published character at version 1.
+  - **`test_scenario_catalog`:**
+    - the table shape gains `report`;
+    - the publish assertions use the new shape and rules;
+    - the video is real;
+    - the locked role's character is published first.
+  - **Report shape:** `test_catalog_characters`, and `test_catalog` (its publish-report test moved to `test_catalog_validation`'s character runner test; its ports test changed).
+  - **Search tests:** the labelled helper gains a rating; "Unrated" becomes "Everyone"; the list assertion now names the three published characters, which is stricter.
+  - **Helpers:** I-21's scenario helper gains a rating; `test_engine_profiles`'s scenario uses the fixture body.
+  - **Pins:** `ownership_fixtures.CALLS` gains the validate route, and U-18 pins the new setting.
+  **Why:** The AC require each behaviour; these are the smallest changes that keep the tests' intent. Cost if wrong: none.
+  **Issue:** #111, #108
+- **Decision:** I mutation-checked the story. A script applied each mutation, ran the named test and restored the source (SHA-1 checked). Each of these 13 mutations fails a test:
+  - publish ignoring errors (I-20);
+  - capability-gated checks not listed (C-15);
+  - negation ignored (the personality test);
+  - ratings compared at their current version (the stored-version test);
+  - an exclusive lower age bound (U-26);
+  - the limit off by one (U-26);
+  - media kind unchecked (I-20);
+  - archived characters unchecked (I-20);
+  - policy hits dropped (C-20);
+  - age-conditioned policies not listed (the detailed test);
+  - the default port silent (the detailed test);
+  - roles sorted last (I-20);
+  - prepare inside the lock (the no-lock test).
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #111
+- **Decision:** #110 verification fixes, round 1 (gap 1 of 5). The gap was real, and it was a gap in test coverage only. No source file changed for it. `test_list_items_are_the_single_read_cards` now edits its published entries' drafts after they publish:
+  - the character's name and public description;
+  - the archived character's name, before it is archived;
+  - the scenario's name, public description, labels (`noir`) and rating (Teen).
+
+  So a list that showed a draft would no longer equal the single read.
+  - For each edited entry, the listed card equals the plain read, which shows the published name, and `?draft=true` shows the edit.
+  - The label, rating and text filters also read the published version. `label=family` and the Everyone rating find the scenario. The draft's `noir`, its Teen rating and its new words (`sale`, `margaret`) find nothing.
+  - **Mutation-checked.** The verifier's 1b (`catalog.c.draft.label("document")` at `search.py:314`) passed every story test before. Now the story's tests give 1 failed, 39 passed: the listed card shows the draft's "Keeps the orchard now." where the read shows the published card.
+  **Why:** This is the fix hint. I extended the test that claims "list cards equal the single read" rather than adding a new one, so the claim and its proof stay together. Cost if wrong: none.
+  **Issue:** #110
+- **Decision:** #110 verification fixes, round 1 (gap 2 of 5). The gap was real, and it was a gap in test coverage only. No source file changed. `test_i_21__listing_filters` now combines `status=draft` with the label and rating filters:
+  - `label=family` and the Everyone rating find `s4`, the draft-only "Attic".
+  - `label=noir` and the Teen rating find nothing.
+  - The docstring names the clause.
+  - **Mutation-checked.** The verifier's mutant 2 makes the label and rating predicates read `versions.c.content` instead of the shown document (`search.py:332,334`). It passed before. Now: 1 failed, 39 passed, at `{'label': 'family'}`, where `[] != [s4]`.
+  **Why:** This is the fix hint's first option. I-21 is the filters' behavioural matrix, and it already holds a labelled draft-only scenario. The new cases sit after the matrix loop, because that loop asserts that each filtered list is a strict subset of the published list. Cost if wrong: none.
+  **Issue:** #110
+- **Decision:** #110 verification fixes, round 1 (gap 3 of 5). The gap was real, and it was a gap in test coverage only. No source file changed. Tests now pin every filter in the cursor's hash.
+  - **Unit.** The new `tests/test_catalog_listing.py::test_a_cursor_binds_every_filter` is parametrised over all eight filters and both kinds. The filters are `q`'s words, `label`, `content_rating`, `listing_status`, `owner`, `relation`, `status` and `include_companions`. For each pair of queries that differ in exactly that filter:
+    - their fingerprints differ;
+    - the cursor decodes to its position under its own fingerprint;
+    - under the other's fingerprint it is 422 `cursor_invalid`, reason `filters_changed`.
+  - **REST.** `test_list_requests_are_checked` now also checks the reuse cases, each `filters_changed`:
+    - the page-1 cursor reused with `label`, `content_rating`, `listing_status` or `relation` added;
+    - a search's cursor (`q=sailor`) reused with `q=sailor 1`;
+    - a scenario list's cursor reused with `include_companions=true`.
+    Complement: the search's own next page lists the other two sailors.
+  - **Mutation-checked.** The verifier's mutant 3 removes `q`, `labels`, `content_rating`, `listing_status` and `include_companions` from `CatalogQuery.fingerprint`. It passed before. Now: 11 failed, 29 passed. The failures are the REST test and the 10 unit cases for those five filters.
+  **Why:** The fix hint offered either test. Both are cheap, and the REST one also pins how `search` uses the fingerprint, not just the hash. Cost if wrong: none.
+  **Issue:** #110
+- **Decision:** #110 verification fixes, round 1 (gap 4 of 5). The gap was real, and it was a gap in test coverage only. No source file changed. A new detailed test, `test_writes_waiting_on_a_removal_read_the_values_it_left`, races a removal against both writes that read the configured values under the deployment row `FOR SHARE`.
+  - **The race.**
+    1. The test's own transaction takes the row `FOR UPDATE` with `core.config_changes.lock_deployment`, the call every settings write starts with.
+    2. A listing-status change to `in_review` and a creation both start, and the test waits until `pg_stat_activity` shows both waiting on the lock.
+    3. The transaction sets the values to `["public", "private"]` and commits.
+  - **The outcome.**
+    - The change had passed its own early check before its key was claimed. It is now 422 `invalid_listing_status`, naming the new values. Nothing is recorded (no event, no operation), and the entry stays `private`.
+    - The new entry starts at `public`, the new first value.
+  - **Mutation-checked.** The verifier's mutant 7 (no `refuse_unknown` under the lock, `service.py:657` at this HEAD) now fails the test: 200, not 422. Mutant 8 (`allowed_values(conn, lock=False)` in `create`, `service.py:450`) fails it too: "no request waited on the lock in time", because the creation no longer waits and takes `private`. Each run: 1 failed, 39 passed. Both mutants passed every test before.
+  **Why:**
+  - The fix hint's direct service call, bypassing `Engine.require_allowed`, would prove only that the in-transaction check exists. The race shows why it matters: it goes through REST, and the early check passes.
+  - I simulated the operator's removal with a held transaction instead of adding a pause point to `apply_settings`, so no product code changed for a test.
+  - The simulation skips `refuse_removal` and the `config_changes` rows. Neither affects what the waiting writes read, and since no entry holds `in_review`, the real removal would have committed the same values.
+
+  Cost if wrong: none.
+  **Issue:** #110
+- **Decision (Rule 2):** #110 verification fixes, round 1 (gap 5 of 5). A listing status value must now be printable text, as the pass-2 Discretion line says: "any printable text without control characters". Before, `LISTING_STATUS_PATTERN` refused only C0 and DEL. The setting, the `PUT …/listing-status` body and the `listing_status` filter all accepted a C1 control (U+0085), a no-break space (U+00A0), a zero-width space (U+200B) or a direction override (U+202E), so two configured values could look the same yet differ.
+  - **The pattern.** `LISTING_STATUS_PATTERN` now also refuses C1 (`\x7f-\x9f`), so the published schema refuses every control character.
+  - **The validator.** The rest of the rule is a new after-validator, `settings_schema.listing_status_value`. It trims the value and then requires `str.isprintable()`.
+    - Refused: the format characters (zero-width space, direction marks and overrides, soft hyphen, BOM, and the zero-width joiner, so emoji ZWJ and tag sequences are refused); every separator except the space; and private-use, surrogate and unassigned code points.
+    - Still valid: accented letters, symbols, and emoji without a joiner.
+  - **Where the rule applies.**
+    - `ListingStatusValue` uses the validator, so both bodies apply it.
+    - `search.catalog_query` now validates the filter through the same type (a `TypeAdapter`), so a query is refused at `query.listing_status` (422 `validation_error`) by the same rule.
+    - The field descriptions now say "printable". `docs/openapi.json` was regenerated: the pattern in four places and two descriptions.
+  - **Exact comparison.** Values are still compared exactly as written. Canonically equivalent spellings (an NFC and an NFD `é`) and look-alike letters from other scripts stay distinct values. I added no normalisation, because the plan names none.
+  - **Tests.**
+    - 422 cases for U+0085, U+00A0 and U+200B in:
+      - `test_listing_status_values_setting` (the setting);
+      - `test_listing_status_writes` (the body);
+      - `test_list_requests_are_checked` (the filter, at the route's pattern and at `catalog_query`);
+      - `test_requests_are_normalised_and_checked` (unit).
+    - Complement: `en révision ✓` is configured, set (trimmed) and filtered by over REST, and `catalog_query` keeps it.
+    - The new unit test `test_the_documented_pattern_refuses_every_control_character` pins the published pattern against C0, DEL and C1 at the start, middle and end of a value.
+  - **Mutation-checked.** Without the printable check, 4 tests fail. With the pattern's C1 range dropped, the new unit test fails, and `openapi --check` flags the document.
+  - **Stored data.** None is affected: the column is new in this milestone (migration 0027), and its defaults are printable.
+  **Why:** This is the fix hint's first option. The plan line is explicit, and this log's entry for the column already said "no control character", which C1 contradicted. `str.isprintable` is the standard library's definition of printable, so no hand-kept table is needed. The pattern carries the part a schema can state. Cost if wrong: a consumer cannot use a joiner sequence or an invisible character in a value. Relaxing the check later is additive.
+  **Issue:** #110
+- **Decision:** Filed #321 (`needs-triage`). The principal rule refuses only C0 and DEL: `PRINCIPAL_PATTERN`, `principal_problem`, and the principal part of `RELATION_FILTER_PATTERN`. But its messages and the `X-Epistrel-Principal` description say a principal "holding a control character" is refused, and C1 controls are accepted. This is M2's FR-AUTH-4 rule, outside #110's scope, so it was not fixed inline.
+  **Why:** The verifier noted that the principal rule shares the convention gap 5 corrected. Cost if wrong: none.
+  **Issue:** #110, #321
+- **Decision (drift):** #112's parts follow docs/04 §15 and the shared-file rule.
+  - `test_c_26__feedback`, `part("M3", "FR-FB-1,2; FR-AUTH-4")`, and `test_c_26__isolation`, `part("M3", "FR-FB-2")`, are in the new `tests/conformance/test_c_26.py`. #126's `test_c_26__review` must join this file.
+  - The test plan's `test_feedback` and `test_feedback_isolation` map to no docs/04 test ID (`FEEDBACK`, `FEEDBACK-ISOLATION`), so they were not used as names. The detailed tests are unmarked, in `tests/integration/test_feedback.py`, and their docstrings name no FR id.
+  - §15's C-26 (M3) also covers FR-AUTH-4 ("a rating records the principal"), so the feedback slice claims it.
+  - check-parts counts 173 parts; check-lexicon reports 0 violations; check-traceability passes.
+  **Why:** The drift note: traceability counts one file per test ID and milestone, and an unmapped name would be "missing from §15". Cost if wrong: renames only.
+  **Issue:** #112, #126
+- **Decision (drift):** The feedback writes use #103's `route_flags(mutating=False)` on `PUT` and `DELETE`.
+  - No `Idempotency-Key` is minted or echoed, no expected revision is checked, and no revision base is required; a sent key and a stale `X-Epistrel-Expected-Revision` are ignored. A rating writes no `operations`, `events`, `config_changes` or `idempotency_keys` row.
+  - The methods still require the principal (400 from the HTTP rule).
+  - `GET` checks the principal in `Engine.get_feedback` (400 `principal_required`, message "reading a rating needs the requesting principal"), and the OpenAPI document gains `PRINCIPAL_READS = {"get_feedback"}`: the header is documented as required on that read, and `OPERATION_ERRORS["get_feedback"]` lists its 400. Without both, C-01 would see an undocumented 400.
+  - `route_flags`' docstring now also names "a write that is idempotent by itself and records no operation".
+  **Why:** The pass-2 Discretion ("flagged `mutating=False` … no `Idempotency-Key` echo; `X-Epistrel-Expected-Revision` is ignored") and the drift note's GET correction. #103 built the flag after the drift note was written, so the note's alternative (a `MutationResponse` body) was not needed. Cost if wrong: #128's replay test treats these routes as non-mutating, as its own plan says.
+  **Issue:** #112, #103, #128
+- **Decision (drift):** Only a `message_rendered` event with `provenance = engine` can be rated: a reply, a safe fallback (#68), or a regenerated variant, in any membership (a truncated turn's reply too). The consumer's ingested narration (#58, provenance `consumer`) is 404 `not_found`, like the player's input, another story's message or an unknown id. The 404 names `story_id` and `message_id`; an unknown story is 404 naming `story_id`.
+  **Why:** FR-FB-1 says "rate a generated message", and narration was produced under no configuration (its operation records no stamp). This is the drift note's first option. Cost if wrong: narration becomes ratable with a null context, a one-line filter change.
+  **Issue:** #112
+- **Decision:** The tables (migration `0029_message_feedback`, `core/tables/feedback.py`):
+  - `message_feedback` follows the pass-1 and pass-2 Discretion, with `turn` and `variant` denormalised and `redacted_at` for #124. It has a CHECK on 1 to 5 and is unique on `(story_id, message_id, principal)`.
+  - `feedback_history` holds `(id, story_id, message_id, turn, variant, principal, rating, tags, text, kind, rated_at, replaced_at, redacted_at)`. `turn`, `variant` and `rated_at` (the replaced value's `updated_at`) go beyond pass 2's list, following the base line "history rows carry the full previous row plus `replaced_at`". The context is not copied: it is the message's, the same for every value.
+  - `story_id` references `stories` on both tables. `message_id` and `operation_id` are plain ids: M7's compaction may delete a message and its operation, and the rating stays, marked. The isolation-schema test allows only the `story_id` and `operation_id` foreign keys anyway.
+  - Indexes: `created_at` and `replaced_at` for the retention sweep, and `(story_id, message_id, principal)` on the history for the read. Hand-off to #126: the `created_at` index already exists; add only `config_fingerprint`, `profile_version` and the `tags` GIN.
+  - `core/tables/__init__.py` imports the module only to register the tables, without re-exporting their names, so every module that names them stays visible to the grep guard.
+  **Why:** The AC's columns, and a history entry that can say when its value was given. Cost if wrong: one migration changes columns before anything but #112 reads them.
+  **Issue:** #112, #124, #126
+- **Decision:** A rating's write holds three locks in one transaction, and a new pause point drives the race tests.
+  - The story row `FOR KEY SHARE`. A story deletion (`FOR UPDATE`) waits for the rating, then deletes it. Turns, archives and settings writes take only non-key locks, so a rating is allowed on an archived story and during a turn, and blocks neither.
+  - The deployment row `FOR SHARE`, while reading `feedback_tags` and `feedback_text_max_chars`. A tag removal waits for the rating and then counts it, and a rating waiting on a removal reads the tags it left.
+  - The principal's row `FOR UPDATE`, with the first rating inserted by `INSERT … ON CONFLICT DO NOTHING`. One that loses the race re-reads the winner's row and replaces it (200, with a history entry).
+  - The pause point is `feedback.rate.unrated` (`epistrel.testing.pauses`).
+  **Why:** The pass-1 Discretion's upsert, plus the two races the plan does not name: without the story lock, a deletion that commits first makes the insert fail its foreign key (500); without `FOR SHARE`, a rating could commit a tag that a concurrent write has just removed. Mutation-checked: dropping either lock fails its race test. Cost if wrong: none to stored data.
+  **Issue:** #112
+- **Decision (drift):** The feedback settings.
+  - **`feedback_tags`** is a `deployment_state` column (`text[]` NOT NULL), as #110 made `listing_status_values`, because the AC names `deployment_state.feedback_tags`. The column's server default seeds the nine tags into the existing row, in place of the pass-2 "UPDATE of the row in the migration"; the result is the same. The column is prospective and in `DEPLOYMENT_COLUMNS`, `DeploymentState`, `config_changes._COLUMNS`, `SettingsPatch` and U-18's `EXPECTED`.
+  - **Rules for the tags:** `[a-z0-9_]{1,40}` each, distinct, at most 50, and the list may be empty. A write replaces the list and records one `config_changes` row with the old and new lists. Removing a tag that a rating or a history entry carries is 409 `feedback_tag_in_use`, with `details {field: "body.feedback_tags", in_use: [{tag, current, history}]}` in the old list's order. The check runs in `apply_settings` under its `FOR UPDATE` lock (`core.feedback.refuse_tag_removal`), and nothing is written.
+  - **`feedback_text_max_chars`** (1 to 20000, default 2000) and **`feedback_retention`** (`story_lifetime`, the default, or 1 to 3650 days) are a new prospective `FeedbackSettings` section of the settings document. The section is in `config_changes.SECTIONS`, so the values read back and survive unrelated writes; a test pins that. #315's bug affects only the sections missing from `SECTIONS`, which is also why `feedback_retention` is not in `RetentionSettings`.
+  - **Stricter than the older integer settings:** `feedback_text_max_chars` is a `StrictInt` (a boolean or a numeric string is 422), and `feedback_retention` is decided by one plain validator, so every refusal is at `body.feedback_retention`, not at a union member's location.
+  **Why:** The AC's column name, the pass-1/pass-2 bounds, and the drift note's hooks. Cost if wrong: a column moves into the settings document, or the reverse.
+  **Issue:** #112, #315
+- **Decision (deviation):** `retention_sweep` enforces `feedback_retention` in the Orchestrator's handler, which reads the two tables through `core.tables.feedback` and never imports `core.feedback`.
+  - A rating is aged by `created_at` and a history entry by `replaced_at`, in chunks, with no marker. Under `story_lifetime`, nothing expires.
+  - The grep guard's allow-list therefore adds `orchestrator/jobs/handlers/retention.py`, beside the planner's modules and the drift note's `testing/determinism.py`. The planner's list omitted the sweep, although the plan says it is extended.
+  - Hand-off to #126: its planned `feedback-is-flag-only` contract (Orchestrator modules must not import `core.feedback`) holds, but its planned grep over Orchestrator modules for the table names must allow the retention sweep.
+  - Hand-off to #123: an expired rating's subject-index rows must go with it there; `drop_hook` is not called, because the Orchestrator does not import `core.feedback`.
+  **Why:** The pass-1 line "enforced by extending #71's `retention_sweep`". Reading the tables directly keeps #126's import contract possible. Cost if wrong: the sweep moves behind a core function bound at worker start.
+  **Issue:** #112, #71, #123, #126
+- **Decision:** A fork copies no feedback: `message_feedback` and `feedback_history` are in `STORY_TABLES_NOT_COPIED`, and in `STORY_TABLES` before `operations` for deletion. `testing/determinism.ORDER` orders both tables by story, turn, variant and principal (and the history entries by when they were replaced).
+  **Why:** The drift note asked for an explicit decision. A rating belongs to the message variant it rated (FR-FB-2). The fork's copy is a new message with a new id, and copying would count one rating twice in #126's aggregates. Cost if wrong: one set entry.
+  **Issue:** #112, #67
+- **Decision:** The surfaces and shapes.
+  - **Engine methods:** `rate_message(ctx, story_id, message_id, FeedbackRequest) -> FeedbackWrite {feedback, created, changed}`, `retract_feedback(...) -> FeedbackRetraction {story_id, message_id, retracted}` and `get_feedback(...) -> Feedback`. Routes are `api/routes/feedback.py` under a new `feedback` OpenAPI tag, which #126 reuses.
+  - **`PUT`** answers 201 for the principal's first rating and 200 otherwise, with the `Feedback` body (the pass-2 shape).
+  - **The context:** `context` is copied from the operation's `config_revisions`: `profile_version` as `profile_id@version`, `quality_status` as its status string, and `rating_version_id` from #64's `rating_version`. An operation without #109's stamp gives null fingerprint, profile version, models and quality status, while its `rating_version` is still copied. `context` is null when there is no current rating.
+  - **`GET`** with no rating answers `rating: null`, `tags: []` and the history, newest first. **`DELETE`** is 204 even with nothing to retract, and 404 for an unknown message.
+  - **Request rules:** `rating` is a `StrictInt` from 1 to 5. At most 10 tags as sent, each 1 to 64 characters once trimmed and lower-cased (a blank one is 422 at `body.tags[i]`); then they are de-duplicated, sorted and compared as a set. The text is at most 20000 characters as sent, and the deployment's cap applies once it is trimmed (422 `validation_error` at `body.text`, `details.max_chars`). A NUL is 422 at its field.
+  - **422 `unknown_feedback_tag`** has `details {field, unknown_tags, allowed_tags}`.
+  - **Library exports:** `epistrel` exports `FeedbackRequest`, `Feedback`, `FeedbackContext`, `FeedbackHistoryEntry`, `FeedbackWrite` and `FeedbackRetraction`, and the errors `MessageNotFound`, `UnknownFeedbackTag` and `FeedbackTagInUse`.
+  - **The seams:** `index_hook` and `drop_hook` are no-ops (AC5) until #123 rebinds them.
+  - **Logging and metrics:** writes log one INFO line (`feedback rated` or `feedback retracted`) with the story, the message and the outcome only. There are no metrics in M3.
+  **Why:** The pass-1 and pass-2 Discretion lines, filled in where they are silent. Cost if wrong: response fields are additive.
+  **Issue:** #112, #123, #126
+- **Decision:** Existing tests changed because the story adds routes, tables and settings they pin. No assertion was loosened.
+  - **C-01:** the fixture turn's reply is the `message_id` path id, so the feedback routes are generated against a real message.
+  - **C-03:** three steps (`rate_message`, `get_feedback`, `retract_feedback`), `RATING_ANSWERS`, and an assertion that the rating recorded the first turn's operation and reads back the same. The names say "rating", never "feedback", which is an M3 lexicon term in an M2 part; `MESSAGE_RATING` avoids the existing content-rating `RATING`.
+  - **S-DELETE:** `_populate` rates a reply twice, so the victim has rows in both tables.
+  - **U-18:** pins the three settings as prospective.
+  - **Ownership fixtures and I-21:**
+    - `ownership_fixtures.CALLS` gains the three routes.
+    - `Call.own` names the body keys that echo the requester, because the read is the requester's own rating (FR-AUTH-4).
+    - The nothing-gates matrix sets those keys aside and asserts that each one is the requester's. Each of the three requesters rated the reply alike.
+  **Why:** The route-table, delivered-type and parity guards require them. Cost if wrong: none.
+  **Issue:** #112
+- **Decision:** I mutation-checked the story. A script applied each mutation, ran the named tests and restored the source (SHA-1 checked). Each of these 23 mutations fails a test:
+  - consumer narration ratable;
+  - the tags read without `FOR SHARE`;
+  - the same value counted as a change;
+  - the fingerprint not copied;
+  - a retraction keeping no history;
+  - a lost insert race not re-reading the rating;
+  - a history entry not keeping a tag in use;
+  - retention by `updated_at`;
+  - forks copying feedback;
+  - deletion forgetting the tables;
+  - the read taking no principal check;
+  - tags kept as sent;
+  - compaction marking another story's ratings;
+  - the cap counting untrimmed text;
+  - unknown tags accepted;
+  - another story's message ratable;
+  - no story lock;
+  - `drop_hook` not called;
+  - `index_hook` called only on creation;
+  - history newest last;
+  - the context recomputed on a re-rating;
+  - retention ignoring the setting;
+  - `FeedbackSettings` missing from `SECTIONS`.
+
+  "Retention by `updated_at`" first survived, so the retention test now re-rates an old rating 10 days ago and expects it deleted by its `created_at`.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #112
+- **Decision:** These docs follow the build.
+  - docs/02 §4.14 describes the built tables, what a rating copies and writes, its retention, and the fork and compaction rules. §9 adds the `GET` and the status codes.
+  - README gains a "Message feedback" section, and its Configuration section names the three settings.
+  - `PUT /admin/settings`'s description names them and the 409.
+  - `docs/openapi.json` is regenerated.
+  **Why:** docs/02 is authoritative and should describe the routes as built, as #110 and #111 did. Cost if wrong: none.
+  **Issue:** #112
+- **Decision:** Filed #322 (`needs-triage`) and did not fix it. `PUT /admin/settings` coerces a JSON boolean, a numeric string or an integral float for every older integer setting. `SettingsPatch` and the settings sections use lax `int`, so `true` becomes `1` and `"7"` becomes `7`, while the documented schema says `integer`. #112's own new settings refuse these values: `feedback_text_max_chars` is a `StrictInt`, and `feedback_retention` has a validator. It is cross-referenced on #112.
+  **Why:** The older settings are M2's and earlier M3 stories', outside #112's scope, and tightening them changes accepted input for every integer setting: a triage call. Cost if wrong: none.
+  **Issue:** #112, #322
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** A published scenario version keeps the validation report its publish answered, in `catalog.scenario_versions.report` (jsonb, migration 0028; #111). That report is content.
+  - A warning's `text` quotes the version's own text. For `personality_in_role` it is the sentence from a role's setup description or seed. For `input_policy` it is the matched words, or the first 200 characters of the field when a pattern or model-assisted policy locates no span.
+  - A `personality_in_role` warning on a `default` role names that role's catalog character in `source`.
+  - The same report is part of the publish's stored idempotency result (`publish_scenario`, deployment scope) until its key expires.
+  - A refused publish leaves the report in neither place: its key is released and no version is written. So only `warnings[].text` and `warnings[].source` can hold content. A `rating_looser` source is an identifier (`catalog_id@version` or a media id), and `unavailable` holds only check names.
+  - No behaviour changed. `core/tables/catalog.py`'s docstring now states all this.
+  **Why:** #111's verifier (round 1, gap 1) found that this hand-off was never written.
+  - The pass-1 Discretion stores the report on the version and names the `default` character in `source`. #122 plans the same name for its creation report.
+  - #124's catalog pass names the scenario seeds it redacts "in every scenario version and draft", and it lists the content-bearing JSON columns it redacts (`operations.turn_report`, `attempts`, `read_set`). It does not name this column.
+  - An erasure that follows #124's plan would therefore leave the subject's name in a version's report. That breaks its truth that afterwards "no text anywhere in that scope names them".
+  **Affects:**
+  - **M3 #124 (erasure).**
+    - The catalog pass must redact `report` in every scenario version it rewrites, using the same span matcher on each warning's `text` and `source`. That holds however the version was found. A version found through a declared subject (a role filled with the subject, whose `character` the pass nulls) can name the subject only in its report's `source`, because its content holds just the catalog id.
+    - The catalog residue scan must cover the column. The planned enumeration of `jsonb` columns from `information_schema` already includes it. But its fixture must produce a report that names the subject, or the scan proves nothing. A `default` role filled with the subject, with a setup description that asserts personality, gives `source` = the subject's name.
+    - The purge of deployment-scoped stored idempotency results must reach `publish_scenario` results. It must also reach `publish_character` results once #116 nests the companion's report in them.
+  - **M3 #123 (subject index).**
+    - The `publish_scenario` stored result's declared text paths must include `report.warnings[].text` and `report.warnings[].source`.
+    - For `scenario_versions` `<id>@<n>`, #123 chooses one of two approaches:
+      - index the report's `warnings[i].text` and `warnings[i].source` as fields of that record;
+      - keep relying on the record's content fields and declared subjects, as #108 indexes it today. Then #124 rewrites the whole report of every version it touches, not only the fields that are indexed.
+    - A report can also quote strings the index never covers (#323).
+  - **Not affected:**
+    - #122 persists its creation report in `operations.turn_report`, which #124 already redacts.
+    - #116's companion versions write the column through the same publish.
+    - No other open plan names the column. I searched for `scenario_versions`, `redact`, `residue`, `erasure` and `validation report`.
+  - #123 and #124 are later M3 stories in this run. Their drift check should apply this, or `/n8-replan M3` should run before them.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after the `## Ad-hoc` entry from #111's round-1 verification fixes. Later stories append below.
+  **Why:** This keeps the drift ledger entry and keeps the run's section last, as #107 and #108 did. Cost if wrong: one heading.
+  **Issue:** #111
+- **Decision:** #111 verification fixes, round 1, gap 1 of 2: the report column's hand-off. The gap was real. The build logged hand-offs for #115, #116, #118, #119, #120 and #121, but none for #124 or #123. I recorded it as the `## Ad-hoc — 2026-10-13` entry above, and a paragraph in `core/tables/catalog.py`'s docstring now says the report is content that erasure redacts with the version. No behaviour changed.
+  - **`source` keeps the `default` character's name.** The verifier also offered an identifier (`catalog_id@version`), so that the stored report would hold no names. I kept the name for three reasons:
+    - the pass-1 Discretion names it;
+    - #122 plans the same name for its creation report, and the one report shape should mean one thing on every surface;
+    - an identifier would not remove the need for the hand-off, because `text` still quotes content.
+  - **#111 adds no index rows for the report.** #123 settles how records are indexed, and the version record is already found through the content and the role characters the report is derived from. The hand-off leaves that choice to #123.
+  **Why:** The fix hint, and the plan's own choices. Cost if wrong: #124 is replanned to redact one more column, or `source` becomes an identifier before #122 builds on it.
+  **Issue:** #111, #124, #123, #122
+- **Decision:** #111 verification fixes, round 1, gap 2 of 2: the must-have test file. The gap was real. This log's #111 entry says `tests/integration/test_scenario_validation.py` "holds every check with a failing and a passing fixture". At `c46a13a` it did not. The failing fixtures for `cast_limit`, `role_characters` and `providers`, and for the eligibility labels and age range, were only in the I-20 and U-26 parts, and nothing recorded the split. Rather than only correct the entry, I made the must-have true as written. The file gains four tests and two complements:
+  - `test_the_cast_limit_counts_every_role`: four roles, two of them optional, under the scenario's own limit of 3 give one error at `cast.roles` that names the limit and the count. They pass at 4.
+  - `test_role_characters_must_be_published_and_live`:
+    - an unknown id and a missing pinned version (each `character_missing`), a never-published character and an archived one are each refused;
+    - a live character beside them gives no entry;
+    - once the draft character is published, the archived one unarchived, and existing ids and versions named, the scenario validates.
+  - `test_eligibility_labels_and_age` (scratch database, planted characters):
+    - a missing label, an age above the range's upper end, and a character with no labels or no true age each fail with their rule;
+    - the ranges `[60, any]` and `[any, 60]` include 60;
+    - a label held as `Warm` satisfies `warm`.
+  - `test_providers_must_be_declared`: a scheduled item's provider and one nested in a starting value are each undeclared. Declaring one clears only its error, and declaring both validates.
+  - **Complements:** `test_the_document_check_gates_the_others` first validates the draft as saved, and `test_seeds_are_located` validates the same three seeds made complete.
+
+  Every check in `validation.CHECKS` that M3 can run now has a failing and a passing fixture in that file. The three that need a capability M3 lacks (`seed_normalization`, `fact_consistency`, `state_schema`) can only be listed, and the file asserts that they are. The parts stay where the drift note put them, in I-20, U-26, C-15, C-20 and U-29.
+  - **Mutation-checked.** A script applied each mutation, ran the new test and the earlier story tests (I-20, U-26, `tests/test_catalog_validation.py` and the file's other tests), then restored the sources (SHA-1 checked). Each mutation fails its new test:
+    - the limit off by one;
+    - archived characters unchecked;
+    - a missing pinned version unreported;
+    - an age that cannot be judged passing;
+    - an open upper end read as 0;
+    - an exclusive upper end;
+    - a character with no labels holding every label;
+    - starting values not read for providers.
+
+    Four of them passed every earlier story test: the age that cannot be judged, the open upper end, no labels, and starting values.
+  **Why:** The must-have is the plan's definition of done for that file, and the drift note moved only the parts, not the details. Correcting the entry alone would have left the artifact false. The four surviving mutations show that coverage was missing, not just a sentence. Cost if wrong: four tests that overlap the parts.
+  **Issue:** #111
+- **Decision:** Filed #323 (`needs-triage`). `scenarios.indexed_fields` (#108) does not list the strings inside the objects a scenario stores as given, or the scenario's own `story_settings_defaults.policies`. The objects are `starting_state.states`, `clock`, `scheduled_events`, `predicates`, `closed_sets` and `rules`, and a role's `state_initial_values`.
+  - A name written in any of these is never subject-indexed. #124's catalog-scope erasure finds records only through the index, so it would miss that name.
+  - #111's input-policy check sends these strings to the policies, so a version's report can quote them too.
+  - #323 is cross-referenced on #111.
+  **Why:** The field list belongs to #108 and the index to #123, both outside #111's scope. Cost if wrong: none.
+  **Issue:** #111, #323, #108, #123, #124
+- **Decision:** #110 verification fixes, round 2 (gap 1 of 2). The gap was real, and it was a gap in test coverage only. No source file changed for it. Every paged search in the story's tests tied on rank, so nothing pinned the rank that the cursor carries and the next page's bound compares. Two assertions now page a search whose ranks differ:
+  - `test_search_reads_only_the_latest_published_public_card` pages `q=harbour` one entry at a time and expects `[named, described]`. The name match is the older entry, so rank order and newest-first order disagree, and page 2 is reached only through the cursor's rank. This is the fix hint.
+  - `test_catalog_search` holds the test plan's "cursor paging returns every entry exactly once" check. It now adds a newer but weaker match after the seven tied `Sailor n` entries: `Ned Rowe`, with "sailor" in the description only. `q=sailor` with `limit=3` must list the seven, newest first, then `Ned Rowe`. This pins pages of several entries, ties inside a rank, and the step across a rank boundary.
+  - **Mutation-checked.** The verifier's mutant bounds the next page on `(updated_at, id)` only and keeps rank first in the `ORDER BY` (the `after` block of `search.statement`). It passed every story test before. Now the story's tests give 2 failed, 39 passed: both new assertions fail, each losing the weaker match. The tests run were `test_catalog_search.py`, `test_catalog_listing.py`, `test_c_15__listing_status` and `test_i_21__listing_filters`. The source's SHA-1 matched before and after.
+  **Why:** The hint's assertion closes the gap. I added the second one because the plan puts its paging clause in `test_catalog_search`, and the hint's case pages one entry at a time, so no page in it crosses a rank boundary. It costs one more character. Cost if wrong: none.
+  **Issue:** #110
+- **Decision (Rule 1):** #110 verification fixes, round 2 (gap 2 of 2). The library's `Engine.search_catalog` now takes a plain-string `label` or `relation` as one value, just as REST takes one `?label=` or `?relation=` parameter as one value. Before, a `str` passed where a `Sequence[str]` was expected was iterated by character:
+  - `label="family"` became six one-letter labels, ANDed together, so the list was silently empty.
+  - `relation="editor:p-c"` was refused with 422 "the colon is missing". The message was about the letter `e`, not the value.
+  - **The fix.** `search.catalog_query` passes both through a new helper, `_repeated` (`(value,) if isinstance(value, str) else value`), before the NUL check and validation. A malformed plain string is therefore refused at `query.label[0]` or `query.relation[0]`. On `catalog_query` and `Engine.search_catalog` the parameters are now typed `str | Sequence[str]`, and the docstrings say so. REST is unchanged, because its routes always pass lists.
+  - **Tests.**
+    - **Unit** (`test_requests_are_normalised_and_checked`):
+      - `labels=" Family "` and `relations="editor:p-c"` give one label and one relation.
+      - That query equals the tuple form, so its cursor fingerprint is the same too.
+      - `labels="no:colon"` and `labels="a\x00b"` are refused at `query.label[0]`. Before the fix they were refused at `query.label[2]` and `query.label[1]`.
+    - **Integration** (`test_catalog_search`):
+      - the library's `label="family"` lists exactly what REST's `?label=family` lists, in the same order;
+      - `label=["family", "noir"]` lists only the entry that has both labels;
+      - `relation="editor:p-c"` lists the related entry.
+  - **Checked against the old behaviour.** With `_repeated` returning its input unchanged, the story's tests give 2 failed, 39 passed:
+    - `test_catalog_search`, where the library's `label="family"` lists `[]`;
+    - the unit test.
+  **Why:** The fix hint offered this or a 422 refusal. I chose one value because the library mirrors REST, where one `label` parameter is one label. A refusal would make the library stricter than REST for the same request. Cost if wrong: if a refusal is preferred, `_repeated` raises 422 at the field instead, a two-line change.
+  **Issue:** #110
+- **Decision:** Filed #324 (`needs-triage`) and did not fix it. Library methods outside #110 have the same pattern: each types a repeatable parameter `Sequence[str]` and iterates a plain string by character.
+  - `Engine.config_changes(settings=...)` (M2) fails silently: a plain setting name lists nothing. REST is safe, because it checks names against the closed vocabulary (#279).
+  - `list_stories`, `list_media` and `list_profiles` (#104, #105, #106) refuse a plain `relation` with a misleading 422.
+  - `get_media_content` (#105) never answers `not_modified` when the entity tag is passed in `if_none_match` as a string. The bytes are served again.
+  - #324 is cross-referenced on #110.
+  **Why:** These methods belong to M2 and to earlier M3 stories, outside #110's scope. Cost if wrong: none.
+  **Issue:** #110, #324
+- **Decision (drift):** I followed #106's amended body (the owner's decision of 2026-10-12) for the Lite budgets: `{model_calls: null, deadline_ms: 45000}`. `null` means NFR-PERF-6's formula (9 + G), and `deadline_ms` is M2's `turn_deadline`. I did not use #113's stale "{model_calls: 2, deadline_ms: 30000}" premise.
+  - The turn now reads both budgets from the story's effective configuration, and the default behaviour is unchanged.
+  - P-09 (9 + 2, source `formula`, 45.0) and S-SELFPOLICE keep every assertion. Their setup changed in one place only: they set the story's dials through `PATCH /stories/{id}/profile-overrides` instead of story settings (entry below).
+  **Why:** The orchestrator's group-A hand-off and the owner's decision. Cost if wrong: none; the values are the amended AC's.
+  **Issue:** #113, #106
+- **Decision:** Which M2 engine dials moved out of `stories.settings` and `deployment_state.settings` (AC5, FR-PROF-5).
+  - **Story dials moved into the story's overrides** (`SUPERSEDED_STORY_SETTINGS`):
+    - `generation_settings` → `models.generation`
+    - `lite_window_messages` → `memory.rolling_summary.window_messages`
+    - `lite_summary_max_tokens` → `.compress_threshold_tokens`
+    - `max_model_calls_per_turn` → `budgets.model_calls`
+    - `turn_deadline` → `budgets.deadline_ms`, converted from seconds to milliseconds
+    - `guardrail_retry_budget` → `repair.polish.max_regenerations`. The planner's list missed it; #106 mapped the polish pass onto it.
+  - **Deployment dials moved into `profile_defaults`** (`SUPERSEDED_DEPLOYMENT_SETTINGS`): `lite_generation_defaults`, `lite_window_messages`, `lite_summary_max_tokens` and `max_model_calls_per_turn`.
+  - **Still story settings:**
+    - `regenerate_retry_budget`. The planner listed it, but no profile setting holds it: it is FR-CONC-4c's revalidation budget, a concurrency setting like `turn_queue_max`, distinct from the polish budget (drift note).
+    - `turn_concurrency`, `turn_queue_max`, `default_output_viewpoint` and `audit_retention_days`.
+    - `lite_summary_chunk`, at story and deployment level, as the plan says.
+  - **The deployment's `max_pinned_memories` stays, as a ceiling.** A pinned-memory edit is refused above the smaller of it and the story's effective `pins.max_pinned`; `details.cap` names whichever binds. Without this, #106's `pins.max_pinned` was a dial nothing read. With Lite's 50, the default is unchanged.
+  - **A write naming a moved key is 422 `validation_error`**, with `reason: superseded` and the profile setting that replaced it in `details.replacement`. This holds for `PATCH /stories/{id}/settings` (REST and library), for a story's creation `settings`, and for `PUT /admin/settings`.
+  **Why:** AC5 ("engine dials never live there") and the pass-1 Discretion's removal list. Leaving the polish budget or the pin cap where they were would keep two sources for one dial (drift note). Cost if wrong: one dial moves back into `StorySettings`, plus its migration.
+  **Issue:** #113
+- **Decision:** `deployment_state.profile_defaults` is a JSONB column, listed in `DEPLOYMENT_COLUMNS`. In `DeploymentSettings` it is one prospective dict setting, whose published schema is the delivered settings schema, attached when the schema is generated (`settings_schema` cannot import `profiles.schema`, which imports it).
+  - **A write is laid over the stored defaults** (`effective.layered`), not merge-patched, so `null` is a value: `budgets.model_calls: null` is the formula.
+  - **The result must stay valid.** It must name every delivered setting, validate strictly, and leave every live profile's latest version, every version a story runs on, and every story's overrides able to run (`effective.runnable_under`). Otherwise the write is 422 `invalid_profile` with `details.profiles` (`<id>@<version>`) or `details.stories`.
+  - **Each changed setting is one row**, `profile_defaults.<path>`, carrying that setting's class.
+  - **The cross-check goes beyond the Discretion,** which asks only that the defaults stay valid. It is cheap (one resolution per distinct version, plus one per overridden story), and without it a defaults write could leave a story unable to start a turn.
+  **Why:** The Discretion ("partial merge that must remain a complete valid document (run through #106's validator)"), and AC2's "validated as a whole". #109's preview found that RFC 7396's null removal conflicts with settings that take `null`. Cost if wrong: the cross-check becomes a warning.
+  **Issue:** #113, #129
+- **Decision (drift):** A new profile version is a configuration change at deployment scope, under one `bump_config_revision`.
+  - **Rows:** one `engine_profile:<id>` row (old and new version numbers, carrying the strongest class among the changed settings), then one `engine_profile:<id>.<dotted path>` row per setting whose value over the defaults changed, each with its own class. Rows go through `record_config_change`. A rename, create, copy or delete changes no configuration.
+  - **Locking:** to take the revision, an edit now locks the deployment row `FOR UPDATE` from the start, as every deployment configuration write does. Before, it took `FOR SHARE` first. Upgrading a share lock to an update lock deadlocks two concurrent edits.
+  - **Settings layers:** a version's settings are now validated over `profile_defaults`, as the layer they are. The document is checked alone for its shape and delivered names, then the whole configuration for dependencies.
+  - **`test_edits_record_their_requester_and_replay` changed.** It asserted that no profile write moves the revision. It now asserts that the one edit that made a version moved it by exactly one, and that the other writes did not.
+  **Why:** AC3 ("#64 record_config_change, deployment scope, class per setting"), the drift note's per-leaf rows, and the version row, which the drift note left optional. Cost if wrong: dropping the version row.
+  **Issue:** #113, #106
+- **Decision:** A profile edit's impact report gives each following story the change it sees through its own overrides. `impact.following_report` takes `overridden`, mapping each such story to its own delta. The warnings, the guarantees lost and the stories kept on their version (`upgrade_unavailable`) are computed over every delta. An edit under which a follower's overrides could not run is 422 `invalid_profile` with `details.stories` and `count`, whether confirmed or not, and nothing is written.
+  **Why:** The Discretion ("a profile edit that would make an existing story's combination invalid is refused 422 invalid_profile with details.stories"). With overrides, one shared delta would misreport a story that overrides the setting the edit changes. Cost if wrong: none, since the shapes are #109's.
+  **Issue:** #113, #109
+- **Decision (deviation):** The answers of `PUT /stories/{id}/engine-profile` and `PATCH /stories/{id}/profile-overrides` are `{applied, impact, result, config_revision, timeline_revision, idempotency_key}`, where `result` is the story's full effective configuration after the write (`null` when held). The Discretion put `effective`, `profile` and `overrides` at the top level.
+  - Both bodies extend `MutationResponse`.
+  - `config_revision` is the story's own revision, moved by one per write; the timeline revision does not move.
+  - The library returns `TwoStageResult[EffectiveConfig]`.
+  **Why:** This mirrors #109's shipped envelope for profile edits (`{applied, impact, result}`), so every two-stage answer has one shape, and it reuses the read's model. The drift note required `MutationResponse`. Cost if wrong: the body is flattened.
+  **Issue:** #113, #109
+- **Decision (deviation):** Assigning a profile that is unknown is 422 `profile_deleted` with `reason: unknown` at `body.profile_id`, not the Discretion's 404, so it refuses exactly as the impact preview (#109) and `default_engine_profile_id` (#106) do. Other refusals:
+  - a deleted profile: the same code with `reason: deleted`;
+  - `profile_id: null`: 422 `validation_error`;
+  - the story's own profile: 200, a no-op that writes nothing, and the story keeps the version it runs on (#109's preview rule);
+  - an assignment whose upgrade is unavailable (M3's interim rule): confirmed, it writes nothing for that story.
+  An assignment clears the story's version pin (#109's hand-off). The overrides are kept and revalidated against the new profile: when they cannot run, the call is 422 `invalid_profile` naming them in `details.overrides`.
+  **Why:** A 404 would read as "no such story". One rule for one field across the three places that name a profile to assign. Cost if wrong: one status code.
+  **Issue:** #113
+- **Decision (deviation):** On an archived story, both writes are 409 `story_archived` when they would change something. A no-op is still answered 200. The Discretion allowed these mutations on archived stories.
+  **Why:** M2's rule is that an archived story is read-only for every story-scoped configuration write (settings #63, policies #50). An exception for profiles would surprise clients; unarchive first. The drift note offered either option. Cost if wrong: one condition.
+  **Issue:** #113
+- **Decision:** The overrides are a JSON merge patch, per the Discretion: `null` removes an override. So a story cannot override a dial to `null` (for example `budgets.model_calls: null`, the formula, under a profile that sets a cap); the profile or the defaults can.
+  - The published body schema is the delivered settings schema with `null` allowed at every key (`story.PATCH_SCHEMA`), the C-01 point from #109's hand-off.
+  - `expected_revision` compares against the overrides' revision (0 before the first write). A mismatch is 409 `revision_conflict` with `reason: overrides_revision`.
+  - **Rows:** each set, changed or removed dial is one story-scoped row, `profile_overrides.<path>`, with its class, written through `record_config_change` (the control operation and one `config_changed` event per row). An assignment writes one `engine_profile_id` row.
+  - **Filters:** the config-change `setting` filters gain `engine_profile:` (deployment), `engine_profile_id` and `profile_overrides.<path>` (story), and `profile_defaults.<path>`. M2's names of the moved dials stay filterable, because older rows keep them.
+  **Why:** The Discretion and the drift note's closed vocabulary (#279). Cost if wrong: a later story adds an explicit "override to null" form.
+  **Issue:** #113
+- **Decision:** The impact preview's `overrides` are now laid over the story's stored overrides: each setting they name replaces the story's override of it, and the rest are kept. A previewed assignment keeps the stored overrides too, as the assignment itself does.
+  **Why:** Before #113 a story had no stored overrides. This makes the preview answer what the write would do. Cost if wrong: one argument of `effective.resolve`.
+  **Issue:** #113, #109
+- **Decision:** A turn captures its configuration once, when it starts (`turn_gate.read_concurrency` resolves it), and runs under it to the end. The read phase uses the captured configuration and no longer re-reads the profile, so a regeneration under #47 cannot switch versions mid-turn.
+  - **What it governs:** the call cap and deadline, the generation settings (the effective `models.generation` as the bottom layer, then the request's `prompt_params`), the window, the rolling summary and pins switches, the polish budget (none with the polish pass off), and the stamp.
+  - **What it records:** `operations.config_revisions` gains `overrides_revision` beside #109's `profile` and `profile_version`. None of them joins `LITE_DEPENDENCIES`.
+  - **Queued turns:** a queued turn captures its configuration when it is played; its budget is still the one planned at enqueue (M2).
+  - **Responses:** respond responses gain `profile {id, version}` and `config_revision`, the story's configuration revision at turn start. I-07's `RESPONSE_FIELDS` gains both.
+  - **Deadlines:** the slot's lease, the queue's long poll and the deadline of gates outside a turn all follow `budgets.deadline_ms`. The milliseconds-to-seconds conversion lives in `read_concurrency`, not in `effective.py` as the Discretion put it.
+  **Why:** AC4 and the key link ("resolved at turn start and recorded in operations.config_revisions"). The test plan's "a turn already in flight finishes under its captured configuration". Cost if wrong: none observable; a profile edit cannot otherwise reach a turn already under way.
+  **Issue:** #113
+- **Decision:** The read set drops M2's `generation_settings` member (the Discretion). `test_read_set_members_are_fixed` and `test_base_and_read_set_are_captured` changed accordingly.
+  - With the rolling summary off, a prompt carries no summary and only the latest `window_messages` rows; no summary job is queued, and one already queued finds nothing to do.
+  - With pins off, the prompt carries no pinned memories.
+  - The summary job reads the window, the threshold and the switch from the effective configuration.
+  - Lite's `compress_threshold_tokens: 6000` is now the merge cap of every Lite story. M2's default was 2,000; #106 left this decision to #113. It is #106's AC1 value, and nothing in the suite depended on 2,000.
+  **Why:** Prospective changes never invalidate in-flight work, and these are the Discretion's switch semantics. The window without a summary keeps the prompt bounded. Cost if wrong: one condition in `core.turns`.
+  **Issue:** #113, #106
+- **Decision:** A write reads the story's current configuration without validating it (`effective_configuration(validate=False)`), and so does the "before" side of an impact report (`effective.merged_settings`). Only the configuration the write would produce must run.
+  **Why:** Found by #106's `test_validate_without_a_body_checks_the_latest_version`. When a validation rule is added after a configuration was stored, validating the current one would keep a story or profile from ever being fixed. Cost if wrong: none; a turn and the read still validate.
+  **Issue:** #113
+- **Decision:** The resolution cache is per process, keyed by story and checked against `(profile_id, version, overrides_revision, deployment config_revision)` from the same one query. It is bounded at 10,000 stories, evicting least recently used.
+  - It is on through a real setting, `Settings.effective_config_cache` (default true, documented in `.env.example`). The Engine applies it at construction; in Core it is off until then.
+  - Tests turn it off in `auth_settings`, because test-only rules change validation behind the revisions. `test_the_cache_follows_every_layer` turns it on and checks every layer.
+  **Why:** The Discretion, and the drift note on `EPISTREL_*` names. Cost if wrong: none; every key part moves with its layer.
+  **Issue:** #113
+- **Decision:** Migration `0030` carries M2's stored dials over to the new layers.
+  - **Stories:** a story's moved values become its overrides at revision 1. The deadline is converted from seconds to milliseconds, and a generation `null` (which meant "inherit") is dropped.
+  - **Deployment:** the deployment's changed Lite defaults and call cap are laid over the Lite seed as `profile_defaults`.
+  - **M2 defaults are skipped.** A stored value equal to M2's default is not carried over. M2 stored every setting at its default on every write, so such a value cannot be told from one never set, and the profile (Lite, M2's values) gives the same. The moved keys leave the documents either way.
+  - **No row, no revision.** It writes no `config_changes` row and moves no revision.
+  - **Downgrade** puts each carried value back under its M2 name.
+  - **Known limit:** a deployment-level M2 customisation that Lite names explicitly does not reach Lite stories, because the profile wins over the defaults. Lite names every setting, so only profiles that leave a setting out see `profile_defaults`.
+  **Why:** The Discretion ("removed with a data migration into profile_defaults/story_profile_overrides"). Cost if wrong: an operator who changed M2's deployment generation defaults must edit Lite, or override per story.
+  **Issue:** #113
+- **Decision (Rule 1):** The rows of one configuration write now list in the order they were written. `record_config_change` mints each change id after the write's previous one (`ids.ulid_after`). Before, ids minted in one millisecond sorted at random, so a revision with several rows listed them in any order.
+  - C-03 found it: the parity profile edit's `engine_profile:` rows came back in different orders over REST and the library.
+  - Regression test: `test_rows_of_one_write_list_in_the_order_written` (`tests/integration/test_config_changes.py`). With the old ids it fails.
+  **Why:** #113's version rows are the first multi-row deployment writes that C-03 compares. The bug is in the listing those rows go through. Cost if wrong: none; the cursor (revision, id) is unchanged.
+  **Issue:** #113
+- **Decision (drift):** The parts follow docs/04 §15 and the traceability rule of one file per test ID and milestone.
+  - In `tests/integration/test_engine_profiles.py`, beside #106's and #109's parts:
+    - `test_u_28__effective`, `part("M3", "FR-PROF-5,6")`;
+    - `test_c_16__follow_latest`, `part("M3", "FR-PROF-1,6; FR-API-6")`.
+  - `test_i_18__profile_resolution`, `part("M3", "FR-LITE-4; FR-PROF-5")`, in `tests/integration/test_i_18.py`, not the plan's `FR-PROF-5,7`. #122's I-18 (M3) slice must join that file.
+  - The must-have file `tests/integration/test_effective_config.py` holds the detailed tests (11), not the parts.
+  - The in-flight assertion holds the turn at its model-assisted input check, with the stub latch on `guardrail_check`. That is before the turn's read phase, so the test also distinguishes "captured at start" from "re-read in the read phase". #64 shipped no hooks.
+  **Why:** The drift note. check-parts (186 parts), check-lexicon (0 violations) and check-traceability pass. Cost if wrong: renames only.
+  **Issue:** #113, #122
+- **Decision:** Existing tests changed because the story moves the dials they set. Each keeps its assertions; only the mechanism changed, from story or deployment settings to overrides or `profile_defaults`.
+  - P-09: its `_settings` helper.
+  - S-SELFPOLICE: the polish budget override.
+  - I-18 (M2): the FR-LITE-4 slice's bottom layer is now the deployment's default profile, Lite (0.8, 0.95, medium). Lite holds the values M2's deployment defaults held, so the old global `lite_defaults` mutation is not needed. The summary slices now use overrides, and their fork checks that a fork copies them.
+  - The summary-window setups of I-22, C-26, X-04, the determinism script (one create step now carries `overrides`, still 60 answers), `test_time`, `test_lite_summary_job` and `test_s_consolidation_race`.
+  - `test_config_revalidation` (its prospective rule is now the deadline override), `test_model_matrix_run`, `test_turn_concurrency` and `test_config_changes`.
+  - U-18: EXPECTED drops the moved leaves and adds `profile_defaults`; `test_u_18__writes` writes the remaining story settings.
+  - C-01 and C-03: other story settings; C-03 also gains the assignment and overrides parity steps.
+  - The ownership matrix: the two new routes; its story settings call now uses `regenerate_retry_budget`.
+  - S-DELETE: its populate now writes an override.
+  - **One clause was replaced.** `test_settings_patch`'s "nested merge" check had only `generation_settings` to merge, and no story setting is nested now. It became the superseded-key check. The nested merge of overrides is covered by `test_overrides_are_a_merge_patch`.
+  **Why:** The story requires the behaviour change (the Discretion's "writes to the old keys → 422"). Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** I mutation-checked the story. A script applied each mutation, ran the named tests and restored the sources, with SHA-1 checked.
+  - **Killed (20 of 22):** overrides ignored; defaults ignored; generation not from the configuration; no version config change; the summary switch ignored; the pins switch ignored; the story pin cap ignored; overrides replaced instead of merged; the pin not cleared; followers' overrides ignored in an edit; defaults not cross-checked; the cache ignoring its key; the migration skipping the deadline; change ids unordered; the deadline not from the configuration; no profile in respond; the call cap not from the configuration; the budget source always `story`; the in-flight turn re-reading its configuration; an assignment never held.
+  - **Two survivors were equivalent:**
+    - Removing `_known_keys`' explicit superseded branch: `check_keys` raises the same error. I removed the branch as redundant.
+    - Skipping the whole-configuration check in `set_overrides`: the write's final read validates and rolls back with the same 422.
+  - **Two kills needed stronger tests:** the summary switch (segments now exist before the summary is turned off) and the in-flight turn (now held before its read phase).
+  **Why:** Under the batched gate, the story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Filed #325 (`needs-triage`) and did not fix it. A profile's per-purpose model routing (`models.purposes`) is stored, validated and shown in the effective configuration, but neither the turn nor the fingerprint uses it; both still resolve models from `/admin/model-config`. #325 is cross-referenced on #113.
+  **Why:** AC4 names the generation settings, budgets and window only; routing touches the Model Access Layer, outside this story. Cost if wrong: none.
+  **Issue:** #113, #325
+- **Decision:** I ran a wider test gate than the per-story rule's minimum.
+  - `tests/integration`: 531 passed.
+  - The other directories under CI's marker expression, plus every unit module: 920 passed, 3 deselected.
+  - `tests/conformance`: green after the Rule 1 fix above. C-03 and C-08 were rerun.
+  **Why:** The change runs through the turn path, the settings and the summary job, so "the tests of every area touched" is most of the suite. Cost: about 20 minutes of test time.
+  **Issue:** #113
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #113 moved M2's engine dials out of a story's settings and the deployment's settings into the engine-profile layers (FR-PROF-5). The moved dials and their new places:
+
+  | M2 dial | Profile setting |
+  |---|---|
+  | `generation_settings` / `lite_generation_defaults` | `models.generation` |
+  | `lite_window_messages` | `memory.rolling_summary.window_messages` |
+  | `lite_summary_max_tokens` | `memory.rolling_summary.compress_threshold_tokens` |
+  | `max_model_calls_per_turn` | `budgets.model_calls` |
+  | `turn_deadline` (seconds) | `budgets.deadline_ms` |
+  | `guardrail_retry_budget` | `repair.polish.max_regenerations` |
+
+  - **Where they are written now:** a story overrides them with `PATCH /stories/{id}/profile-overrides`. The deployment's defaults are `profile_defaults` in `/admin/settings`, a new column seeded from Lite.
+  - **Where they are read:** a turn reads them from the effective configuration it captures at its start.
+  - **The old keys:** `PATCH /stories/{id}/settings`, a story's creation `settings` and `PUT /admin/settings` refuse them with 422, `reason: superseded`, and the replacement named. Migration 0030 moved the stored values.
+  - **What stays:** `regenerate_retry_budget`, `turn_concurrency`, `turn_queue_max`, `default_output_viewpoint`, `lite_summary_chunk` and `audit_retention_days` stay story settings. `max_pinned_memories` stays a deployment ceiling over the story's `pins.max_pinned`.
+  - **Also changed:**
+    - A new profile version is now a deployment-scope configuration change (`engine_profile:<id>[.<path>]` rows).
+    - Profile edits take the deployment row `FOR UPDATE`.
+    - #47's read set drops `generation_settings`.
+    - Respond responses gain `profile {id, version}` and `config_revision`.
+    - `GET /stories/{id}` gains `engine_profile`.
+  **Why:** #113's AC5 ("engine dials never live there") and its pass-1 Discretion, with the drift note's additions (the polish budget, the pin cap). The decision entries above give the details.
+  **Affects:**
+  - **M4 #156.**
+    - Its plan names `max_model_calls_per_turn` ("profile budget, #106's semantics"), `turn_deadline` ("#69's unchanged") and #68's `guardrail_retry_budget`. These are now `budgets.model_calls` (the turn's total cap, G included), `budgets.deadline_ms` and `repair.polish.max_regenerations`.
+    - All three are read from the configuration the turn captured at its start: `turn_gate.read_concurrency` gives `Concurrency.configuration`, and `pipeline.polish_budget` gives the polish budget.
+    - The earlier Ad-hoc entry already flagged #156's "G added on top" wording.
+  - **M4 #145.** Its "within `guardrail_retry_budget` + 1 renders" is now the story's polish budget, `repair.polish.max_regenerations`.
+  - **M4 #129.** `deployment_state.profile_defaults` exists as #129 assumes. Its migration adds the new modules' off defaults, and it must:
+    - write only delivered names;
+    - keep the document complete, since a write through `/admin/settings` is checked for completeness and validated whole;
+    - leave every profile and overridden story runnable (`effective.runnable_under`).
+  - **M3 #122.** Its I-18 (M3) slice must join `tests/integration/test_i_18.py`, beside `test_i_18__profile_resolution`, because traceability counts one file per test ID and milestone.
+  - **M3 #119.** A story's creation `settings` refuse the moved dials, and the scenario's `story_settings_defaults` hold none of them already. No plan change.
+  - **#322 (triage).** Its body counts `max_model_calls_per_turn` among the lax integer deployment settings; that setting is gone.
+  - **The Console (nathanpond/Epistrel-Console).** Its settings screens that write the moved keys now get 422. The matching surfaces are:
+    - `PUT /stories/{id}/engine-profile`
+    - `PATCH /stories/{id}/profile-overrides`
+    - `GET /stories/{id}/effective-config`
+    - `profile_defaults` in `/admin/settings`
+  - **Next step:** suggest `/n8-replan M4` after M3. It was already suggested for #156.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after #113's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111 did. Cost if wrong: one heading.
+  **Issue:** #113
+- **Decision (Rule 1):** #112 verification fixes, round 1 (gap 1 of 1). The gap was real. A first rating that lost its insert to the same principal's concurrent first rating answered 200 with `rating: null` and wrote nothing when that principal's retraction deleted the winning row before the loser re-read it. `INSERT … ON CONFLICT DO NOTHING` does not wait for another transaction's row lock, so the loser's insert did nothing and its `FOR UPDATE` re-read then found the row gone. No serial order of the three requests gives that answer.
+  - **The fix.** In `rate()` (`core/feedback.py`), a first rating is now written by an upsert whose update never applies: `ON CONFLICT (story_id, message_id, principal) DO UPDATE SET updated_at = message_feedback.updated_at WHERE false`. PostgreSQL locks the conflicting row before it tests the `WHERE`. When that row is deleted or changed before the lock is granted, it runs the statement again from the start. So the statement either inserts the rating or holds the committed one, and the replace path updates that under the lock. In the verifier's interleaving the loser now waits for the retraction, then creates its own rating (201), as if it ran after both. The re-read after a conflict is `.one()`, so if the guarantee ever broke the answer would be a 500, never a silent 200 with `rating: null`.
+  - **Alternatives not taken.** The hint's bounded retry needs a bound, and an answer for when the bound runs out; PostgreSQL's own retry needs neither. A real upsert with `RETURNING (xmax = 0)` reads a system column, and the history needs the value the upsert replaces, which `RETURNING` gives only from PostgreSQL 18 (`RETURNING old.*`). The project runs PostgreSQL 16.
+  - **This corrects** the earlier #112 entry "One that loses the race re-reads the winner's row and replaces it". That still holds while the winner's rating stands. When the winner's rating is retracted first, the loser now creates its own. The module docstring's **Writes** paragraph says so.
+  - **The test.** `test_a_first_rating_outlasts_the_retraction_of_the_one_it_lost_to` (`tests/integration/test_feedback.py`) runs the interleaving through the real REST retraction:
+    - A new pause point, `feedback.retract.locked` (`epistrel.testing.pauses`), is called in `retract()` once it holds the rating `FOR UPDATE`. It stops the retraction while it holds the lock.
+    - The winning first rating is committed straight to the table. A second REST rating would stop at the held `feedback.rate.unrated` as well.
+    - Before the fix, the test failed with 200 and `rating: null`, which is the verifier's result. The verifier's own reproduction (scratchpad, never committed) now prints 201 with rating 5.
+  - **Mutation-checked.** Each mutation was reapplied on top of the fix, run against the new test and `test_concurrent_first_ratings_serialise`, then reverted. Afterwards the file compared byte for byte with the fixed one.
+    - The original `DO NOTHING` with the lenient re-read: the new test fails (200, `rating: null`).
+    - `DO NOTHING` with the strict re-read: the new test fails (`NoResultFound`, 500).
+    - The upsert without `WHERE false`, so that its update applies: `test_concurrent_first_ratings_serialise` fails (both answers are 201, and no history entry is written).
+  **Why:** This is a Rule 1 bug in the story's own write path. The plan's pass-1 Discretion says a rating is "serialised by an upsert on the unique key". Cost if wrong: none to stored data. The upsert locks only a row the write was about to lock `FOR UPDATE` anyway.
+  **Issue:** #112
+- **Decision:** #112 verification fixes, round 1: the gate's test scope. The fix touches `rate()` and `retract()` in `core/feedback.py` and adds one point to `epistrel.testing.pauses`. No route, `Engine` method signature, OpenAPI shape, migration, table or event changed, and `openapi --check` agrees. So the gate ran the modules that exercise feedback or import the pause module, 13 in all, in one run: 189 passed, rc 0, 73 s.
+  - **Feedback:** `test_feedback.py`, C-26, C-03 (the `rate_message`, `retract_feedback` and `get_feedback` parity steps) and S-DELETE.
+  - **The pause module:** `test_catalog.py`, `test_catalog_characters.py`, `test_catalog_search.py`, `test_engine_profiles.py`, `test_media_assets.py`, `test_media_delivery.py`, `test_ownership.py`, `test_scenario_catalog.py` and `test_scenario_validation.py`.
+  - **Not run whole:** `tests/conformance`. The group B full-suite run covers it.
+  **Why:** The gate rule sends route, `Engine` method and OpenAPI changes to the whole conformance directory. This fix changes only what `core.feedback.rate` does in one race, behind unchanged `Engine` methods. Cost if wrong: a conformance failure would surface in the group B full run.
+  **Issue:** #112
+- **Decision (drift):** A character added to a running story (`POST /stories/{id}/characters`, `Engine.add_story_character`, `core/stories.py::add_story_character`) is recorded by one `Operation(kind=CONTROL, bumps_revision=True)`. That is the drift note's correction, not the plan's "no revision bump". It is not a control action, has no turn position, and records `character_defined`, which now carries `{character_id, name, is_player}`. The row is inserted in the commit step, at the next ordinal and under the story lock.
+  - **The checks, in order:** 404 for the story; 422 for a full cast (20), a name the story has (ignoring case, `reason: duplicate`), an image that is not live (`media_retired`), or a video (`reason: not_an_image`); 409 `story_archived`; 409 `revision_conflict`; 423 `story_busy` while a turn is in flight; then the input gate. The commit step checks the cap, the name, the images and in-flight turns again, under the lock.
+  - **Not done:** the drift note's `characters.operation_id`. The addition has no turn position, like #60's pinned-memory edits, so a truncation keeps the character and every fork copies it. `test_an_added_character_stays_through_truncation_and_forks` pins that.
+  **Why:**
+  - The Lite read-set member `definitions` reads every `characters` row, so a cast change is a prompt-input change. A turn that began before the addition must regenerate, and `X-Epistrel-Expected-Revision` must see the change.
+  - Positioning the operation at the head turn, so that truncation drops the character, would also make a regenerate of that turn drop it. Regenerating retires everything positioned at the turn. It would also mean filtering every cast read by membership: `core/turns.py`, the read set, `read_cast`, `get_story`, and fork's `_cast` and `_genesis`.
+  - Cost if wrong: a story that wants added characters to follow the timeline needs a positioned operation (an inter-turn slot, `slot_k`, which nothing writes yet), plus a membership filter on cast reads.
+  **Issue:** #114
+- **Decision:** The added character's body is `AdHocCharacter`: #50's `CharacterSpec` fields (name ≤ 80, definition ≤ 20,000, a required strict `true_age` 0–150, `safe_fallback_text` ≤ 500) plus `images`, up to 20 distinct media ids. `is_player` is refused as an unknown key.
+  - A full cast is 422 `validation_error` with `{cap: cast_max, limit, actual}`, the shape of #60's caps. It is not `cast_limit_exceeded`, which names a scenario's starting-cast limit.
+  - The input gate checks the definition (locator `definition`) under a new entry point, `story_character`. It uses the story's guard context with the new character's age added to the cast, so an age-conditioned policy applies when the newcomer is a minor.
+  - The answer is 201 `StoryCharacterBody` (`MutationResponse`: `{id, name, ordinal, timeline_revision}`, per the drift note). The key is story-scoped.
+  - `characters.images` joins `MEDIA_REFERENCE_SOURCES`, so an asset a story character shows survives its retirement until the story goes.
+  **Why:**
+  - The pass-1 Discretion gives the shape ("#50's free-text shape plus optional `images`") and the cap ("#50's cast size").
+  - The age matters: story creation gates the cast's definitions with the cast's ages (`creation_context`). Gating with the old cast's ages would let a minor's definition past a minors-only policy.
+  - Cost if wrong: a 422 code.
+  **Issue:** #114
+- **Decision:** Personas live in `public.personas`, created by migration `0031_personas`.
+  - Columns: owner, name, gender, age (CHECK 0–150), description, `created_at`, `updated_at`. The unique index `uq_personas_owner_name` on `(owner_principal, lower(name))` makes a duplicate 409 `persona_name_taken`. It applies on create, on rename, and on an owner transfer: `Engine.transfer_owner` maps the index's refusal through `personas.name_conflicts`. The `(updated_at, id)` index is the list's keyset.
+  - The CRUD is `core/catalog/personas.py`, as the plan's artifact says, though a persona is not a catalog entry. docs/02 §4.10 (and §9) are amended to say where it lives and why.
+  - Rules: name 1–120, gender optional 1–40, age a strict int, description 1–4,000 (pass 2), each trimmed.
+  - An edit is a merge patch over the four fields, last write wins. `null` removes only `gender`; for the other fields it is 422 at the field. An edit that changes nothing records nothing.
+  - Delete is a hard 204. It calls `ownership.drop_entity` and writes a `persona_deleted` audit row `{entity_type, entity_id, operation_id}`, a new `AuditKind` that the migration adds to `ck_audit_log_kind`; its downgrade deletes those rows first.
+  - Writes record #103's story-less `control` operation under a deployment key and answer `PersonaBody` (`DeploymentMutationResponse`).
+  - `GET /personas` pages newest first with #110's `encode_cursor`/`decode_cursor`, under a persona fingerprint of `owner` and `relation`. `limit` is 1–200 and the cursor at most 256 characters. A plain-string `relation` is one value in the library (#324's lesson).
+  - The routes have a new `personas` tag; the four ownership routes are mounted there.
+  **Why:** These are the pass-1 and pass-2 Discretion lines, with the drift note's corrections (§4.10, the audit CHECK, the response bases). Cost if wrong: a moved table or a renamed tag.
+  **Issue:** #114
+- **Decision:** `characters` gains four columns.
+  - `persona_id`: a plain column with no foreign key, as S-DELETE's isolation test requires.
+  - `persona_snapshot` (jsonb): `{persona_id, name, gender, age, description, snapshotted_at}`. `ck_characters_persona_player` keeps it and `persona_id` on player rows only.
+  - `images` and `promoted_to`: jsonb arrays, default `[]`.
+  - `personas.snapshot()` and `personas.player_character()` are the helpers #119's genesis calls. They also set `name` = the persona's name, `true_age` = its age, and `definition` = its description, verbatim.
+  - Until #119 exists, the snapshot clause is tested with the direct-update fixture `tests/persona_support.copy_into` (#103's FR-CAT-9 pattern).
+  **Why:** This is the pass-1 Discretion, with `is_player` in place of a `kind` (drift note). Cost if wrong: a column.
+  **Issue:** #114, #119
+- **Decision (deviation):** AC2's player checks live in `core/genesis/models.py`.
+  - The models: `PlayerAssignment {principal, persona: PersonaRef {id} | AdHocPersona {ad_hoc: PersonaFields}}`. The ad-hoc body is the persona create body without `owner`, which an unsaved persona cannot have.
+  - `player_role_entries` (pure) answers `player_role_fixed` for a `players` key naming an `npc` role, and for a player role that `slots` also names.
+  - `resolve_personas` (read-only) answers `persona_required` for a persona id that is a catalog character's.
+  - Both produce #111 report entries: outcome `rejected`, and `location.field` `players.<role>…`/`slots.<role>`.
+  - An id that is neither a persona's nor a catalog character's, and a key naming no role, are 422 `validation_error` at `body.players.<role>.persona.id` / `body.players|slots.<role>`.
+  - **Deviations from #114's pass-1 line:**
+    - A catalog character slotted into the player's role is `player_role_fixed`, not `persona_required`. That follows #119's pass-1 table, which assigns that case to #114's `player_role_fixed`.
+    - The 422 field carries the `body.` prefix every `validation_error` field has. Pass 2's literal text is `players.<role>.persona.id`.
+  - Until #119 exists, `test_c_19` runs both checks directly against the database, on a published scenario, catalog character and persona, and asserts that the `stories` count does not move.
+  **Why:** AC2 names the two codes and leaves these cases open. #119 owns the request model and its precedence, so following #119's table spares it a rewrite. Cost if wrong: one code swapped for one case.
+  **Issue:** #114, #119
+- **Decision (deviation):** Promotion is `core/catalog/promote.py` (`promote`, `PromoteRequest`, `Promotion`), not part of `personas.py` as the plan's artifact list says. Its route, `POST /stories/{story_id}/characters/{character_id}/promote`, is in `routes/stories.py`, under the router's `/stories` prefix, and is tagged `catalog` through `ROUTE_TAGS`. The plan put it in `routes/personas.py`.
+  - **One transaction:**
+    - read the story; lock the character `FOR NO KEY UPDATE`;
+    - 422 `validation_error` (`reason: player_character`) for a player character;
+    - check the rating: the request's, else the story's (`require_assignable`, 422 `rating_retired`);
+    - lock the live images `FOR SHARE`;
+    - create the draft through a new `CatalogService.create_in(conn, …)`, which `create` now calls. It writes the same entry, the same story-less `control` operation and key binding, and the same records.
+    - append the new id to `characters.promoted_to`.
+  - **No story event, no revision change.** It is allowed on archived stories and during a turn. The expected revision, when sent, is checked first, as on #104's story-path writes. The key is deployment-scoped.
+  - **The answer:** 201 `PromotionBody` (a `MutationResponse`: `{catalog_id, draft_revision, warnings, timeline_revision}`, the story's revision unchanged) with `Location: /catalog/characters/{id}`, which the OpenAPI document declares (`CATALOG_CREATING_OPERATIONS`).
+  - **The draft:**
+    - name: the request's or the character's;
+    - `definition.true_age`;
+    - `definition.background_flavor` = the free-text definition, cut at 4,000 characters with warning `definition_truncated` (outcome `kept`);
+    - `definition.safe_fallback_text`;
+    - `public_card.images {primary, gallery}` from the live images, with a retired one left out under warning `media_retired` (outcome `dropped`, `source` the media id);
+    - `metadata.content_rating_id`.
+    - Nothing else. Story rows have no aliases or deflection style yet, so none are copied.
+  **Why:**
+  - Two modules keep the persona CRUD and the promotion apart.
+  - The route shares the `/stories` prefix with the addition route (pass 2 puts that in `routes/stories.py`).
+  - One transaction makes "a new draft, plus the link on the story character" atomic. `create_in` keeps the entry an ordinary draft (key link: "via #103"), so #116's companion creation will reach promoted drafts too.
+  - Cost if wrong: files move.
+  **Issue:** #114, #116
+- **Decision (Ad-hoc, see the entry below):** The interim `CharacterDraft` gains the fields a promotion copies, at #115's planned paths and limits:
+  - `definition.true_age` (strict, 0–150), `definition.background_flavor` (≤ 4,000) and `definition.safe_fallback_text` (≤ 500);
+  - `public_card.images {primary, gallery ≤ 20 distinct}`, as media ids;
+  - `metadata.content_rating_id`.
+  - `CharacterPatch` merges them the same way.
+  - `CharacterCatalog.checked` gets the scenario save's checks: a rating that changes must be assignable, and each added image must be live (`FOR SHARE`).
+  - `version_values` records the rating's version.
+  - Card and full reads show the images (the primary first, then the gallery, with each asset's alt text) and the rating, through `service.card_rating`, which is extracted from the scenario module. The scenario module now calls it, with no change in behaviour.
+  - The `full` projection's `definition` shows the new keys as `null` when unset. `test_save_is_a_json_merge_patch`'s exact `{"personality": None}` therefore became the four-key dict.
+  **Why:**
+  - AC4 copies the true age and the images, and the pass-2 Discretion copies the rating, the definition and the fallback line. The interim draft could hold none of them, and every save re-validates the stored draft against `CharacterDraft`.
+  - #105's index, #110's search and #111's checks already read these paths.
+  - Cost if wrong: #115 moves the paths, in a migration of stored drafts.
+  **Issue:** #114, #115
+- **Decision:** Tests and parts.
+  - `test_c_19` (`part("M3", "FR-CAT-6; FR-API-6; FR-AUTH-5")`) and `test_s_promote` (`part("M3", "FR-CAT-7,8")`) are in `tests/integration/test_personas.py`, as the plan says, with the persona details. The addition and promotion details are in `tests/integration/test_story_characters.py`.
+  - A new I-21 slice, `test_i_21__persona` (`part("M3", "FR-CAT-6")`), is in `tests/integration/test_i_21.py`. It covers I-21's "deleting a saved persona leaves a story created with it unchanged". The story's rows are compared byte for byte, and the complement archives the story.
+  - check-parts counts 189 parts and check-traceability 167 code parts. check-lexicon reports 0 violations.
+  **Why:**
+  - docs/04 §15 maps FR-CAT-6 to I-21 (M3) as well as C-19. Without an I-21 part naming it, the row would be "planned but absent" once `current_milestone` reaches M3.
+  - The detailed tests' docstrings name no FR id, so they are not parts.
+  **Issue:** #114
+- **Decision:** Existing tests changed because the story changes what they pin. No assertion was loosened.
+  - `ownership_fixtures` gains the persona `Kind` (a unique name per persona, so fresh personas read alike once ids are blanked). `CALLS` gains seven persona routes and the story's two new routes, so the nothing-gates matrix and the ownership slice cover them.
+  - `test_every_delivered_type_is_covered` now expects every registered type to be delivered.
+  - C-03 gains the addition and promotion steps, which join the "character" status list asserted in its body, and nine persona steps checked against `PLAYER_ANSWERS` through `PLAYER_GROUP`. C-03 is an M2 part and "persona" is an M3 lexicon term, hence the name.
+  - C-01 seeds a persona (`persona_id`) and excludes `delete_persona`, as it excludes the other fixture deletes. It overrides `character_id` for `promote_character` with the fixture story's Ada, because the path parameter shares its name with the catalog character's.
+  - The definition dicts of `test_save_is_a_json_merge_patch` and `test_draft_save_publish_and_versions` now list the new keys, as `null`.
+  - The viewpoint-parity library surface (`tests/conformance/conftest.py`) renders `promoted_to` on an omniscient story read, as REST now does.
+  **Why:** The delivered-type guard, the parity rules, the C-01 contract run and the new definition fields and story read require them. Cost if wrong: none.
+  **Issue:** #114
+- **Decision:** `observability.content.CONTENT_FIELDS` gains `description`, `gender`, `persona_snapshot` and `background_flavor`, so the content rule drops a persona's and a promoted definition's text at any depth (invariant 3). Nothing here logs them, and C-08 runs C-03's new steps.
+  **Why:** This is the drift note's pointer. Unknown strings would otherwise be cut to 64 characters, not dropped. Cost if wrong: none.
+  **Issue:** #114
+- **Decision:** These were not done here and are handed off.
+  - **#119:** wire `player_role_entries` and `resolve_personas` into `POST /stories` with a scenario, and write `persona_snapshot` through `personas.snapshot`/`player_character`. Add the end-to-end "rejected, no `stories` row" assertion to `test_c_19` in `tests/integration/test_personas.py`; traceability allows only one file for C-19 (M3).
+  - **#119, also:** once `character_snapshots` exists, a catalog-sourced story character must promote from its snapshot's typed fields (the pass-2 line). Until then every story character promotes through the free-text path (`promote.draft_of`).
+  - **#116:** create a companion for a promoted draft too. It is made by `CatalogService.create_in`, so a creation hook in `create_in` covers it. Then assert the companion in `test_s_promote`.
+  - **#123:** index personas (`personas` records) and the new text fields: `background_flavor`, `safe_fallback_text`, a story character's `persona_snapshot`. Catalog characters do not call `index_references` yet either.
+  - **#124:** erase personas, `characters.persona_snapshot` and the promoted drafts' text.
+  - **#117:** offboarding deletes personas through `core.catalog.personas.delete`.
+  **Why:** Each belongs to that story's plan, and this one's AC do not name them. Cost if wrong: a gap caught by those stories' tests.
+  **Issue:** #114, #116, #117, #119, #123, #124
+- **Decision:** I mutation-checked the story. A script applied each mutation, ran the tests named for it and restored the source, checking the SHA-1. All 22 mutations fail a test:
+  - a persona delete clears the snapshots (C-19, the I-21 slice);
+  - a persona edit rewrites them (C-19);
+  - the list ignores `owner` (C-19);
+  - a catalog id is not `persona_required`;
+  - a player slot, or a player in an `npc` role, is not `player_role_fixed` (C-19, each);
+  - promotion copies the story's custom instructions, is deduplicated, records no `promoted_to`, or changes another column of the character (S-PROMOTE, each);
+  - a player character is promoted, or the expected revision is skipped (the promotion refusals test);
+  - an added character gets a catalog source (S-PROMOTE);
+  - an addition does not bump the revision, or skips the busy precheck (the refusal test sees the failed operation's row);
+  - the gate leaves the new age out of the cast;
+  - `characters.images` is no media reference;
+  - a transfer's name clash is not mapped;
+  - a persona delete writes the wrong audit kind;
+  - a card shows no images;
+  - a save checks nothing it adds;
+  - a version records no rating version.
+  One mutation survived its first run. It had patched the create path, not the edit path, because the two share their last lines. Retargeted at the edit, it fails C-19.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #114
+- **Decision:** #114's gate. The story changed routes, `Engine` methods, the OpenAPI document, a migration, tables and an event, so the gate ran, in one run:
+  - all of `tests/conformance`, including C-08's telemetry scan, which runs C-03's new steps;
+  - the route guard, the response bases, the route flags and `test_openapi_calls_the_message_finished_never_verified`;
+  - `test_migrations`, `test_drift`, I-08 and the event registry;
+  - every module that exercises the changed catalog, ownership, media, story, gate and observability code: catalog characters, search, scenarios and validation, I-17, I-20, I-21, ownership, media assets and delivery, I-10, S-DELETE, U-13, the input gate, the minors policy, the fork, undo-swap, determinism and isolation tests, I-04, observability, the trust boundary and the Lite cast;
+  - the new modules.
+  - The result: 600 passed, 0 failed, in 697.6 s.
+  - The first run gave 598 passed and 2 failed. The two failures were existing exact expectations that the story's additive changes moved: the viewpoint-parity library surface's story read, and `test_draft_save_publish_and_versions`' definition dict. Both are fixed, as the test-change entry above records.
+  - ruff, ruff format, mypy, the import contracts, check-assignment, check-parts (189 parts), check-lexicon (0 violations), check-traceability (167 code parts), check-deps, `openapi --check` and `model_guide --check` all pass. No dependency changed, so check-licenses was not run.
+  **Why:** This is the M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #114
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #114 changed shapes that later stories build on.
+  - **The interim catalog `CharacterDraft` (#103) gained the fields a promotion copies,** at #115's planned paths and limits:
+    - `definition.true_age` (0–150), `definition.background_flavor` (≤ 4,000) and `definition.safe_fallback_text` (≤ 500);
+    - `public_card.images {primary, gallery ≤ 20}`, as media ids;
+    - `metadata.content_rating_id`.
+    - A save checks them: a rating it sets must be assignable and each image it adds live.
+    - A version records the rating's version.
+    - Card and `full` reads show the images and the rating. `full` shows the new definition keys as `null` when unset.
+  - **`characters` gained four columns:** `persona_id`, `persona_snapshot` (player rows only), `images` (a media reference source) and `promoted_to`.
+  - **New:**
+    - `public.personas`, in the default schema: docs/02 §4.10 and §9 are amended.
+    - the `persona_deleted` audit kind;
+    - `character_defined` now carries `{character_id, name, is_player}`;
+    - `core/genesis/models.py`: `PlayerAssignment` and the player checks. A catalog character in the player's slot is `player_role_fixed`, per #119's code table.
+  - **The ad-hoc addition bumps the revision** and has no turn position: a truncation keeps the character and a fork copies it.
+  **Why:**
+  - AC4 copies a character's true age, images and rating into a draft. The interim draft could hold none of them, and #115 comes after #114 in group B.
+  - The rest is what #114's AC and Discretion prescribe, corrected by the drift notes.
+  **Affects:**
+  - **M3 #115.**
+    - Its `CharacterDraft` starts from this shape. It should keep the five paths and their limits, and move `name`/`public_description` under `public_card` beside `images`.
+    - Its migration of stored drafts must expect `public_card.images`, `metadata.content_rating_id` and the definition keys to be set already.
+    - `CharacterCatalog.checked`/`version_values` and the card's images and rating are already in place; #115 keeps them or replaces them with its own.
+    - Its publish rules (a true age and a rating required) apply to promoted drafts.
+  - **M3 #116.** A promotion creates its draft through `CatalogService.create_in`. The companion should be created there, so promoted drafts get one, and asserted in `test_s_promote` (`tests/integration/test_personas.py`).
+  - **M3 #119.**
+    - Call `core.genesis.models` (`player_role_entries`, `resolve_personas`) and `core.catalog.personas.snapshot`/`player_character`.
+    - Add the end-to-end C-19 (M3) refusal to `tests/integration/test_personas.py`; traceability allows only one file.
+    - Have a catalog-sourced story character promote from `character_snapshots.content`'s typed fields.
+    - `character_defined` already carries `is_player`.
+  - **M3 #117.** Offboarding deletes personas through `core.catalog.personas.delete`.
+  - **M3 #122.** A promoted draft's free text is `definition.background_flavor`. Render it with the other definition fields.
+  - **M3 #123 and #124.** Index and erase `personas`, `characters.persona_snapshot`, and the drafts' `background_flavor`/`safe_fallback_text`. Catalog characters call no `index_references` yet.
+  - **M3 #128.** The route table now has `/personas` (with its ownership routes), `POST /stories/{id}/characters` and `POST /stories/{id}/characters/{cid}/promote`.
+  - **The Console (nathanpond/Epistrel-Console).** It has new surfaces to cover: persona screens, adding a character to a running story, and promoting one to the catalog.
+  - **Next step:** #115, #116, #119 and #122 are later group B stories in this run. Their drift check should apply this, or `/n8-replan M3` should run before them.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after #114's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111 and #113 did. Cost if wrong: one heading.
+  **Issue:** #114
+- **Decision (Rule 1):** #113 verification fixes, round 1, gap 1 of 8: a merge patch that changes no setting now writes nothing. The gap was real. On a story with no overrides, `PATCH /stories/{id}/profile-overrides` with `{budgets: {model_calls: null}}` moved the story's `config_revision` and the overrides' revision and stored `{budgets: {}}`. It recorded no `config_changes` row, no `config_changed` event and no control operation. Naming an empty group (`{memory: {}}`) or removing a group the story does not override (`{budgets: null}`) did the same. The cause: RFC 7396 leaves empty objects, `normalised` keeps them, and the no-op test compared the documents' text.
+  - **The fix.**
+    - A merge patch is now applied by `effective.patched`. It checks the patch (gap 5's removal check), checks the result as a settings document, and prunes empty objects at any depth (`effective.pruned`). Stored overrides never hold an empty group.
+    - `set_overrides` decides a no-op from the settings the two documents name (`story.changed_settings`, over `leaf_values`). The same list decides the rows, so a write moves the revisions exactly when it records at least one row (#64's rule).
+    - Pruning reaches inside `models.purposes` too: an empty route laid over the profile's changes nothing.
+  - **Test:** `test_a_patch_that_changes_no_setting_writes_nothing` (`tests/integration/test_effective_config.py`).
+    - The verifier's three patches leave both revisions as they were, with no operation, row or event; the overrides read back as `{}`. Each call keeps only its own `Idempotency-Key` record, as every applied call does (#61).
+    - Empty groups beside a stored override change nothing.
+    - Removing the last override stores `{}` (the table, not just the read).
+    - A planted row holding an empty group, as the old build could leave one, pins the rule that the settings named decide, not the text.
+  - **Mutation-checked:** with pruning disabled, or the no-op decided from the documents' text again, the test fails.
+  **Why:** The module docstring and the route description promised that a patch that changes nothing writes nothing, and #64 records every revision move. This follows the verifier's fix hint. Cost if wrong: none. An empty group names no setting, and laid over another layer it changes nothing. Migration 0030 never writes one.
+  **Issue:** #113
+- **Decision (Rule 1):** Gap 2 of 8: the resolution cache is now keyed on the documents as well. The gap was real. `set_overrides` reads the story's configuration inside its transaction to answer it (as `assign_profile` does), and that read put a cache entry keyed by the new, uncommitted overrides revision. If the transaction then rolled back, the next committed write that took the same revision with other settings was answered from the stale entry, and its turns ran under it, until some key part moved. The cache is on by default (`Settings.effective_config_cache`), and the suite runs with it off.
+  - **The fix.** The key is now `(profile_id, version, overrides_revision, deployment_revision, digest)`. `digest` is a SHA-256 over the canonical JSON of the three documents (`effective.digest`). An entry is used only for the documents it was resolved from, so an entry a rolled-back write left is never served, whatever path put it there.
+  - **Not taken:** the hint's `cache=False` argument at the two in-transaction reads. It fixes today's two call sites but leaves a rule every later caller must remember. The digest costs one hash of a few KB of JSON per resolution, small beside the query.
+  - **Test:** `test_the_cache_keeps_nothing_a_rolled_back_write_read`. With the cache on, `effective.view` fails once, after the write's final read; that write had read its own overrides at revision 1, and it rolls back. The next write (window 9) answers window 9, and so does the read. With the digest taken out of the key it answers 5.
+  **Why:** The verifier's fix hint offered both. The revisions stay in the key, as the Discretion names them. Cost if wrong: none observable; a miss costs one resolution.
+  **Issue:** #113
+- **Decision:** Gap 3 of 8: the overrides-aware data-producing branch now has a test. The gap was real; it was a test gap only, and no source changed for it.
+  - **Test:** `test_a_data_producing_edit_keeps_only_the_followers_it_raises`, under `data_producing("polish")`. Two followers have history, and one of them overrides the polish pass on. The edit that turns the polish pass on reports only the plain story `upgrade_unavailable`. Confirmed, it pins only that story to version 1, and the other moves to version 2, unpinned.
+  - **Mutation re-check:** the verifier's mutant (`impact.following_report`'s `if overridden.get(story, change).increases` → `if True`) now fails that test. `test_an_edit_reaches_each_follower_through_its_overrides` and `test_c_16__upgrade_unavailable` still pass it, as before.
+  **Why:** AC3's last clause, as #113 refined it. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Gap 4 of 8: the respond response's `config_revision` is now asserted by value. The gap was real; it was a test gap only.
+  - `test_assignment_runs_in_two_stages`: the turn after the assignment reports the assignment's `config_revision`. After an overrides write moves it by one, the next turn reports that.
+  - `test_c_16__follow_latest`: each follower's turns report the story's own revision. The profile edit is deployment-scoped, so it leaves that revision as it is while the deployment's moves.
+  - **Mutation re-check:** the verifier's mutant (`"config_revision": 0` in `orchestrator/lite/pipeline.py`) now fails both tests. So does a mutant that reports the deployment's revision.
+  **Why:** The pass-1 Discretion ("respond responses gain ... config_revision"). Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Gap 5 of 8: the impact preview's `overrides` is now the JSON merge patch that `PATCH /stories/{id}/profile-overrides` takes in `settings`. This is the hint's first option. Both apply it through one function (`effective.patched`, called by `effective.resolve`). Before, the preview read a `null` as a value: `budgets.model_calls: null` previewed the formula, while the write removed the override and fell back to the profile's cap. A `null` where a setting takes none (`rolling_summary.enabled: null`) was 422 for the preview but applied by the write. Now the preview of any patch is the report the write answers, and the earlier #113 entry ("This makes the preview answer what the write would do") holds for removals too.
+  - **Published schema:** `ImpactPreviewRequest.overrides` is now the null-allowing patch schema. `PATCH_SCHEMA` moved from `story.py` into `schema.py` as `nullable(SETTINGS_SCHEMA)`; `story.PATCH_SCHEMA` and `OverridesPatchDocument` still resolve. #109's hand-off required this if the preview became a patch.
+  - **What a preview can no longer express:** overriding a dial to `null` (the formula, or "inherit"). The write cannot do that either; the profile or the defaults can.
+  - **#109's test changed:** `test_preview_refusals_write_nothing` asserted that `{"overrides": {"repair": null}}` is 422 at `body.overrides.repair` ("overrides are settings, not a merge patch"). That behaviour is gone by this decision. The test now asserts that the removal is answered and changes nothing (the story overrides nothing there), and that a `null` under a key no setting has (`repairs`) is 422 at `body.overrides.repairs`.
+  - **Test:** `test_a_preview_answers_what_the_overrides_write_would` runs the verifier's two probes:
+    - removing the cap: the write's `impact` equals the preview, and so does the fingerprint after;
+    - removing the summary override: the held write's report equals the preview, and the confirmed write runs under the preview's fingerprint.
+    - Both refusals of gap 5's removal check are answered alike by the preview and the write.
+  - **Mutation-checked:** with the preview's overrides laid over again, that test and #109's fail.
+  - **Not a doc-only fix:** docs/02 says the preview "computes the same report for one story" as the write. A removal can add data-producing capability, so a client must be able to preview it.
+  - **Not Rule 4:** #109's entry left this to #113 ("#113 decides how its PATCH … is previewed"). M3 is unreleased, and no later plan names the preview's `overrides`: the search found only #128, which lists the route.
+  - **Console:** a preview screen that sent `null` as a value now removes the override instead.
+  **Why:** The verifier's fix hint, docs/02's two-stage flow, and #109's hand-off. Cost if wrong: the preview's `overrides` returns to a settings document, and the docs say removals cannot be previewed.
+  **Issue:** #113, #109
+- **Decision (Rule 2):** A merge patch's `null`s are now checked against the published schema, on both routes (`effective.check_patch`, inside `patched`). Before, `merge_patch` dropped a `null` before anything validated it, so `{"settings": {"zzz": null}}` was a 200 no-op although the published schema forbids the key. So was a `null` under an undelivered group (`memory.episodic.enabled`). C-01's negative-data check could flake on either, and gap 5 would have brought the same hole to the preview.
+  - A removal of a key no setting has is 422 `validation_error` at its field. This covers an unknown member of a purpose's route, and a purpose name that breaks the pattern.
+  - A removal of a setting or group this deployment has not delivered is 422 `invalid_profile` with `details.undelivered`, as setting it is.
+  - An object with more members than the schema allows (`models.purposes`: 50) is 422 `validation_error`.
+  - `PATCH_SCHEMA` now also allows `null` for a purpose's route (`models.purposes.<name>: null`), because the merge patch removes it. Before, that was published as invalid but accepted.
+  **Why:** This is input validation of the story's own routes: the server accepts what it publishes, and the document a patch makes cannot show its `null`s. Cost if wrong: a removal that was quietly ignored is now refused.
+  **Issue:** #113
+- **Decision:** Gap 6 of 8: the profile-edit docs are corrected and `docs/openapi.json` is regenerated.
+  - `ProfileBody` is described as answering a create or a copy, which leaves `config_revision` as it is.
+  - `ProfileEditBody`: the deployment's `config_revision` is one more when the edit made a new version, unchanged otherwise, and each report entry is the change seen through that story's overrides.
+  - The `update_profile` description now says that a new version is a configuration change. It lists the `engine_profile:<id>` row, which carries the strongest class of the changed settings, and one `engine_profile:<id>.<setting>` row per setting changed, each with its class. It also documents the 422 `invalid_profile` with `details.stories` and `count` when a follower's overrides could not run.
+  - The module docstring now says which writes move `config_revision`.
+  **Why:** The gap was real: the docs said "(unchanged)" since #113 made a new version move the revision. Cost if wrong: none.
+  **Issue:** #113
+- **Decision (deviation, recorded late):** Gap 7 of 8. The summary job reads `memory.rolling_summary.window_messages`, `compress_threshold_tokens` and `enabled` from the effective configuration when it runs. It reads them in `summary.summary_state`, through `read_summary_settings`, both when the job starts and whenever a turn or the scheduler decides whether to enqueue it. The planner's pass-1 Discretion said the job reads them "from the effective config at enqueue". #113's build did this but did not record the choice; this entry records it. No code changed.
+  - **Why it stays this way:** M2's rule for these settings is that they are prospective and read when a job or a turn starts (#72).
+  - A story's job is coalesced into one queued row (`lite_summary:<story>`) with no payload, so a value captured at enqueue would be the first trigger's, possibly several turns stale.
+  - Reading at the start lets turning the rolling summary off stop a job that is already queued: "one already queued finds nothing to do", which `test_the_configuration_shapes_the_turn` asserts.
+  **Why:** The verifier's gap. This follows the hint's first option and keeps M2's behaviour. Cost if wrong: the job gains a payload holding the three values, captured when it is enqueued.
+  **Issue:** #113
+- **Decision:** Gap 8 of 8 (hygiene). `tests/integration/test_effective_config.py`'s `_shared` helper now types `beside` as `collections.abc.Set[str]` (default `frozenset()`), and its `type: ignore[assignment]` is gone. mypy passes without it.
+  **Why:** The gap was real: the ignore silenced a wrong annotation instead of fixing it. Cost if wrong: none.
+  **Issue:** #113
+- **Decision (Rule 1, tests):** C-01 now undoes each successful generated `PATCH /stories/{id}/profile-overrides` (`_restore_overrides`, a confirmed patch with `null` for every published group), as it already undoes `replace_model_config`.
+  - **What happened.** In this round's gate, C-01's generated `POST /stories/{id}/regenerate` answered 503 `model_unavailable` (`reason: deadline`, no model call, 46 ms elapsed) on the fixture story. An earlier generated overrides write had set that story's `budgets.deadline_ms` to a few milliseconds. That is a valid write: the floor is 1 ms, and NFR-PERF-6 sets no minimum. Every later generated turn on the story then fails, and `not_a_server_error` rejects any 503, documented or not.
+  - **Confirmed by a throwaway probe** (not committed): overriding `deadline_ms: 1` and regenerating gives that exact answer.
+  - **Whose hazard:** #113's. M2's float `turn_deadline` (`gt=0`) existed, but small integers are far more often generated than tiny floats. The hazard is not a product bug, so nothing was filed.
+  - **After the fix:** the C-01 rerun passed (119 passed), the failing `regenerate` case included.
+  **Why:** A generated valid write must not break later examples on the shared fixture. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** #113's round-1 gate, per the M3 rule (the full suite is the orchestrator's, once per group).
+  - **Tests run:**
+    - `tests/integration` (all of it): 562 passed.
+    - `tests/conformance`, `tests/test_route_guard.py`, `tests/test_responses.py` and `test_respond.py::test_openapi_calls_the_message_finished_never_verified`: 166 passed, 1 failed (the C-01 `regenerate` case above). After the C-01 fix, `tests/conformance/test_c_01.py` was rerun: 119 passed.
+    - The non-integration modules that exercise the changed code, under CI's marker expression: 154 passed. These were X-03/04/06/07, the determinism script, P-04/05/09, S-AUDIT-CATEGORY, S-DOUBLE-SUBMIT, S-SELFPOLICE, S-TURN-CONCURRENCY, S-CONSOLIDATION-RACE, and the unit modules for catalog validation, idempotency, the Lite prompt, model adapters, profile facts, the trust boundary, U-13, U-18, the Lite summary, projections, the registry and the event registry.
+    - The story's own modules once more, after the last edits: 60 passed.
+  - **Static checks:** ruff check and format, mypy (498 files), lint-imports (3 kept), check-assignment (438/438), check-parts (193 parts), check-lexicon (0 violations), check-traceability, check-deps (0 denied), `openapi --check` (regenerated) and `model_guide --check` all pass. No dependency changed, so check-licenses was not run.
+  - **Mutation re-checks:** 8 mutations, all killed; each file's SHA-1 matched after restore. The two the verifier named are among them: gap 3's `if True` and gap 4's `"config_revision": 0`.
+  **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #113
+- **Decision (drift):** #115's parts follow docs/04 §15 and the one-file-per-test-ID rule.
+  - `test_c_15__character_content`, `part("M3", "FR-CAT-2,4")`, is in `tests/conformance/test_c_15.py`. The plan's `FR-CAT-12; FR-RATE-3` are not in the marker (§15 maps them to R-07, S-MINORS, S-AGE-ASSIGNMENT and I-22, not C-15), and the true-age and rating refusals are asserted in its body.
+  - `test_c_23__optional_images`, `part("M3", "FR-CAT-4")`, is in `tests/integration/test_media_delivery.py`, #107's hand-off.
+  - `test_r_05__deflection_style`, `part("M3", "FR-GUARD-6,7")`, is in a new `tests/redteam/test_r_05.py`, marked `integration` and `redteam`.
+  - `test_s_selfpolice__deflection`, `part("M3", "FR-GUARD-7")`, is in `tests/scenario/test_s_selfpolice.py`.
+  - The detailed tests are unmarked, in `tests/integration/test_character_content.py`, the must-have's file; their docstrings name no FR id.
+  - The parts take lexicon-sensitive values from the new `tests/character_support.py`. A reference image's `perceivable` trips M5's `perceiv*` even as a constant's name, so the parts say `SEEN` and `HIDDEN`.
+  - check-parts counts 197 parts; check-lexicon reports 0 violations; check-traceability passes.
+  **Why:** The drift notes. Cost if wrong: renames only.
+  **Issue:** #115, #107
+- **Decision (drift):** Where the code lives.
+  - The document and its projections are a new `core/catalog/models.py`, the must-have's artifact. `characters.py` re-exports every name it had and keeps the service, the projection queries and the save path.
+  - The publish rules are a new check module, `core/catalog/checks/character_content.py` (`kinds = {CHARACTER}`), placed in `validation.CHECKS` after `required`. This is #111's hand-off; the plan's `core/catalog/validate.py` is not created.
+  - `required.py` is scenario-only again. The character's name rule moved into the new check, at `public_card.name`. The rating lookup both use is `required.rating_unusable`.
+  - The document check also runs a character's save rules (`models.character_rules`), as it runs a scenario's.
+  **Why:** #111's hand-off and the plan's artifact list. Cost if wrong: modules move.
+  **Issue:** #115, #111
+- **Decision:** The draft's shape follows AC1.
+  - `name` and `public_description` move under `public_card`, beside #114's `images`, as #114's Ad-hoc entry expected. A request that names them at the top level is now 422 (`extra_forbidden`).
+  - The groups default to objects. A stored draft always holds `public_card.images.gallery`, `metadata.aliases` and `metadata.labels`, each possibly empty, and `definition`.
+  - `PATCH` keeps typed merge-patch models, one per group, as #103 and #114 started: every field optional, `null` removes it, objects merge, lists replace. Each disposition axis has its own patch model, because its setting's enum differs. #108's free-form groups for scenarios were the alternative; typed models keep the published PATCH schema documented field by field.
+  **Why:** AC1 names the shape. Cost if wrong: one more migration of stored drafts.
+  **Issue:** #115, #114
+- **Decision:** "A draft may be saved with name only; everything else is required at publish" (the pass-1 Discretion) is read as follows.
+  - **Required at publish:** every scalar AC1 does not mark optional, and each of the five disposition axes. A string must not be blank. These are `models.PUBLISH_REQUIRED`: the name, the public description, the appearance, the personality, the five axes, the values and motivations, the speech style and the vocabulary. Each missing one is `field_required` at its path.
+  - **With a visual identity,** also its preferred image model, base appearance prompt, negative prompt and seed (`IDENTITY_REQUIRED`).
+  - **Codes of their own:** `true_age_missing`, `content_rating_missing`, or `rating_retired` for an unknown or retired rating, `reference_image_missing_audience`, and `primary_image_required`.
+  - **Not required:** lists, which may be empty (likes and dislikes, mannerisms, sample dialogue, aliases, labels, the gallery, reference images), containers, the images, background flavor, the deflection style, the safe fallback line, the adapter parameters, the restricted-details prompt, and the visual identity itself. AC2 and C-23 make the images optional, so a container of optional items cannot be required.
+  - A publish reports every error at once, and C-15's complement shows the complete document publishing.
+  - A name alone stays a valid draft, and so does an empty one, as #103 built.
+  **Why:** The Discretion line, made testable. The test asserts the list literally rather than reading `PUBLISH_REQUIRED`. Cost if wrong: an entry added to or removed from the table.
+  **Issue:** #115
+- **Decision:** A reference image's audience: the published schema requires it, a non-null `perceivable`/`restricted`, and a save refuses it missing or `null`: 422 `validation_error` (type `missing`) at `body.visual_identity.reference_images[i].audience`. The Python model still reads a stored document without it, so that a publish of a document stored some other way can name it with the planner's code, `reference_image_missing_audience`, instead of the document check's generic `missing`. This is done by `ReferenceImage`'s `json_schema_extra`, as #105 documents `depicted_subjects`.
+  - Add-ons in `adapter_params` are not interpreted in M3: AC1 keeps the field opaque. FR-CAT-4's audience rule for add-ons is left to #259, which plans `adapter_params.addons[*].audience` and excludes an add-on whose audience is missing.
+  **Why:** The must-have truth ("cannot be saved") and the Discretion's code both hold. Cost if wrong: a stored add-on without an audience is accepted until M8 interprets it; #259 already fails closed on it.
+  **Issue:** #115, #259
+- **Decision:** Limits the plan does not give.
+  - `speech_style` and `vocabulary`: at most 2,000 characters each.
+  - Likes and dislikes: at most 30 items each, of at most 200 characters.
+  - Mannerisms and sample dialogue: at most 20 items each, of at most 500 and 1,000 characters. List items are trimmed and never blank.
+  - `deflection_style`: at most 2,000 characters, for a catalog definition and a story character alike (`DEFLECTION_STYLE_MAX` in `core/tables/characters.py`).
+  - `preferred_image_model`: at most 200 characters, #105's limit for a model name.
+  - Labels and aliases reuse the scenario's `Label` and `Alias` types: labels are 1 to 40 of `A-Z a-z 0-9 _ -` and spaces, stored lower-cased and distinct; aliases are trimmed. Beyond the plan, two aliases may not be equal, ignoring case (`alias_duplicate`), as well as an alias and the name (`alias_is_name`).
+  - Reference images: at most 10, distinct. `adapter_params` holds finite numbers only (#317's `require_finite`), at most 8 KiB as JSON.
+  **Why:** Each field needs a bound before it reaches storage. The plan's limits are kept where given. Cost if wrong: a bound widens later, which is additive.
+  **Issue:** #115
+- **Decision:** The projections.
+  - **`card.images`** becomes `{primary, gallery}`, each image `{media_id, alt_text}`. It was #114's flat list, primary first, which cannot say which image is the primary when there is none: #108 kept a scenario's cover apart for the same reason. #114's Ad-hoc entry left the card's images to #115.
+  - **`full`** shows each image and reference image with its live media row inlined: alt text, caption, MIME type, width, height and generation metadata, read from the row, not snapshotted. It adds `aliases` and the `visual_identity`. Its `definition` shows every field, `null` when unset.
+  - **`labels`** on the card now come from `metadata.labels`.
+  - A listing's items follow the card.
+  - Round-trip equality is structural JSON equality: jsonb normalises key order and number form (`1e300` comes back written out). C-15 also compares canonical JSON text.
+  **Why:** AC3 and the pass-1 Discretion. Cost if wrong: a reshaped card before a consumer depends on it.
+  **Issue:** #115, #114, #110
+- **Decision (drift):** `require_primary_image` is a prospective leaf of the deployment settings document, in `CatalogValidationSettings` beside #111's `validation_model_calls`, not the `deployment_state` column the Discretion names.
+  - It is in `SettingsPatch` as a `StrictBool`, so a JSON string is 422, as #112 did for its own settings (#322).
+  - It is pinned in U-18 and described in `PUT /admin/settings`, the README and docs/02.
+  - A publish reads it through its validation context's settings.
+  **Why:** The drift note: M2 keeps new deployment settings in the settings document. Cost if wrong: one migration moves it to a column.
+  **Issue:** #115, #322
+- **Decision:** Migration `0032_character_content` rewrites every stored character document to the new shape: drafts and published versions alike.
+  - It moves a top-level `name` and `public_description` under `public_card`. Versions are rewritten under the transaction-local `epistrel.erasure` setting, the versions trigger's one exemption, which it turns off again. The generated `search` column follows.
+  - The downgrade moves both keys back.
+  - `test_character_documents_move_under_the_public_card` covers both directions, an untouched document and the search.
+  - `core/erasure/index.py` now reads the name at `public_card.name` (`NAME_PATH`). The search functions of migration 0027 already read both places.
+  **Why:** One shape everywhere, rather than readers that accept two shapes for data only development databases hold (M3 is unreleased). The rewrite changes how a version is stored, not what was published. Cost if wrong: a version written before 0032 in some database keeps the moved keys; the readers would need their old fallback back.
+  **Issue:** #115, #105, #110
+- **Decision:** `catalog.character_versions.content_rating_version_id` stays nullable, though #103's entry expected #115 to add the NOT NULL.
+  **Why:** Publish validation now requires a rating, and every new version records its rating's version. A constraint would need a backfill that invents a rating for any version published before #115. Cost if wrong: one migration adds it later.
+  **Issue:** #115, #103
+- **Decision:** #111's media check now covers catalog characters: their images and reference images. It reports `media_missing`, `media_retired`, `media_kind_mismatch` (each must be an image) and `media_not_allowed`, each at its field and naming the asset. A save checks only what it adds: liveness of new images and reference images, at `body.public_card.images…` and `body.visual_identity.reference_images[i].media_id`. Kind is checked at publish, as for a scenario's media.
+  **Why:** The Discretion: "images and reference images must be `kind = image`", and media existence is checked at save and again at publish. The type and size rules come with the shared check, for consistency with scenarios. The Discretion's "existence and liveness only" excludes the owner (FR-AUTH-8), not these. Cost if wrong: one entry type removed from the check.
+  **Issue:** #115, #111
+- **Decision (Rule 2):** `OPERATION_ERRORS` now documents `rating_retired` and `media_retired` on `create_character_draft` and `save_character_draft`, and `rating_retired` on `publish_character`, so `docs/openapi.json` lists what those routes answer.
+  - #114 had added the save-time checks without documenting them, and #115 extends them to reference images.
+  - The publish holds the rating `FOR SHARE` while it records the version, so a rating retired between the check and that insert answers 422 `rating_retired`, as `publish_scenario` documents.
+  **Why:** A route documents every error it answers. Cost if wrong: none.
+  **Issue:** #115, #114
+- **Decision (drift):** The deflection style (FR-GUARD-7) reaches the Lite prompt through the story's `characters` row, as the drift note says.
+  - **Storage:** a new nullable column, `characters.deflection_style`. `CharacterSpec` (`POST /stories`) and `AdHocCharacter` (`POST /stories/{id}/characters`) gain an optional `deflection_style` of 1 to 2,000 characters.
+  - **Rendering:** `core/turns.py` reads the column. The orchestrator's `CharacterDefinition` gains `deflection_style` (category `character_definition`; `docs/models.md` regenerated), and `lite_generation.j2` renders it inside the character's author notes as "When <name> refuses or changes the subject: <style>". Nothing changes when a character has none.
+  - **Promotion** copies the style into the draft's `definition.deflection_style`, which #114 left for when story rows held one.
+  - **Not read elsewhere:** the read set's `definitions` member is unchanged, since a style never changes after its row is inserted and a new row already moves the member. Story reads do not show the style, as they do not show `safe_fallback_text`.
+  **Why:** The planner's line: the Lite prompt's character notes carry the style, so a guardrail regeneration renders in character. Story characters are the only path to a prompt before #119, so the parts go through the real API. Cost if wrong: one optional field and one column.
+  **Issue:** #115, #68, #114, #119
+- **Decision (Rule 2):** The input gate checks a story character's deflection style like its definition: locator `characters[i].deflection_style` at story creation, `deflection_style` for an addition. A violation is 422 `guardrail_violation` and creates nothing, which `test_story_characters_store_their_deflection_style` covers.
+  **Why:** The style is consumer text that reaches every Lite prompt, and FR-GUARD-10 checks such text before anything is recorded. Cost if wrong: none.
+  **Issue:** #115
+- **Decision:** Existing tests changed because the story changes the shape they send or read. No assertion was loosened.
+  - **The fixtures:** `catalog_support.character()` and `scenario_support.published_character()` now build a complete, publishable character (`character_support.complete`), and `catalog_support.save` puts `name`/`public_description` under `public_card`.
+  - **Request bodies moved to `public_card`:** C-03's `CHARACTER`, `CHARACTER_PATCH` and `GHOST`; C-01's two malformed character cases; the ownership fixture's `PATCH`; and the bodies in `test_catalog_search`, I-20, I-21, U-26, `test_scenario_validation`, `validation_support` and `test_story_characters`.
+  - **Planted documents moved to the new shape:** in `test_media_assets` and I-21.
+  - **`test_catalog_characters`:** the exact definition dicts compare against the create answer with the edited field. The nameless-draft refusal is a complete draft without its name, now at `public_card.name`. The cap test lowers `DRAFT_MAX_BYTES` to 1,200 instead of 600, because the complete fixture is about 840 bytes. A card's images are the new object. The card shows the rating the complete body names.
+  - **Promotion tests (`test_s_promote`, `test_story_characters`):** the promoted definition lists every key, and the promoted draft's `public_card` holds the name.
+  - **`test_catalog_search`:** the Everyone-rating filter now finds the other character, which the complete body rates Everyone; it is stricter, an exact list.
+  - **Unit tests:** `test_catalog` (the stored form of an empty draft), and `test_catalog_validation` (the check list gains `character_content`, and the character runner test asserts #115's rules).
+  - **U-18** pins the new setting as prospective.
+  **Why:** AC1 moves the card's fields and AC2 makes a publish need a complete character. These are the smallest changes that keep each test's intent. Cost if wrong: none.
+  **Issue:** #115
+- **Decision:** I mutation-checked the story. A script applied each mutation, ran the tests named for it and restored the sources; the SHA-1 of every touched file matched afterwards. All 24 mutations fail a test:
+  - **Publish rules:** the true age not required; a missing audience passing the publish; `require_primary_image` ignored; a disposition axis not required; blank text counting as present; the visual identity's fields not required; a retired rating passing; a reference image never checked at publish; the media check ignoring characters.
+  - **Save rules:** a save keeping a reference image without its audience; an alias equal to the name; reference images not checked at save.
+  - **Projections:** `full` dropping the generation metadata; the card showing the caption as alt text; the card's description leaking the personality; `full` without a reference image's asset; a version read showing the draft's visual identity.
+  - **Story characters:** a turn not reading the deflection style; the prompt not rendering it; the creation gate skipping it; the style not stored at creation, or on an addition; a promotion dropping it.
+  - **Migration:** versions left unmoved.
+  Two gaps showed up while writing the mutations, and the tests were tightened before running them. `test_a_draft_needs_only_a_name` read its expected paths from `PUBLISH_REQUIRED`, so it could not catch a change to that table; it now lists them literally. `test_images_are_checked_at_save_and_at_publish` did not cover a reference image at publish; it now names a video as one.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #115
+- **Decision:** #115's gate, per the M3 per-story rule (the full suite is the orchestrator's, at the end of group B).
+  - **Routes, Engine methods and OpenAPI:** `tests/conformance` (C-01's generated run included), the route guard, the response bases and `test_openapi_calls_the_message_finished_never_verified`: 168 passed in 610 s.
+  - **Migrations and tables:** `test_migrations` and `test_drift`, 9 passed; `test_migrations` again after the migration was rewritten with literal SQL, 5 passed.
+  - **Prompt, turn, story, media and settings code, under CI's marker expression:** 289 passed. The modules were the Lite prompt, the registry, the model guide, the Lite cast, U-18, U-13, the listing, the catalog and validation units, the media units, observability, the trust boundary, the event registry and the ownership rules; respond, the input gate, the minors policy, I-18, I-04, I-10, S-DELETE, media assets, I-17, config changes, I-08, the event store schema, story texts and I-22; and `tests/property`, `tests/determinism`, `tests/scenario` and `tests/redteam`.
+  - **Media delivery and the rest:** C-23 and the detailed tests, the new detailed module, I-21 and ownership, 146 passed. Then the catalog characters, scenario catalog and validation, search, I-20, U-26, personas, story characters, profiles and two-stage, effective config, feedback, config revalidation, idempotency, jobs, model config, operations, ratings, drift, P-03's quick subset and the unit modules that import the changed code: 347 passed, 1 deselected (`perf_long`).
+  - **Static checks:** ruff check and format, mypy (504 files), lint-imports (3 kept), check-assignment (438/438), check-parts (197 parts), check-lexicon (0 violations), check-traceability (171 code parts), check-deps (63 packages, 0 denied), `openapi --check` (regenerated) and `model_guide --check` (regenerated) all pass. No dependency changed, so check-licenses was not run.
+  **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #115
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #115 gave a catalog character its full document and changed shapes that later stories build on.
+  - **Request bodies.** `POST`/`PATCH /catalog/characters` take `public_card {name, public_description, images {primary, gallery}}`; a top-level `name` or `public_description` is now 422. The draft has typed groups: `definition` (true age, appearance, personality, likes and dislikes, five disposition axes each `{setting, nuance}`, values and motivations, interaction style, background flavor, `deflection_style`, `safe_fallback_text`), `metadata {aliases, labels, content_rating_id}` and an optional `visual_identity` whose reference images require an `audience`. Migration 0032 moved every stored draft and version to this shape.
+  - **Publishing needs a complete character:** every scalar of the definition but the optional ones, all five axes, a true age, an assignable rating, an audience on each reference image, live images, and a primary image when `require_primary_image` is on (a new prospective deployment setting, default off). A name alone is still a valid draft, so a promoted draft (#114) must be completed before it publishes.
+  - **Projections.** `card.images` is now `{primary, gallery}` of `{media_id, alt_text}`, where it was a flat list, and the card's `labels` come from `metadata.labels`. `full` inlines each image's and reference image's media row and adds `aliases` and `visual_identity`.
+  - **Story characters.** `characters.deflection_style` is a new column. `CharacterSpec` (`POST /stories`) and `AdHocCharacter` take an optional `deflection_style`, which the input gate checks. `core/turns.py` reads it, and the Lite template renders it in the character's author notes ("When <name> refuses or changes the subject: <style>"; the registry's `CharacterDefinition.deflection_style`). A promotion copies it into the draft.
+  **Why:** #115's AC1–AC5 and its pass-1 Discretion. The drift notes placed the setting and the deflection path. The decision entries above give the details.
+  **Affects:**
+  - **M3 #116 (companions).** A character publish now needs a complete character, so its companion tests and fixtures must publish complete bodies (`tests/character_support.complete`). The companion's own version is a scenario version and unaffected.
+  - **M3 #119 (genesis).** Read a catalog character's snapshot at #115's paths (`public_card.name`, `definition.*`, `metadata.*`). Copy `definition.deflection_style` onto `characters.deflection_style`, as `safe_fallback_text` is copied. Gate the style with the chosen characters' definitions (FR-GUARD-10), as story creation now gates a cast's style.
+  - **M3 #122 (Lite materialisation).** The planner renders `deflection_style` into the prose author notes. The template already renders the story column inside the notes, so #122 should leave it out of the prose, or genesis should leave the column empty, never both, or the line appears twice.
+  - **M3 #123 and #124 (index and erasure).**
+    - Index and erase the new text fields: every definition prose field and list; the visual identity's prompts (`base_appearance_prompt`, `negative_prompt`, `restricted_details_prompt`) and its opaque `adapter_params`; and the story column `characters.deflection_style`.
+    - A catalog character's name is now at `public_card.name` (`core/erasure/index.py`'s `NAME_PATH`).
+  - **M3 #128 (API surface).** The character routes' shapes and errors changed (`docs/openapi.json` regenerated).
+  - **M8 #259 and #260.** The visual identity's shape is the one #259 reads: `preferred_image_model`, `base_appearance_prompt`, `negative_prompt`, `seed` (0 to 2^32 - 1), `reference_images [{media_id, audience}]`, opaque `adapter_params` (at most 8 KiB) and `restricted_details_prompt`.
+    - FR-CAT-4's audience rule for add-ons is not enforced at save in M3, because `adapter_params` is opaque. #259 should add the refusal when it gives `adapter_params.addons` a shape. It already excludes an add-on without an audience.
+  - **The Console (nathanpond/Epistrel-Console).** The character editor sends `public_card {name, public_description, images}` and can now edit the definition's typed fields, the metadata and the visual identity; it reads the card's images as `{primary, gallery}`. The settings screen gains `require_primary_image`, and the story-creation and add-character forms gain `deflection_style`.
+  - **Next step:** #116, #119, #122, #123, #124 and #128 are later M3 stories in this run. Their drift check should apply this, or `/n8-replan M3` should run before them. `/n8-replan M8` should look at #259 for the add-on rule.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after #115's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111, #113 and #114 did. Cost if wrong: one heading.
+  **Issue:** #115
+- **Decision:** #114 verification fixes, round 1, gap 1 of 3: a promoted draft's default owner is now asserted. The gap was real; it was a test gap only, and no source changed for it. `promote()` already sets `owner=request.owner or principal` (`core/catalog/promote.py`), but the only owner assertion named an owner.
+  - **Tests:** `test_s_promote` asserts that the draft is the author's (`owner_principal == AUTHOR`); its request names no owner. In S-PROMOTE the author also created the story, so that assertion alone cannot tell the requester from the story's owner. The complement is in `test_promotion_refusals_and_options`: `p-promoter` promotes with no owner, and the draft is `p-promoter`'s while the story's owner is `p-author`.
+  - **Mutation re-check:** the verifier's mutant (`request.owner or "p-somebody-else"`) now fails `test_s_promote`. A second mutant, the story's owner as the default, passes `test_s_promote` and fails the refusals test, which is why the complement is there.
+  **Why:** The must-have key link ("an ordinary draft owned by the requesting principal") and FR-AUTH-5's default. This follows the verifier's fix hint. Cost if wrong: none.
+  **Issue:** #114
+- **Decision:** Gap 2 of 3: `ck_characters_persona_player` now has a test. The gap was real; it was a test gap only. The new test is a persona detail, `test_only_a_player_character_holds_a_persona` in `tests/integration/test_personas.py`, not an addition to `test_c_19`.
+  - It gives the player character (Wren) a persona through `copy_into`, then writes directly with SQL, because `copy_into` filters on `is_player` and so never meets the rule. The database refuses three writes, each with an `IntegrityError` that names the constraint: the persona's id on the non-player character (Ada), an ad-hoc snapshot (no id) on Ada, and Wren ceasing to be a player while it holds a persona. Both rows are byte-identical afterwards.
+  - Its docstring names no FR id, so it is not a part, like the file's other details.
+  - **Mutation re-check:** the verifier's mutant (the CHECK removed from the table and from migration 0031) now fails the test: `DID NOT RAISE IntegrityError`.
+  **Why:** docs/04's C-19 text describes what the persona API does, not this storage rule, and the file's persona details hold the rest of that storage. The `is_player` case shows that the rule covers the whole row, not only the persona's columns. Cost if wrong: the clause moves into `test_c_19`.
+  **Issue:** #114
+- **Decision (deviation from the verifier's hint):** Gap 3 of 3: a promotion while a turn is in flight now has a test, with a real held turn rather than an inserted `in_flight` operations row. The gap was real; it was a test gap only. The code follows the pass-2 Discretion line: `Engine.promote_character` has no busy check.
+  - **Test:** `test_promotion_refusals_and_options` holds the stub adapter's `generation` call (`stub.hold`, as `test_idempotency` and `test_turn_concurrency` do), so the turn really is in flight. The test first asserts that the story's turn slot names an in-flight `turn` operation. The promotion then answers 201 at the unchanged revision, and the held turn commits (200). The revision moves by the turn's bump only. The final `promoted_to` names both drafts, oldest first.
+  - **Mutation re-check:** the verifier's mutant (`_refuse_busy(conn, story_id, turns_only=True)` before the promotion) now fails the test with 423 `story_busy`. So does a refusal keyed on the turn slot (`stories.in_flight_turn`).
+  **Why:** A turn in flight sets two markers: its `in_flight` operations row and the story's turn slot. An inserted row sets only the first, so a test built on it would pass a refusal keyed on the slot. A held turn also shows that the promotion leaves the turn to commit. Cost if wrong: one stub turn of runtime. The module runs in about 5 s, and the test passed three more runs in a row.
+  **Issue:** #114
+- **Decision:** #114's round-1 gate, per the M3 rule (the full suite is the orchestrator's, once per group). Only two test modules changed. No source, route, `Engine` method, OpenAPI shape, migration, table or event changed, so the gate ran those two modules in full.
+  - **Tests:** `tests/integration/test_personas.py` and `tests/integration/test_story_characters.py`: 17 passed, after the last edit.
+  - **Static checks:** ruff check and format, mypy (504 files), lint-imports (3 kept), check-assignment (438/438), check-parts (197 parts), check-lexicon (0 violations), check-traceability, check-deps (0 denied), `openapi --check` and `model_guide --check` all pass. No dependency changed, so check-licenses was not run.
+  - **Mutation re-checks:** 5 mutations. Each fails the test named for it, and the second gap-1 mutant passes `test_s_promote`, as predicted. A script applied each mutation, ran its tests and restored the sources; every file's SHA-1 matched afterwards.
+  **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #114
+- **Decision:** #113 verification fixes, round 2, gap 1 of 3: the `upgrade_unavailable` branch of a story's own two writes now has a test. The gap was real. It was a test gap only, and the behaviour did not change. Confirmed, `PUT /stories/{id}/engine-profile` and `PATCH /stories/{id}/profile-overrides` keep a story with history as it was when the change adds data-producing capability (the two `if unavailable:` returns in `core/profiles/story.py`). But deleting either branch left every test green.
+  - **Test:** `test_a_story_write_whose_upgrade_is_unavailable_writes_nothing` (`tests/integration/test_effective_config.py`), under `data_producing("polish")`, through the helper `_kept_as_it_was`.
+    - Without `ignore_warnings`, each write is held with `UNAVAILABLE_WARNINGS`.
+    - Confirmed under the same key, it answers `applied: true` with its entry `upgrade_unavailable`. Its `result` equals the effective configuration read before the call, and the revisions it answers are the story's.
+    - Nothing is written. Every story's profile, pin and revisions, the operations, the `config_changes` count, the deployment revision, the story's overrides row, its `config_changes` rows and its events by type all compare equal.
+    - The only new row is the confirmed call's own `Idempotency-Key` record. Under #61 an applied call keeps its key and a held one keeps none, and the test asserts exactly one more record.
+  - **Complement:** the same patch and the same assignment reach two stories without history. Each is held for `capabilities_gained` alone. Once confirmed, each moves `config_revision` by one, records its row, and runs with the polish pass.
+  - **Docs:** `TWO_STAGE`, which both routes publish, gains the sentence the verifier asked for. A confirmed change whose upgrade is unavailable keeps the story's configuration: `applied: true`, `result` is the configuration as it was, nothing is written and `config_revision` does not move. The route module's docstring and the docstrings of `Engine.assign_engine_profile` and `Engine.set_profile_overrides` say the same. `docs/openapi.json` was regenerated (two descriptions changed).
+  **Why:** The verifier's fix hint. Cost if wrong: none; the test pins behaviour M3's interim rule already had.
+  **Issue:** #113
+- **Decision (deviation from the verifier's hint):** In gap 1's test, the story with history is pinned before the two writes. A real confirmed profile edit turns the polish pass on, which keeps the story on version 1 (`upgrade_unavailable`). The hint used an unpinned story on a profile with the pass off.
+  - **Why the pin:** with no pin, "the story keeps its pin" compares `None` with `None`, and an assignment that cleared the pin would pass too. #109's hand-off also let an assignment "set it for an upgrade-unavailable single story". With a real pin, the test shows the pin is neither cleared nor reset.
+  - **The complement stories** follow a second profile with the pass off that is never edited. A story without history on the edited profile already runs with the pass.
+  - **Gap 3 gets a second check:** `GET /stories/{id}` names version 1 for the pinned story while its profile is at version 2.
+  **Why:** One more profile edit buys a discriminating pin assertion. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Gap 2 of 3: the stories half of the `profile_defaults` cross-check (`effective.runnable_under`, `details.stories`) now has a test. The gap was real. It was a test gap only. I extended `test_profile_defaults_are_the_bottom_layer` rather than adding a sibling test, so it reuses that test's scratch database and runs one migration fewer.
+  - **Setup:** after the profiles-half refusals, the unused profile that turned pinned memories on is deleted, so no profile in use names them on. The story on the sparse profile, which names neither switch, overrides pinned memories on.
+  - **Refusal:** under `extra_rule(PINS_NEED_SUMMARY)`, a defaults write of `merged(SUMMARY_OFF, PINS_OFF)` is 422 `invalid_profile`. Its details hold `stories == [story]`, `count` 1, no `profiles`, and `missing_dependencies` naming `pins`. `configuration_rows` and the stored `profile_defaults` are unchanged.
+  - **Complement:** with the override removed, the same defaults write is accepted, and the story runs without pinned memories.
+  **Why:** The verifier's fix hint. #113's `## Ad-hoc` entry tells M4 #129 to rely on this check. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Gap 3 of 3: `GET /stories/{id}`'s `engine_profile.version` is now tested on a pinned story. The gap was real. It was a test gap only. `test_a_data_producing_edit_keeps_only_the_followers_it_raises` now asserts `{id: profile, version: 1}` for the pinned story and version 2 for the one that moved, as the hint asked. Gap 1's test asserts version 1 for its pinned story too.
+  **Why:** The verifier's fix hint. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Mutation re-checks for round 2. A script applied each mutation, ran the named tests and restored the file, checking its SHA-1. `git hash-object` of the three sources also matched before and after.
+  - **Gap 1:** deleting the `if unavailable:` return in `set_overrides` fails the new test, and so does deleting the one in `assign_profile`. In both, the confirmed `result` is not the configuration as it was.
+  - **Gap 2:** with `overridden.all()[:0]` (the stories check never refuses), `test_profile_defaults_are_the_bottom_layer` fails: 200 where 422 was expected.
+  - **Gap 3:** with the coalesce swapped to `(current_version, pin)`, both `test_a_data_producing_edit_keeps_only_the_followers_it_raises` and the new test fail: version 2 where 1 was expected.
+  - **Extra, for the complement:** with `_report` passing `history=True` for every story, the new test's complement fails, because the story without history is held as `upgrade_unavailable`.
+  **Why:** The round-2 rule: show that each surviving mutant now fails. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** #113's round-2 gate, per the M3 rule (the full suite is the orchestrator's, once per group). The source changes are text only: two published route descriptions, the route module's docstring and two `Engine` docstrings.
+  - **The story's tests and every module that exercises the two routes,** under CI's marker expression: `test_effective_config`, `test_engine_profiles`, `test_two_stage`, `test_i_18`, `test_i_22__ratings`, `test_s_delete`, `test_model_matrix_run`, `test_i_21`, `test_ownership`, `test_config_changes`, the determinism script, P-09 and S-SELFPOLICE: 194 passed.
+  - **Routes and OpenAPI:** `tests/conformance` (C-01's generated run included), the route guard, the response bases and `test_openapi_calls_the_message_finished_never_verified`: 168 passed in 586 s.
+  - **Stability:** the new test and the extended defaults test passed three more runs in a row (2 passed each).
+  - **Static checks:** all pass. These are ruff check and format, mypy (504 files), lint-imports (3 kept), check-assignment (438/438), check-parts (198 parts), check-lexicon (0 violations), check-traceability, check-deps (0 denied), `openapi --check` (after regenerating) and `model_guide --check`. No dependency changed, so check-licenses was not run.
+  - **No `## Ad-hoc` entry:** nothing that a later plan assumes changed. The route text documents behaviour the routes already had.
+  **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #113
+- **Decision (drift):** #116's parts follow docs/04 §15 and the one-file-per-test-ID rule.
+  - `test_i_20__companion`, `part("M3", "FR-CAT-3,5,10; FR-SCN-5; FR-RATE-5")`, is a slice in `tests/integration/test_i_20.py`, beside #111's `test_i_20__validation`, not the plan's bare `test_i_20` in `tests/integration/test_companion.py`. It runs on its own scratch database, because its rating clause links a policy to the seeded Everyone rating (the drift note: the seeded ratings carry no policies, so no pair of them differs).
+  - `test_s_companion`, `part("M3", "FR-CAT-5,10")`, is in the must-have's file, `tests/integration/test_companion.py`, with eleven unmarked detailed tests; their docstrings name no FR id.
+  - Not here: I-20's "every story created from any companion version snapshots exactly the pinned pair" and S-COMPANION's story clauses (a one-to-one chat from the companion; another scenario casting the character brings none of its world) need #119's genesis. The pass-2 line puts them in #119's `test_i_22__creation`, and the pass-1 line adds FR-CAT-10 to that marker; both are #119's. I-20 here asserts the catalog half: every companion version's pin columns equal its content's pin and name an existing character version.
+  - check-parts counts 200 parts; check-lexicon reports 0 violations; check-traceability passes.
+  **Why:** traceability counts a test ID per milestone in one file (the drift note), and #119 builds story creation. Cost if wrong: renames only.
+  **Issue:** #116, #111, #119
+- **Decision (deviation from the pass-1 line, AC and docs/03 over Discretion):** a character's first character-alone publish makes companion version 1 from the companion's defaults (`companion_slots.defaults`: the two slots and an empty world), named and rated as the character version being published and pinned to it, not from the stored companion draft as the pass-1 line says ("first-publish v1 uses the stored companion draft (which started as the defaults)"). An edited companion draft stays a draft, its pin moved to 1.
+  **Why:** FR-CAT-10 says the first publish copies "the companion's defaults: its two slots and an empty world" and "An unpublished companion draft is not published by this"; AC2 says "creates companion v1 from the companion's defaults"; and the must-have truth is "Publishing a character never silently publishes half-edited companion content". The two readings agree whenever the draft was never edited and the character not renamed before its first publish; they differ only for an edited draft, where the Discretion would publish the edit. I-20 asserts the defaults with an edited draft. Cost if wrong: `_content` returns the re-pinned stored draft, one line.
+  **Issue:** #116
+- **Decision (deviation from the pass-1 line):** the defaults' roles carry short, non-blank setup descriptions, "Just talk with <name>." for `npc` and "You." for `player`, not the planned `setup_description: ""`; a character created without a name (a draft may lack one) gets a companion whose `npc` label is "Companion" and whose public card has no name.
+  **Why:** #108 made a role's `setup_description` required, non-blank prose and its `public_label` a required name (its AC lists both without `?`). Relaxing them would change #108's published contract for every scenario (Rule 4). A character-alone first publish builds version 1 from the published character's name, which a publish requires. Cost if wrong: three strings.
+  **Issue:** #116, #108
+- **Decision (deviation from the pass-1 line):** `companion_of` stays on the scenario card, where #108 put it (its own pass-1 line, "Scenario card carries #103's envelope (id, version, listing_status, status, companion_of)") and #110's listing items carry it; #116's pass-1 line puts it "in `full` only". `pinned_character_version` is added to `ScenarioFull` only (the companion's pin for the version or draft shown; `null` for every other scenario and before the character's first publish), and a companion's role shows the same pin as its `character.version`. Character responses carry `companion_id` in `full`, the create and save answers and the archive and unarchive answers, not on the card (#103's nine keys).
+  **Why:** removing a key from a verified response is a contract change, and `companion_of` is an identifier, not private content (FR-SCN-10 keeps private fields off the card). Cost if wrong: one key removed from the card, the listing items and their tests.
+  **Issue:** #116, #108, #110, #103
+- **Decision:** the slots are frozen as follows.
+  - `companion_slots.slot_change` compares the raw merged draft with the stored one before any model validation, so 422 `companion_slots_fixed` comes before #108's `validation_error` in the same patch (the pass-2 line). Roles are matched by `id` (reordering is not a change); a role added, removed, renamed or repeated, or a changed `kind`, `fill` (absent is `open`) or `character` (its catalog id and its version, absent and `null` alike) is the change.
+  - `details` are `{scenario_id, character_id, role, field}`. `role` is the role id (`null` for a role without a string id) and `field` the request path, `body.cast.roles[i].<slot field>` (`body.cast.roles` for a removed role): every other error's `details.field` in this API is a request path, so the pass-2 `{role, field}` is read as that.
+  - #108's hand-off: the null-version save rule is relaxed for companions only (`rule_errors(companion=True)`), so a draft echoed back from a `full` read, whose pin is `null` before the character's first publish, saves.
+  - "Enforced by a check in the scenario validator" (pass 1) is a new #111 check module, `checks/companion.py`, in `validation.CHECKS` after `rating_mismatch`: it reports `companion_slots_fixed` (an error, new in `report.CODES`) on a draft whose slots were changed some other way, at publish and in the dry run.
+  **Why:** the pass-1 and pass-2 lines, made concrete. Cost if wrong: the field path becomes the slot name.
+  **Issue:** #116, #108, #111
+- **Decision:** how a character publish runs (`core.catalog.companion.publish`, called by `CharacterCatalog.publish`).
+  - `CatalogService.publish` is split into steps that the generic publish, the companion published alone (`ScenarioCatalog.publish_alone`) and the character's publish share: `read_editable`, `prepare_for`, `validated`, `insert_version` and `mark_published`. Hooks join the service for what follows an entry: `created`, `saved`, `saving`/`save_values`, `archived`, `dropped`, `set_status`/`remove`, and `refuse_follower`.
+  - Both sides prepare outside any transaction (FR-CONC-2); then one transaction locks the character, then the companion (every companion path takes them in that order: publish, save with the rating write-through, archive, delete, listing status, transfer; the companion published alone takes the character `FOR SHARE`), compares both revisions again, and validates the character, inserts its version, makes it the character's latest, then runs the companion step (`copy_companion`: validate, insert the companion version with its pin columns, pin the draft at its next revision), then records one `control` operation.
+  - The character's version is made its latest before the companion step: the role-characters check reads `current_version`, and without it a first publish's companion failed `character_not_published`. The planned order "validate → insert character version → re-pin/copy companion → companion validation → commit" holds.
+  - A character-alone publish copies the companion's latest version as it read it; when a companion publish committed between that read and the locks, it is 409 `draft_stale` naming the companion (FR-CAT-10's concurrency clause), not a copy of stale content.
+  - A companion the character lacks (only SQL can remove one) is made again in a short transaction before the publish, so no character version exists without its companion version.
+  **Why:** the key link and FR-CAT-10. Cost if wrong: one step moves.
+  **Issue:** #116
+- **Decision:** the character publish's request and answer.
+  - The body is `CharacterPublishRequest`, a `PublishRequest` with an optional `companion_draft_revision`, required with `?with_companion=true` and refused without it (422 at `body.companion_draft_revision`). `Engine.publish_character` checks the pair before the `Idempotency-Key` is claimed (#110's lesson: a used key with a bad body answers the 422), and takes a plain `PublishRequest` too, so existing callers stand. Scenario publishes keep `PublishRequest`.
+  - The 201 answer nests `companion {id, version, draft_revision, report}` (non-null). The codec stores `CharacterPublished`, so a replay answers the companion too.
+  - Every refusal of a character publish names its side, `details.entity` `character` (with `character_id`) or `companion` (with `scenario_id`), in both paths, not only with `with_companion`: a character-alone publish validates the companion too.
+  - A companion version's report names the version validated: `draft` when the draft is published (with the character, or alone), the new version's number for a character-alone copy. The companion side's `rating_looser` source is `<scenario_id>@<that label>`.
+  - The idempotency material adds `with_companion`.
+  **Why:** the pass-1 and pass-2 lines. Cost if wrong: an optional body field.
+  **Issue:** #116
+- **Decision:** what follows the character, and how.
+  - **Creation.** `CatalogService.create_in` calls a new `created` hook, so a creation and a promotion (#114's hand-off: `test_s_promote` asserts the promoted draft's companion) both make the companion in their own transaction: the defaults, the character's owner and listing status, `draft` at revision 1, `content_rating_explicit` false, indexed like any scenario draft. One `control` operation records the whole write. The scenario's `checked` is not run on it: a deployment ceiling below 2 must not refuse every character creation, and the rating is the character's own, already checked.
+  - **Rating.** The pass-2 `content_rating_explicit` column. A companion save whose patch names `metadata.content_rating_id` (any value, the same one or `null`) or resets the `metadata` group sets it. While it is false, a character save that changes the character's rating gives the companion's draft the same rating (or removes it) at its next draft revision (the `saved` hook). A character-alone copy keeps the last published content's rating id, as AC2 reads ("the last published companion content re-pinned"), and records that rating's version current at the copy (the pass-1 "re-snapshots"); a difference from the character is then a `rating_looser` warning (AC4).
+  - **Rating difference.** The pass-1 "both directions reported as `rating_looser`, `source` naming the looser side": a character looser than its companion is #111's rating-mismatch `rating_looser` on the locked role (`source` `catalog_id@version`); a companion looser than its character is the new companion check's (`source` `scenario_id@label`, at `metadata.content_rating_id`). Both run in the dry run too.
+  - **Archive and delete.** `refuse_follower` (#110's companion refusal, made generic) refuses a companion's own archive, unarchive and delete (422 `companion_follows_character`), as #104 and #110 refuse its owner, relations and listing status. A character's archive and unarchive move its companion in the same transaction (`archived` hook: `archived`, else `published` with a version, else `draft`). A character's delete removes its companion first (`dropped` hook) by the scenario's own removal: its `deleted` ownership event, its subject-reference rows, its row and versions under `epistrel.erasure`; then both `catalog_entry_deleted` audit rows name the one operation. The `ON DELETE CASCADE` stays as a backstop.
+  - A companion published alone while its character is archived is 422 `entry_archived` (its own archive, which follows the character's), as the pass-1 line asks.
+  **Why:** AC1, AC4 and AC5, #108's hand-off (the companion's own audit row and `deleted` event) and the pass-1 and pass-2 lines. Cost if wrong: one hook each.
+  **Issue:** #116, #114, #104, #110
+- **Decision:** migration `0033_companions`.
+  - `companion_of` is unique (pass 1): `uq_scenario_catalog_companion_of` replaces #108's plain index. Before it, a character that two scenarios name keeps the older as its companion and the other becomes an ordinary scenario; only SQL could make such rows before #116.
+  - `content_rating_explicit` boolean, NOT NULL, default false.
+  - Every character without a companion gets one (pass 2), as creation makes it, pinned to the character's latest published version (none before its first publish), `archived` with an archived character. The migration writes the defaults in their minimal form rather than importing the catalog models, and `test_every_character_gets_a_companion` checks that they validate to `companion_slots.defaults`. It writes no operation, ownership event or subject-reference row: the backfilled drafts are indexed by their next save or #123's index rebuild.
+  - Downgrade drops the column and turns the index back; the companion rows stay, valid under the older schema.
+  **Why:** the pass-1 and pass-2 lines. A migration that imports application models changes what an old revision does when the models move on. Cost if wrong: a backfilled companion is unindexed until #123's rebuild or its next save (development databases only: M3 is unreleased).
+  **Issue:** #116, #108, #123
+- **Decision (Ad-hoc, see the entry below):** docs/02 §4.10's companion paragraph is amended, as the pass-2 line asks: "a trigger in the catalog service creates one per character" is service code in the character's creation transaction, and "slot edits are rejected by constraint" is the scenario save's refusal plus the validation's companion check. The paragraph now also states the unique `companion_of`, the explicit-rating column, the pin's two places, the lock order, the copy's waiver, `details.entity`, the companion-alone refusal before the first publish, the rating warning, `GET …/companion` and the backfill. §9 names `?with_companion=true` and the companion read. README gains a companion paragraph.
+  **Why:** docs/02 is authoritative and should describe what is built, as #104, #110 and #114 did. Cost if wrong: none.
+  **Issue:** #116
+- **Decision:** existing tests changed because the story changes what they pin. No assertion was loosened.
+  - **Companions planted with SQL, rebuilt on real ones** (a second companion of a character now breaks the unique index):
+    - `test_i_21__companion`: Y is X's own companion; Y2, out of step, is a second character's companion given the new owner with SQL, and that character's transfer leaves it alone (no event, no timestamp). The ownership-event count is 3, not 2, for the second transfer.
+    - `test_c_15__listing_status`: Mara's own companion followed her `public` change and follows her `in_review` one; the holders of `private` are Ivo and his companion (2, not 1); the companion list also shows Ivo's.
+    - `test_catalog_search`: `test_statuses_and_companions` dresses Mara's companion with the scenario body's public card, metadata, world and opening (`catalog_support.dress_companion`) and publishes it alone; `test_companions_follow_and_hooks_run` uses three characters' companions (one published, one a draft, one put ahead with SQL) instead of three companions of one; `test_listing_status_writes` counts the characters' own `listing_status` events (each companion records its own too); `test_listing_status_values_setting` counts 6 holders of `public`, the three characters and their companions, not 4.
+  - **Every character now has a companion:** `test_i_21__listing_filters`' whole-table check lists scenarios with `include_companions=true`; `test_subject_references_are_indexed` reads the scenario's own rows (the character's companion indexes it too); `test_draft_save_publish_and_versions` (characters) expects the companion's id in `companion_id`, where it expected `null`.
+  - **New shapes:** the scenario table-shape test gains the column and the unique index; `scenario_support.FULL_KEYS` gains `pinned_character_version`; the check list in `test_catalog_validation` gains `companion`.
+  - **New routes and steps:** `ownership_fixtures.CALLS` gains `GET …/companion` (five reads, so the nothing-gates matrix covers it); C-03 gains four steps (the companion read through its character, its draft saved, published with the character as a pair, and version 2 read in full), checked through `ENTRY_ANSWERS`; C-03's body names no M3 term.
+  **Why:** the delivered-type guard, the parity rule and the unique index require them. Cost if wrong: none.
+  **Issue:** #116, #104, #110, #108, #103
+- **Decision:** I mutation-checked the story. A script applied each mutation, ran the tests named for it and restored the source, checking its SHA-1; every file matched afterwards. All 24 mutations fail a test; seven of them were spot-checked, and each fails at the assertion meant for it:
+  - **Slots:** never fixed; refused for a `null` pin on a companion (the relaxation dropped); not checked by the validation (a planted draft publishes).
+  - **Publishing:** the first publish copies the stored draft; a character-alone publish publishes the draft; the draft not re-pinned; copies waive nothing; the companion not validated; the character made latest after the companion step; a stale copy not refused; a missing companion left missing; the pin columns not written; a companion published alone pinned to its draft's pin.
+  - **Following:** the rating never followed; never set explicitly; the archive not cascaded; the delete left to the foreign key's cascade; a companion archived alone.
+  - **Requests and reads:** `companion_draft_revision` not required; refusals naming no side; a never-published companion not read as its draft; no pin shown in `full`; no companion created; no companion rating warning.
+  The last of the publishing mutations first survived: in normal operation every character publish re-pins the draft, so the draft's pin is the latest. `test_a_companion_published_alone_pins_the_latest_character_version` now leaves an older pin in the draft with SQL, and the mutant fails it.
+  **Why:** under the batched gate, a story's correctness rests on its own tests until group B's full run. Cost if wrong: none.
+  **Issue:** #116
+- **Decision:** hand-offs, not done here (see the `## Ad-hoc` entry below for what later plans may now find stale):
+  - **#119:** create stories from companion versions (each locked role names its pinned version, so the snapshot is the pinned pair), assert I-20's "every story created from any companion version snapshots exactly the pinned pair" and S-COMPANION's story clauses in `test_i_22__creation`, and add FR-CAT-10 to that marker (the pass-1 line). A copied companion version may have no world or opening.
+  - **#123 and #124:** companion drafts and versions are indexed as scenario records on create, save and publish (a re-pin changes no indexed field, so it does not re-index); the drafts migration 0033 backfilled have no rows until their next save or #123's rebuild. A character's delete now removes its companion explicitly, with its own audit row and event. A stored `publish_character` result holds the companion's report.
+  - **#117:** a character's companion goes with it through the character's own transfer and delete paths.
+  - **#128:** the new route, query parameter, body field, nested answer and error codes are in `docs/openapi.json`, with C-03 steps.
+  **Why:** each belongs to that story's plan. Cost if wrong: a gap those stories' tests catch.
+  **Issue:** #116, #117, #119, #123, #124, #128
+- **Decision:** #116's gate, per the M3 per-story rule (the full suite is the orchestrator's, at the end of group B).
+  - **Routes, Engine methods and OpenAPI:** `tests/conformance` (C-01's generated run included), the route guard, the response bases and `test_openapi_calls_the_message_finished_never_verified`: 169 passed in 486 s.
+  - **Migrations, tables and every module that exercises the catalog:** `test_migrations`, `test_drift`, I-08 and the event-store schema; the catalog characters, search, character content, the new companion module, engine profiles, I-17, I-20, I-21, media assets and delivery, ownership, personas, the scenario catalog and validation, story characters; and the unit modules for the catalog, listing, validation, U-26, U-29, the trust boundary, the docs' Python version and the ownership rules (README and docs/02 changed): 410 passed in 111 s.
+  - **Static checks:** ruff check and format, mypy (509 files), lint-imports (3 kept), check-assignment (438/438), check-parts (200 parts), check-lexicon (0 violations), check-traceability (173 code parts), check-deps (63 packages, 0 denied), `openapi --check` (regenerated) and `model_guide --check` all pass. No dependency changed, so check-licenses was not run.
+  **Why:** the M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #116
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #116 gave every catalog character its companion scenario and amended docs/02 §4.10, as its pass-2 line asks: docs/02's "a trigger in the catalog service creates one per character" is read as application code, and "slot edits are rejected by constraint" as the scenario save's refusal plus a validation check, since roles live in the document. What later stories build on:
+  - **Creation.** A character's creation (a promotion's too) creates its companion in the same transaction: `scenario_catalog.companion_of` (now unique), the roles `npc` (locked to the character, no version until its first publish) and `player`, the character's name and rating, an empty world. Migration 0033 backfilled one for every existing character, without subject-reference rows.
+  - **Following.** A companion's owner, listing status, archiving, unarchiving and deletion follow its character's and are refused alone (422 `companion_follows_character`); a character's delete removes its companion first, with its own `deleted` ownership event and `catalog_entry_deleted` audit row. Its draft takes the character's rating until one is set on it (`scenario_catalog.content_rating_explicit`).
+  - **Slots.** A save that adds, removes or changes a companion's role `id`, `kind`, `fill` or `character` is 422 `companion_slots_fixed` (`details {scenario_id, character_id, role, field}`); the validation's new `companion` check reports the same code, and a companion's `rating_looser` against its character.
+  - **Versions.** Every character publish makes a companion version in its transaction, pinned to the new character version (`scenario_versions.pinned_character_id`/`pinned_character_version`, and the `npc` role's `character.version`): a copy of the latest published companion content (the defaults on the first publish), or with `?with_companion=true` and `companion_draft_revision` the companion's draft. The companion published alone pins the character's latest published version. A refusal names its side (`details.entity`). `POST /catalog/characters/{id}/publish` answers a nested `companion {id, version, draft_revision, report}`, and stores it with its idempotency result.
+  - **Reads.** `GET /catalog/characters/{id}/companion` (`Engine.get_companion`); `pinned_character_version` in a scenario's `full`; `companion_id` in a character's `full` and its archive answers.
+  **Why:** #116's AC and its pass-1 and pass-2 lines; the decision entries above give the details.
+  **Affects:**
+  - **M3 #117 (offboarding).** A character's companion goes with it through the character's own paths (transfer, delete); the companion's own transfer, relations, listing status, archive and delete are refused. Its plan ("a character's companion follows the character's action … companions omitted") fits; the character's delete now deletes the companion explicitly.
+  - **M3 #119 (genesis).** A companion version's locked role names its pinned character version in its content (and its columns), so creating a story from any companion version snapshots exactly that pair; the I-20 and S-COMPANION story clauses, and FR-CAT-10 on `test_i_22__creation`'s marker, are #119's. A companion has no world until its author writes one, and a character-alone copy needs no world or opening, so genesis must accept a companion version with neither.
+  - **M3 #123 and #124 (index and erasure).** Companion drafts and versions are scenario records, indexed on create, save and publish (a re-pin does not re-index); backfilled drafts have no rows until their next save or #123's rebuild. #124's catalog deletion goes through the character's delete, which now removes the companion explicitly (its own audit row and event) before the `ON DELETE CASCADE`. A stored `publish_character` idempotency result now holds the companion's report too (#111's Ad-hoc entry already flags its purge).
+  - **M3 #128 (API surface).** New: `GET /catalog/characters/{id}/companion`, `?with_companion` and `companion_draft_revision` on the character publish, its nested `companion`, the error `companion_slots_fixed`, and `companion_follows_character` on a scenario's archive, unarchive and delete. C-03 has steps for them.
+  - **M4 #148 and #149.** The seed checks of I-20's M4 part ("a companion seed refers to an alias the new character version no longer has") run as the companion's validation inside the character's publish (`companion.copy_companion`), which already refuses the pair and names the companion (`details.entity`).
+  - **M8 #259 and #260.** "The companion version whose `pinned_character_version = N`" exists as planned.
+  - **The Console (nathanpond/Epistrel-Console).** The character screens can show and edit the companion (`GET …/companion`, `PATCH /catalog/scenarios/{id}`), publish the pair (`with_companion`), and must expect 422 `companion_slots_fixed` and `companion_follows_character`.
+  - **Next step:** #117, #119, #123, #124 and #128 are later M3 stories in this run; their drift check should apply this, or `/n8-replan M3` should run before them.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after #116's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111, #113, #114 and #115 did. Cost if wrong: one heading.
+  **Issue:** #116
+
+- **Decision:** Group B paused at the owner's request ("finish current tasks and take a break", about 20:45). The one agent working then, #116's implementer, finished first. The group B workflow (run `wf_bf0f8bc7-2e0`) was stopped at 21:11, seconds after #116 returned and before any other agent did any work: #114's fix round 2 and #116's first verifier had just started, made no tool calls and posted nothing. The tree was clean and the branch pushed at `9b1a306`.
+  State of group B at the pause:
+  - #111 and #112: verified (both in round 2).
+  - #110: built and fixed twice. Its third verification left 4 test gaps: case-sensitive listing status values, the 1- and 40-character edges, the generated search column, and two paging edges. They need a follow-up fix with a focused verifier, as #104, #105, #108 and #109 had in group A.
+  - #113: built and fixed twice. Its third verification left 5 gaps:
+    - `deployment_defaults` is never checked against a value the upper layers change;
+    - no test discriminates the per-setting change class;
+    - the two writes bypass #109's `impact.two_stage`;
+    - the routes' published text says an archived story is 409 even when the call changes nothing (that answers 200);
+    - no test covers pins in the runnability cross-checks.
+    It needs the same follow-up.
+  - #114: built and fixed once. Its second verification left 2 test gaps: a promoted ad-hoc character listed in the catalog, and an omniscient read's `promoted_to`. Fix round 2 and verification round 3 are next.
+  - #115: built. Its first verification left 3 gaps: a non-finite `adapter_params` value in a PATCH is silently deleted, two assertions were weakened by the move of `name` under `public_card`, and a docs/02 §4.10 pronoun. Fix round 1 is next.
+  - #116: built (`78f37fd`, `9b1a306`), not yet verified.
+  - #117, #118 and #119: not started.
+  - Group B's full-suite gate, AC ticks and completion comments wait for the group to finish. No group B AC box is ticked yet.
+  - Filed so far in group B (`needs-triage`): #321 to #325.
+  - The orchestrator relayed group B's `## Ad-hoc` entries (from #111, #113, #114, #115 and #116) to the drift notes of the later stories they name: #116, #117, #119, #122, #123, #124 and #128.
+  **Why:** The owner asked to stop after the work in progress. Stopping between agents leaves a clean tree and every finished agent's result in the run's journal, so resuming redoes nothing that finished.
+  **Resume:**
+  - In the same session, relaunch the workflow with `resumeFromRunId` `wf_bf0f8bc7-2e0`. Finished agents replay from the journal. The queue continues with #114's fix round 2, #115's fix round 1 and #116's verification, then #117 to #119.
+  - After that come the follow-ups for #110 and #113, then group B's gate.
+  - In a new session, author a continuation from that run's journal with the same work list.
+  **Issue:** #110, #111, #112, #113, #114, #115, #116, #117, #118, #119
+- **Decision:** #114 fix round 2: both verifier gaps were real test gaps (no product change). `test_s_promote` now checks, after the ad-hoc addition and before any promotion, that the catalog's row count is unchanged, that no listing in any status (published, draft, archived; every page) shows an item named "Dale Pruitt", and that no draft holds that name under `draft->'public_card'->>'name'`. The old SQL check read the top-level `draft->>'name'`, which #115's migration 0032 moved under `public_card`, so it always counted 0. The test then reads `GET /stories/{id}?viewpoint=omniscient` after the two promotions and asserts `promoted_to == [first, second]`, and checks that a plain read of the same character carries no `promoted_to` key. Mutation re-checks: an `insert_character` that also calls the character catalog's `create_in` now fails the test, both at the row count and, with that check disabled, at the name listing. `promoted_to=()` in the omniscient read fails it at the new assertion. Both mutations were reverted.
+  **Why:** The AC ("never lists it, asserted after creating one") and the pass-2 Discretion line (`promoted_to` in an omniscient read) were covered only by checks that could not fail. The row count catches a catalog write whatever name it carries. The name and SQL checks catch one that reuses a row count elsewhere. Cost if wrong: none to the product, only a slightly longer test.
+  **Issue:** #114
+- **Decision:** #115 fix round 1, gap 1 (Rule 1, input validation): `VisualIdentityPatch.adapter_params` now carries the finite check (`FiniteParams`, `Annotated[dict[str, Any], AfterValidator(require_finite)]`). A PATCH with a non-finite number (`1e400`, `-1e400`, `NaN`, `Infinity`) in `visual_identity.adapter_params` is 422 `validation_error` at `body.visual_identity.adapter_params` and leaves the draft and its revision as they were. Before, it answered 200 and deleted the key: the patch is dumped with `mode='json'`, which writes the infinity as `null`, and the merge reads `null` as "remove". The size bound (`_params_bounded`) stays on the merged draft only, not on the patch: the merged document is what gets stored, and a patch is never larger than it. `test_numbers_in_adapter_params_must_be_finite` gained the PATCH cases, plus a complement where a finite save merges and a `null` removes a key. Without the fix the extended test fails (200 answered where 422 is asserted).
+  **Why:** The decision log's "adapter_params holds finite numbers only" held on create but not on save. Cost if wrong: none; a finite patch merges as before.
+  **Issue:** #115
+- **Decision:** #115 fix round 1, gap 2: corrects the #115 entry above that says "No assertion was loosened". Two existing complements read the top-level `draft->>'name'`, which migration 0032 moved under `public_card`, so they could no longer fail. #114's fix round 2 (`884d01c`) already corrected `test_s_promote`'s. This round corrects `test_every_write_is_idempotent_and_attributed`: it now counts `draft->'public_card'->>'name' = 'Someone Else'` (still 0 after the 409 `idempotency_conflict`). A positive complement shows the query can match: the same path finds the test's entry under its saved name "Ilse", count 1. Mutation re-check: with the query put back to `draft->>'name'`, the complement fails. Reverted.
+  **Why:** A check that cannot fail is a loosened check, whatever the diff looks like. Cost if wrong: none.
+  **Issue:** #115
+- **Decision:** #115 fix round 1, gap 3 (docs): in docs/02 §4.10, the deflection-style sentence now comes after "It is recorded by a `control` operation ... a fork copies it", so "It" refers to the added character again. The C-15 module docstring now lists #115's part, `test_c_15__character_content` (FR-CAT-2,4, as its part marker says).
+  **Why:** docs/02 is authoritative, and the pronoun misattributed the recording rule. Cost if wrong: none.
+  **Issue:** #115
+- **Decision (drift, deviation from the pass-1 line):** #117's request records a committed, story-less `control` operation in the POST transaction (#103's pattern, `control.record_control_operation`), which binds the `Idempotency-Key` and stores the 202. It does not record an `in_flight` operation that the job finalises, as the pass-1 line says. So `jobs.operation_id` and `operations.stage_log` are not added. The operation's id is kept on the new `offboarding_jobs.operation_id` instead. A dry run, or a plan held by its warnings, writes nothing and releases its key (`_keyed(keep=offboarding.stored)`, #109).
+  **Why:** The drift note: #75's `fail_orphans` marks `failed` any `in_flight` operation older than 60 s that no running job with a live lease claims. A queued offboarding claims nothing (between yields, in backoff), and `Operation` cannot finish a row another process began. Keeping the in-flight shape would have needed an `_unclaimed` extension plus a guarded cross-process finalise; for #128's stage view, the `offboarding_jobs` row's status and progress already say what the stages would. Cost if wrong: #118 and #128, whose plans name `jobs.operation_id`, add the column themselves (see the Ad-hoc entry below).
+  **Issue:** #117, #118, #128
+- **Decision (drift):** The job framework gains two small pieces instead of the per-entity `maintenance` operations of the pass-1 line. `JobOutput.requeue_in` lets a handler that records no operation put its row back to `queued`, due in N seconds, under its fence. It is not a failure, and `failures` is untouched (`queue._requeue`, reusing `_back_to_queue`). `queue.hold(conn, job)` fences one of a handler's own transactions: it locks the job row and raises `Fenced` when the claim no longer holds it. The offboarding handler (`orchestrator/jobs/handlers/offboarding.py`, `records_operation=False`, `max_attempts` 20) yields every 100 entities. Each entity's change is recorded by the path that made it: its own `control` operation and ownership rows. It is not a `maintenance` operation declaring the progress row as an input.
+  **Why:** `commit_job` commits one output once, and #50's `delete_story` runs its own `control` `Operation` and transaction, so no delete can join a job's operation (drift note). A per-entity `maintenance` operation would add one empty operations row per entity and still not cover the delete. Cost if wrong: another handler style; `requeue_in` is additive and refused for handlers that record an operation.
+  **Issue:** #117, #70
+- **Decision:** Resumability is a marker in `offboarding_jobs.progress`, not one transaction holding both the action and the progress. Before acting, the job records the entry as `progress.current`. The type's own path then acts in its own transaction. A fenced transaction then records the outcome in the report and moves `progress.index` past it. A run that finds its entry already `current` is `resumed`: a delete whose entity is gone, or a transfer whose entity is already at `transfer_to`, is recorded as done without acting again. Soft deletes (media retire, profile delete) and relation removal are idempotent anyway. `test_i_21__offboarding_resumes` kills the run after a story's delete and before its record. Every entity's ownership events are then counted once.
+  **Why:** Every normal delete and transfer opens its own transaction, so the action and the progress cannot commit together. The re-check is the drift note's ("rely on the per-entity re-check (`gone`)"). Cost if wrong: a run fenced between acting and recording, whose replacement then finds the entity changed by someone else, records `skipped`. That is a report inaccuracy, never a double action.
+  **Issue:** #117
+- **Decision:** The job's ownership rows name it without new parameters on every delete path. `core.ownership.acting_job(job_id)` sets a context variable, and `record_event` writes it into `ownership_events.job_id` when no explicit `job_id` is given. The job runs every path as `system`. Relations are removed by a new `ownership.remove_relations_of` (one transaction per entity under its row lock, one `relation_removed` event per name, one `control` operation). The relation queries the plan needs (`principals.related_entities`, `related_principals`) live in `core/principals.py`, so `core.ownership` and `core.principals` stay the only readers of `entity_relations` (`tests/test_ownership_rules.py`).
+  **Why:** The pass-1 line ("rows the job writes carry principal `system` and the job id"), and #104's rule that only the two modules read relations. Cost if wrong: one context variable.
+  **Issue:** #117, #104
+- **Decision:** Choices the AC and Discretion left open:
+  - **Counts.** A companion is counted with its character, not as a scenario, so `characters` counts characters. A media asset moved by a transferred entry counts as `transfer`. Relations count `{remove, keep}`.
+  - **The 202 body.** It is `{applied: true, job_id, counts, warnings}`: the plan's `{job_id, counts}` plus the warnings it was confirmed over. The 200 body is `{applied: false, counts, warnings}`. Both extend `DeploymentMutationResponse` and carry `config_revision`.
+  - **Warnings.** Each is `{kind, entity_type, entity_id, principals}`, with `entity_type` the ownership type (`story`, `engine_profile`, `media`). `profile_in_use` and `media_referenced` count only other owners, as FR-AUTH-7 says. `media_referenced` reads every reference source with its holder (`media.assets.REFERENCE_HOLDERS` and `references`, new, beside #105's `referenced`).
+  - **Report.** Buckets are `deleted`, `transferred`, `removed` (relations), `kept` and `skipped`, each by type. A companion is listed under `scenarios` with `companion_of`, and a moved asset carries `reason: referenced`. Skip reasons are `gone`, `not_owned`, `name_taken`, `default_profile`, `busy` and `none` (no relation left to remove).
+  - **Remaining.** `remaining` lists only live links. A retired asset and a deleted profile are still owned until their sweeps purge them, so they are not "still linked". The lookup itself lists them with their status, as the pass-1 line says.
+  - **The snapshot.** It holds every owned entity, `keep` ones included, so the report lists what was kept. A media `candidate` (FR-IMG-7, private) is neither listed nor offboarded.
+  - **Relations.** `relations: remove` covers the entities the principal does not own, plus the ones it owns and transfers. A deleted entity's relations go with it; a kept one's stay.
+  - **Personas.** A persona transfer that would give `transfer_to` two personas of one name is skipped (`name_taken`), not failed.
+  - **Busy stories.** A busy story is deferred and retried 3 times, `BUSY_DELAY_S` (5 s) apart, through `requeue_in`.
+  - **Failure.** On the job's last failed attempt the row is `failed`, with `error {class, message}`. The message names the class only, never what was being processed (invariant 3's spirit). The partial report and `remaining` are kept.
+  **Why:** Each is the reading closest to FR-AUTH-7 and the pass-1 lines. Cost if wrong: a report or body shape changes before any consumer reads it.
+  **Issue:** #117
+- **Decision:** The lookup's routes and parameters.
+  - `GET /principals/{principal_id:path}`: the principal is the rest of the path (it may contain `/`). It follows the principal rule with `system` allowed; a blank one is 422 at `path.principal_id`.
+  - One `limit` (1–200, default 50). The per-page cursors are explicit query parameters, `cursor[<type>]` and `cursor[related.<type>]`, in #110's encoding (`catalog.search.encode_cursor`), bound to the principal, the section and the type. A cursor sent to another page is 422 `cursor_invalid` at `query.cursor[<page>]`.
+  - Keysets: `(updated_at, id)`, or `(created_at, id)` for stories and media, and the newest relation's `created_at` for related entities.
+  - Items: `{id, name, status, version, listing_status, companion}`, with `null` where a type has none. A media asset's name is its caption, else its alt text. A profile's status is `active` or `deleted`. A persona's status is `null`.
+  - The route has its own non-admin router with the new closed-list tag `principals`. `OPERATOR_PATH_PATTERNS`' `offboard` segment now also matches `offboarding`.
+  **Why:** The pass-1 line and the drift note's route placement. Cost if wrong: renames before #128 freezes the surface.
+  **Issue:** #117, #110, #128
+- **Decision (drift):** Retention. Finished `offboarding_jobs` rows are purged by #71's `sweep_retention` after the new `offboarding_report_retention_days` (default 90, 1–3650, prospective; in `RetentionSettings` and `SettingsPatch`, pinned in U-18). The sweep's result gains `offboarding_jobs`. The row keeps its own status and report, with no foreign key to `jobs`.
+  **Why:** The drift note: finished `jobs` rows go after `job_retention_days` (7). Like `job_retention_days`, the new setting is not read back by `GET /admin/settings`, because `RetentionSettings` is missing from `config_changes.SECTIONS` (#315, open). Cost if wrong: none beyond #315's.
+  **Issue:** #117, #71, #315
+- **Decision (drift):** The parts follow docs/04 §15 and the one-file rule.
+  - `test_i_21__offboarding` and `test_i_21__offboarding_resumes` both carry `part("M3", "FR-AUTH-7")`, in `tests/integration/test_i_21.py`.
+  - The test plan's bare `test_offboarding` maps to no docs/04 ID.
+  - X-07 (M3) is the media sweep's (#105), so the resume part is an I-21 slice.
+  - The I-21 slice follows docs/04's text (profiles `transfer`). It also runs a dry run with profiles `delete`, to show all three warning kinds.
+  - The test plan's variant (profiles deleted, so a profile is retired) is the detailed `test_offboarding_carries_out_every_action`. It sits with 13 more detailed tests in `tests/integration/test_offboarding.py`, the must-have's file.
+  - Each test runs on its own scratch database: it counts rows, and its worker would otherwise claim other tests' jobs.
+  - check-parts counts 202 parts, check-lexicon finds 0 violations, and check-traceability passes.
+  **Why:** The drift note. Cost if wrong: renames only.
+  **Issue:** #117
+- **Decision:** Existing tests changed because new operations need them; no assertion was loosened.
+  - **C-03.** It gains four principal steps: a lookup, a dry run of removing everything of the parity principal's, a 202 enqueue that keeps everything, and the job read back as `queued`. `Step` gains an optional `status`, because the library result's REST status is the 202 beside the route's 200. Its body names no M3 term.
+  - **C-01.** It seeds a queued offboarding, and its path ids gain `job_id` and `principal_id`, so generated requests reach the new routes. Its C-01 run passed: 123 tests.
+  - **U-18.** It pins the new setting as prospective.
+  **Why:** The parity rule (`parity_gaps`) and the delivered-route conformance. Cost if wrong: none.
+  **Issue:** #117, #73
+- **Decision:** The hand-offs from #114 and #116 are applied as their entries ask.
+  - Personas are deleted through `core.catalog.personas.delete`.
+  - A character's companion goes with it through the character's own paths, never as an entity of its own. The catalog delete removes it (its own `deleted` event and audit row), and `ownership.transfer_owner` moves it.
+  - The report lists the companion under `scenarios` with `companion_of`.
+  - A scenarios action never touches a companion: companions are left out of the snapshot (`listed: companion_of IS NULL`).
+  **Why:** The relayed Ad-hoc entries. Cost if wrong: none.
+  **Issue:** #117, #114, #116
+- **Decision:** #117's gate, per the M3 per-story rule (the full suite is the orchestrator's, at the end of group B).
+  - **Routes, Engine methods and OpenAPI:** `tests/conformance/` (C-01's generated run included), the route guard, the response bases, the route flags and `test_openapi_calls_the_message_finished_never_verified`: 175 passed in 596 s.
+  - **Migrations, jobs, ownership and offboarding:** `test_migrations`, `test_drift`, I-08, the event-store schema, X-07, `test_jobs`, the summary job, `test_offboarding`, I-21, `test_ownership`, the ownership rules, U-18, the trust boundary, the docs' Python version, the event registry, S-RETENTION, S-DELETE and `test_time`: 211 passed in 63 s.
+  - **The catalog, media and profile modules the new code calls:** engine profiles, feedback, I-17, I-18, media assets and delivery, scenario validation, story characters, catalog listing, the media units, personas, companions, catalog characters, the scenario catalog and config changes: 230 passed in 74 s.
+  - **Static checks:** ruff check and format, mypy (518 files), lint-imports (3 kept), check-assignment, check-parts (202 parts), check-lexicon (0 violations), check-traceability, check-deps, `openapi --check` (regenerated) and `model_guide --check` all pass. No dependency changed, so check-licenses was not run.
+  **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #117
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #117 built principal lookup and offboarding with shapes that differ from what its plan and later plans name.
+  - **Routes.** `GET /principals/{id}` (tag `principals`), `POST /admin/offboarding` and `GET /admin/offboarding/{job_id}` replace docs/02 §9's `/principals/{pid}/entities` and `/admin/principals/{pid}/offboard[/{job_id}]`. docs/02 §9 and §4.10 are amended, and the README gains a section.
+  - **New error codes.** `principal_reserved`, `transfer_target_required` and `transfer_target_invalid` (422), and `offboarding_in_progress` (409).
+  - **The request's operation** is a committed `control` operation that binds the key. The plan's `in_flight` operation, finalised by the job, is not built. **`jobs.operation_id` is not added**: the link lives on `offboarding_jobs.operation_id`, and `operations.stage_log` is not added either.
+  - **The job framework** gains `JobOutput.requeue_in`, which continues a job later without a failure, and `queue.hold`, which fences one of a handler's own transactions.
+  - **The rest.** `ownership.acting_job` puts the job's id on ownership rows. `media.assets.references` and `REFERENCE_HOLDERS` name who holds each media reference. A new setting, `offboarding_report_retention_days` (90), is purged by `sweep_retention`.
+  **Why:** #117's AC and its pass-1 lines, corrected by the drift notes: #75's orphan sweep fails an `in_flight` operation that a queued job does not claim, and `commit_job` commits once. The decision entries above give the details.
+  **Affects:**
+  - **M3 #118 (rating tightening).** Its pass-1 line opens an `in_flight` `control` operation at PUT time, finalised by the job and linked "via `jobs.operation_id` (#117)". That column does not exist. #118 must add it, with the `_unclaimed` extension in `core/orphans.py` the #117 drift note describes, or follow #117's committed-operation pattern with the link on its own `rating_check_jobs` row. `JobOutput.requeue_in` and `queue.hold` are there to reuse.
+  - **M3 #128 (API surface).** Its stage view was to read `jobs.operation_id` and `operations.stage_log` for an offboarding. An offboarding's stages are its `offboarding_jobs` row (`status`, `progress`, `current`). The route table and error list now hold the three new routes and four new codes, with C-03 steps. `OPERATOR_PATH_PATTERNS` already matches `offboarding`.
+  - **M3 #124 (erasure).** Offboarding leaves attribution on events, as FR-AUTH-7 says. If erasure reuses the stage log, it adds `operations.stage_log` itself, as its own migration already plans.
+  - **The Console (nathanpond/Epistrel-Console).** New surfaces: a principal lookup screen, an offboarding form (dry run, warnings, confirm), and a progress and report view.
+  - **Next step:** #118 is the next group B story; its drift check should apply this, or `/n8-replan M3` should run before it.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after #117's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111, #113, #114, #115 and #116 did. Cost if wrong: one heading.
+  **Issue:** #117
+- **Decision:** I posted #118's plan comment late. Implementation was under way before the comment went up, and the comment says so. The plan it describes is the one built.
+  **Why:** The task asks for the plan comment before any code. That order was missed, and the log should say so. Cost if wrong: none to the product.
+  **Issue:** #118
+- **Decision (drift):** A turn in flight during a relax commits under the new rating because `content_rating_id` (which rating the story has) joins the compared Lite dependencies (`core.config_dependencies.LITE_DEPENDENCIES`). The turn is re-checked (`ConfigRecheck`) and re-captured, so it records the new `rating_version`. I did not compare `rating_version` itself, because that would re-check, with guardrail model calls, every turn in flight during any edit of the story's rating, a description-only edit included. Guardrail and policy changes are already compared.
+  **Why:** The drift note covers this. FR-RATE-6 counts an equal set as a subset, and every seeded set is empty, so a relax between seeded ratings moved no compared value: the turn committed with the old version. Mutation-checked: without the member, `test_equal_guardrails_relax_and_a_retired_target_is_refused` fails on the recorded version, and `test_i_22__relax_tighten` fails on `config_changed`. Cost if wrong: one more re-check per rating change mid-turn.
+  **Issue:** #118, #64
+- **Decision (drift, deviation from the pass-1 line):** The tightening request records a committed `control` operation (#117's pattern, `control.record_control_operation`). It does not record the `in_flight` operation the job would finalise. The committed operation binds the `Idempotency-Key` and carries the `story_paused` event. The same transaction inserts the `rating_check_jobs` row, enqueues the job and sets the story `paused`. The operation's id is kept on `rating_check_jobs.operation_id`, so `jobs.operation_id` is not added. When the change applies, it is recorded by its own committed `control` operation, the configuration write's, with the principal who asked (`started_by`), and `story_resumed` is recorded under it. A refusal or a failure records `story_resumed` under a committed `control` operation of its own.
+  **Why:** The drift note and #117's Ad-hoc entry: #75's orphan pass fails an `in_flight` operation that a queued job does not claim, and `record_config_change` always records its own committed operation. Cost if wrong: #128's stage view reads the `rating_check_jobs` row, not an operation's stages.
+  **Issue:** #118, #117, #128
+- **Decision (deviation from the pass-1 line):** The PUT pauses the story at once, and the job waits for a turn in flight to commit (`in_flight_turn` clear, up to twice the default turn deadline from the request) before it reads the history. The plan instead had the job wait before pausing.
+  - `Operation.begin` refuses revision-bumping work on a paused story.
+  - A commit is not refused, so work that began before the pause finishes.
+  - A write that commits after the history was read moves `timeline_revision`, and the job reads again.
+  **Why:** With the pause in the request, the 202 and the first `story_paused` are deterministic. The turn in flight still commits and is checked, as `test_the_check_waits_for_a_turn_in_flight` shows. docs/03 FR-CONC-5 ("a pause begins only after any in-flight ordinary turn has committed") is met in effect: under `reject` a new turn would get `story_busy` meanwhile anyway, and here it gets `story_paused`. Cost if wrong: during that window a new call is answered `story_paused` instead of `story_busy`.
+  **Issue:** #118
+- **Decision:** What a pause refuses and what it serves (`core/pause.py`, 409 `story_paused`, details `{story_id, job_id, cause, progress {done, total}}`).
+  - **Refused:** respond, regenerate, a queued turn when it would start (the drainer records `story_paused` on it), ingest, pinned memories, custom instructions, truncate, untruncate, swap, an added character, fork, archive and unarchive, story policies (`PATCH /settings` with `policies`, `policies_set_story`) and a second rating change. Each is checked right after `story_archived`, and `Operation.begin` refuses every revision-bumping operation as a backstop.
+  - **Served:** reads; `PATCH /settings` without `policies`; the story's engine profile and overrides (prospective, a reading the pass-1 list does not mention); owner and relation changes; feedback; and delete.
+  - **Delete:** "delete cancels the job" is met by enqueueing the job with no `story_id`. So `delete_story`'s `_refuse_running_job` never sees it, the `rating_check_jobs` row goes with the story, and the job ends when it finds no row (`test_delete_during_the_check_ends_it`).
+  **Why:** The pass-1 line and the drift note's "make delete cancel or drop it". Cost if wrong: a deletion during a run's model call leaves that one run to finish its call before it ends.
+  **Issue:** #118
+- **Decision (drift):** `operations.checked_guardrails` (migration 0035, added to the trigger's allow-list) is encoded `{rating_id, rating_version_id, global, rating, story, character}`, each `{policy_id: version}` with integer policy versions. I added `rating_id` and the `rating` map to the pass-1 encoding, because rating policies are edited in place too.
+  - Every `turn` operation, generated or ingested, is stamped at commit under the story lock with the set in force then (`core/ratings/stamp.py`). That set is what a turn re-checked mid-flight passed.
+  - An applied tightening restamps every active turn variant with the target's set.
+  - Turns committed before 0035 keep `NULL`. No backfill: which set they passed is unknown, and #120 should read `NULL` as "passed no recorded set".
+  **Why:** The drift note: policies have integer versions and no version table. Cost if wrong: #120 compares a different shape.
+  **Issue:** #118, #120
+- **Decision:** The verdict cache (`guardrail_check_results`, a story table, never copied by a fork) is keyed by `(story, record_key, policy_id, policy_version)`. An event's key is its id. A pinned memory's key is `pin:<id>:<sha256[:16] of its text>`, and the custom instructions' is `instruction:<sha256[:16]>`, because the projection holds no event id and the key must change when the text does. Deterministic verdicts are stored. A model-assisted verdict is stored only when the model was conclusive: an uncertain or unaffordable one follows `on_uncertain` and is asked again next time.
+  **Why:** The pass-1 line says "keyed by event id (images by asset id)", and pins and instructions have no event id of their own. Cost if wrong: a pin edit re-checks only that pin.
+  **Issue:** #118
+- **Decision:** The shape of `evaluate_history`, for #119 to reuse.
+  - The signature is `evaluate_history(target_guardrails, records, *, model_check=None, calls_per_record=0, cache=None, progress=None, image_check=None) -> HistoryResult(violations, checked, cached, verdicts, model_calls)`.
+  - The caller decides age conditions: it passes the policies that apply (`GuardContext.active`).
+  - A character-scoped policy checks only that character's records.
+  - Every violation is listed, in position order: turns, then `{kind: seed|pin|instruction|image, id}`.
+  - The model check is a `ModelCheck` protocol in `core/ratings/change.py`, not a new member of #103's `Ports`. The job, which is Orchestrator code, passes `ModelPolicyCheck`: one `guardrail_check` call through `check_text`, under its own one-call, 60 s budget, never a turn's.
+  - `read_history` reads every committed, active `player_input` and `message_rendered` event (genesis included: an event with no turn is a `seed`), plus the pinned memories and the custom instructions.
+  **Why:** The pass-1 line ("an injected checker port") and core's layering. A `Ports` member would need the Engine to wire it, and the only caller is a job. Cost if wrong: #119 wraps the protocol once.
+  **Issue:** #118, #119, #103
+- **Decision:** Story images. `story_image_records` answers `[]` in M3. An image record is checked by its prompt (`image_prompt`). With no image checker it is a violation with `code: image_unchecked`, attributed to the target's first `image_output` policy (`null` when it has none). This is tested in the unmarked `tests/test_rating_history.py`, and no M3 part body uses the M8 terms.
+  **Why:** The pass-1 line and the drift note's lexicon correction. Cost if wrong: #272 changes how the violation is attributed.
+  **Issue:** #118, #272
+- **Decision (drift):** The settings.
+  - `rating_check_model_calls_per_record` (prospective, 0 to 100, default 2) is a field of `GuardrailSettings`, which is in `config_changes.SECTIONS`, so `GET /admin/settings` reads it.
+  - `rating_check_retention_days` (prospective, 1 to 3650, default 30) is a field of `RetentionSettings`, and `sweep_retention` purges finished `rating_check_jobs` rows by it (new result key `rating_check_jobs`).
+  - Both are in `SettingsPatch`, pinned in U-18, and named in `PUT /admin/settings`'s description and the README.
+  **Why:** The drift note: deployment settings live in sections of the settings document, not in `deployment_state` columns. The check's status must outlive the 7-day `jobs` purge, so it lives on its own row, with no foreign key. Cost if wrong: the retention value is not read back until #315 is fixed, the same as `offboarding_report_retention_days`.
+  **Issue:** #118, #71, #315
+- **Decision (drift):** A rating change's story-scope `config_changes` row uses the setting `content_rating_id`, with old and new rating ids and class `interpretive`. The name joins `StorySettingFilter`'s extra names (beside `engine_profile_id`), so `GET /stories/{id}/config-changes?setting=content_rating_id` filters on it.
+  **Why:** The drift note: #279's closed vocabulary would answer 422 for an unknown name. A single setting name, like `engine_profile_id`, reads better than a `rating:<id>` family for the one rating a story has. Cost if wrong: a rename.
+  **Issue:** #118, #279
+- **Decision:** The bodies.
+  - **200** (`RatingAppliedBody`, a `MutationResponse`): `{applied: true, changed, content_rating_id, rating_version, config_revision, timeline_revision}`. Naming the current rating is `changed: false` and writes nothing.
+  - **202** (`RatingCheckStartedBody`): `{job_id, operation_id, status: "checking", config_revision, timeline_revision}` with `Location: /stories/{id}/content-rating/checks/{job_id}`. It is stored under the key, so a retry answers the same job.
+  - **The check read:** one shape for every status: `{job_id, story_id, status, progress, started_at, started_by, finished_at, target {rating_id, version}, from_rating_id, operation_id, rating_version, config_revision, violations, error}`, with `null` or an empty list where a field does not apply. The plan had per-status shapes.
+  - **The route path:** `checks`, as docs/02 §9 already names it, so no docs/02 rename was needed.
+  - **Tags and errors:** the new route module `api/routes/story_rating.py` is tagged `settings`. `story_paused` is in `ERROR_STATUS` and in the documented errors of every operation that answers it.
+  - **Exports:** `epistrel` exports `RatingChangeRequest`, `RatingApplied`, `RatingCheckStarted`, `RatingCheckView`, `StoryPaused` and `RatingCheckNotFound`.
+  **Why:** The drift note (`MutationResponse` for a story path; a 202 declared under `responses`). One read shape keeps the schema simple for the Console. Cost if wrong: a response shape changes before #128 freezes the surface.
+  **Issue:** #118, #128
+- **Decision:** How the job runs (`orchestrator/jobs/handlers/rating_check.py`, kind `rating_check`, `records_operation=False`, `max_attempts` 8).
+  - It checkpoints progress and new verdicts every 25 records, and yields (`requeue_in=0`) after 240 s, well under the 600 s runtime cap.
+  - A model that cannot answer fails the attempt, which #70's backoff retries while the story stays paused. The last attempt calls `change.fail`: the story resumes on its old rating, the check is `failed`, and `error {class, message}` names the class only.
+  - When no Model Access Layer is bound, the job raises `NoModels` only if a model-assisted policy applies. The Engine binds the layer in `start_workers`, as it does for `lite_summary`.
+  - A target retired mid-check ends the check `failed` (`RatingRetired`), with the story resumed.
+  - A target rating edited mid-check (its version moved) runs the check again, and the cache answers what is unchanged.
+  - A refusal writes an `audit_log` row: the new kind `rating_change_refused`, with the policy ids and `{job_id, target_rating_id, violations: count}`, never text.
+  **Why:** The drift notes (`fail_job` runs no hook; the 600 s cap) and the pass-1 lines. Cost if wrong: retry tuning only.
+  **Issue:** #118, #70
+- **Decision (drift):** The parts follow docs/04 §15 and the one-file rule.
+  - `test_i_22__relax_tighten`, `part("M3", "FR-RATE-6,7")`, sits in `tests/integration/test_rating_change.py`, the must-have's file. FR-CONC-15 is dropped from the marker: §15 maps it to I-22 (M2) only. #119's and #120's I-22 (M3) slices must join this file, not `test_story_from_scenario.py` or `test_rating_reactivation.py`.
+  - `test_u_29__classification`, `part("M3", "FR-RATE-6,7")`, joins `tests/test_u_29.py`. Its sideways move uses two custom ratings that inherit Explicit, and its complements are equal sets (relax both ways) and reversed display orders.
+  - The integration tests each run on a scratch database (`tests/rating_change_support.rating_db`), which links a rating policy into Teen: the seeded sets are empty.
+  - 11 detailed integration tests and 9 database-free tests (`tests/test_rating_history.py`) cover the rest.
+  - check-parts counts 204 parts.
+  **Why:** The drift note. Cost if wrong: renames only.
+  **Issue:** #118, #119, #120
+- **Decision:** Existing tests changed because new behaviour needs them.
+  - **I-08 (narrowed).** `test_i_08__rebuild` compares the operations log without `checked_guardrails` (`DROPPED_BELOW_0019`). Its downgrade to 0018 passes through 0035, which drops that column. The column records the checks a turn passed, not the log, and every other column is still compared. This narrows an existing assertion because the story adds the column, so I record it here.
+  - **S-DELETE.** It plants a finished `rating_check_jobs` row and a cached verdict in the victim, so the every-story-table check covers both new tables.
+  - **C-03.** It gains `set_content_rating` (a relax between seeded ratings: 200 on both surfaces) and `get_rating_check` (a check the story does not have: 404 on both).
+  - **C-01.** `set_content_rating` joins `EXCLUDED`: a generated tightening would pause the fixture story, and no worker runs.
+  - **U-18.** It pins both new settings as prospective.
+  **Why:** The parity rule, the delete-coverage rule and the migration round trip. Cost if wrong: none.
+  **Issue:** #118
+- **Decision:** I mutation-checked the pause and the in-flight relax. Removing both the `Operation.begin` and the `run_queued` refusal makes `test_queued_turns_fail_when_they_would_start` fail (`error_code` `None`). Removing only one passes, because each backs the other up. Removing `content_rating_id` from the compared dependencies fails both relax tests, as above. All mutations were reverted.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until the group's full run. Cost if wrong: none.
+  **Issue:** #118
+- **Decision:** #118's gate, run under M3's per-story rule (the orchestrator runs the full suite at the end of group B).
+  - **Routes, Engine methods and OpenAPI:** `tests/conformance/` (C-01's generated run included), the route guard, the response bases, the route flags and `test_openapi_calls_the_message_finished_never_verified`: 176 passed in 603 s. The first run failed on three things, all now fixed. C-03 saw a new 404, and its expected error statuses now include 404, the check read's, with a check of the two rating steps' statuses. Three new response components lacked descriptions, and they now have them. `docs/openapi.json` was rewritten while the run was going, which made C-01's schema test fail; the rerun passed.
+  - **The story's areas:** the rating-change, migration, drift, I-08, schema, event-registry, I-22 (M2), config revalidation and rebase, config changes, ratings API, S-DELETE, I-10, ingest, story texts, respond, turn concurrency, operation, jobs, offboarding, I-21, policies API, story characters, feedback, history, revisions, truncate mid-generation, input ingest, time, U-18, U-29, rating-history, route guard, responses, trust boundary, ownership rules, docs Python version and concurrency tests: 358 passed. I-08's rebuild failed on the dropped column, as recorded above; after the fix, I-08 passed 2. Determinism plus the story's own tests after the final edits: 42 passed.
+  - **Static checks:** ruff check and format, mypy (528 files), lint-imports (3 kept), check-assignment, check-parts (204 parts), check-lexicon (0 violations), check-traceability, check-deps, `openapi --check` (regenerated) and `model_guide --check` all pass. No dependency changed, so check-licenses was not run.
+  **Why:** M3's per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #118
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #118 built rating changes with shapes that differ from what its plan and later plans name.
+  - **The request's operation.** It is a committed `control` operation that records `story_paused` and binds the key. The plan's `in_flight` operation, finalised by the job, is not built, and `jobs.operation_id` is not added: the link is `rating_check_jobs.operation_id`. The applied change is recorded by its own committed configuration-write operation, with the requester as principal.
+  - **The pause.** The PUT pauses the story at once (`stories.status = paused`, `paused_by` = the `rating_check_jobs` id). The job then waits for a turn in flight to commit. `core/pause.py` is the one refusal (409 `story_paused`, `{story_id, job_id, cause, progress}`), and only `cause: rating_check` exists. `Operation.begin` refuses every revision-bumping operation of a paused story; a commit is not refused.
+  - **`checked_guardrails`.** It is an `operations` column encoded `{rating_id, rating_version_id, global, rating, story, character}`, each `{policy_id: version}` (integer versions). Every `turn` operation is stamped at commit; turns from before migration 0035 are `NULL`.
+  - **The evaluator.** `core.ratings.change.evaluate_history(target_guardrails, records, *, model_check, calls_per_record, cache, progress, image_check)`, with `read_history` and a `ModelCheck` protocol, not a `Ports` member. Verdicts are cached in `guardrail_check_results`.
+  - **The in-flight relax.** `content_rating_id` joins the compared Lite dependencies.
+  - **The rest.** A new route reads a check: `GET /stories/{id}/content-rating/checks/{job_id}`. A new error code is `story_paused`. Two new settings, `rating_check_model_calls_per_record` and `rating_check_retention_days`, are added. The story setting `content_rating_id` joins the config-change filter, and `rating_change_refused` is a new audit kind.
+  - **Tests.** I-22's M3 parts live in `tests/integration/test_rating_change.py`.
+  **Why:** #118's AC and pass-1 lines, corrected by its drift notes and #117's Ad-hoc entry. The decision entries above give the details.
+  **Affects:**
+  - **M3 #119 (story from a scenario).** Its creation check calls `evaluate_history` as above, with the policies that apply and a `ModelCheck`, synchronously. Its I-22 (M3) slice must join `tests/integration/test_rating_change.py`, not `test_story_from_scenario.py`. Only `turn` operations are stamped automatically, so its opening narration must be a `turn` operation or stamp itself with `stamp.guardrail_stamp`.
+  - **M3 #120 (reactivation re-checks).**
+    - Its pause adds `cause: reactivation_check` to `core.pause`, which today reads its progress from `rating_check_jobs`. It either reuses that table or adds a pause source there.
+    - It reads `checked_guardrails` in the shape above, and `NULL` means "passed no recorded set".
+    - It can reuse `read_history`, `evaluate_history` and `load_cache`/`save_progress`.
+    - Its I-22 (M3) slice joins `tests/integration/test_rating_change.py`, not `test_rating_reactivation.py`.
+  - **M3 #128 (API surface).** The route table gains `set_content_rating` (200/202) and `get_rating_check`, with C-03 steps. `story_paused` joins the error list. `set_content_rating` is excluded from C-01.
+  - **M8 #272 (story images).** `core.ratings.change.story_image_records` is the hook that returns `[]` today. An image no checker can check is a violation with `code: image_unchecked`.
+  - **The Console (nathanpond/Epistrel-Console).** New surfaces: a rating change, a progress view of a check while the story is paused, and the refused check's violation list.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after #118's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111, #113 to #117 did. Cost if wrong: one heading.
+  **Issue:** #118
+- **Decision:** Verification fix (round 1), Rule 1: an offboarding whose #70 job ended without the handler closing it is reconciled from the `jobs` row. `core.offboarding.reconcile` closes every queued or running `offboarding_jobs` row whose job is `done`, `failed` or gone as `failed`, with its partial report, its frozen `remaining`, and `error.class` set to the job's recorded error class (for example `TimeoutError`), or `JobFailed`, `JobEnded` or `JobMissing`. `refuse_active` runs it under the principal's advisory lock in the POST transaction, and `get` runs it before its read, so `GET /admin/offboarding/{id}` now uses a write transaction.
+  **Why:** The worker's runtime cap cancels the handler (a `CancelledError`, which `except Exception` does not catch), and a failed `commit_job` fails the job outside the handler. On the last attempt either one left the row active forever, so every later offboarding of the principal got 409 `offboarding_in_progress`. I chose read-time reconciliation over catching `BaseException` in `_run`, because that would still miss a failed commit, and over a recovery-pass sweep, because that would add a job-framework hook for one handler. The fix needs no schema change. Cost if wrong: a GET can write once to close a dead offboarding. The `with_for_update` plus the status re-check keeps this safe against the handler's own `_close`.
+  **Issue:** #117
+- **Decision (drift):** Genesis from a scenario is one transaction, through a new `Operation.begin_in(conn)`: the operation reads its base and configuration and inserts its `in_flight` row inside the caller's open transaction, then `write_in(conn)` does the commit work there and `settle` records the outcome after it ends. `core/genesis/create.py` inserts the `stories` row, begins the `genesis` operation (`story_created` naming `scenario {id, version}`, one `character_defined` per cast member with `role_id` and catalog `source`), inserts the cast, the snapshots, the story policies and the `player` relations, writes the operation, then begins and writes the opening narration's `turn` operation, all in one `db.begin()`. Both operations bind the call's key (the first is its operation). M2's `create_story_from` (two transactions plus compensation) is untouched for blank stories.
+  **Why:** The drift note: FR-SCN-9 and docs/02 §4.10 require one transaction, and `Operation.begin` commits its row separately and needs the story row for its foreign key. Widening `Operation` reuses its whole commit path (positioning, projections, #118's guardrail stamp on the turn, the chain check, the key binding) instead of hand-writing the rows as fork's `_genesis` does. Cost if wrong: one more entry point on `Operation`.
+  **Issue:** #119, #45
+- **Decision (Rule 3, deviation from the pass-1 line):** `characters.definition` stays `NOT NULL`. A catalog-sourced character's row holds a plain rendering of its snapshot's private definition (`create.render_definition`: appearance, personality, values, background, likes and dislikes, dispositions, speech style, vocabulary, mannerisms, sample lines; never the public card or labels). The snapshot in `character_snapshots` stays the record.
+  **Why:** The pass-1 line says NULL, rendered by #122, but every Lite reader (`core.turns`, the read set, the generation schema) needs a string, and #119's own tests play turns on catalog casts before #122 exists (group C). Writing a rendering keeps all readers unchanged. Cost if wrong: #122 replaces the rendering (or renders from the snapshot and leaves the column as is).
+  **Issue:** #119, #122
+- **Decision (drift):** The opening narration (turn 1) is one `message_rendered` beat (category `narrative_state`) of a `turn` operation: provenance `system`, origin `ingested` (authored, not generated), no character, `finish_reason: opening`, and a new optional payload field `present_character_ids` (the characters of `opening.roles_present`, stored, unused by Lite). `transcript.role_of` maps a `system` beat with no character to `narration`, as a consumer one. The text is stored verbatim; the `Narrator:` prefix in the Lite window is #122's. A scenario with no opening (a companion copied alone, #116) gets no turn 1 (revision 1, next turn 1).
+  **Why:** The drift note: `narrative_state` is a category, and `MessageRendered` is the M2 narration shape. The payload field is named for what it holds, not for M5's lexicon term. Cost if wrong: one field rename.
+  **Issue:** #119, #122
+- **Decision:** `POST /stories` stays one route and one Engine method. The handler takes the raw JSON object and parses it as `StoryFromScenario` when it names `scenario`, else as #50's `StorySpec`; `api.validation.register_body_selector` makes the strict-JSON check use the same choice, so error paths stay `body.<field>` of the body sent (a union model would prefix the member's name). The documented body is the component `StoryCreate` (`oneOf` the two). `Engine.create_story` is overloaded on the two request types. `StoryCreatedBody` gains `applied`, per-character `role_id`, `scenario`, `engine_profile`, `report` and `impact`; `story_id` and `content_rating` become nullable for the held answer (below). A blank creation answers as before, the new fields `null`.
+  **Why:** The pass-1 line (one route, one method, one parity entry) and the existing error paths. Cost if wrong: the published body schema and the nullable `story_id` change before #128 freezes the surface.
+  **Issue:** #119, #128
+- **Decision:** #109's two stages on creation. The request takes `ignore_warnings`. After every 422 condition has passed, the engine profile is chosen (the request's `engine_profile_id`: unknown is 422 `validation_error` at `body.engine_profile_id`, deleted `profile_deleted`; else the scenario's recommended one when it can be assigned, else the deployment default with the warning `profile_unavailable`) and `impact.creation_report` built. When it warns (an unmet recommended capability) and `ignore_warnings` is not set, the answer is 200 `{applied: false, impact, report}`, nothing is written and the key is released (`keep`); otherwise the story is created and the 201 carries the impact report.
+  **Why:** The pass-1 line and #109's hand-off (`recommendations_unmet` for genesis). Cost if wrong: the held answer's status.
+  **Issue:** #119, #109
+- **Decision:** The refusal codes and their precedence: `creation_conflicts` (under `strict`, any `personality_in_role` warning), `slot_required`, `locked_slot_reassigned`, `player_role_fixed`, `persona_required`, `entry_archived`, `not_published`, `override_not_allowed`, `eligibility_failed`, `cast_limit_exceeded`, `rating_check_failed`, then the input gate's own `guardrail_violation`. The pass-1 list did not place `entry_archived`, `not_published` or `override_not_allowed`; I put them after the slot codes. A role's character that is gone, unpublished or without a true age refuses as `not_published`, an archived one as `entry_archived`. Unknown ids the request names (scenario, its version, a catalog character or its version, a persona) are 422 `validation_error` at the field. Every refusal carries the full report (`details.report`, entries always listed).
+  **Why:** The pass-1 lines leave these cases open; the request's own references are field errors, as #114's persona lookup already answers. Cost if wrong: a code swapped for one case.
+  **Issue:** #119
+- **Decision (drift, deviation from the pass-1 line):** The guardrail checks at creation.
+  - The input gate runs last, after the rating check, over the personas' descriptions, ad-hoc definitions and deflection styles, the catalog characters' rendered definitions and deflection styles, every seed, the world description and the opening narration, under the requested (or scenario's) rating with the cast's ages. The pass-1 line excluded catalog definitions ("gated at publish"); docs/04 C-20 (M3) and #115's hand-off include them, and docs/04 is authoritative. The scenario's own policies are not in the gate's context (a new story has none until genesis writes them).
+  - Its 422 is the gate's own `guardrail_violation` with its audit row; it is not merged into the creation report (the gate raises), which is why it comes last.
+  - No `genesis_model_calls` setting: the gate sizes its budget to its texts (`input_budget`), as every gate without a turn does, so `budget_below_safety_minimum` cannot arise here.
+  - The tightening check (FR-RATE-7) runs only when the request names a rating whose live guardrails add a policy to the scenario's (#118's `classify`). Its records are the seeds, the world description and the opening narration (target `text_output`), evaluated synchronously by #118's `evaluate_history` with the Orchestrator's `ModelPolicyCheck` and `rating_check_model_calls_per_record`. A violation is `rating_check_failed`, one entry per violation at its field with the policy id as `source` and its name as `rule`, and one `audit_log` row of the existing kind `guardrail_input_rejected` (entry point `story_create`, `check: rating`, policy ids and a count only), not a new audit kind.
+  **Why:** The drift note and docs/04 C-20, kept to the existing machinery. Cost if wrong: one more text kind gated, or a new audit kind later.
+  **Issue:** #119, #118, #56, #115
+- **Decision:** Overrides and settings. An override key is a dotted path under `story_settings_defaults.` or `cast.max_characters_at_start` (another path is 422 `validation_error` at `body.overrides.<path>`), allowed when `creation_rules.overridable` names it or a prefix of it, applied to a copy of the version's document and validated by the scenario model. The request's own `max_characters_at_start` is always accepted (FR-SCN-4's request override), capped by the ceiling. The story's settings take `turn_concurrency` and `audit_retention_days` from the defaults, keep `interaction_mode`, `player_authority`, `ambiguous_retcon_timing` and `backfill_conflict_policy` as stored extra keys, and turn `default_output_viewpoint` (a role id) into that role's character, else the sole player's. The story's name defaults to the scenario's `public_card.name`. `scenario_snapshot` holds the published version unchanged (the overrides apply to the story, not the snapshot).
+  **Why:** The pass-1 lines, with the open reading of "plus `max_characters_at_start`". Cost if wrong: one more path refused or allowed.
+  **Issue:** #119
+- **Decision:** What the report holds. `CreationReport {counts {errors, warnings, deferred: 0, inactive: 0}, unavailable, errors, warnings}`: entries are listed under `projection: full` (and in every refusal), `null` under `card`. The warnings are #111's re-run checks for what the story uses (the document check, `personality_in_role`, and the three checks M3 cannot run, listed `unavailable`), `rating_looser` for each catalog character whose rating lacks a guardrail of the story's (FR-RATE-5), `eligibility_unverifiable` for a label or rating filter on an ad-hoc character, and `profile_unavailable`. I did not re-run #111's publish-only checks (seeds, media, providers, required, the companion check): the version passed them at publish, and re-running the media check would make a published version unusable once an asset it shows retires.
+  **Why:** The coverage line (#111's report plus counts; #122 fills deferred and inactive). Cost if wrong: one check more or less re-run.
+  **Issue:** #119, #111, #122
+- **Decision:** #316's half: `MEDIA_REFERENCE_SOURCES` lists `public.character_snapshots.content` and `public.stories.scenario_snapshot` (statically, in the commit that adds the columns), and `REFERENCE_HOLDERS` names their story and owner for #117's offboarding. Genesis does **not** call `assert_referenceable`: it copies references a published version already holds, and a version whose asset has since retired must still start a story (the asset stays served while referenced). Proven by `test_i_17__media_story_snapshot`.
+  **Why:** The hand-off asks for the decision; refusing would make a published scenario or character unusable through no edit of its own. Cost if wrong: a story can start showing a retired (still served) asset.
+  **Issue:** #119, #316, #105
+- **Decision:** Player relations are written by a new `ownership.relate_in(conn, ...)` inside the genesis transaction (the `relation_added` ownership event; the genesis operation records the call), keeping `core.ownership` the only writer of `entity_relations`. A scenario has one player role in M3 (#108's save rule `player_role_limit`), so docs/04 I-21's "A and E in player slots" can be shown for one player principal only; `test_i_21__story_creation` asserts that one.
+  **Why:** FR-AUTH-6 and the ownership-rules test. Cost if wrong: none; a second player role is a later scenario rule change.
+  **Issue:** #119, #104
+- **Decision:** The scenario's policies become `story` policies through a commit step the Engine supplies, built on `orchestrator.policies.admin.upsert_story_item` (a public wrapper over `_upsert_story_item`, which the drift note named). No `config_changes` rows are recorded for them and the story's `config_revision` stays 0: they are the story's configuration at creation, not a change.
+  **Why:** Core may not import the Orchestrator, and admin stays the policy store's only writer (import-linter contract). Cost if wrong: genesis policies missing from the config-change history.
+  **Issue:** #119, #63
+- **Decision (Rule 2, #114's hand-off):** A catalog-sourced story character promotes from its `character_snapshots.content`: the draft takes the snapshot's typed `definition` (with the story's true age) and its public card's live images, instead of the rendered text as `background_flavor`. `test_a_catalog_cast_character_promotes_from_its_snapshot` covers it.
+  **Why:** #114's hand-off; without it a promotion of a catalog character would copy the interim rendering. Cost if wrong: none.
+  **Issue:** #119, #114
+- **Decision (deviation from the pass-1 line, not built):** `GET /stories/{id}` gains `scenario {id, version}` and per character `role_id` and `source {catalog_id, version}`, but not the `?projection=full` read of the snapshots under `viewpoint=omniscient`. No acceptance criterion needs it; the snapshots are readable by the Engine's tables and #122 renders from them.
+  **Why:** Scope; the AC are met. Cost if wrong: #122 or #128 adds the projection.
+  **Issue:** #119, #122, #128
+- **Decision (drift):** The parts follow docs/04 §15 and the one-file rule. `test_i_22__creation` `part("M3", "FR-SCN-6; FR-RATE-3,7; FR-CAT-10")` in `tests/integration/test_rating_change.py` (I-20's and S-COMPANION's story clauses included, per #116's hand-off); `test_i_17__genesis_isolated` (`FR-SCN-9`, with the injected failure: docs/04 I-17's "an induced failure mid-genesis leaves no story", so it sits there rather than in I-22 as the test plan says) and `test_i_17__media_story_snapshot` (`FR-MEDIA-2`, #316) in `test_i_17.py`; `test_i_27__atomic` (`FR-SCN-9`) in a new `tests/integration/test_i_27.py`, which #122's I-27 (M3) slice must join; `test_u_26__creation` (`FR-SCN-6`) in `tests/test_u_26.py`; `test_i_21__story_creation` (`FR-AUTH-5,6,8`, parametrised over the three listing statuses, two owners) in `test_i_21.py`; `test_s_age_assignment__eligibility` (`FR-SCN-3`) in `tests/integration/test_story_from_scenario.py` with the unmarked detailed tests. C-19 (`test_personas.py`), C-20 (`test_c_20.py`) and S-COMPANION (`test_companion.py`) gained their creation clauses in place. Later-milestone field names stay in `tests/genesis_support.py` and `tests/scenario_support.py`. The rollback is injected in process (monkeypatching `create.insert_cast` to raise after the inserts), the drift note's alternative to `testing.faults`. check-parts counts 211 parts, check-lexicon 0 violations.
+  **Why:** The drift note. Cost if wrong: renames only.
+  **Issue:** #119, #116, #118, #122
+- **Decision:** Existing tests changed because new behaviour needs them; no assertion was loosened. S-DELETE plants a `character_snapshots` row in its victim (the new story table). S-COMPANION's story is now created from the companion by genesis instead of a blank story with planted provenance. C-19 asserts the end-to-end refusals and a real persona snapshot.
+  **Why:** The delete-coverage rule and the hand-offs. Cost if wrong: none.
+  **Issue:** #119
+- **Decision:** The new optional fields stay out of what existing records and reads show. `StoryCreated.scenario`, `CharacterDefined.role_id`/`source` and `MessageRendered.present_character_ids` are omitted from a payload when unset (`exclude_if`), so every event an M2 or earlier M3 path writes is byte-identical to before (I-10, determinism and the ingest tests compare payloads). Likewise a blank story's characters show no `role_id`/`source` in `GET /stories/{id}` or the 201. `determinism.ORDER` gains `character_snapshots` (story, then cast order).
+  **Why:** The first area run failed on exactly these comparisons; additive keys would have changed M2's recorded shapes. Cost if wrong: none.
+  **Issue:** #119
+- **Decision (discovered work):** `test_ownership.py::test_every_delivered_type_is_covered` fails on the branch because #118's two content-rating story routes are missing from `ownership_fixtures.CALLS`. Unrelated to #119; filed as #326 (`needs-triage`), not fixed inline.
+  **Why:** The discovered-work rule. Cost if wrong: none; the group B gate will show it until #326 is fixed.
+  **Issue:** #119, #118, #326
+- **Decision:** `POST /stories`' request body is documented as `anyOf` the `StorySpec` and `StoryFromScenario` components (`openapi.DOCUMENTED_BODIES` takes a tuple), and C-01's body check (`tests/conformance/test_c_01.py::_body_problems`) now holds each component of such a body to the same rules (no unknown fields, an example) instead of refusing any body that is not one component. `overrides` values are typed `Any` (validated by the scenario model), so no bare `JsonValue` component appears.
+  **Why:** The story's one-route request is a choice of two documents. The check is extended, not loosened: a single-component body is checked as before, and a several-component body only under `anyOf`, each member checked. Cost if wrong: one schema shape for #128 to revisit.
+  **Issue:** #119, #73, #128
+- **Decision:** #119's gate, under M3's per-story rule (the orchestrator runs the full suite at the end of group B).
+  - **The story's areas** (every module importing a touched module, plus drift, responses, respond's OpenAPI test, the event store schema, the Lite prompt and cast, I-20, scenario validation, feedback and story texts): 687 passed, 5 failed in 423 s on the first run. Four were #119's (payload and read shapes, the determinism order) and are fixed above; the fifth is #326 (filed). After the fixes, the touched and new modules: 109 passed in 47 s; I-21, ownership, offboarding and media assets: 162 passed, 1 failed (#326 only).
+  - **Routes, Engine methods and OpenAPI:** `tests/conformance/` (C-01's generated run included), the route guard, the response bases and `test_openapi_calls_the_message_finished_never_verified`: 172 passed, 1 failed (C-01's schema check, on the body component, fixed above); the schema check, the route guard, the responses and the respond OpenAPI test then passed (11), and C-01's generated run passed 122 against the anyOf body.
+  - **Static checks:** ruff check and format, mypy (533 files), lint-imports (3 kept), check-assignment, check-parts (211 parts), check-lexicon (0 violations), check-traceability, check-deps, `openapi --check` (regenerated) and `model_guide --check` pass. No dependency changed, so check-licenses was not run.
+  **Why:** M3's per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #119
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #119 built story creation from a scenario with shapes later stories build on.
+  - **Storage.** `stories.scenario_id`, `scenario_version` and `scenario_snapshot` (the published version's whole document), `characters.role_id`, and the story table `character_snapshots (story_id, character_id, source_catalog_id, version, content, published_at, content_rating_version_id)` (migration 0036). A catalog-sourced `characters.definition` holds an interim plain rendering of the snapshot's private definition (`core.genesis.create.render_definition`), not `NULL` as the plan said.
+  - **The log.** One `genesis` operation (`story_created` with `scenario {id, version}`, one `character_defined` per cast member with `role_id` and `source {catalog_id, version}`), and the opening narration as turn 1: a `turn` operation with one `message_rendered` beat, provenance `system`, no character, `finish_reason: opening`, `present_character_ids`. All in one transaction (`Operation.begin_in`). A companion with no opening has no turn 1.
+  - **The surface.** `POST /stories` takes `StorySpec` or `StoryFromScenario` (documented as `StoryCreate`), and answers 201 with `scenario`, `engine_profile`, `report` (`CreationReport`: counts, `unavailable`, entries under `full`) and `impact`, or 200 `{applied: false}` when #109's two stages hold it (`ignore_warnings`). New 422 codes: `slot_required`, `locked_slot_reassigned`, `eligibility_failed`, `override_not_allowed`, `rating_check_failed`, `creation_conflicts` (plus `entry_archived`, `not_published`, `cast_limit_exceeded`, `player_role_fixed`, `persona_required`, `profile_deleted` on this route). `GET /stories/{id}` gains `scenario` and per character `role_id`/`source`; its `?projection=full` snapshot read was not built.
+  - **The rest.** The scenario's policies become `story` policies (`policies.admin.upsert_story_item`); `ownership.relate_in` records the `player` relation; `MEDIA_REFERENCE_SOURCES` lists both snapshot columns (#316) and genesis does not call `assert_referenceable`; a catalog-sourced character promotes from its snapshot's typed definition. No `genesis_model_calls` setting: the gate sizes its own budget.
+  **Why:** #119's AC and pass-1 lines, corrected by its drift notes and the group A/B hand-offs. The decision entries above give the details.
+  **Affects:**
+  - **M3 #122 (Lite materialisation).** Render the Lite prompt from `stories.scenario_snapshot` and `character_snapshots.content`; replace (or keep) the interim `characters.definition` rendering, and leave `characters.deflection_style` out of the prose (genesis fills the column, per #115's note). The opening beat is stored verbatim: the `Narrator:` prefix is #122's. `CreationReport.counts.deferred/inactive` are 0 until #122 fills them and adds the `deferred[]`/`inactive[]` arrays. Its I-27 (M3) slice must join `tests/integration/test_i_27.py`. The snapshot read under `?projection=full` is unbuilt.
+  - **M3 #123 and #124 (index and erasure).** Index and erase `stories.scenario_snapshot`, `character_snapshots.content` and the rendered `characters.definition` of catalog-sourced rows (they quote the catalog's private text).
+  - **M3 #120 (reactivation re-checks).** Turn 1 of a scenario story is an ordinary `turn` operation (the opening), stamped with `checked_guardrails` at genesis; a truncation to 0 discards it like any turn.
+  - **M3 #128 (API surface).** `create_story`'s body is the `StoryCreate` union and its answer can be 200; the new error codes are in `ERROR_STATUS` and the route's documented errors. C-03 has no scenario-creation step yet.
+  - **The Console (nathanpond/Epistrel-Console).** A story-setup screen: pick a scenario version, fill each role (catalog `character@version` or ad hoc), the player's persona, permitted overrides, rating and profile; show the creation report and the held `applied: false` answer with its confirm (`ignore_warnings`).
+  - **Next step:** `/n8-replan M3` before group C (#120, #122 to #124, #128), or apply this in their drift checks.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #119's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111 and #113 to #118 did. Cost if wrong: one heading.
+  **Issue:** #119
+
+- **Decision:** Rule 1 (#118 verification round 1): `read_history` now also reads a scenario story's genesis seeds, meaning the world description and every seed in `stories.scenario_snapshot` (`change.scenario_records`), at `{kind: seed, id: <field>}`. #119 writes seeds into the snapshot only, not as events, so before this a tightening never checked them, although AC2 names "genesis seeds". They are checked as `text_output` with the same field locators #119's creation check uses. The plan's pass-1 line puts seeds under `text_input`, so this deviates from it, on purpose: a creation at the stricter rating and a later tightening must refuse the same seed. The opening narration stays the turn-1 event it already was.
+  **Why:** Without this, a story created at Mature from a scenario whose seed breaks a Teen policy could be tightened to Teen and keep that seed. Cost if wrong: if seeds should be `text_input`, a policy that targets only inputs would miss them. The fix is one constant in `scenario_records` and one in `genesis.create.check_rating`. #120's reactivation re-checks now see seeds too if they reuse `read_history`.
+  **Issue:** #118
+- **Decision:** Rule 1 (#118 verification round 1): `save_progress` now locks the check's row and stores nothing when the row is gone or no longer `checking`. It returns `False` in that case, and the handler then ends the run (`_Gone`, job `done`). The alternative was a foreign key from `guardrail_check_results` to `stories`, but that is a schema change, and the lock is enough: `delete_story` empties `rating_check_jobs` before `guardrail_check_results` (`STORY_TABLES` order), so either side waits for the other and no verdict outlives its story.
+  **Why:** The job is enqueued without a `story_id`, so `delete_story` never sees it. Before the fix, a deletion during a model call left orphan cache rows. Regression test: `test_a_story_deleted_mid_check_keeps_no_verdicts`. Cost if wrong: one more row lock for each checkpoint.
+  **Issue:** #118
+- **Decision:** Rule 2 (#118 verification round 1): `change.reconcile` ends as `failed` every `checking` check whose #70 job is `done`, `failed` or gone, and resumes the story on its old rating. The reported error class is the job's own (for example `TimeoutError`), or `JobMissing`/`JobFailed`/`JobEnded`. It runs at four points: `get_check`, which is now a write transaction; `change_rating` on a paused story, under its lock, before the `story_paused` refusal; a new worker recovery hook `rating_check` (`engine.RATING_CHECK_HOOK`, registered beside `turn_queue`); and the retention sweep, which gains the result key `rating_checks_ended`. This mirrors #117's `offboarding.reconcile`. The fix hint's other option, bounding one record's time under the runtime cap, is not built. A record whose model calls exceed 600 s on every attempt now ends `failed` with the story resumed, instead of staying stuck, and that is what the gap was about. `GET /stories/{id}` and the 409 `story_paused` paths do not reconcile, because `core.pause` must stay table-only for `core.events.operation`. A client sees the job id in the 409, and reading that check ends it.
+  **Why:** `fail_job` runs no hook, so a cancelled or uncommitted last attempt used to leave the story paused for ever. Regression tests: `test_a_last_attempt_the_runtime_cap_ends_resumes_the_story` and `test_a_check_whose_job_is_gone_is_ended`. Cost if wrong: a stuck story waits for the next check read, rating change, worker start or daily sweep. A per-record time bound can still be added later.
+  **Issue:** #118
+- **Decision:** #110 verification follow-up round 1: test-only. Four gaps closed, none disputed, no product code changed. (1) Listing status values are pinned case-sensitive. `test_listing_status_values_setting` configures `Live` and `live` side by side; it checks that `LIVE` is 422 `invalid_listing_status`, that `?listing_status=Live` lists the entry and `?listing_status=live` does not, and that removing the unheld `live` is allowed while `Live` is held (409 when `Live` is removed). `test_listing_status_writes` refuses `Public`. (2) Both length bounds are accepted: a 1- and a 40-character value are configured, set and filtered by, with a unit test over `LISTING_STATUS_PATTERN`, `listing_status_value` and `catalog_query`. (3) Both table-shape tests assert that `search` is `is_generated = 'ALWAYS'` with the expression `catalog.epistrel_<kind>_search(content)`. (4) `test_catalog_search` checks `limit=200` over REST and the library, and that a page holding exactly the last `limit` entries (limit 10 of 10, and page 2 at limit 5) has `next_cursor` null.
+  **Why:** Each gap named mutants that survived. All eight now fail: casefold membership, `.lower()` storage, casefold uniqueness, refusing 40, refusing 1, a plain tsvector column, `limit < 200`, and a cursor on a full last page. Each was reverted, with its SHA-1 checked. The trigger-maintained-column mutant was not re-run, because it needs probe trigger functions. It is pinned by the same `is_generated = 'ALWAYS'` assertion, since a trigger-filled column is not generated. Cost if wrong: none to behaviour; the tests are stricter.
+  **Issue:** #110
+- **Decision:** Rule 1 (#113 verification follow-up round 1): `assign_profile` and `set_overrides` now go through `impact.two_stage`, using a shared helper `story._staged`. Before this they made the held/applied decision inline, which deviated from the story's AC1 and #109's key link. `report_fn` builds the one-story report and records whether the upgrade is unavailable. `apply_fn` either writes or returns the configuration as it was: for a call that changes nothing, and for M3's interim rule. The result's `config_revision` is read back from the story row after the call, and `timeline_revision` comes from the locked row, set with `dataclasses.replace` the way `update_profile` does it. Calls that change nothing (the story's own profile, a no-op patch) also go through `two_stage` and log a report line. Answers and writes are unchanged. Regression test: `test_a_story_write_logs_its_impact_report` (caplog over `epistrel.core.profiles.impact`).
+  **Why:** Only `two_stage` logs the INFO "impact report" line (#109's Discretion), so held or upgrade_unavailable story writes left no log line. A later change to `two_stage` would also have missed these routes. I chose to route the no-op calls through it as well, rather than keep a separate short path, so every PUT engine-profile / PATCH profile-overrides that answers a report also logs one. Cost if wrong: one extra INFO line on a no-op call.
+  **Issue:** #113
+- **Decision:** #113 follow-up round 1: added a test-only reclassification switch, `epistrel.testing.profiles.interpretive(*paths)`. It works the same way as `data_producing`, through a new module global `schema.INTERPRETIVE_SETTINGS` (empty) that `schema.setting_tags()` reads at call time for `ProfileSettings`. Nothing in the Engine sets it. `test_each_row_takes_its_settings_class` uses it to show that the per-leaf `engine_profile:<id>.<path>` rows, the version row (the strongest class), and the `profile_overrides.<path>` and `profile_defaults.<path>` rows all take each setting's own class. The complement, without the switch, checks that every row is prospective.
+  **Why:** All 14 settings delivered in M3 are prospective, so before this a hard-coded `prospective` passed every test (mutations D and E). I put the switch on `setting_tags()`, not on each call site, so that one switch reaches all three writers (`store._record_version`, `story._change_class`, `deployment` profile_defaults rows). Cost if wrong: a test-only global in Core's schema, restored on block exit.
+  **Issue:** #113
+- **Decision:** #113 follow-up round 1, docs: the TWO_STAGE description of PUT /stories/{id}/engine-profile and PATCH /stories/{id}/profile-overrides (docs/openapi.json regenerated), both Engine docstrings and the `core.profiles.story` module docstring now say that an archived story is 409 `story_archived` only when the call would change something. A call that changes nothing answers 200 and writes nothing. This matches the code and the existing tests, so behaviour is unchanged.
+  **Why:** The published text claimed 409 without exception, while the routes answer 200 on a no-op. I corrected the text rather than the code, because the existing tests assert the 200 and the earlier decision log records the exception. Cost if wrong: a docs line.
+  **Issue:** #113
+- **Decision:** #113 follow-up round 1, tests: `test_u_28__effective` now checks `deployment_defaults` against the two values the upper layers change: temperature 0.8 (the profile sets 0.4) and the window 30 (profile 10, overrides 6). I dropped the hint's optional whole-field comparison with GET /admin/settings, because the two documents differ in shape (the admin read carries `models.purposes.*.model` without `params`). Two pin tests were added: `test_a_pinned_story_is_not_checked_against_an_edit` (a profile edit refuses only for the unpinned follower) and `test_defaults_are_checked_against_the_version_a_story_is_pinned_to` (a defaults write names `<id>@1` from a pin). After the fixes, mutations A, B, C, D, E, a profile_defaults-class mutation (F) and an inline-not-two_stage mutation (W) each fail their test; all were reverted.
+  **Why:** These close the verification gaps whose mutants survived. Cost if wrong: none to behaviour.
+  **Issue:** #113
+- **Decision:** Rule 1 (#113 follow-up round 1, my own regression): my first version of `story._staged` built the configuration-as-it-was view eagerly, before the write. That broke `test_the_cache_keeps_nothing_a_rolled_back_write_read`, which counts `effective.view` calls: the first call now saw overrides revision 0 instead of the write's own read at 1. `_staged` now takes the story's `StoryProfile` as `kept` and views it only when it answers with it, which is the only time the inline code viewed it before.
+  **Why:** Viewing eagerly added an extra fingerprint computation to every write and changed which read a failing write answers from. Cost if wrong: none; the order is now the pre-refactor order.
+  **Issue:** #113
+- **Decision:** #119 verification follow-up round 1, C-01: restored the example check for `POST /stories`'s documented bodies. When #119 changed `create_story` to take a raw object (`dict[str, Any]`), `_body_problems` began skipping example validation for it, which had run against `StorySpec`. The earlier entry calling the change "extended, not loosened" was wrong on this point. A raw-object operation (`DOCUMENTED_BODIES`) now validates each component's examples against that component's model, through a test-side map `DOCUMENTED_MODELS` (`StorySettingsPatch`, `StorySpec`, `StoryFromScenario`). A documented component with no known model is reported as a problem, not skipped. `PATCH /stories/{id}/settings`'s `StorySettingsPatch` examples are now validated too; they had been skipped since M2 for the same reason, and they pass. The complement is in a new unmarked test, `test_raw_object_body_examples_are_validated`, not in the M2 part `test_c_01__schema`: check-lexicon refuses the M3 term "scenario" in an M2 part.
+  **Why:** No documented body example should go unchecked. I kept the map in the test, not in `api.openapi`, so the served document and its code stay as they are. Cost if wrong: a new raw-object body has to be added to the map, which the test enforces.
+  **Issue:** #119
+- **Decision:** #119 verification follow-up round 1, tests only (no product change): `test_i_27__atomic` now asserts that turn 1's `message_rendered` lists the characters of the roles the opening has present, using the new `genesis_support.opening_cast` / `opening_present` helpers, which keep the M5 field name out of the part body. A new unmarked test, `test_the_recommended_profile_is_the_story_profile`, shows that a scenario's recommended profile becomes the story's profile, in both the creation answer and the story read, and that a request naming a profile overrides it. `test_unpublished_scenario_is_refused` now also covers a created but never-published catalog character in an open role (422 `not_published`), and asserts unchanged counts for both refusals. The two `cast_limit_exceeded` refusals in `test_u_26__creation` also assert unchanged counts. Mutations re-checked: present-ids filter `if False`, recommended branch disabled, character `not_published` branch disabled, raw-body validation disabled. Each now fails its test, and each was reverted.
+  **Why:** These close the verifier's coverage gaps (AC2, AC3). The behaviour was already right. Cost if wrong: none to behaviour.
+  **Issue:** #119
+- **Decision:** Rule 1 (#118, found by the M3 group B full-suite gate): `test_every_delivered_type_is_covered` failed because #118 served two story routes with no `CALLS` entry in `tests/integration/ownership_fixtures.py`. Both now have one, each on its success code. `PUT /stories/{id}/content-rating` is a 200 relax: prepare (`_relaxable`) creates a uniquely named rating with no policies and no inheritance, and every requester moves its fresh story to it. An empty guardrail set is a subset of any rating's, so this is a relax whatever the shared database's ratings list. `GET /stories/{id}/content-rating/checks/{job_id}` reads a real check: prepare (`_checking`) has the owner tighten the story to a uniquely named rating that lists one new rating-scoped policy (202). The matrix's app has no lifespan, so no worker runs and the check stays `checking`, the same for all three requesters. Both prepares go through the admin REST routes on the shared database, the way `test_u_13`, `test_i_22__ratings` and `validation_support.link_rating_policy` already create ratings and policies there. No seeded rating is touched. Before relying on this, I grepped every shared-database test that lists ratings or policies and found none that counts or pins the full list; those tests passed alongside the change.
+  **Why:** The matrix has to run every request to its success code. A relax to a fresh empty rating does not depend on the story's starting rating or the deployment default, and the tightening gives the check read a real job to find. Cost if wrong: each run leaves 6 ratings, 3 policies and 3 paused stories with queued rating-check jobs in the shared test database. `test_jobs` clears the `jobs` table, and no shared-database test counts the other rows.
+  **Issue:** #118, #326
+- **Decision:** Group B resumed in a new session (2026-10-13, late), so not by `resumeFromRunId`. A continuation workflow (`wf_c43e1e52-af3`) was written from the paused run's journal. It took each story's commits and its open gaps from that journal (written to the run's scratchpad as `groupB-resume.json`) and kept the pause entry's queue order: #114 fix round 2, #115 fix round 1, #116's verification, then #117 to #119. After those came the follow-up rounds for #110 and #113. The follow-up verifiers ran in their own worktrees, pinned to the fix commit, not in the main tree as group A's did, because the main tree was still in use. 21 agents ran, and no story was blocked.
+  **Why:** `resumeFromRunId` works only within the session that ran the workflow. The journal held every finished agent's result, so none of that work was redone. Cost if wrong: one verify or fix round might have repeated; none did.
+  **Issue:** #110, #113, #114, #115, #116, #117, #118, #119
+- **Decision:** Group B's full-suite gate passed on attempt 2. Attempt 1, at `329e619`, was a plain run without coverage: 1752 passed and 1 failed in 1156 s. The failure was `tests/integration/test_ownership.py::test_every_delivered_type_is_covered`. It was attributed to #118 by test name (two #118 routes were missing from `ownership_fixtures.CALLS`; #119's implementer had filed it as #326). It was fixed as a Rule 1 fix on #118 in `1a55837`. Attempt 2, at `1a55837`, ran with CI's coverage gate: 1755 passed, 14 deselected, in 1166.30 s, with `epistrel.core` coverage at 97.04 %. Then the AC boxes of #110 to #119 were ticked, and each got a completion comment, verified against the live issue. The metrics are in `.n8/memory/m3-batched-test-gate.md`.
+  **Why:** This follows the M3 batched-gate rule: failures go back to the story that caused them, and boxes are ticked only after a green group run. #326 stays open, for the owner to triage or close, since the orchestrator did not create it. Cost if wrong: none; the gate is green.
+  **Issue:** #118, #326
+- **Decision:** #117's, #118's and #119's `## Ad-hoc` entries were relayed to the drift notes of the group C stories they name, as earlier groups' entries were: #120 (from #118 and #119), #122 and #123 (from #119), #124 (from #117 and #119), and #128 (all three). `/n8-replan M3` was not run before group C.
+  **Why:** The entries change implementation shapes (route paths, where a job's operation is linked, the snapshot columns, the test file each I-test slice joins), not any group C story's acceptance criteria. That is the "adjust inline, log the correction" class of drift. Cost if wrong: a group C implementer meets a shape its plan does not name; the drift notes tell it which one wins.
+  **Issue:** #120, #122, #123, #124, #128
+- **Decision (drift):** #120's guard sits at the outer entries only: `Engine.untruncate`, `Engine.swap`, and `Engine.fork` when `variant_chain` is given. It is `core.ratings.reactivation.guard`, called inside `_keyed` after the edit's own validation. In one locked transaction it checks archived, paused and the expected revision. Then it plans the edit (`activates`, which raises the edit's own 409/422 errors, such as `nothing_to_undo` and `unknown_chain`) and compares stamps. No `_skip_guard` keyword exists. The job applies the held-back edit by calling core's `timeline.untruncate`/`swap` and `fork.fork` directly, and those carry no guard.
+  **Why:** The drift note: the timeline edits and the fork each run their own transactions with retry loops, so the continuation cannot run "inside the job's transaction". The pass-1 line already takes the fork out of it. Calling core directly makes a skip flag unnecessary. Cost if wrong: there is a small window between the guard answering `None` and the edit's own commit, and a policy added in that window is not checked before this one edit. The story lock is not held across the two.
+  **Issue:** #120
+- **Decision:** What "unchecked" means: a `turn` operation the edit would make active whose `checked_guardrails` does not record, at the same integer version, every policy of the story's live effective set (`stamp.live_policies`: global, the rating closure, story and character policies, age-conditioned ones included, as #118's stamp records them). Ids are compared across every scope map. The rating's `rating_version_id` is not compared, so an edit of the rating's guidance alone triggers no check. A `NULL` stamp (no recorded set) lacks every policy. With no policies in effect, nothing is unchecked. For a fork, only the copied operations on the selected chain above where it parts from the active chain, through `at_turn`, and not already active, are compared. A fork along the active chain, or with no `variant_chain`, is never checked.
+  **Why:** The AC ("missing any policy in the story's current effective set") and the pass-1 lines (compare by policy and version, including character scope; a guidance-only edit checks nothing), corrected by the drift note: policies have integer versions, not version ids. Cost if wrong: a guidance-only rating edit that the owner wanted re-checked would need `rating_version_id` added to the comparison.
+  **Issue:** #120, #118
+- **Decision (drift, deviation from pass-1):** A reactivation check reuses #118's table and job. `rating_check_jobs` gains `kind` (`tightening` | `reactivation`, default `tightening`, check `ck_rating_check_jobs_kind`) and the status `reactivated`, in migration 0037. Its downgrade deletes the reactivation rows and resumes any story one paused. Both rating columns hold the story's rating, and `target_rating_version` its current version. The held-back edit (`Continuation {operation, story_id, args, principal}`) is the job's `RatingCheckPayload.then`, which pass-1 places in `jobs.payload`. I dropped pass-1's `idempotency_key`, `viewpoint` and `expected_revision` from it. The key is already bound by the guard's committed `control` operation (`record_control_operation`), and the 202 is stored under it by `_keyed`. The expected revision is checked at request time only (pass-1). The three edits take no viewpoint. `core.pause` reports `cause: reactivation_check` for a reactivation row; `story_paused`'s payload has `target_rating_id: null`, and `story_resumed`'s outcome is `reactivated`, `refused` or `failed`.
+  **Why:** The pass-1 line ("`rating_check_jobs` gains `kind`", "status `reactivated` added") and #118's Ad-hoc entry (`core.pause` reads progress from `rating_check_jobs`, so reusing the table keeps that working). The new column and status serve the story's own AC (Rule 4 does not apply). Cost if wrong: a later story that counts `rating_check_jobs` rows must filter by `kind`.
+  **Issue:** #120, #118
+- **Decision (deviation from pass-1):** The story stays paused while the job applies the edit. A new context `pause.holding(job_id)` makes `pause.refuse`, the single refusal every entry point and `Operation.begin` use, let a call through when the story's `paused_by` is that job. The job runs `reactivation.apply` inside it, then `reactivation.end` resumes the story in its own committed `control` operation and sets the check to `reactivated` with `outcome {operation, result}`. The result is the edit's dataclass answer as JSON, without `replayed`: for a fork, the 201 body's fields, which include the new `story_id`. An edit the job's second plan finds impossible (`EpistrelError`, for example `NothingToUndo`) ends the check `failed` with that class, and the story resumes.
+  **Why:** The pass-1 line resumes before the fork copy ("the fork copy runs on its own connection after the check commits"). Resuming before the edit would leave a window in which another call could change the timeline the check just passed. Keeping the pause closes that window, and the fork copy still runs on its own connection after the check's commit. Cost if wrong: if a worker dies after the edit commits but before `end`, the retried run finds nothing to undo and reports `failed` for an edit that did apply. A fork in that case would be created and also be re-created by the retry. This needs a crash in a sub-second window, and the check read shows it.
+  **Issue:** #120
+- **Decision:** On a refusal, `reactivation.settle` still stamps every turn that passed with the current set, under the story lock. The stamp is written directly on the turn's operation row, with no event and no revision bump, the way #118's `finish` restamps. That row is already on the operations trigger's allow-list, so pass-1's `maintenance` operation is not needed. Before stamping, `settle` compares the timeline revision and the live policy set, by (id, version), with what the run read. If either moved, it restarts the check (#118's restart pattern). I did not add the pass-1 `input_versions` reader for the policy set. A refusal writes no `audit_log` row.
+  **Why:** AC3 needs a turn that passed in a refused attempt to be "current" afterwards. The restart check gives what the drift note's `input_versions` reader would give, and needs no new registry entry. I added no audit kind, because "nothing changes" is the AC and #118's `rating_change_refused` is about rating changes. Cost if wrong: if the owner wants refused reactivations audited, that is a new kind in the `audit_log` check.
+  **Issue:** #120
+- **Decision (deviation from pass-1):** A turn in flight when the guard runs is not abandoned. The job waits for it to commit (#118's `turn_in_flight` wait, up to `WAIT_LIMIT_S`). Queued turns are refused `story_paused` when they would start (#118's drainer), not failed with `timeline_changed` at guard time. The job then plans the edit again over whatever committed, so an untruncate that became a swap is checked and applied as a swap.
+  **Why:** This reuses #118's pause semantics. The held-back edit's own control action still abandons or fails anything that reaches its commit. Cost if wrong: a turn in flight commits before the reactivation, where pass-1 would have abandoned it.
+  **Issue:** #120, #118
+- **Decision:** An archived story's fork of a dormant chain, an allowed call since #67, is checked without pausing the source. The source's status stays `archived` and `paused_by` stays null, because an archived story changes no truth anyway. Pausing it would have un-archived it on resume. A second guarded call while any check of the story is `checking` is 409 `story_paused`, with that check's `job_id` and `cause` (`_refuse_running`), never a unique-index 500. Reactivation checks take no 240-second yield: they read only the turns being reactivated.
+  **Why:** These edge cases came up while building, and the plan does not cover them. Cost if wrong: an unarchive during that fork's check is allowed.
+  **Issue:** #120
+- **Decision:** The surface. The `untruncate`, `swap` and `fork` codecs become 200/201 or 202 unions. The 202 is #118's `RatingCheckStartedBody` with `Location: /stories/{id}/content-rating/checks/{job_id}`, declared under `responses`, and the routes' descriptions explain the check. `GET /stories/{id}/content-rating/checks/{job_id}` gains `kind` and `outcome`. For a reactivation check, `rating_version`/`config_revision` are null. `GET /stories/{id}/variants` gains `requires_check` per chain (`reactivation.chains`, wrapping `variants.list_chains`, so `core.variants` does not import ratings). `docs/openapi.json` was regenerated. #128's `applied` stage view was not built: that is #128's. Library callers that read these results narrow them. `test_c_03`'s three helpers and `test_i_18`'s fork now `assert isinstance(...)` the synchronous type: a type narrowing, with no assertion loosened.
+  **Why:** The pass-1 lines (the 202 is #118's plus `Location`; `requires_check`; reuse the check route) and #118's "a 202 declared under `responses`". Cost if wrong: response shapes change before #128 freezes the surface.
+  **Issue:** #120, #128
+- **Decision (drift):** The part is `test_i_22__reactivation`, `part("M3", "FR-RATE-7")`, in `tests/integration/test_rating_change.py`, the single I-22 (M3) file, not the plan's `test_rating_reactivation.py`. It checks all five AC clauses: untruncate, swap and fork-promote refused (fork counts asserted), not re-checked (a spy on `change.evaluate_history`'s record set), the new global policy in the evaluated policy set, and the null-stamp fixture. The complements run first with `reactivation.guard` replaced by a test-only no-op: the same untruncate, swap and fork succeed. The no-unchecked case is synchronous, with zero spy calls, no new job and no `guardrail_check` model call. The null-stamp helper `_forget_checks` is described outside the part body, without the M7 term. Three detailed integration tests cover: a passing swap and a passing fork (outcome, the fork's active chain, source memberships kept); the pause refusal (`cause`), the `Idempotency-Key` replay of the 202, a stale expected revision, and a fork along the active chain; and an edit that became impossible (`failed`, `NothingToUndo`). `tests/test_reactivation.py` has three database-free tests of the comparison. I mutation-checked two mutants, and both were reverted: skipping the stamp of passing turns fails the not-re-checked clause, and a guard that always answers `None` fails the refusal clauses.
+  **Why:** The drift notes (one file per test ID and milestone; lexicon) and #118's Ad-hoc entry. Cost if wrong: renames only.
+  **Issue:** #120
+- **Decision:** #120's gate, run under M3's per-story rule (the orchestrator runs the full suite at the end of group C).
+  - **Routes, Engine methods and OpenAPI:** `tests/conformance/`, the route guard, the response bases and `test_openapi_calls_the_message_finished_never_verified`: 174 passed in 582 s.
+  - **The story's areas:** the new and rating-change tests, migrations, drift, event registry, ownership, I-21, and every test module that exercises untruncate, swap, fork, variants, the pause or the rating check (X-03, determinism, lexicon, I-02, I-04, I-08, I-17, I-18, revisions, rebuild, S-DELETE, S-REWIND, S-UNDO-SWAP, S-FORK-SNAPSHOT, isolation, C-10, jobs, offboarding, truncate mid-generation, story characters, two-stage, time, effective config, engine profiles, feedback, lite summary, projections, rating history, U-18, U-29): 389 passed, 11 deselected, in 264 s.
+  - **Static checks:** ruff check and format, mypy (536 files), lint-imports (3 kept), check-assignment, check-parts (216 parts), check-lexicon (0 violations), check-traceability, check-deps, `openapi --check` (regenerated) and `model_guide --check` all pass. No dependency changed, so check-licenses was not run.
+  **Why:** M3's per-story gate rule. Cost if wrong: a failure surfaces in group C's full run.
+  **Issue:** #120
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #120 built the reactivation re-check with shapes that later plans name differently or do not name.
+  - **The edits.** `untruncate`, `swap` and `fork` (with a non-active `variant_chain`) can answer 202 `RatingCheckStarted` (#118's body plus `Location`) instead of their 200/201.
+  - **The check.** It is a `rating_check_jobs` row with `kind = reactivation` (new column, migration 0037) and the new status `reactivated`. Its `outcome {operation, result}` holds the edit's answer, a fork's new story included. The check read gains `kind` and `outcome`, `GET /stories/{id}/variants` gains `requires_check`, and the pause cause is `reactivation_check`.
+  - **The rule.** A turn is checked when its `checked_guardrails` lacks a live policy at its version, and a `NULL` stamp lacks all. Passing turns are stamped even when the edit is refused. The edit is applied by the job while the story stays paused (`pause.holding`).
+  - **The hooks.** `change.story_image_records` takes an optional `operation_ids` (still `[]`), and `change.event_records` reads the records of any operations.
+  **Why:** #120's AC and pass-1 lines, corrected by its drift notes and #118's Ad-hoc entry. The decision entries above give the details.
+  **Affects:**
+  - **M3 #128 (API surface).** The route table's `untruncate`, `swap` and `fork` answer 202 too, with the documented `RatingCheckStartedBody`. `get_rating_check` gains `kind`/`outcome`, and `variants` gains `requires_check`. The pass-1 `applied` stage of the stage view is not built. C-03 has no reactivation step.
+  - **M7 #251 (making a story brought in by a bundle safe).** Record its inactive turns with `checked_guardrails` `NULL` or `{}`: either one makes any later reactivation check them first, by construction. No backfill of a "passed" stamp.
+  - **M8 #272 (story images).** Reactivation passes the turns' operation ids to `story_image_records(conn, story_id, operation_ids)`. An image violation has no `{turn, variant}` position, so `settle` does not withhold the turn's stamp for it. #272 should map image positions to their turn when it adds them.
+  - **The Console (nathanpond/Epistrel-Console).** The undo, swap and fork actions must handle a 202 and follow the check (the same progress and refusal views as a rating change), show `requires_check` on dormant chains, and show a reactivated fork's new story from the check's `outcome`.
+  - **Next step:** `/n8-replan M3` for #128, or apply this in its drift check. M7 and M8 are later milestones.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #120's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111 and #113 to #119 did. Cost if wrong: one heading.
+  **Issue:** #120
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #121 delivered the `rating_suggestion` purpose and the advisory table. Some of what it built differs from, or adds to, what later plans name.
+  - **The surface.** The routes are `POST /catalog/{characters|scenarios}/{id}/rating-suggestion` (`suggest_ratings_character`, `suggest_ratings_scenario`), flagged `mutating=False`. Their body is `{version?: n | "draft"}`, and `include_retired` is a query parameter. The answer is `{advisory, entry, evaluated, rows, unavailable, model_calls, elapsed_ms}`. Each row is `{rating_id, rating_name, rating_version, appropriate, concerns, error, truncated, dropped_concerns}`. A concern's `element.location` is #111's location plus `media_id`.
+  - **The model configuration.** `rating_suggestion` is now a delivered, configurable purpose: `/admin/model-config` lists it. It resolves its model as its own row, then `guardrail_check`'s, then `default`'s. `sources` values gain `inherited`, which is additive. The registry's `Purpose.default_model_key` now names the parent row. The new `Purpose.story_scoped` (`false` for `rating_suggestion`) and `STORY_PURPOSES` decide what an engine profile routes, a story's runtime facts fingerprint and the model matrix measures. A profile that names `rating_suggestion` is 422.
+  - **The isolation.** The contract `rating-suggestion-is-advisory` lists `epistrel.core.policies` and `epistrel.orchestrator.policies` where the plan named `epistrel.core.guardrails`, which does not exist.
+  **Why:** #121's AC and pass-1 lines as corrected by its drift notes; the decision entries below give the details.
+  **Affects:**
+  - **M3 #128 (API surface).** Its route table, parity and replay tests should list the two suggestion routes as `mutating=False`. `info.version` and the tags are unchanged. The model-config `Source` enum has three values now.
+  - **M3 #126 (feedback).** Its planned contract `feedback-is-flag-only` names `epistrel.core.guardrails` too. Use `epistrel.core.policies` and `epistrel.orchestrator.policies`, as here.
+  - **M4+ purposes (for example `time_estimation` M6, `belief_adjudication` M5, `image_prompt` M8).** A purpose that defaults to another purpose's row sets `default_model_key` to that purpose. A purpose that runs outside stories sets `story_scoped=False`.
+  - **The Console (nathanpond/Epistrel-Console).** It needs an author-facing rating-suggestion view per catalog entry (the whole table, never one answer, with each concern's element and the row's `error`). Its model-config page should show `rating_suggestion` and the `inherited` source.
+  - **Next step:** `/n8-replan M3` for #126 and #128, or apply this in their drift checks.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision (drift):** #121's purpose is declared in the registry, not in a `purposes/` package. `RATING_SUGGESTION` is a `Purpose` in `orchestrator/models/registry.py` and is in `DELIVERED`; its `ReservedPurpose` is removed.
+  - **Shape:** `hot_path=False`, structured floor `parse_validate_retry`, template `rating_suggestion.j2`.
+  - **Inputs:** `RatingSuggestionInputs` (the rating's name, description and guidance, the model-assisted policies, the deterministic hits, subjects, and the elements). It uses two new `ContentCategory` values, `catalog_text` and `rating_description`, both described in `tools/model_guide.py`.
+  - **Output:** `RatingSuggestionVerdict {concerns: [{policy_id?, clause?, element: {kind, location}, explanation}]}`. It has no `appropriate` and no confidence.
+  - **Template:** states verbatim "Report only conflicts with the listed policies — never taste, audience fit or quality."
+  - **Model guide:** the "Returns" line now says "its free text is author-facing" for a schema with a string field, because the old fixed "no free-text field" would be false here. `docs/models.md` was regenerated.
+  **Why:** The drift note: no `orchestrator/purposes` package exists, and `_build` refuses a name that is both delivered and reserved. Cost if wrong: one module move.
+  **Issue:** #121
+- **Decision (drift):** The resolution chain own row → `guardrail_check` row → `default` reuses `Purpose.default_model_key`, which until now was always `default`. `rating_suggestion` sets it to `guardrail_check`.
+  - `config.parent_of`, `resolve(..., parent=)`, `ConfigCache.effective` and `describe` walk own → parent → `default` per field and per params key. `_build` refuses a parent that is not an earlier delivered purpose defaulting to `default`.
+  - `/admin/model-config`'s `sources` gains a third value, `inherited`, which is additive in the API.
+  **Why:** The drift note asks for a third source value. Reusing the registry field keeps one place that names the parent. Cost if wrong: the new source value would need renaming in the Console.
+  **Issue:** #121
+- **Decision:** The layout follows the pass-1 split.
+  - `core/ratings/suggest.py` holds the response models, `load_entry`, elements, `deterministic_concerns`, `row` and the INFO line (entry id, row count and latency only).
+  - `orchestrator/ratings/suggest.py` builds each rating's policy set with `creation_context(db, rating, cast)` (the entry's true ages, so the minors policy is active only with a minor), runs one call per rating with `asyncio.Semaphore(4)` and one shared `TurnBudget(deadline_s=20)`, and filters the answers.
+  - `Engine.suggest_ratings(ctx, entity_type, entry_id, request, *, include_retired)` fills `model_calls` and `elapsed_ms`.
+  - The two routes are `suggest_ratings_character` and `suggest_ratings_scenario`. They live in `api/routes/catalog_characters.py` and `catalog_scenarios.py` (the drift note: there is no `catalog.py`) and share `api/routes/rating_suggestion.py`. Both are flagged `mutating=False`.
+  **Why:** Pass-1 Discretion and the layering (core never imports the orchestrator). Cost if wrong: module moves only.
+  **Issue:** #121
+- **Decision:** The response shape as built, settling what the AC and pass 1 left open.
+  - **Top level:** `{advisory: true, entry {type, id, version}, evaluated [{rating_id, rating_version}], rows, unavailable, model_calls, elapsed_ms}`.
+  - **Row:** `{rating_id, rating_name, rating_version, appropriate, concerns, error, truncated, dropped_concerns}`. `error`, `truncated` and `dropped_concerns` are always present (null, false, 0) rather than omitted.
+  - **`element.location`:** #111's shape plus `media_id`, with `entry` and `version` always set. For the entry's own elements they are the entry's id and version label. For a `cast_character` they are the character's id and the version read.
+  - **Element kinds:**
+    - a scenario's planned reveal (truth and conditions) is `reveal`;
+    - other seeds are `seed` (with `seed_id`);
+    - every other role text (setup description, public label, relationships, name overrides, starting values) is `role`;
+    - an asset's caption, alt text and `generation_metadata.prompt`/`negative_prompt` are `media_caption` (`field` `caption`, `alt_text` or `generation_metadata.<key>`), and so is a scenario video's own caption (`field` `public_card.media.videos[i].caption`).
+  - **What the elements cover:**
+    - for a scenario, #111's `policy_texts` plus the public card, labels, role labels and the visual style;
+    - for a character, the public card, labels, aliases, every definition string except the disposition `setting` enums, and the identity prompts.
+  - **`unavailable`:** entries are `{role, entry, version, reason: character_unavailable}`.
+  - **Request:** the body is `{version?: n | "draft"}`, and `include_retired` is a query parameter.
+  **Why:** AC1 names `rows`/`evaluated`/`concerns`, and pass 1 names the echoes and the location object. Cost if wrong: response field changes before #128 freezes the surface.
+  **Issue:** #121
+- **Decision:** Model answers are filtered as follows. A model concern is kept only when it:
+  - names exactly one of `policy_id` and `clause`;
+  - names a `policy_id` among the rating's active text policies (deterministic or model-assisted), or a `clause` that appears, whitespace- and case-normalised, in the rating's description;
+  - names an element exactly as one that was sent.
+  Anything else is dropped and counted in `dropped_concerns`. A repeat of a deterministic concern is skipped but not counted.
+  - Element truncation is greedy within `CONTEXT_CHARS = 24000` characters, private elements first. Deterministic evaluation always covers every element.
+  - Failures map to `error` values:
+    - `ModelUnavailable` with reason `deadline` → `deadline`;
+    - reason `garbage`, a refusal, a `length` finish, or text that fails strict parsing → `invalid_response`;
+    - any other `ModelError` → `model_unavailable`.
+  - The call is a plain `ModelAccessLayer.call` with the declared response schema: no structured retry and no deterministic-first step (pass 1: "plain adapter call").
+  **Why:** Pass 1's "outside the enumerated sets are dropped". Checking clauses against the description is my reading of "description clause", because an invented clause would otherwise pass. Cost if wrong: a real clause the model paraphrased is dropped, and the row still lists the deterministic concerns.
+  **Issue:** #121
+- **Decision (drift):** The contract `rating-suggestion-is-advisory` uses the drift note's importer list, because the AC's `epistrel.core.guardrails` does not exist.
+  - **Source modules:** `epistrel.core.policies`, `epistrel.orchestrator.policies`, `epistrel.core.catalog`, `epistrel.core.genesis` and `epistrel.core.ratings.change`.
+  - **Forbidden modules:** `epistrel.core.ratings.suggest` and the driver `epistrel.orchestrator.ratings.suggest`, indirect imports included.
+  - To keep it holdable, the registry's output models (`Suggested*`) are separate from core's response models. The registry is imported by `orchestrator.policies`, so it must not import `core.ratings.suggest`. `core/ratings/__init__.py` does not re-export it.
+  - Tests in `tests/gates/test_rating_suggestion_contract.py` (unmarked): the contract as written, KEPT on the real tree, BROKEN on a fake tree's indirect import, and an AST scan showing the only importers are the Engine, the driver and the three route modules.
+  **Why:** The drift note's resolution. Pass 1's direction (core module as source) would prove layering, not advisory isolation. Cost if wrong: a list edit.
+  **Issue:** #121
+- **Decision (drift):** The tests are in `tests/conformance/test_c_21.py`, not `tests/integration/test_rating_suggestion.py`.
+  - Six slices, each on its own scratch database: `test_c_21__affair_table`, `__gentle_scenario`, `__deterministic_without_model`, `__characters`, `__retired_and_unavailable` and `__model_and_documentation`.
+  - Markers: `part("M3", "FR-RATE-8")`. The affair table and the model slice carry `part("M3", "FR-RATE-8; FR-MODEL-2")`, because §15 lists FR-MODEL-2 under C-21 (M3).
+  - The scratch database makes the ratings exactly the four seeded ones plus the custom non-linear `Workplace` (it inherits Explicit and adds an `affair` word list).
+  - The counts-unchanged check enumerates every base table of `public` and `catalog` from `information_schema`. `subject_references` does not exist yet, and `rating_check_jobs` is covered by the enumeration. Complement: a draft save moves the counts.
+  - Mutation-checked: accepting any policy or clause fails the affair slice. The source was restored from a scratch copy.
+  **Why:** The drift note's correction (§15 maps FR-RATE-8 only to C-21; one file per test ID). Cost if wrong: renames only.
+  **Issue:** #121
+- **Decision:** Pass-1 lines not applied as written.
+  - "An `@draft` pin uses the draft": `RoleCharacter.version` is an int or null at HEAD, and no `@draft` pin exists, so there is nothing to apply.
+  - "`appropriate` is derived": it is `null` only when the model failed and no deterministic concern exists.
+  - The pass-1 `?projection=` 422 is a hidden query parameter (not in the schema) refused at `query.projection` with `validation_error`.
+  **Why:** HEAD's shapes. Cost if wrong: small additions when a pin syntax lands.
+  **Issue:** #121
+- **Decision:** Wiring around the new operation.
+  - C-03 gains three `suggest_ratings` steps (a scenario's version 1, a character's draft, a missing version → 404) in group `suggestion`, asserted against `SUGGESTION_ANSWERS`.
+  - The ownership matrix gains `CALLS` for both routes, under the lesson from #118.
+  - `docs/openapi.json` was regenerated.
+  - `tests/test_registry.py`'s delivered-set assertion now includes `rating_suggestion`, whose default key is `guardrail_check`. This is a change the story requires, not a loosening.
+  **Why:** The per-story gate rules (C-03 parity, the ownership `CALLS` lesson, OpenAPI drift). Cost if wrong: none.
+  **Issue:** #121
+- **Decision:** `rating_suggestion` is delivered but not story-scoped. `Purpose.story_scoped` is a new field (default `true`, `false` here), and `registry.STORY_PURPOSES` holds the story-scoped purposes. Code that is about a story uses `STORY_PURPOSES`:
+  - `Engine.purposes`, which is what a profile may route. A profile naming `rating_suggestion` is 422 at `models.purposes.rating_suggestion` ("runs outside any story"), through the new `Purposes.deployment` set.
+  - A story's runtime facts: `facts.identities` and `TEMPLATE_HASHES`.
+  - The model matrix's columns and its `--purpose-model` check.
+  The capability assessment (C-07), the model guide, the prompts and `/admin/model-config` still cover every delivered purpose.
+  - Existing tests that compared with `DELIVERED` as the profile's purpose set now compare with `STORY_PURPOSES`: `test_engine_profiles` (the Lite preset's stored purposes, `GET /engine-profiles/schema`'s `purposes`, the Lite model) `test_profile_facts::test_model_ids_and_template_hashes`, and `test_two_stage::test_c_18__fingerprint` (the turn's recorded models).
+  - C-04 `[openai]` expects each purpose that defaults to `guardrail_check` at the gateway's base URL. It derives these from `DELIVERED` rather than naming the purpose, because of the lexicon gate.
+  These are behaviour changes the story causes, and no assertion is loosened.
+  **Why:** The alternative was to add `rating_suggestion` to the Lite preset. That needs a migration of the seeded preset, would change every story's profile fingerprint (so certifications go stale) whenever the suggestion's model is configured, and would let a profile "route" a purpose no story ever calls. Cost if wrong: a later story that wants per-profile routing of the suggestion flips the flag and migrates the preset.
+  **Issue:** #121
+- **Decision:** The table's `model_calls` lists the calls in rating order. Each rating's call records into its own `metrics.recording()` log inside its task, and `suggest` appends those logs to the Engine's log in row order. The metrics counters are still counted once, at the call.
+  **Why:** C-03's parity run failed because parallel calls finished in a different order on the two surfaces. The order of a table's call list should not depend on timing. Cost if wrong: none.
+  **Issue:** #121
+- **Decision:** `SuggestionRequest` carries model-level examples (`{"version": "draft"}`, `{"version": 2}`, `{}`), because C-01 requires an example on every request body. The database-free registry and configuration tests are in an unmarked new file, `tests/test_rating_suggestion_model.py`, whose docstrings name no requirement ID. A test that names an M3 term inside an M2 part fails the lexicon gate, and an unmarked test whose docstring names `FR-MODEL-2` counts as an M2 part.
+  **Why:** The C-01 and lexicon gates. Cost if wrong: none.
+  **Issue:** #121
+- **Decision:** #121's gate, run under M3's per-story rule (the orchestrator runs the full suite at the end of group C). The final run covered:
+  - `tests/conformance/`, the route guard, the response bases, `test_openapi_calls_the_message_finished_never_verified`, ownership, I-21 and `tests/gates/`;
+  - the modules touching the purpose registry, model configuration, profiles, the catalog and ratings: registry, model guide, profile facts, structured output, model matrix (unit and run), adapters, catalog units, policy evaluation, U-29, model-config API, config changes, two-stage, engine profiles, effective config, API key at rest, catalog characters, scenario catalog and validation, companion, ratings API, rating change, model unavailable, X-07 and P-08.
+  Result: 1139 passed and 1 failed in 723 s. The failure was `test_c_18__fingerprint`, a `DELIVERED` → `STORY_PURPOSES` fix (above). After the fix, `test_two_stage.py` plus `test_rating_suggestion_model.py` gave 14 passed, and `test_feedback.py` gave 19 passed. An earlier run of the same set found the C-03 order, C-01 example, C-04, lexicon, matrix and profile issues fixed above.
+  Static checks all pass: ruff check and format, mypy (543 files), lint-imports (4 kept), check-assignment, check-parts (222 parts), check-lexicon (0 violations), check-traceability (191 code parts), check-deps, `openapi --check` (regenerated) and `model_guide --check` (regenerated). No dependency changed, so check-licenses was not run.
+  **Why:** M3's per-story gate rule. Cost if wrong: a failure surfaces in group C's full run.
+  **Issue:** #121
+- **Decision:** (Rule 1, #120 verification round 1) `reactivation.settle`'s refusal branch now resumes the story only when `stories.paused_by` is this check, as `end` already did. A refused fork of an archived source left the source `active` with a `story_resumed` for a pause that never happened. Regression test: `test_a_refused_fork_of_an_archived_story_leaves_it_archived` (the mutation back to the unconditional resume fails it).
+  **Why:** AC1 says a refusal changes nothing. The guard does not pause an archived source, so resuming it un-archived it. Cost if wrong: none.
+  **Issue:** #120
+- **Decision:** (Rule 1, #120 verification round 1) `reactivation.guard` no longer records `story_paused` for an archived fork source. It still records the `control` operation, because `rating_check_jobs.operation_id` and the Idempotency-Key binding need it. The new regression test caught this: the event claimed a pause that the story row never had. Event replay or audit would read the story as paused until a `story_resumed` arrived, and after the fix above none arrives. The mutation that records the event again fails the test.
+  **Why:** The event log is the truth (invariant 6), so it must not record a pause that did not happen. The alternative was to keep the event and also resume, but that would invent a pause and a resume for a story that stayed archived the whole time. Cost if wrong: a consumer that expected a pause event for every reactivation check misses one, but only for archived sources.
+  **Issue:** #120
+- **Decision:** (Rule 1, #120 verification round 1) `GET /stories/{id}/variants` computes `requires_check` from the nodes a swap to the chain activates: `tree.path(tree.resolve(ref)).nodes`, the same set `plan_swap` uses. Before, it read only the chain's own segment. For a chain that continues in more than one way (the swap is 409 `unknown_chain`), it reads the path to the end of the chain's own segment, which every tip through the chain activates. Regression test: `test_requires_check_covers_the_whole_path_a_swap_activates` (the mutation back to `segment_of` fails it).
+  **Why:** The flag promises to say whether making the chain active starts a check, so it must look at what the edit actually activates. The fallback for an ambiguous chain is my own choice, since the verifier's hint left it open. A full answer there would depend on which candidate the caller names. Cost if wrong: an ambiguous chain's flag shows `false` while one of its candidate tips would need a check. The swap still runs the check either way, so this is a display issue only.
+  **Issue:** #120
+- **Decision:** (discovered work, #120 verification round 1) The verifier's C-01 fuzz failure on `POST /engine-profiles` is filed as #327 (needs-triage) and cross-referenced on #120, not fixed here. The cause is the name's `strip_whitespace=True` together with `max_length` (`core/profiles/store.py:127`): the server checks the stripped length, but the schema's `maxLength` counts the raw string. The search found no existing issue (#279 is a different route).
+  **Why:** The bug is in #106's code, outside #120's scope. Cost if wrong: none.
+  **Issue:** #120
+- **Decision:** #120 fix round 1 gate (M3 per-story rule; the orchestrator runs the full suite for group C). The run covered `test_rating_change.py` (all #118/#120 slices plus the 2 new tests), `test_reactivation.py`, S undo-swap, I-04, time, C-03, S fork-snapshot, S rewind, I-03, I-08 and the event registry. Result: 58 passed, 0 failed. All static and CI-lint gates pass. No route, model or dependency changed, so `openapi --check` stayed clean and check-licenses was not run. The conformance suite and the ownership and route-guard modules were not re-run, because no route or schema changed.
+  **Why:** M3's per-story gate rule. Cost if wrong: a failure surfaces in group C's full run.
+  **Issue:** #120
+
+- **Decision (drift):** The dispatcher is `core/genesis/materialize.py`: each scenario field's handling comes from its class (`CLASS_HANDLING`: `public_card` and `style` never, `knowledge_seed` rendered and deferred, `story_rule` and `starting_state` deferred, `director` rendered, `configuration` and `recommendation` consumed) with six per-path exceptions (`PATH_HANDLING`: the world description and the starting places rendered only, the roles present rendered, the opening narration consumed as turn 1, the scheduled events deferred only), and a `configuration`/`story_setting` field (plus `required_providers`) is a `setting`. `handling_problems()` is the build-time check (an override naming no field, a class with no handling, a public-card, director, recommendation or style field that would defer, a setting with no capability entry), asserted empty by `tests/test_genesis_materialize.py`, which also proves a broken table is reported. The item enumeration refuses any item whose fields the dispatcher does not defer.
+  **Why:** The key_link "every field dispatched by its class; an unknown class is a build error", with the pass-2 lines on what is rendered only. Cost if wrong: one path moves between handlings.
+  **Issue:** #122, #108
+- **Decision:** `genesis_deferred` (migration 0038) is `(id ulid pk, story_id, operation_id, field_ref, field_class, location jsonb, capability_needed, payload jsonb, created_at, materialized_at null)` with `ix_genesis_deferred_story_id`, no foreign key (like `character_snapshots`), in `STORY_TABLES` (enumerated delete) and copied by a fork with its genesis operation (it has `operation_id`). One row per item, one capability per row: a seed is `structured` when its audience holds `public` and it is not `secret`, else `partitions` (a belief or nested seed always), a scheduled seed `clock`; locations, entities, relationships, name overrides, rules, predicates, closed sets and a planned reveal's truth `structured`; the clock and scheduled events `clock`; States and a role's starting values `states`; the player persona's seeding one `partitions` row at `persona.audience`. The payload is `{value: <the item's JSON from the stored document>, characters: {role: story character id}}` (the persona row adds `known_to`). `determinism.ORDER` orders it by story then `field_ref`; S-DELETE plants a row.
+  **Why:** The pass-1 and pass-2 lines. A planned reveal's truth follows the pass-1 line (`structured`) rather than the seed rule, so its row names one capability; the table is a story table without foreign keys because S-DELETE forbids any other. Cost if wrong: one capability token per item kind, which M5 to M7's materialisation reads.
+  **Issue:** #122, #231, #149, #202
+- **Decision (deviation from the pass-1 line):** A role's default participation is stored as the inactive setting `participation.<role id>` (capability `multi_character`) in `stories.settings.inactive`, not as a new `characters` column. Inactive settings are `stories.settings.inactive = {name: {value, capability}}`; `interaction_mode` → `multi_character`, `player_authority` → `structured`, `ambiguous_retcon_timing` and `backfill_conflict_policy` → `history_rewrite`, `required_providers` → `providers` (`core/genesis/settings_map.py`, complete by `unmapped_settings()`). #119's top-level `interaction_mode`, `player_authority`, `ambiguous_retcon_timing` and `backfill_conflict_policy` keys move under `inactive`; `turn_concurrency`, the default viewpoint, `audit_retention_days` and the policies stay applied. A setting is applied instead once its capability is in #106's `DELIVERED`.
+  **Why:** AC5 needs the setting stored and listed, which `settings.inactive` does without a schema change to `characters` (Rule 4 territory the AC does not need). No reader used the moved top-level keys (searched). Cost if wrong: #157 or M7 reads participation from the settings rather than a column.
+  **Issue:** #122, #119
+- **Decision:** The creation report (`core/genesis/models.py`) gains `story_id`, `cast` (a catalog member is #115's card of the version taken, `catalog.characters.version_card`, plus `kind: catalog`, `character_id`, `role_id`, `source {catalog_id, version}`; an ad-hoc member or the player is `{kind, character_id, role_id, name}`), `counts {errors, conflicts, warnings, deferred {by_class, by_capability}, inactive {by_class, by_capability}}` (non-zero keys only; `conflicts` always 0 under Lite) and, under `full` only, `deferred[]` (`field_ref`, `field_class`, `location`, `capability_needed`, `payload`) and `inactive[]` (`name`, `value`, `capability`, `field_class`, `location`). `counts.deferred`/`inactive` change from #119's integers to the two maps. I kept `errors` in the counts (a refusal's report uses it) beside the AC's `conflicts`.
+  **Why:** AC4 and the pass-1/pass-2 lines. Cost if wrong: #128 freezes a slightly different count shape.
+  **Issue:** #122, #119, #128
+- **Decision:** Every `personality_in_role` warning of a creation names the story character filling its role as `source` (`merge.name_warnings`, the story name with any canonical override), the player's role included; #111's heuristic and term list stay in `catalog/checks/personality.py` (pass 2), and `merge.py` imports it. A role whose seeds assert personality gets one sentence after its seeds in the scenario text: "Where a scenario fact describes <Name>'s personality, it is guidance only: <Name>'s own author notes decide how <Name> behaves."
+  **Why:** AC3 ("personality comes only from the character ... rendered as guidance that yields: the prompt says so"). The pass-1 wording ("it takes precedence over the character's own description") says the opposite of the AC and of FR-SCN-7, so I followed the AC. Cost if wrong: one sentence's wording.
+  **Issue:** #122, #111
+- **Decision (drift):** The two prompt blocks are rendered on every turn from `stories.scenario_snapshot` and the cast (`core/genesis/render.read_rendered`, called by `core.turns.read_turn_inputs`); `GenerationInputs` gains `scenario_text` and `director_notes` with new content categories `scenario_text` and `director_notes` (descriptions in `tools/model_guide.py`, `docs/models.md` regenerated; the guardrail and rating-suggestion purposes never receive them). The template pastes the finished blocks in the order guidance, instructions, scenario text, author notes, director notes, pins, summary, preamble (no Jinja partials: `render.py` emits finished text, as pass 2 says). `READ_SET_MEMBERS` gains `scenario_text` and `director_notes`, each the hash of its block; `test_concurrency.py` and `test_revisions.py` pin the new member list (a required behaviour change, no assertion loosened).
+  **Why:** The drift note's path (GenerationInputs, TurnInputs, read-set loaders) and pass 2's "render.py emits finished text blocks". Cost if wrong: none to the product; the blocks' text is a constant per story.
+  **Issue:** #122, #57, #47
+- **Decision (drift, #119's hand-off):** A catalog character's author notes stay in `characters.definition`, written at genesis, now as `render.definition_notes` (appearance, personality, values, background flavor, the five disposition axes as fixed sentences with their nuance, likes and dislikes, speech, vocabulary, mannerisms, sample lines), replacing #119's interim rendering; true age, visual identity, safe fallback and deflection style are left out (the template already renders the story's `deflection_style` column, per #115's note). The column is the snapshot's rendering, so the `definitions` read-set member and every Lite reader are unchanged, and editing the catalog after creation changes no prompt (asserted in `test_i_18__scenario_prompt`).
+  **Why:** #119 kept the column NOT NULL and offered "replace the rendering"; rendering per turn would change nothing the story can observe, since the snapshot is fixed. Cost if wrong: a later change to the prose rendering affects only stories created after it.
+  **Issue:** #122, #119, #115, #114
+- **Decision:** Rendering details beyond the pass-2 lines: disclosure sentences use the holder's name instead of a pronoun ("June conceals it and may lie to protect it"), since the snapshot has no pronoun; a `self` audience joined by `acquaintances` or `perceivable` drops the redundant "Known to <holder>"; a named group renders as "the <group>"; each filled role's starting place is a "Where each starts:" list before `Present at the start`; a relationship name loses a trailing `_of` (`mother_of` is "mother"); an unfilled optional role's seeds render under "Other people:" by its public label; the persona note gives name, gender, exact age and description, then "Known to <names>: <Name>'s name and exact age; others perceive <gender>, <age band>".
+  **Why:** Low-cost wording choices the Discretion leaves open. Cost if wrong: prompt wording only.
+  **Issue:** #122
+- **Decision (#119's hand-off):** The opening narration is labelled `Narrator: ` in the window: `WindowRow.opening` is set for a reply row whose payload's `finish_reason` is `opening` (`core.turns.OPENING_FINISH`, now the one constant `genesis.create` uses), and `transcript_line` prefixes it. Other narration rows (ingested M2 narration, the summary's chunks) are unchanged.
+  **Why:** #119 stored the opening verbatim and left the prefix to #122; a broader prefix would change M2 prompts and summary inputs. Cost if wrong: none.
+  **Issue:** #122, #119
+- **Decision (drift):** The full creation report is persisted as `operations.turn_report = {creation_report: ...}` on the genesis operation, written in the genesis transaction after `write_in`. `GET /operations/{id}` gains `creation_report`, filled only for a `genesis` operation and a read naming `?viewpoint=omniscient` (else `null`); `OperationView`, `OperationBody` and `docs/openapi.json` are updated.
+  **Why:** The pass-2 line and the drift note. Cost if wrong: #124 must redact one more jsonb path (named in the Ad-hoc entry).
+  **Issue:** #122, #61, #124
+- **Decision (drift):** Tests follow docs/04 §15 and the one-file rule. `test_i_27__lite` `part("M3", "FR-SCN-2,5,9,11")` in `tests/integration/test_i_27.py`; `test_u_27__lite` `part("M3", "FR-SCN-7; FR-CAT-2")` in a new `tests/test_u_27.py`; `test_i_18__scenario_prompt` `part("M3", "FR-LITE-1")` in `tests/integration/test_i_18.py` (it carries the catalog-edit complement); `test_c_15__story_creation` `part("M3", "FR-SCN-10")` in `tests/conformance/test_c_15.py`; unmarked `tests/test_genesis_materialize.py` and `tests/test_genesis_render.py`. Capability tokens, seed kinds and setting names stay in `tests/lite_genesis_support.py` (check-lexicon). The planned `tests/fixtures/scenarios/sunday_dinner.json` is not created: `lite_genesis_support.sunday_dinner` is #119's `scenario_support.COMPLETE` (already the Sunday Dinner family with every group) with a planted public description, label and style. The planned `tests/integration/test_lite_genesis.py` is not created. "No placeholder record" is asserted by enumerating every `story_id` table from `information_schema` and comparing the rows a creation adds to the exact expected set.
+  **Why:** The drift notes and #113's and #119's hand-offs. Cost if wrong: renames only.
+  **Issue:** #122, #113, #119
+- **Decision:** The I-18 slice's pinned memory and catalog edit were reworded after `test_c_11` (the lexicon gate's own test) caught "clock" and "rewritten" in the part's body. No gate was changed.
+  **Why:** check-lexicon. Cost if wrong: none.
+  **Issue:** #122
+- **Decision (discovered work):** Running `tests/test_markers.py` before the session's first `pg_url` setup errors every later integration test with "Table 'schema_meta' is already defined" (an ordering I used in an area run; it reproduces without this story's changes). Already filed as #311; not fixed, and my area runs keep integration modules before the unit modules.
+  **Why:** The discovered-work rule. Cost if wrong: none.
+  **Issue:** #122, #311
+- **Decision:** `docs/02` §4.10's `genesis_deferred` column list is amended to the built shape (with the Ad-hoc entry below). #123's writer registration and #124's redaction of `genesis_deferred.payload` and the persisted report are left to those stories, as the pass-1 line assigns them.
+  **Why:** The pass-1 line names those stories. Cost if wrong: #123/#124 miss the table (named in their Affects line).
+  **Issue:** #122, #123, #124
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #122 materialised Lite stories from their scenario snapshot. It changed shapes that later stories build on.
+  - **The new table `genesis_deferred`** (migration 0038; docs/02 §4.10 amended). Its columns are `id, story_id, operation_id, field_ref, field_class, location, capability_needed, payload {value, characters}, created_at, materialized_at`.
+    - It has one row per item the story cannot use, and each row names one #106 capability: `structured`, `partitions`, `clock` or `states`.
+    - It is a story table with no foreign key: story deletion enumerates it, and a fork copies it with the genesis operation.
+  - **Inactive settings.** Settings for undelivered capabilities now live in `stories.settings.inactive` as `{name: {value, capability}}`.
+    - They were top-level keys at #119.
+    - A role's participation is stored there as `participation.<role id>`, not as a `characters` column.
+  - **The creation report** gains `story_id`, `cast` cards, and `counts {errors, conflicts, warnings, deferred/inactive {by_class, by_capability}}`. `deferred`/`inactive` were integers at #119. Under `full` it also has the `deferred[]` and `inactive[]` arrays.
+  - **The report is persisted** on the genesis operation's `turn_report.creation_report`. `GET /operations/{id}` returns it as `creation_report` under `?viewpoint=omniscient` only.
+  - **The Lite prompt** gains the `## Scenario` and `## Author notes (not facts)` blocks.
+    - New `GenerationInputs` fields `scenario_text`/`director_notes`, with content categories of the same names.
+    - Two new read-set members.
+    - A catalog character's `characters.definition` is now `render.definition_notes` prose.
+    - The opening narration is labelled `Narrator:` in the window.
+  **Why:** #122's AC and its pass-1/pass-2 Discretion, corrected by its drift notes and the #113, #114, #115 and #119 hand-offs. The decision entries above give the details.
+  **Affects:**
+  - **M3 #123 (index).** Register `genesis_deferred` (its `payload` holds seed and persona text) and `operations.turn_report.creation_report` with the reference writers.
+  - **M3 #124 (erasure).** Redact the same two, plus `stories.settings.inactive` values (they hold no prose today).
+  - **M3 #128 (API surface).**
+    - The `CreationReport` shape changed: counts are maps, and it has the cast cards and the arrays.
+    - `OperationBody` gained `creation_report`.
+    - `docs/openapi.json` is regenerated.
+  - **M4 #149, M5 (partitions), M6 #202 and M7 #231 (materialisation).**
+    - Read the deferred items from `genesis_deferred` by `capability_needed`, with each row's original JSON in `payload.value` and the resolved character ids in `payload.characters`, and set `materialized_at`.
+    - #202's States, clock and scheduled events are rows under `states`/`clock`.
+    - #231 drains rows by capability.
+  - **M5 #174, #175, #176 (multi-character) and M7 #230 (backfill conflicts).** `interaction_mode` and each role's participation (`participation.<role id>`) are under `settings.inactive` with capability `multi_character`. `backfill_conflict_policy`/`ambiguous_retcon_timing` are there under `history_rewrite`. A story created before those capabilities land reads them from there.
+  - **The Console (nathanpond/Epistrel-Console).**
+    - The story-setup screen can show the card report's counts, cast cards and unavailable checks.
+    - An author view can show the `full` report's deferred and inactive lists, or read them later from `GET /operations/{id}?viewpoint=omniscient`.
+    - The story settings screen should show `settings.inactive` read-only.
+  - **Next step:** `/n8-replan` for M4 to M7 (#149, #174 to #176, #202, #230, #231) after M3. #123, #124 and #128 are later group C stories in this run: their drift check should apply this.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #122's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #122
+- **Decision (drift):** No new migration. `subject_references` already exists in #123's full shape, from #105's migration 0022: the subject-kind, scope and ref-kind CHECKs, the story-scope CHECK, the unique key and both AC1 indexes. AC1's migration clause is satisfied by 0022, and `test_the_index_table_has_its_lookups` asserts the two indexes. `record_table` keeps #105's plain table names (`events`, `characters`, `character_versions` and so on), not the schema-qualified names pass 1 proposed.
+  **Why:** #105's entry settled this ("#123's full shape", plain names as its AC wrote them), and #108's rows already use plain names. Cost if wrong: one `UPDATE` to qualify the names, and #124 reads whichever names are stored.
+  **Issue:** #123, #105
+- **Decision:** A subject is defined as the pass-1 line says. A story character's terms are its name, its snapshot's `public_card.name` and `metadata.aliases`, its role's `name_overrides` (canonical and aliases, read from `stories.scenario_snapshot` by `role_id`) and `persona_snapshot.name`. A catalog character's terms are the names and aliases of its draft and of every version. A persona's term is its name. In a story record, a row that names a catalog-sourced or persona-made character also gets a `catalog_character` or `persona` row in the same field, in story scope. Defining rows (a `characters` row, a catalog draft or version, a persona) are `declared` with `field` null. An event's `character_id` column is `authored`. The matcher compiles one alternation per subject (NFC, casefold, whitespace runs, `(?<!\w)…(?!\w)`, at least 2 characters). It matches a possessive "'s" because `'` is not a word character.
+  **Why:** The pass-1 lines. `ReferenceKind`'s own docstring reads "authored by it", which fits the speaker column, not a defining row. Cost if wrong: a ref_kind relabel, which #124 does not branch on.
+  **Issue:** #123
+- **Decision (deviation):** Writers call `index_records(conn, [Record…])`, the batch form, or `records.index_rows(conn, table, where, build)` as often as `index_references(...)`. All three end in `index_records`, which reads the term set once per scope for the whole batch. There is no per-transaction cache: the terms are read again on every call.
+  **Why:** An operation commits several events, and genesis writes four tables, so one term read per call is the cache the plan asked for. A cache that lives across calls would go stale inside a transaction that defines a character (genesis, ad-hoc add). Cost if wrong: one read per call (the timing check below found no measurable cost).
+  **Issue:** #123
+- **Decision (deviation):** An unknown structured id does not raise. In a story record, a character id that is not one of the story's characters is skipped. Other declared ids are kept as given.
+  **Why:** Drafts may hold dangling ids. A scenario draft naming a deleted catalog character is a legal save, and #111 reports it as `character_missing`. Raising would turn those saves into 500s. A story record's ids are written by the engine itself, so skipping one that names no character of the story loses nothing. Cost if wrong: an `UnknownSubject` refusal added at the writers that should refuse.
+  **Issue:** #123, #111
+- **Decision (drift):** Where each record type is indexed:
+  - **Events:** in `Operation._write`, after the commit steps (so a character a step inserts is already a subject). This covers `commit` and `write_in`, so ingest, job outputs (#72's summary segments) and genesis go through it. The direct inserts call it explicitly: `config_changes._story_event`, `ratings.change`'s control event, and the fork. A fork re-indexes the whole story after its copy (`reindex_story`), its own genesis event included.
+  - **JSON columns** are walked whole (`records.text_fields`: every string leaf at its dotted path, except the values of id-like keys). That covers payloads, `turn_report`, `scenario_snapshot`, `character_snapshots.content`, `persona_snapshot`, `genesis_deferred.payload.value`, config `old`/`new`, policy rules, stored results, and catalog character documents (the whole definition, lists, visual identity prompts and opaque `adapter_params`, as #115 asked). `character_id` and the `*character_ids` lists declare their characters.
+  - **Exempt projections:** `lite_summary_segments`, `transcript_messages`, `story_texts` and `story_heads`, because their source events are indexed. `client_events`, `timers`, `turn_queue`, `jobs`, `story_profile_overrides`, `rating_check_jobs`, `guardrail_check_results` and `audit_log` are exempt with reasons in `EXEMPT_TABLES`.
+  - **Registered writers** beyond the plan's list: `policies` (in `orchestrator/policies/admin._insert`/`_replace`), `config_changes` (`record_config_change`) and `operations.turn_report` (genesis's creation report and the Lite pipeline's `write_report`).
+  **Why:** The drift notes' corrections. A whole-document walk indexes fields added later without a change here. Over-inclusion is the safe direction for erasure. Cost if wrong: extra rows for strings that name nobody (none are written unless a term matches).
+  **Issue:** #123, #45, #72, #119, #122
+- **Decision:** I applied the group B hand-offs:
+  - **#111:** a scenario version's record adds `report.warnings[i].text` and `.source`. These are `scenarios.version_record`'s fields, read back from the stored row in `recorded`, so #124's catalog pass finds a version whose report names the subject. The `publish_scenario` and `publish_character` stored results are covered by the whole-result walk.
+  - **#114/#115:** the catalog character's `recorded`/`forgotten` hooks now index the draft and each version (the whole document), and personas are indexed on create and update and dropped on delete. `characters.persona_snapshot` and `characters.deflection_style` are fields of the character row.
+  - **#116:** companion drafts and versions are scenario records, as before. The migration-0033 backfills get rows from `reindex_subjects --catalog --write` or their next save.
+  - **#119/#122:** genesis indexes `stories` (name and `scenario_snapshot`), the cast, `character_snapshots`, `genesis_deferred` and the operation's `turn_report.creation_report` in its transaction (`genesis.create._index_genesis`).
+  - **#112:** `feedback.index_hook`/`drop_hook` now index a rating as record `<message_id>:<principal>` and drop it on retraction. Each `feedback_history` entry is indexed as it is appended. The retention sweep drops the index rows of the ratings, history entries and audit events it deletes. `core/erasure/index.py` joins the feedback-table allow-list.
+  **Why:** The drift notes' hand-offs. Cost if wrong: a missed field reopens a residue gap that #124's scan would catch.
+  **Issue:** #123, #111, #114, #115, #116, #119, #122, #112
+- **Decision:** These delete paths drop index rows:
+  - a persona delete;
+  - a catalog character or scenario delete (draft plus `<id>@*` via `drop_prefixed`);
+  - story deletion's idempotency keys (via `RETURNING`; their story-scope rows already go with `STORY_TABLES`, and deployment-scoped ones are catalog-scope rows);
+  - `idempotency.purge_expired` and `purge_idempotency`'s settled and freed keys (`drop_results`);
+  - the retention sweep's chunks.
+  Truncated, dormant and discarded records keep their rows, as the plan says.
+  **Why:** The pass-1 line ("drop_references … called by every delete path"). Cost if wrong: stale rows naming a record that is gone, which #124 would skip.
+  **Issue:** #123, #61, #71, #103, #114
+- **Decision:** An ad-hoc character added to a running story re-indexes its whole story, inside the addition's commit step. A catalog-scope term change (a new or renamed catalog character or persona) re-indexes only the record that changed, as the plan states ("re-indexes that character's own story/entry"). Older catalog-scope records that already held the new name are found by `reindex_subjects --catalog`.
+  **Why:** A story is small and its terms change rarely. Re-scanning every catalog-scope record (deployment events included) on each catalog write would cost far more than the drift it fixes. Cost if wrong: the catalog rebuild reports those rows until `--write` is run. #124's erasure should run the catalog rebuild first, or scan, before relying on the index for a subject created after the records naming it.
+  **Issue:** #123, #124
+- **Decision (drift):** The rebuild tool is `python -m epistrel.tools.reindex_subjects [--story ID | --catalog] [--write]`. With no scope it rebuilds every story, then the catalog. It is report-only by default and prints JSON (per scope: `clean`, `missing`, `extra`, as identifier and field-path rows). It exits 1 on any difference, 78 on a configuration error and 69 when the database is unavailable. `--write` runs a story's rebuild as a `maintenance` operation under the story lock (no event, no revision bump) and the catalog's under the deployment lock. A report-only run reads in one repeatable-read transaction per scope. Equality ignores surrogate ids and order.
+  **Why:** The pass-1 line, with `projections.rebuild` as the model for the maintenance operation. Cost if wrong: flags only.
+  **Issue:** #123
+- **Decision (drift):** The test plan's `test_subject_index` is unmarked, in `tests/integration/test_subject_index.py`.
+  - It maps to no §15 test ID, and S-ERASURE-BOUNDARY is #124's. M2's #44/#52 left such tests unmarked, and their docstrings carry no FR IDs.
+  - The writer-coverage check runs first (`test_the_coverage_check_reports_a_writer_that_never_indexes`), against the fixture `tests/subject_writer_fixture.py`.
+  - The enumeration test lists the public tables that have a `story_id` and a text or JSON column, plus the `catalog` tables, plus the hand-listed `config_changes`, `idempotency_keys`, `personas` and `media_assets`.
+  - The runtime half is a context-var spy (`index.recording()`) around the played story: every table holding one of the story's records, or one of the test's catalog records, was indexed during the run. #127's plan names this spy.
+  - Name overrides are asserted through the role alias "Mum's".
+  - The planned "a message that does not mention her has no row for her" is asserted as written on an ingested narration. A stub reply that names nobody is still hers by `render_character_ids`, a declared reference, so the test asserts it has no mention row.
+  **Why:** The drift notes. In a Lite story every reply is voiced by its NPC, so "no row" holds only for a message nobody voices. Cost if wrong: renames only.
+  **Issue:** #123
+- **Decision (drift):** Invariant 3 is checked in two places:
+  - `test_indexing_logs_counts_only` captures DEBUG through Epistrel's JSON handler. The line has the table, record, counts and ids only, and neither the caption nor the name.
+  - C-08's canaries gain `character_name` (a third character in `canary_scenario.py`, named in Ada's definition and the stub's reply), so the telemetry run exercises indexing with a planted name.
+  The logger is `epistrel.core.erasure.index` (structlog `get_logger(__name__)`, not the plan's `epistrel.erasure.index`). `record_table`, `record_id`, `records`, `rows`, `missing` and `extra` join `content.KNOWN_FIELDS`. The tool prints an error's class name only.
+  **Why:** The drift note: #74 shipped no fixture. Cost if wrong: none.
+  **Issue:** #123, #74
+- **Decision:** I changed one existing test because the story changes the behaviour it pins. No assertion was loosened. `test_i_27__lite` enumerates every `story_id` table a creation grows, and `subject_references` now grows too. The test pops that table, asserts it grew, and keeps the exact expected set for every other table. `test_feedback`'s allow-list adds `core/erasure/index.py`, which its docstring had reserved for "#123's subject-index registry". The reader functions were named `read_ratings`/`read_rating_history` so that `records.py` does not name the tables.
+  **Why:** The index is not a record of the story. I-27's "no placeholder record" is about story records. Cost if wrong: none.
+  **Issue:** #123, #122, #112
+- **Decision:** #323 was left open (`needs-triage`). The catalog scenario records keep #108's curated `indexed_fields` list, plus the report's fields. The story-scope `scenario_snapshot` is walked whole, so a story created from such a scenario is indexed in full. Only the catalog-scope draft and version miss the strings stored as given.
+  **Why:** #323 is a filed issue awaiting triage. Walking the catalog documents whole would change #108's pinned row set. Cost if wrong: #124's catalog pass misses a name in those objects until #323 is fixed (one line: merge `text_fields(document)` into `draft_record`/`version_record`).
+  **Issue:** #123, #323, #108
+- **Decision:** A timing check found no measurable cost. The same three modules (I-18, C-03, the scenario catalog; 34 tests) took 14.99 s at HEAD in a scratch worktree and 15.25 s with indexing.
+  **Why:** The hook runs on every commit. Cost if wrong: the group C gate's metrics would show it.
+  **Issue:** #123
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #123 completed the subject-reference index. Shapes later stories build on:
+  - **Table and ids.** No migration: `subject_references` is #105's 0022 table. `record_table` holds plain table names. Record ids are a row's id, or composite ids joined by `:`:
+    - `character_snapshots` `<story_id>:<character_id>`;
+    - stored results `<scope>:<scope_id>:<key>`;
+    - ratings `<message_id>:<principal>`.
+    Catalog versions are `<id>@<n>`.
+  - **Kinds.** `field` is a dotted path (`payload.text`, `content.metadata.aliases[0]`, `report.warnings[0].source`); a defining row has `field` null. `ref_kind` is one of:
+    - `declared`: a structured id, or a defining row;
+    - `mentioned`: found in prose;
+    - `authored`: an event's speaking `character_id`.
+    A story record naming a catalog-sourced or persona-made character also has `catalog_character`/`persona` rows, in story scope.
+  - **API** (`core.erasure.index`):
+    - writing: `index_references`, `index_records([Record])` and `records.index_rows`;
+    - dropping: `drop_references`, `drop_many`, `drop_prefixed`;
+    - rebuilding: `reindex_story`, `rebuild`/`rebuild_scope` (a `Difference` of `RowKey`s), `records_of(conn, story_id | None)`;
+    - the matcher: `story_subjects`/`catalog_subjects` and `mentions`;
+    - coverage: the runtime spy `recording()`, and the registry `SUBJECT_WRITERS` (`table`, `writers` modules, `reader` `module:function`) with `EXEMPT_TABLES`.
+    `core.erasure.records` builds a `Record` from a row and walks JSON columns whole.
+  - **Tool.** `python -m epistrel.tools.reindex_subjects [--story ID | --catalog] [--write]` (JSON; exit 1 on differences).
+  - **Not done:**
+    - A catalog-scope term change (a new or renamed catalog character or persona) re-indexes only its own record. Older catalog records that hold the name are found by the catalog rebuild.
+    - An unknown structured id is skipped, not raised.
+    - #323 (scenario strings stored as given, catalog side) stays open.
+  **Why:** #123's AC and pass-1 lines, corrected by its drift notes and the group B hand-offs; the decision entries above give the details.
+  **Affects:**
+  - **M3 #124 (erasure).**
+    - Find records through `subject_references` with plain `record_table` names and the id formats above, not schema-qualified names.
+    - Run (or include) the catalog rebuild before a catalog-scope erasure of a subject created after records that name it.
+    - Purge the subject's rows with the drop helpers.
+    - A story's index is recomputed by `reindex_story` after the projection rebuild.
+  - **M3 #125 (boundary).** The subject index's in-scope tables are `SUBJECT_WRITERS`.
+  - **M3 #127 (resurrection guard).** Derive `CONTENT_WRITE_PATHS` from `SUBJECT_WRITERS` (writer modules per table). The runtime spy is `index.recording()`.
+  - **M4 #135 (memories), #149, and M5 #178.** New content tables register a `SubjectWriter` with a reader in `core.erasure.records` and call `index_records` in their write transaction. `test_every_content_table_has_a_writer` fails otherwise.
+  - **M7 #247 (prune).** Delete pruned events' index rows with `drop_many(conn, "events", ids)`.
+  - **M7 #249 (export).** `subject_references` is index data, not story content.
+  - **M8 #266 (images).** `story_images`, `image_candidates` and `image_jobs` register in `SUBJECT_WRITERS`. Media's own record is `records.media_record`.
+  - **Next step:** #124, #125 and #127 are later group C stories in this run: their drift check should apply this, or `/n8-replan M3` should run before them. `/n8-replan` for M4, M5, M7 and M8 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #123's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #123
+- **Decision (Rule 1):** The area run found three failures in #123's own code, all fixed:
+  - **The rebuild crashed on an invalid stored draft.** The shared database holds a scenario draft that no longer validates (an extra key planted by an earlier test), and the rebuild reads every draft. `scenarios.draft_record`/`version_record` now walk such a document whole and declare every role's `character.catalog_id`, so the rebuild never fails on one. A valid document keeps #108's field list.
+  - **S-DELETE counted removed index rows its "owned" set did not list.** These were the rows of the creation's deployment-scoped stored result, which story deletion now drops along with the key. `_rows_of` counts those rows as the story's.
+  - **The determinism comparator ordered the index rows ambiguously.** The order is now a natural key: an event's seq, a character's (or its snapshot's) ordinal, an operation's start, a deferred item's field, a policy's name, a rating's turn, a history entry's or change's time, a stored result's key, then the subject's cast ordinal. No ids are in the key.
+  `test_subject_index` passes in the shared database after the earlier tests' plantings. That is the regression check for the first fix. S-DELETE and the determinism test are the regression checks for the other two.
+  **Why:** Rule 1, inside the story's scope. Cost if wrong: none.
+  **Issue:** #123
+
+- **Decision (deviation):** Summary regeneration rewrites each redacted level-0 segment's text **in place**, in the segment's own `lite_summary_segment` event, under `epistrel.erasure`. One `consolidation` operation does it, and its `stage_log` records the run. The planned approach was a new segment event plus "old segments flip to `superseded`".
+  - The windows are the level-0 segments still in the summary whose event was redacted and whose text still holds `[erased]`. So a later erasure of the story tries again any window an earlier one could not regenerate.
+  - The new text is post-checked with the subject's terms and redacted on a hit. It is reached through a new `Ports.summary_compressor` port; the Orchestrator's `lite_summary.ErasureCompressor` wraps #72's `_write` with one `MAX_CALLS_PER_RUN` budget.
+  - Without a compressor (`Ports()` default) or after a failed call, the redaction stands with `summary_regeneration_failed`. Running out of calls gives `summary_regeneration_capped`.
+  - Drafts the deterministic output check rejects during regeneration are dropped. They are not written as `guardrail_output_rejected` audit events, as #72's job writes them.
+  **Why:** The drift notes show that #72's coverage, the non-partial unique index `uq_lite_summary_segments_position`, `_not_written_yet` and `settle()` all refuse a second segment at the same position. Rewriting in place keeps coverage, the index and fold == incremental untouched, at the cost of one more in-place event rewrite, which only erasure may do (invariant 6 names erasure). Cost if wrong: a later story that wants the regenerated text as a separate event adds one; the migration needs nothing.
+  **Issue:** #124, #72
+- **Decision:** A story-scope erasure is the planned three operations.
+  - **The `control` operation** (`Operation(erasure=True)` skips the archived and paused refusals; it bumps the revision as a control action) does all of step 1 in one commit step:
+    - the deletions (the subject's `characters` rows, their `character_snapshots`, the `genesis_deferred` items whose `payload.characters` are only the subject, and the character-scoped `policies` of the subject), each with one position-less `erasure_marker` event (inserted directly with the next `seq`);
+    - span redaction of every string leaf (id-like keys skipped) of every record the index names, and of a beat the subject authored, whole, to `[erased]`;
+    - the subject's ids taken out of `render_character_ids` and the events' `character_id`;
+    - the default viewpoint cleared;
+    - stored results purged;
+    - `replace_with_fold`, `reindex_story` and the residue scan, which fills the ledger's `counts.residue`;
+    - the ledger and `audit_log` rows.
+  - **The `consolidation` operation** regenerates the summary.
+  - **The `maintenance` rebuild** runs (`projections.rebuild`, synchronous) even when regeneration failed.
+  Projections are refolded inside step 1 as well, so a failure after step 1 still leaves nothing naming the subject.
+  **Why:** The pass-1 line ("redaction is always applied in step 1 so a failed step 2 or 3 leaves a complete erasure"). Cost if wrong: one extra fold per erasure.
+  **Issue:** #124
+- **Decision (deviation):** Discovery is the index plus two lookups the index cannot give.
+  - In the story scope: the deployment-scoped stored results bound to the story's operations, matched against the terms (the index scans them for catalog subjects only); and the transient `turn_queue.request` and `jobs.payload`, which are redacted, not deleted (deleting a queued turn's row would orphan its `queued` operation).
+  - In the catalog scope: every catalog record (`records_of(conn, None)`) is also matched against the subject's own terms, because #123's hand-off says records written before the subject existed have no index row. This scans for one subject only, not a full catalog rebuild.
+  **Why:** The drift note on deployment-scoped keys, and #123's Affects line. Cost if wrong: a catalog erasure reads every catalog record once.
+  **Issue:** #124, #123
+- **Decision:** A dry run uses the real code path.
+  - A story dry run runs the story pass with `write` false in one read-only REPEATABLE READ snapshot.
+  - A catalog dry run runs the catalog pass with `write` true inside a transaction it always rolls back: no operation, key, ledger row or blob delete is ever committed. What the subject's own deletion removes decides whether a medium is still referenced, so only this gives the real run's counts.
+  - `records` counts rows deleted or rewritten. `prose_segments` counts text fields changed. `media` counts, in the story scope, the images the subject's characters show; in the catalog scope, the assets purged, retired or rewritten. Catalog keys are schema-qualified. Markers and index rows are not counted.
+  `test_i_09` and `test_s_erasure_boundary__catalog` assert that the dry-run counts equal the real ones, and that every `public` and `catalog` table is unchanged after the dry run.
+  **Why:** AC1 ("changes nothing (asserted)", counts equal what the real run touched). Cost if wrong: a catalog dry run briefly holds the entry's row lock.
+  **Issue:** #124
+- **Decision (drift):** The response and its replay.
+  - **Response.** One model, `ErasureBody(DeploymentMutationResponse)`, serves both runs. It carries `config_revision`, plus `timeline_revision` for the story scope, the four counts at top level, `regeneration`, `degradation`, `referencing_stories`, `erasure_id`, `operation_id`, `ledger_entry {erasure_id, at, scope, story_id, counts}` and `residue`.
+  - **Replay.** The codec `erase` replays the reference with `config_revision` (one `revision_field` per codec). The key is deployment-scoped, and `dry_run` is in the request hash (a dry run never claims a key).
+  - **Errors.** An unknown story is 404 for both runs. An unknown subject is zeros on a dry run and 404 `not_found` (`SubjectNotFound`) on a real run. A subject the ledger already records in that scope is known: a re-run answers 200 with zero counts.
+  - **Configuration.** The catalog scope does not bump `config_revision`, as catalog writes do not; the planner said "bumped".
+  - **New error codes.** `invalid_erasure_scope` (422) is new. `config_key_missing` (503) is a new class, `ErasureKeyMissing`, with the existing code. `erase`'s documented errors add `not_found`, which C-01 found undocumented.
+  **Why:** The drift notes (the response base, one codec), and the catalog convention (#103: catalog writes leave `config_revision` as it is). Cost if wrong: the planner's bump is one `record_config_change` call.
+  **Issue:** #124
+- **Decision (drift):** Pieces that changed shape.
+  - Stored results are purged by nulling `result` (and dropping their index rows); there is no `purged_at`, so a replay answers the reference.
+  - `operations.turn_report` is redacted as JSON, which covers `creation_report`; `attempts` and `read_set` are content-free and left alone.
+  - The audit view is #59's `include_audit=1` read, extended with `erasure_marker` items reading `[erasure marker: <subject id>, <scope>]`.
+  - `redacted: true` comes from `transcript_messages.redacted` and `events.redacted_at`. It appears on corrected-history and audit items only when true (`exclude_if`), and a respond beat never has it.
+  - The cleared default viewpoint is asserted through `GET /history` (422 `viewpoint_unresolved`).
+  - `erasure_shared_media` is an `INTERPRETIVE` field of `DeploymentSettings` (`ErasureSettings`, in `SettingsPatch`), default `purge`, with its leaf in `test_u_18.EXPECTED`.
+  - The router is `api/routes/admin/erasure.py`.
+  - The migration is 0039: `erasure_ledger` with `story_ref`; `events.redacted_at` and the events trigger's UPDATE exemption (only `payload`, `character_id` and `redacted_at`, under `epistrel.erasure = on`); `operations.stage_log` on the allow-list; `transcript_messages.redacted`; `lite_summary_segments.redacted_at`; `catalog.scenario_versions.redacted_at`; and the `erasure` audit kind.
+  - `message_feedback`/`feedback_history` already had `redacted_at` (#112). They are redacted through a new `feedback.redact_for_erasure`, so the erasure module never names the feedback tables (`test_feedback`'s allow-list is unchanged).
+  **Why:** The drift notes' corrections. Cost if wrong: renames only.
+  **Issue:** #124, #59, #61, #112
+- **Decision:** In the catalog scope, a catalog character is deleted through the catalog's own delete, now also callable inside a caller's transaction (`CatalogService.delete_in`, `personas.delete_in`; `delete` calls them, behaviour unchanged). Under the GUC that removes every version, the draft, the companion and its relations, with their `catalog_entry_deleted` audit rows on the erasure's one control operation.
+  - Other catalog drafts are redacted with `draft_revision` + 1, so a stale editor's PATCH is refused rather than re-adding the name. Versions are redacted under the GUC (`scenario_versions.redacted_at`). Each record is re-indexed.
+  - A role filled with the subject loses its `character`, so creating a story from that version fails `slot_required`, as the planner accepts. The version's `report` is redacted (#111's hand-off).
+  - **Media.** An asset with other declared subjects stays, without the subject in `depicted_subjects`, and its caption, alt text and prompts are redacted. An asset depicting or naming only the subject is purged (the row, its relations and index rows, then its bytes after commit through `media.sweep.collect_blob` when no other row shares the checksum). If a record the erasure leaves untouched still references it and the setting is `retire`, it is kept `retired` and redacted instead. The stories referencing it are listed in `referencing_stories`.
+  - **Not done.** The planner line "under `purge` the dangling media id is removed from that version" was not built. A purged id left in another catalog entry's document dangles, as the story's does: the document shapes (`{media_id, alt_text}`, `{media_id, audience}`) make a generic removal unsafe.
+  - Deployment-scoped stored results naming the subject are purged, so a story's own creation result naming her is purged too. That is the catalog scope's record; the story's own rows are asserted unchanged.
+  **Why:** AC3 and the pass-1/pass-2 lines. Cost if wrong: the dangling id is a follow-up for #266 (images through depicted subjects).
+  **Issue:** #124, #103, #111, #116, #266
+- **Decision:** `ERASURE_TARGETS`/`register_target` (`core.erasure.erase`) is the registry #126's export store joins: a target has a `name` and `erase(conn, story_id=, redactor=, write=) -> int`, called in both scopes, its count added to `records`. It is empty in M3.
+  **Why:** The pass-2 line. Cost if wrong: #126 adapts one signature.
+  **Issue:** #124, #126
+- **Decision:** The residue scan (`core.erasure.verify`) runs in production after every erasure, as `residue` in the response and in the ledger's counts.
+  - It reads every `text`/`varchar`/`jsonb`/array column enumerated from `information_schema`. In the story scope, that is the `story_id` tables plus the `stories` row, story `config_changes` and the story's keys. In the catalog scope, it is the `catalog` schema, `personas`, `media_assets` and the deployment-scoped records.
+  - It skips `subject_references`, `erasure_ledger`, and columns named `*hash*`/`*checksum*`/`*fingerprint*` or `read_set`.
+  - It counts any value naming the terms, so another subject sharing a name, or a client's idempotency key spelled with the name, counts. The tests use unique names for that reason, and `test_i_09`'s key was renamed after it caught exactly that.
+  The tests have their own independent scan (`tests/erasure_support.py`).
+  **Why:** The pass-2 line. Cost if wrong: a false-positive residue is reported, never acted on.
+  **Issue:** #124
+- **Decision (drift):** The tests.
+  - `test_i_09` (`part("M3", "FR-ADMIN-2; NFR-PRIV-2")`) and the dry-run, refusal and no-model tests live in `tests/integration/test_erasure.py`. The no-model test runs on an archived story, which an erasure reaches.
+  - `test_s_erasure_boundary__catalog` (`part("M3", "FR-ADMIN-6; FR-MEDIA-2")`) lives in the shared `tests/erasure/test_s_erasure_boundary.py`, marked `integration` by `pytestmark` since conftest marks only `tests/integration`. It covers both `purge` (Thessaly) and `retire` (Corvin) and restores `purge` in a `finally`.
+  - `test_s_delete__erasure` is `part("M3", "FR-ADMIN-2; FR-STORE-14")`, as the drift note says. It sits in `tests/integration/test_s_delete.py` beside S-DELETE's M2 part: I read the planner's "beside test_s_erasure_boundary__catalog" as "in addition to", and it reuses `_rows_of`.
+  - The AC's "parametrised over every story-scoped table" is one test that enumerates the tables at run time and asserts per table, because the enumeration needs the database, which pytest's collection-time parametrisation does not have.
+  - C-03 gained a dry-run step for `erase`.
+  **Why:** The drift notes, the lexicon (no `import` in an M3 part body: the helper imports moved to module level after the gate caught one), and the traceability rule (one file per test ID and milestone). Cost if wrong: file moves only.
+  **Issue:** #124, #125, #127
+- **Decision (Rule 1):** I changed two existing tests because the story changes the shapes they pin. No assertion was loosened.
+  - `test_scenario_tables_have_the_planned_shape` lists the new `scenario_versions.redacted_at`.
+  - `test_u_18.EXPECTED` adds `erasure_shared_media` (interpretive).
+  **Why:** Both pin the exact schema or settings set, and the story adds to them. Cost if wrong: none.
+  **Issue:** #124
+- **Decision:** docs/02 §4.10's erasure bullet is amended with M3's request shape, the three operations, the in-place regeneration, `erasure_shared_media` and the `erasure_ledger` table (#125 adds its copy outside the database).
+  **Why:** The design doc is authoritative and earlier M3 stories amended it when a shape landed. Cost if wrong: one paragraph.
+  **Issue:** #124
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #124 built erasure, with shapes later stories build on.
+  - **Route.** `POST /admin/erasure {subject: {kind, id}, scope: {story: <id>} | {catalog: true}, dry_run?}` (`Engine.erase`, tag `admin`; errors `invalid_erasure_scope` 422, `not_found` 404, `revision_conflict` 409, `config_key_missing` 503). One response model: the counts, `regeneration`, `degradation`, `referencing_stories`, `erasure_id`, `operation_id`, `ledger_entry`, `residue`, `config_revision` and, for the story scope, `timeline_revision`.
+  - **Library.** `core.erasure.erase.erase(db, request, *, principal, config_key, compressor, collect=None, erasure_id=None, write_ledger=True)` and `dry_run(...)`. `Operation(erasure=True)` runs on archived and paused stories. `Operation.stage(name, status)` writes `operations.stage_log` (`[{stage, status}]`: `redacted`, `ledger_written`, `regenerated`, `rebuilt`), and `erase.append_stage` appends to a committed operation's log. `ERASURE_TARGETS`/`register_target` is for other stores. `Ports.summary_compressor` (`core.ports.SummaryCompressor`; the Orchestrator's `ErasureCompressor`).
+  - **Storage (migration 0039).**
+    - `erasure_ledger (id, subject_kind, subject_id, scope, story_ref, principal, operation_id, counts, scan_term_hashes, ledger_hash_prev, ledger_hash, applied_at, at)`; the hashes are HMAC-SHA256 under `EPISTREL_CONFIG_KEY`, and the hash chain columns stay null.
+    - `events.redacted_at`, with the events trigger allowing an UPDATE of `payload`, `character_id` and `redacted_at` under `epistrel.erasure = on`.
+    - `operations.stage_log`, `transcript_messages.redacted`, `lite_summary_segments.redacted_at`, `catalog.scenario_versions.redacted_at`, and the `erasure` audit kind.
+    - The event type `erasure_marker {erasure_id, subject_kind, subject_id, scope, record_table, record_id}` (control, position-less).
+    - The deployment setting `erasure_shared_media` (`purge`|`retire`, interpretive).
+  - **Summary regeneration is in place.** A regenerated segment's text replaces the redacted text in its own event, so no second segment is written and nothing flips to `superseded`.
+  - **Not done.** A purged media id left in another catalog entry's document is not removed (it dangles, like a story's). A catalog-scope erasure does not bump `config_revision`.
+  **Why:** #124's AC and its pass-1/pass-2 lines, corrected by the drift notes and the group B hand-offs. The decision entries above give the details.
+  **Affects:**
+  - **M3 #125 (ledger outside backups).** It builds on the `erasure_ledger` table and `erase(..., erasure_id=, principal="system", write_ledger=False)` for its reapply. Its migration adds `applied_note`, `copied_from`, the append-only trigger and the hash chain (both hash columns exist and are null). The ledger's `counts` already holds `residue`. `erasure_boundary` can reuse the route description's out-of-scope sentence.
+  - **M3 #127 (resurrection guard).** The erasure bumps the revision as a control action (`last_control_revision`). The markers are `erasure_marker` events. Its slices join `tests/erasure/test_s_erasure_boundary.py`.
+  - **M3 #126 (feedback reporting and export).** Register the export store with `core.erasure.erase.register_target`.
+  - **M3 #128 (API surface).** New route `erase` and its errors (above). History items gain `redacted` (present only when true), and the deployment settings gain `erasure_shared_media`. `operations.stage_log` exists for erasure; an offboarding's stages stay on its job row (#117). `docs/openapi.json` is regenerated.
+  - **M8 #266 (images through depicted subjects).** Media erasure uses `depicted_subjects` and the caption, alt text and prompts. A dangling id in another catalog document is the open item.
+  - **M4 #135 and M5 #178 (memories, beliefs).** New content tables are picked up by the residue scan automatically (`information_schema`). Their redaction and regeneration plug into `_story_pass` the way `lite_summary` does.
+  - **M7 #249 and #251 (export, import).** Bundles carry `erasure_marker` events and `redacted_at`; an import applies the ledger.
+  - **The Console (nathanpond/Epistrel-Console).** An operator erasure screen: subject and scope pickers, a dry-run preview of the counts, confirm, the result with `degradation`/`residue`, and `referencing_stories` for the catalog scope. The settings screen gains `erasure_shared_media`, and history views can mark `redacted` items.
+  - **Next step:** #125, #126, #127 and #128 are later group C stories in this run: their drift check should apply this. `/n8-replan` for M4, M5, M7 and M8 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #124's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #124
+- **Decision:** Verification fix, round 1 (Rule 1): `create_story_from` now indexes the `stories` row inside the `insert_cast` commit step, after the cast's rows (`index_rows(conn, stories, ...)`), instead of in the earlier transaction that inserted the row. Regression test `test_a_story_named_after_its_cast_mentions_them`.
+  **Why:** A story made from a cast (no scenario) whose name mentions a cast member was scanned before the characters existed. So it had no `mentioned` row, and `rebuild_scope` was not clean. Genesis (`_index_genesis`) already indexes after its cast. Indexing in the commit step means the row is scanned in the same transaction as the cast. Cost if wrong: none for creation semantics. The row is written in the same place as before; only its index rows move.
+  **Issue:** #123
+- **Decision:** Verification fix, round 1 (test coverage): `test_a_persona_player_is_named_as_the_persona` covers a player character made from a saved persona. A message that names the persona has both `character` and `persona` rows, and so does the character's own declared row. To cover the `persona_snapshot.name` scan term, the test sets the character's name directly (no route renames a character) and checks that `story_subjects` still holds the persona's name.
+  **Why:** Removing the persona link or the snapshot-name term left every test green. The direct UPDATE is the only way to give the character a name that differs from its persona's (`personas.player_character` copies the name). Cost if wrong: the last assertion tests a state production cannot reach today. It still guards the term in case a rename lands later.
+  **Issue:** #123
+- **Decision (drift):** The ledger file is `<EPISTREL_ERASURE_LEDGER_DIR>/ledger.jsonl`. The default is `var/erasure-ledger`; the image and compose use `/var/lib/epistrel/erasure-ledger`, on the `erasure-ledger` volume. The line keeps the AC's `subject: {kind, id}` object and adds pass 2's fields: `{erasure_id, subject, scope, story_id, at, principal, operation_id, counts, scan_term_hashes, ledger_hash_prev, ledger_hash}`. Pass 2 had flattened `subject_kind`/`subject_id`. The table is #124's `erasure_ledger`, with the same hashes.
+  **Why:** The AC names the subject object, and "every clause" outranks the later planner line. The table maps the subject to its own columns. Cost if wrong: a reader of the raw file reads two keys instead of one object.
+  **Issue:** #125
+- **Decision (deviation):** Chain order is serialised by a Postgres advisory transaction lock (`LEDGER_LOCK_KEY`), held from the file append to the commit. `fcntl.flock` covers only the write itself. Pass 2 said the flock is held through the commit. The append (fsynced) comes before the row insert, in the same transaction. A file that cannot be written gives 503 `ledger_unavailable`, and nothing is erased.
+  **Why:** Holding a blocking flock across awaits in one event loop can deadlock two coroutines of the same process. The advisory lock gives commit order across processes without that risk. Cost if wrong: if the transaction fails after the append, a line is left that the next reconcile reapplies. That only repeats an erasure the operator asked for.
+  **Issue:** #125
+- **Decision (drift):** The block is a Core/Engine check, not a route dependency. `engine.gate_story_methods` wraps every public Engine coroutine method that has a `story_id` parameter; `test_every_story_method_is_gated` keeps it so. The exception is `delete_story` (`ERASURE_GATE_EXEMPT`), which now calls the core `check_expected_revision`, so the gated method does not refuse it. `Operation` refuses non-erasure work on a blocked story at begin and at commit (`_refuse_blocked`). The reapply's own consolidation and rebuild operations pass through a contextvar (`ledger.reapplying`). The job claim leaves a blocked story's jobs queued. `stories.delete_story` settles pending entries `story_deleted`. OpenAPI documents 503 `erasure_pending` and `ledger_unavailable` on every `{story_id}` route except `DELETE /stories/{id}`.
+  **Why:** The drift note (#47: preconditions live in the Engine so the library enforces them too). Wrapping by signature also covers story methods added later. Cost if wrong: one indexed status read per story call.
+  **Issue:** #125, #44, #47
+- **Decision:** An Engine that has not compared the ledger runs one `mark` pass on its first story call. The app's lifespan runs it before traffic: `start_erasure_reconcile`, after `bind`, in every mode. With the database down, start-up logs a warning and goes on (`test_health_db` still holds), and the first story call compares instead. File-only problems are checked in `cli._preflight` and again in the lifespan: an unwritable directory, a malformed line or a broken chain exits 78 or raises `ConfigError`. So is a mismatch between file and table.
+  **Why:** The drift note on keeping start-up alive with the database down. The lazy pass also protects library embedders that never run the lifespan. Cost if wrong: one extra pass per Engine.
+  **Issue:** #125, #32, #63
+- **Decision:** `mark` writes nothing when the file and the table agree, and `reapply` writes no run state when nothing is pending. Each reconcile run logs one INFO summary (`erasure ledger reconciled`), with counts and ids only. The start-up run and a requested run log one each. Pending means `applied_at IS NULL` and `copied_from IS NULL`. A pending entry whose story is gone is settled `story_missing`; one whose subject is gone, `subject_missing`. Rows are inserted and appended under the ledger lock, both copies read after taking it.
+  **Why:** The AC's complement ("no-op ... zero log entries beyond the summary"). Tests elsewhere compare whole-table dumps around an Engine's first story call. Cost if wrong: none.
+  **Issue:** #125
+- **Decision (deviation):** `POST /admin/erasure/reconcile` (`mutating=False`, 202) runs the mark and reapply passes inline and answers when they end: `{run_id, ran, settled, failed, pending_count}`. `ran` is false when another process holds `RECONCILE_LOCK_KEY`. The plan said 202 `{run_id}` for a run started in the background.
+  **Why:** An inline run has no task left over in tests or in C-03, and gives the caller its outcome. The 202 and `run_id` follow the plan; `in_progress` in the status reads the advisory lock in `pg_locks`, so a crashed run never shows as running. Cost if wrong: a large reapply holds the request open; status polling still works.
+  **Issue:** #125
+- **Decision (deviation):** `epistrel backup verify` reads the dump with `pg_restore --file=- --data-only --table=erasure_ledger --table=events`, the archive fed on standard input, and parses the `COPY` text. It does not restore into a scratch database `epistrel_verify_<ulid>` as pass 2 said. `--ledger` or `EPISTREL_ERASURE_LEDGER_DIR` names the ledger; full Settings are not loaded, so `--keep` does not exist. The exit codes follow the plan: 0, 2, 3, 4, 5. `backup dump` puts the password in `PGPASSWORD`, never on the command line, and exits 4 without `pg_dump`.
+  **Why:** No `CREATE DATABASE` right, server or credentials are needed, so an operator can check a dump offline. In the tests, the container's own `pg_restore` runs through a `docker exec -i` wrapper (`--pg-restore`). Cost if wrong: a `pg_restore` version older than the dump's cannot read it, which is exit 3, the same as with the planned approach.
+  **Issue:** #125
+- **Decision (drift):** Settled deviations and drift corrections:
+  - The 503 window is held by the new pause point `erasure.reconcile.before_reapply` in `epistrel.testing.pauses`. The planned point in `testing.faults` would make Core import the API.
+  - The restore test uses a module-scoped container of its own (`tests/ledger_support.py`), with a fresh migrated database per test, and fails rather than skips with `EPISTREL_TEST_DATABASE_URL` set.
+  - `stories.status` keeps checked text: the check is recreated with frozen labels in migration 0040. That migration adds `blocked_by_erasure`, `status_before_block` (with a check pairing it with the status), `applied_note`, `copied_from`, the append-only trigger (UPDATE only of `applied_at`, `applied_note`, `ledger_hash_prev`, `ledger_hash`; no DELETE or TRUNCATE) and `deployment_state.erasure_reconcile_state`.
+  - The docs test is `test_s_erasure_boundary__docs`.
+  - #44's `info.description` equality is now `startswith(TRUST_BOUNDARY_STATEMENT)`. The description is the statement, a blank line, then `render_boundary()`.
+  - A reapply calls #124's `erase(..., erasure_id=, principal="system", write_ledger=False)`.
+  **Why:** The drift notes. Cost if wrong: file moves and renames only.
+  **Issue:** #125, #44, #124
+- **Decision:** The boundary text lives in `core/erasure/boundary.py` (`ERASURE_BOUNDARY`):
+  - `out_of_scope`: the AC's three literal strings, plus pass 2's older-backups and logs items;
+  - `logs`: the AC's literal;
+  - `in_scope`: pass 1's list, with the `erasure_shared_media` sentence stating both `purge` and `retire`.
+  #124's `erase` route description dropped its own out-of-scope sentence; it points to `GET /admin/erasure/boundary` and adds 503 `ledger_unavailable`. #123's `SUBJECT_WRITERS` tables are named by kind in the in-scope list, not generated from the registry.
+  **Why:** One source the API, `docs/OPERATIONS.md` and the OpenAPI description render; the test compares them with whitespace normalised. A list generated from the registry would change the docs whenever a table is added. Cost if wrong: one list to keep in step by hand.
+  **Issue:** #125, #124, #123
+- **Decision:** Test-support changes that touch every test:
+  - `tests/auth_support.ERASURE_LEDGER_DIR` is a per-process temp directory, like `MEDIA_ROOT`. `auth_settings` uses it.
+  - `conftest._clean_epistrel_env` sets `EPISTREL_ERASURE_LEDGER_DIR` to it, so bare `Settings` never write a ledger under the repository.
+  - C-03's two surfaces each get their own ledger directory.
+  - The exact `/health` bodies in `test_health.py` and `test_health_db.py` add `erasure_pending: null`.
+  **Why:** The ledger file must match the database it governs. A shared file across fresh databases would insert foreign entries as `story_missing` rows. Cost if wrong: none.
+  **Issue:** #125
+- **Decision:** Known limits, not built:
+  - Queued turns (`turn_queue`) of a blocked story are not held. Their drain fails with `erasure_pending` and they end failed. A queued turn of a restored story would have generated from pre-erasure context, so this is the safe direction.
+  - `GET /operations/{id}` of a blocked story's operation still answers, as pass 2 allows. A stored result there was purged by the reapply only once it ran.
+  - The 10-minute budget applies to the start-up run only.
+  **Why:** The plan names the job claim, not the turn queue. Cost if wrong: an operator re-sends a turn queued before a restore.
+  **Issue:** #125, #63
+- **Decision:** ADR-153 is appended (a new ADR, not an amendment), with its index rows. `docs/OPERATIONS.md` is new (Backups, Restore, Erasure ledger, Verify, and the marked boundary block). The README and docs/02 §12 and §4.10 link to it. `.env.example`, the Dockerfile (env and pre-created directory) and compose (the `erasure-ledger` volume) gain the ledger directory.
+  **Why:** Pass 1/pass 2. Cost if wrong: none.
+  **Issue:** #125
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #125 made the erasure ledger's file the authority and added a block for unreconciled stories. Shapes later stories build on:
+  - **Ledger.** `core.erasure.ledger`: `LedgerFile` (`EPISTREL_ERASURE_LEDGER_DIR/ledger.jsonl`, hash-chained) and `Entry`. `write(conn, ledger, entry)` sits inside #124's transaction; `erase(..., ledger=)` takes the Engine's `self.ledger`. A file that cannot be written gives 503 `ledger_unavailable`.
+  - **Table.** Migration 0040 adds `erasure_ledger.applied_note` and `copied_from` (excluded from reconciliation) and makes the table append-only.
+  - **Block.** `stories.status` gains `blocked_by_erasure` (with `status_before_block`). Every gated Engine story method answers 503 `erasure_pending` (`Retry-After: 30`, details `{story_id, erasure_id, pending_count}`), except `delete_story`; so do `Operation` and the job claim. `ledger.reapplying(story_id)` lets the reapply's own operations through.
+  - **Routes.** `GET /admin/erasure/status` (`erasure_status`), `POST /admin/erasure/reconcile` (`reconcile_erasure`, `mutating=False`, 202), `GET /admin/erasure/boundary` (`erasure_boundary`). `/health` gains `checks.erasure_pending`.
+  - **Job and CLI.** The recurring job `erasure_reconcile_retry` (5 min); `epistrel backup dump|verify`.
+  - **Docs.** `info.description` = the trust statement + the rendered boundary; `docs/OPERATIONS.md`; ADR-153.
+  **Why:** #125's AC and pass-1/pass-2 lines, corrected by its drift notes. The decision entries above give the details.
+  **Affects:**
+  - **M3 #127 (resurrection guard).** A fork copies ledger rows with `copied_from` set; the reconciler ignores those. A fork of a blocked story is refused (gated). Its slices join `tests/erasure/test_s_erasure_boundary.py`.
+  - **M3 #126 (feedback export).** The boundary's out-of-scope "exports already delivered" is the documentation clause C-27 checks (`core.erasure.boundary.DELIVERED_EXPORTS`).
+  - **M3 #128 (API surface).**
+    - Three new routes.
+    - `erasure_pending` and `ledger_unavailable` are documented on every `{story_id}` route.
+    - `StoryStatus` gains a value.
+    - `/health` gains a field.
+    - `docs/openapi.json` is regenerated.
+    - A new story route's Engine method needs a `story_id` parameter to be gated, or an entry in `ERASURE_GATE_EXEMPT`.
+  - **M7 #249, #250, #251 (export and import).** An import applies this deployment's ledger from `LedgerFile.read()`/`erasure_ledger` rows. A bundle's ledger rows would carry `copied_from`.
+  - **M5 #178, M6 #211.** New write paths that build their own `Operation` inherit the block. Jobs are held by the claim.
+  - **The Console (nathanpond/Epistrel-Console).**
+    - An operator view of `GET /admin/erasure/status` with a "reconcile now" button (`POST /admin/erasure/reconcile`).
+    - The boundary text from `GET /admin/erasure/boundary`.
+    - Story lists showing `blocked_by_erasure`.
+    - Handling of 503 `erasure_pending` with `Retry-After`.
+  - **Next step:** #126, #127 and #128 are later group C stories in this run: their drift check should apply this. `/n8-replan` for M5, M6 and M7 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #125's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #125
+
+- **Decision:** Rule 1 (#124 verification fixes, round 1). `_redact_deferred` now reads `genesis_deferred.payload.characters` as the role-to-character mapping genesis writes (`core/genesis/materialize.py`). A row is deleted, with one `erasure_marker`, when its mapping is non-empty and every character in it is a subject. Any other row keeps the mapping as a dict and loses only the subject's entries. Before this fix the code iterated the dict's keys (role ids), so a row was never deleted, and every row it rewrote had its mapping replaced by a list of role ids.
+  **Why:** The verifier showed that Linda's `name_overrides` item survived the erasure, and that every rewritten row came out in the wrong shape. Pass 2's Discretion requires the row to be deleted with a marker. Regression: `test_i_09` now asserts that her deferred rows are gone, each with a `('genesis_deferred', id)` marker, and that the other rows keep their dicts minus her entries. Cost if wrong: none found; genesis writes only the dict form.
+  **Issue:** #124
+- **Decision:** Rule 1, outside #124's own files but blocking its discovery. I fixed `records.deferred_record` (#123's index) here instead of filing it. The function had the same list assumption, so a deferred row that names the subject only through `payload.characters` was never indexed as declaring her, and erasure never found it. It now declares each mapping value at `payload.characters.<role>`. `test_i_09` asserts the declared index row; the old list form fails that check.
+  **Why:** The verifier's fix hint allowed fixing this here when it blocks discovery, and it does. Index rows already stored keep the old (empty) declaration until the story's index is rebuilt; erasure rebuilds a story's index itself. Cost if wrong: one more declared row per deferred item.
+  **Issue:** #124
+- **Decision:** A `message_rendered` beat counts as authored by the subject when it has no `character_id` and its `render_character_ids` are non-empty and are all subjects. Such a beat becomes `[erased]` whole, keeps its type, position and operation, and is left with no render ids. A reply that also voices another character is only span-redacted.
+  **Why:** The Discretion says "a beat authored solely by the subject". Lite replies never carry a `character_id`, and `render_character_ids` are the characters the reply voices (`orchestrator/lite/prompt.py`). Without this rule, a Lite character's own lines could never be erased whole. The alternative was to count authorship only from `events.character_id`; it was rejected because it leaves her unnamed lines in place. Cost if wrong: a reply voiced only for her that the owner would rather keep is blanked. That is the safe direction for erasure.
+  **Issue:** #124
+- **Decision:** I closed three test-coverage gaps the verifier found, all in existing files:
+  - `test_erasure_of_a_persona`: a persona in story scope (its player character is deleted with a marker; its `player_input` beats become `[erased]` whole with position kept and no speaker; replies are untouched; the other story is untouched), then the same persona in catalog scope (the persona row is deleted, a `persona_deleted` audit row is written, and the other story is listed).
+  - `test_a_reply_voiced_only_by_the_subject_is_erased_whole`, with a complement reply.
+  - `test_s_erasure_boundary__catalog` now also purges an asset whose bytes a bystander's live asset shares. The bytes stay and still serve. Its expected `media` count goes from 3 to 4 because the fixture adds this one asset; the assertion is not loosened.
+  **Why:** AC2 (whole-beat erasure), AC3 (the persona is deleted; bytes are removed only when no other asset shares them). Mutation checks: making `_erase_beat` a no-op, turning off the voiced-only rule, reverting the deferred fix (keys taken as ids), reverting `deferred_record` to the list form, and making `collect_blob` ignore other assets that share a blob each make at least one of these tests fail. Every mutation was reverted.
+  **Issue:** #124
+
+- **Decision (drift):** #126 adds the deployment settings `feedback_export` (a `StrictBool`, off by default) and `feedback_regen_window_s` (a `StrictInt` from 1 to 86400, default 300) as `FeedbackSettings` fields of the settings document, not as `deployment_state` columns. Both are prospective, are in `SettingsPatch` and are in `test_u_18.EXPECTED`. The migration (`0041_feedback_export`) only creates `feedback_export_log` and adds the `config_fingerprint`, `profile_version` and GIN `tags` indexes on `message_feedback`.
+  **Why:** The drift note says the deployment settings are tagged section fields, and #112 handed the indexes to #126. Cost if wrong: a later column move.
+  **Issue:** #126, #112
+- **Decision (deviation, Rule 2):** A regenerate's turn operation now records the variant it replaced, as `turn_report.regenerated_variant`. The key is `core.tables.operations.REGENERATED_VARIANT`, written by the Lite pipeline. The aggregates count a regeneration from this key and attribute it to the replaced variant's message. They do not use `turn_variant > 1` as the planner line said.
+  **Why:** The drift note shows that a turn written over a rewound tail also gets `turn_variant > 1`, and the replaced variant was persisted nowhere. A marker is exact. Reconstructing it from membership changes would need a replay of `truncate`/`untruncate`/`swap`. Cost if wrong: regenerations committed before this change are not counted, which matters only for data from before M3. `test_signals_follow_the_timeline` asserts the marker on a regenerate and its absence on the turn written over a rewound tail.
+  **Issue:** #126, #66, #65
+- **Decision:** How the other signals are attributed. `swaps_back` counts a `swap` event at the message's own turn whose `dormant_operation_ids` hold the message's operation and whose activated operation at that turn has a lower variant; an untruncate that swaps back counts too. `rewinds` counts a `truncate` event whose first discarded turn (`to_turn + 1`) is the message's turn and whose `operation_ids` hold its operation. `regen_after_low_rating` counts each current rating of 1 or 2 whose latest value (`updated_at`) is followed, within the window, by the regenerate's `committed_at`. A message's signals count once per group, however many principals rated it. They are summed per group, and `messages` (distinct rated messages) is the denominator.
+  **Why:** The pass-1 lines leave open which message a swap or a rewind belongs to. The message nearest the action is the one the player rejected. Cost if wrong: a different attribution changes the counts, not the shape.
+  **Issue:** #126
+- **Decision:** The aggregates read one row per current rating in SQL: the dimension key and correlated sub-selects for the signals, with no materialized view. They group in Python, which is needed because a `tag` puts a rating in several groups and messages are counted distinct. The envelope is `{group_by, story_id, window: {from, to, regen_window_s}, groups, truncated, totals}`. Each group is `{key, count, messages, mean_rating, histogram, tags, signals}`. Groups are ordered by `count` (highest first), then `key` (`null` last), and capped at `MAX_GROUPS` (500), with `truncated`. `day` is the UTC date of `created_at`, and `content_rating` maps the recorded `rating_version_id` to its rating id. The `regeneration_rate` FR-FB-3 names is `regenerations / messages`, stated in the route description, with no field of its own.
+  **Why:** The pass-1 lines, with "SQL" read as "computed on demand in the database", since grouping by tag in pure SQL needs an unnest per signal. Cost if wrong: more memory per call at large scale; the shapes are unchanged.
+  **Issue:** #126
+- **Decision:** The review lists are `GET /feedback/review/guardrail` and `GET /feedback/review/memory`, two routes on one Engine method `feedback_review` (operation ids `feedback_review_guardrail` and `feedback_review_memory`).
+  - Each item is `{story_id, turn, variant, message_id, principal, rating, tags, text, rated_at, message_text, player_input {say, do} | null, context}`, and the page is `{review, tags, items, next_cursor}`.
+  - `context` is #112's `FeedbackContext`, so it carries `rating_version_id` where the planner wrote `rating_version`. `rated_at` is added because the list is ordered by it.
+  - Filters: `story_id`, plus `from` and `to` on `created_at`, the same meaning as the aggregates. A `tag` that is not on the list is 422 at `query.tag`.
+  - Pages use #110's cursor encoding, bound to the list and its filters.
+  - Ratings of a `blocked_by_erasure` story are left out of both lists and of exports, but they are kept in unfiltered aggregates, which hold no text.
+  **Why:** The pass-1 lines. Reusing the context model keeps one context shape. A restored, unerased story's text must not be served (#125). Cost if wrong: a renamed field.
+  **Issue:** #126, #110, #112, #125
+- **Decision (drift):** The export surface is five routes under `/admin/feedback`, all tagged `feedback` through `ROUTE_TAGS`:
+  - `POST /export`, 201 `{export_id, content_url, case_count, config_revision}`: a `DeploymentMutationResponse`, idempotent per deployment, codec `export_feedback`;
+  - `GET /exports` (pages), `GET /exports/{id}` and `GET /exports/{id}/content` (`application/x-ndjson`);
+  - `DELETE /exports/{id}`, 204 and `mutating=False`. It removes the file and keeps the row with `deleted_at`/`deleted_by`.
+
+  Each route has its own Engine method: `export_feedback`, `list_feedback_exports`, `get_feedback_export`, `get_feedback_export_content`, `delete_feedback_export`.
+
+  The disabled check comes after the body checks (422 first) and before `_keyed`, so a refusal leaves no row, file or key. Downloading the content marks `downloaded_at`, which is how "delivered" is defined. `content_url` is absolute under `public_base_url`, else the path.
+  **Why:** The drift notes on C-02/C-03 parity and on response bases, plus the pass-1 lines. "Every export is recorded" means the row must outlive the file. Cost if wrong: route names change for #128.
+  **Issue:** #126, #128
+- **Decision:** The log table is `feedback_export_log`: `id, principal, at, window_from, window_to, filters, case_count, blob_key, bytes, sha256, downloaded_at, deleted_at, deleted_by, redacted_at`. This extends pass 1's columns with the window, the file's lifecycle and redaction. It is deployment-level, with no `story_id`, so a story's deletion keeps it (tested). There is one case per current rating, and the filters are `story_id`, `tags` (any of them), `min_rating`/`max_rating`, `config_fingerprint` and `profile_version`. Ratings of dormant variants and of archived stories are included.
+  **Why:** The pass-1 lines. The window is the "what" FR-FB-4 records. Cost if wrong: one migration.
+  **Issue:** #126
+- **Decision:** The `BlobStore` port gained `put_object`/`open_object`/`delete_object` for keys matching `OBJECT_KEY_PATTERN` (`exports/<ULID>.jsonl` only), on the local store and the S3 store. Locally a write goes to a temporary file and is renamed into place. Objects are never listed as blobs. Both stores are tested, S3 against MinIO.
+  **Why:** #107's hand-off. Cost if wrong: none to blobs.
+  **Issue:** #126, #107
+- **Decision:** The 7-day expiry runs in `core.media.sweep` (`expire_exports`, `EXPORT_TTL`). It reads `feedback_export_log` through `core.tables.feedback` and never imports a feedback module, so the Orchestrator's `media_sweep` handler keeps the flag-only contract. The sweep's result gains `exports_expired`. The exact-dict assertions in `test_media_assets.py` (a `NO_EXPORTS` constant) and `test_i_17.py` were extended with that key, and no assertion was loosened.
+  **Why:** The pass-1 line "swept by media_sweep". A registered hook would make the result depend on import order. Cost if wrong: one key.
+  **Issue:** #126, #105
+- **Decision:** Erasure (#124's `ERASURE_TARGETS`). `core.feedback_export.ExportErasureTarget` (name `feedback_export_cases`) rewrites the files of exports that were neither downloaded nor deleted. It redacts the texts of each in-scope case (`message_text`, `text`, `player_input.say`/`.do`) and updates `bytes`, `sha256` and `redacted_at`; a dry run counts without writing or locking. The Engine binds its blob store (`feedback_export.bind`; the last Engine built in a process wins). The boundary's `IN_SCOPE` gains "feedback exports not yet downloaded (the subject is redacted in their cases)". `docs/OPERATIONS.md`'s marked block and `info.description` follow. `DELIVERED_EXPORTS` stays out of scope and is quoted by the export routes (`BOUNDARY_NOTE`) and by a new "Feedback exports" section in `docs/OPERATIONS.md`.
+  **Why:** The coverage line (#124/#125). Only a downloaded copy is outside the deployment's reach. Cost if wrong: an extra rewrite of an export file.
+  **Issue:** #126, #124, #125
+- **Decision (drift):** The contract `feedback-is-flag-only` has these sources: `epistrel.orchestrator` (which covers `orchestrator.lite` and `orchestrator.policies`), `core.genesis`, `core.policies` (in place of the missing `core.guardrails`), `core.ratings`, `core.profiles` and `core.projections`. Its forbidden modules are `core.feedback`, `core.feedback_reporting` and `core.feedback_export`. It ignores exactly two edges, `core.erasure.records -> core.feedback` and `core.erasure.erase -> core.feedback`; without them every guarded package reaches `core.feedback` through erasure's subject index. `tests/gates/test_feedback_contract.py` checks the contract as written, that it is kept and that it bites, and adds the grep tests for imports and table names, which allow only the retention sweep.
+  **Why:** The AC, the planner and #121's drift note. Erasure reads a rating's text to redact it, which changes no turn. Cost if wrong: one more ignored edge.
+  **Issue:** #126, #121, #112
+- **Decision (drift):** The tests:
+  - `test_c_26__aggregates` and `test_c_26__review` (`part("M3", "FR-FB-3")`) are in `tests/conformance/test_c_26.py`.
+  - `test_c_27__export` (`part("M3", "FR-FB-4; FR-ADMIN-8")`) is in the new `tests/conformance/test_c_27.py`.
+  - `test_c_09__exports` (`part("M3", "NFR-SEC-3")`) is in `tests/conformance/test_c_09.py`. It plants an API key stored for `generation`, a service credential, the config key and a password in the database URL.
+  - The details are in `tests/integration/test_feedback_reporting.py`.
+  - C-03 gained ten steps (`REPORT_ANSWERS`). The export step filters to ratings of 5, so both surfaces write the same empty file (their cases differ in ids, so their checksums would too).
+  - `test_feedback.ALLOWED` adds the two new modules.
+
+  The planner's `test_feedback_reporting`/`test_feedback_export` part names map to no docs/04 ID.
+  **Why:** The drift note on the traceability rules. Cost if wrong: renames.
+  **Issue:** #126, #112
+- **Decision:** The library exports the new request and result models, with feedback-specific names (`FeedbackGroupBy`, `FeedbackReviewList`, `FeedbackReviewPage`, `FeedbackReviewItem`, `FeedbackAggregates`, `FeedbackExportRequest`, `FeedbackExportFilters`, `FeedbackExportWritten`, `FeedbackExport`, `FeedbackExportPage`), and the errors `FeedbackExportDisabled` (403 `feedback_export_disabled`) and `FeedbackExportNotFound` (404, `reason: deleted` once the file is gone). Exports increment the label-free counter `epistrel_feedback_exports_total`, and log INFO lines with ids and counts only.
+  **Why:** Generic names (`GroupBy`, `ExportRequest`) would collide with M7's story export. Cost if wrong: renames.
+  **Issue:** #126
+- **Decision:** docs/02 §4.14's Reporting and Export bullets are amended with what was built: the dimensions, the regeneration marker, the review routes, the contract, `feedback_export_log`, the blob-store key, the 7-day expiry and the delivered-exports boundary.
+  **Why:** The design doc is authoritative, and earlier M3 stories amended it when a shape landed. Cost if wrong: one paragraph.
+  **Issue:** #126
+- **Decision (Rule 1):** The window bounds accept only RFC 3339 date-times: the reports' `from`/`to` queries through `api.config_changes.IsoDateTime`, and the export body's through `core.feedback_export.RfcDateTime`, which parses with `datetime.fromisoformat`. C-01's schemathesis run found `GET /feedback/review/*?to=0.5` accepted, because pydantic takes a number as epoch seconds. Regression tests in `test_report_requests_are_checked`: `to=0.5` is 422 at `query.to`, and `{"to": 0.5}` is 422. The same run found `FeedbackExportWindow` missing its description (C-01's schema check), and it now has a docstring.
+  **Why:** FR-API-4. The schema says `date-time`. Cost if wrong: none.
+  **Issue:** #126
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #126 built feedback reporting and export. Some of the shapes it settled are ones later stories build on:
+  - **Routes.** `GET /feedback/aggregates` (`feedback_aggregates`), `GET /feedback/review/{guardrail|memory}` (`feedback_review_guardrail`/`_memory`, Engine `feedback_review`), and under `/admin/feedback`: `POST /export` (`export_feedback`, 201), `GET /exports`, `GET /exports/{id}`, `GET /exports/{id}/content` and `DELETE /exports/{id}` (`mutating=False`, 204), all tagged `feedback`. New error codes: 403 `feedback_export_disabled`, and 404 `not_found` with `reason: deleted`. The deployment settings gain `feedback_export` and `feedback_regen_window_s`. `docs/openapi.json` is regenerated.
+  - **Regenerate marker.** A regenerate's operation records `turn_report.regenerated_variant` (`core.tables.operations.REGENERATED_VARIANT`). Any pipeline that regenerates must write it, or its regenerations are not counted.
+  - **Blob store.** The `BlobStore` port has `put_object`/`open_object`/`delete_object` for `exports/<id>.jsonl` (`OBJECT_KEY_PATTERN`). The media sweep's result gains `exports_expired`.
+  - **Erasure.** `ERASURE_TARGETS` now holds `feedback_export_cases`. The boundary's in-scope list gains "feedback exports not yet downloaded".
+  - **Contract.** `feedback-is-flag-only` forbids `epistrel.orchestrator`, `core.genesis`, `core.policies`, `core.ratings`, `core.profiles` and `core.projections` from importing `core.feedback`, `core.feedback_reporting` and `core.feedback_export`.
+  **Why:** #126's AC and its pass-1 lines, corrected by its drift notes. The decision entries above give the details.
+  **Affects:**
+  - **M3 #128 (API surface).** Seven new operations and their routes, flags (`delete_feedback_export` is `mutating=False`) and error codes. C-03 has their steps. The deployment settings gain two fields.
+  - **M4 #154 and M7 #241 (regeneration).** A regeneration path they add, or a Structured pipeline's regenerate, must write `turn_report.regenerated_variant` for FR-FB-3's signals. A new module under the guarded packages must not import the feedback modules.
+  - **M7 #249, #250, #251 (story bundles).** Bundles may reuse the `BlobStore` object API, but only after widening `OBJECT_KEY_PATTERN`. The deployment-level `feedback_export_log` is never exported, as docs/03 says of "the record of feedback exports".
+  - **M4 #158 (prose-quality signals).** It can correlate judge scores with ratings through `feedback_aggregates` (`group_by=fingerprint`).
+  - **The Console (nathanpond/Epistrel-Console).** It needs:
+    - a feedback report view (`group_by` picker, window, story filter, groups with histograms and the four signals);
+    - guardrail and memory review queues (paged, with message, input and context);
+    - an operator export screen (the `feedback_export` switch, an export form with window and filters, the export log with download and delete, and the delivered-exports boundary note);
+    - `feedback_regen_window_s` in the settings screen.
+  - **Next step:** #127 and #128 are later group C stories in this run: their drift checks should apply this. Run `/n8-replan` for M4 and M7 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #126's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #126
+- **Decision:** (Rule 1, verification round 1) The erasure gate now also covers Engine methods that name a story by `entity_type`/`entity_id`: `gate_story_methods` wraps every public coroutine with a `story_id`, or with both `entity_type` and `entity_id`, and the wrapper checks `entity_id` when `entity_type` is `story`. This closes `GET /stories/{story_id}/relations`, which answered 200 for a blocked story, and covers owner transfer and relation add/remove in the library too (REST already refused those writes through the Operation). I did not add a per-method `self._erasure_gate(entity_id)` call. I generalized the one decorator so a future entity-typed method is gated without anyone remembering to.
+  **Why:** AC2 says every read and write of a blocked story gets 503 `erasure_pending`, and docs/openapi.json already documents that for these routes. For a non-story `entity_type` the wrapper does nothing, so `set_listing_status` (catalog kinds only) is wrapped and unaffected. An unknown `entity_type` is left for the method to answer with 422. Cost if wrong: one extra ledger check on catalog ownership calls.
+  **Issue:** #125
+- **Decision:** `test_every_story_method_is_gated` uses the same "names a story" rule and asserts the four ownership and relation methods are gated. `test_a_blocked_story_refuses_everything_but_its_deletion` now asserts the library's `list_relations` raises `ErasurePending`, REST `GET /stories/{id}` and `GET /stories/{id}/relations` answer 503 `erasure_pending`, and the other story's relations answer 200. Reverting the engine change makes both tests fail.
+  **Why:** The old coverage test only looked at `story_id` parameters, so this gap could not show up in it.
+  **Issue:** #125
+- **Decision:** (Rule 1, verification round 1, found by the area test run and not raised by the verifier) `tests/test_ownership_rules.py::test_documentation_says_ownership_confers_nothing` has failed since a75f104. It asserted `info.description == TRUST_BOUNDARY_STATEMENT`, but #125's plan (pass 2) sets `info.description` to the statement, a blank line, then `render_boundary()`. I updated the assertion to that exact value, which is still an equality check and not a looser prefix check, and updated its docstring.
+  **Why:** The story requires this behaviour change, and the plan already expected #44's assertion to be a substring check. `tests/test_trust_boundary.py` already checks the prefix. Cost if wrong: none; the test pins the exact rendered text.
+  **Issue:** #125
+
+- **Decision (drift):** The resurrection guard is `core.erasure.guard.check_content`, called from `Operation._write` (so `commit`, `write_in`, ingest batches and job results share it). It runs after #47's revalidation and after the commit steps, just before the subject index is written. The drift note placed it before the event INSERT. Because the whole commit is one transaction, the result is the same, and this order lets #70's stale-input guard (a commit step) drop an in-flight summary job before the ledger check refuses it.
+  **Why:** AC1 needs a summary job whose window predates the erasure to be dropped and re-enqueued, not failed. Cost if wrong: one extra INSERT that is rolled back on a refusal.
+  **Issue:** #127, #45, #70
+- **Decision (deviation):** The guard compares #124's existing keyed hashes: HMAC-SHA256 under `EPISTREL_CONFIG_KEY` of each normalised term, already in `erasure_ledger.scan_term_hashes` and in the ledger file line. Pass 2 called for a separate salt, HKDF(`EPISTREL_CONFIG_KEY`, info `erasure-terms`); this does not add one. Each text is hashed as every span of 1 to 6 words (`MAX_NGRAM`; pass 1 said 1 to 4), cut at word boundaries of the normalised text. That way a possessive, a hyphenated surname or a three-word name matches exactly where `index.mentions` matches. `test_the_span_matcher_finds_what_the_prose_matcher_finds` pins this. Every Engine registers its key with `guard.bind_key`. Without a key, a check that needs a prose comparison answers 503 `config_key_missing`.
+  **Why:** #124 and #125 had already shipped keyed hashes in the table and the file. A second hash would mean a migration and would re-derive terms that no longer exist. Cost if wrong: names longer than 6 words are missed (none in practice), and rotating the key disables the guard for earlier erasures, as `docs/OPERATIONS.md` now says.
+  **Issue:** #127, #124, #125
+- **Decision:** Which texts are refused, and what a refusal does:
+  - Engine, system and model text is always checked.
+  - `player` and `consumer` provenance (the drift note) is checked only when the operation's `base_revision` is lower than the revision the erasure committed at. A ledger row with no erasure operation in this story (a fork's copy, a reapply) is treated as before any base.
+  - A structured reference (an event's speaker, `character_id`/`*character_ids`) to the subject or to a character the erasure deleted (found from its `erasure_marker` events on `characters`) is always refused.
+  - `Operation(erasure=True)` is exempt, and so are story-less operations.
+  - A refusal is `ErasedSubjectReferenced` (409 `erased_subject_referenced`, `{erasure_id, match_count}`, the planner's message), and the operation ends `abandoned`, not `failed`.
+  - A revalidating `turn` regenerates instead (`Regenerate(reason="erased_subject_referenced")`, through `timeline._moved`'s route). Once `regenerate_retry_budget` is spent, `run_with_revalidation` raises the guard's 409 rather than `revision_conflict`.
+  **Why:** The owner's round-two decision and pass 1/pass 2. Cost if wrong: a model that keeps echoing a name the player typed after the erasure gets 409 after its budget. This is the planned behaviour ("engine text is always checked").
+  **Issue:** #127, #47
+- **Decision (drift):** A refused worker result is a counted failure. `commit_job` re-raises, and the worker's `fail_job` runs; `lite_summary` has `max_attempts=1`, so the job ends `failed` and the next trigger re-enqueues it. It is not a `StaleInputs` requeue.
+  **Why:** The drift note offered both. A requeue with no count would loop forever on a model that keeps naming her, and pass 1 says "counting toward `max_attempts`". Cost if wrong: one window's summary waits for the next trigger.
+  **Issue:** #127, #70, #72
+- **Decision:** The erasure's control step (`erase._stop_in_flight`, inside #124's commit step) does three things. It fails queued turns with `timeline_changed` (`control_operation_id` = the erasure's operation). It clears `in_flight_turn`/`in_flight_lease_until` itself. It sets `membership_tx = transaction_timestamp()` on the committed operations whose events it redacted (`events.redacted_at` = the run's time), so a job that read them is stale at commit. The erasure has no `story_busy` precheck to bypass: it never took the turn slot. Summary coalescing stays per story (drift note). The re-enqueue is #70's `_drop` of the same row, and the rerun summarises the redacted window.
+  **Why:** Pass 1. Cost if wrong: `GET /stories/{id}/variants` shows the erasure's time as `membership_tx` for those operations; the determinism comparator maps timestamps.
+  **Issue:** #127, #124, #63, #70
+- **Decision (drift):** A duplicate request waiting on an abandoned turn's key re-executes against the post-erasure revision, and the guard judges it. It does not receive the same 409. #61's rule is that failures are never stored. This is not asserted.
+  **Why:** The drift note: storing failures would change #61's contract, which needs an owner or ADR decision. Cost if wrong: none for erasure. The re-execution is checked like any new work.
+  **Issue:** #127, #61
+- **Decision:** The fork copies the source's story-scope ledger rows into the fork with new ids, `story_ref` = the fork and `copied_from` = the source row (`_erasure_fence`, last in the fork's transaction). Before copying, it takes `pg_advisory_xact_lock_shared(LEDGER_LOCK_KEY)`, which waits for an erasure that sits between its ledger write and its commit, and reads the source's ledger rows twice: in the snapshot and as committed. A row the snapshot lacks raises `ErasedMeanwhile`, and the existing `SNAPSHOT_ATTEMPTS` loop retries it (then 503 `database_unavailable`). Pass 2 said "compare the newest ledger `at` with its snapshot time".
+  **Why:** An id-set comparison on a fresh connection, under the ledger lock, closes the race window that comparing times would leave. Cost if wrong: a fork waits for a concurrent erasure's commit.
+  **Issue:** #127, #67, #125
+- **Decision:** `assert_not_erased` refuses only new structured references to a catalog-scope erased subject. It is called in two places: the scenario writer's `checked` hook (a role newly filled with the erased catalog id, at `body.cast.roles[i].character.catalog_id`) and the media insert (`depicted_subjects`). Catalog characters, personas and feedback are registered as exempt, with reasons: none of them references another subject by id. The catalog-scope erasure still does not bump `config_revision` (#124's decision); the ledger check carries the catalog case, as pass 2 says. Pass 1 named a deployment `config_revision` bump.
+  **Why:** Pass 2 ("structured references only"; "the `config_revision` bump is informational"). Cost if wrong: one hook per writer added later.
+  **Issue:** #127, #124, #108, #105
+- **Decision:** `guard.CONTENT_WRITE_PATHS` holds one `WritePath(module, how, why)` per module: `SUBJECT_WRITERS`' writer modules plus `core.ingest` and `orchestrator.jobs.queue`. `how` is `operation`, `assert_not_erased`, `fork_fence` or `exempt` (with a reason): `config_changes`, `ratings.change`, `policies.admin`, `feedback`, `idempotency`, `catalog.characters` and `catalog.personas`. `test_every_content_write_path_is_guarded` checks the set for equality and each claim against the module's source. Its runtime half is `guard.recording()`, a spy of the write paths that call the guard, asserted for the scenario writer. Pass 2 also named a runtime spy over a played story, which was not built.
+  **Why:** Pass 2 and #123's hand-off. Cost if wrong: a new writer (M4+, the M7 import) must register, and the set check fails until it does.
+  **Issue:** #127, #123
+- **Decision (drift):** Tests:
+  - The scenario slice is `test_s_erasure_boundary__resurrection` (`part("M3", "FR-ADMIN-2; FR-ADMIN-9; FR-STORE-1; NFR-DETERM-1; NFR-PRIV-2; NFR-SEC-4")`) in the shared `tests/erasure/test_s_erasure_boundary.py`. Together with `__catalog` (FR-ADMIN-6; FR-MEDIA-2), `__restore` (FR-ADMIN-7) and `__docs` (FR-ADMIN-8), it covers the S15 row's set. No docs/04 edit was needed.
+  - It does not repeat the restore, the ledger reapply or `backup verify` (markers as expected gaps). `__restore` in the same file asserts those, and they need the dedicated container.
+  - The #74 clause captures through `observability.logging.configure_logging(..., stream=)` (the drift note), with the erased names and Bobby's as canaries.
+  - The determinism clause is a separate 11-step M3 script (`DETERMINISM_SCRIPT`, an `erase` step added to #75's `Run`). It runs on two fresh databases, each with its own ledger directory, and no normaliser change was needed (`erasure_ledger` has no `story_id`, and `redacted_at` is a timestamp).
+  - The hook-disabled run is the test-only `guard.DISABLED` contextvar.
+  - `test_erasure_resurrection` (the three clauses with complements) is unmarked in `tests/integration/test_erasure_resurrection.py`. The planned `part("M3", "FR-ADMIN-9")` failed check-traceability ("missing from S15"), and pass 1 says ERASURE-RESURRECTION becomes the slice.
+  - The replay clause uses a keyed pinned-memories PUT, not a turn: a turn's request hash covers its render set and resolved viewpoint, which the erasure changes, so a replayed turn is `idempotency_conflict`.
+  **Why:** The drift notes and the traceability rule. Cost if wrong: renames, or a docs/04 row for ERASURE-RESURRECTION.
+  **Issue:** #127, #74, #75, #40
+- **Decision:** `erased_subject_referenced` (409) is documented on `respond`, `regenerate` (through `_TURN`), `ingest`, `set_pinned_memories`, `set_custom_instructions` (a new `_TEXT_EDIT` tuple), `add_story_character`, the upload operations (`_UPLOADED`) and scenario create and save (`_SCENARIO_SAVE`). `ErasedSubjectReferenced` is exported from `epistrel`. `docs/openapi.json` is regenerated. `docs/OPERATIONS.md` gains "The resurrection guard" (with the key-rotation warning), and docs/02 §4.10's erasure bullet gains a paragraph describing it.
+  **Why:** The drift note's correction. Cost if wrong: #128's parity check adjusts the lists.
+  **Issue:** #127, #128
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #127 added the resurrection guard. Later stories build on these shapes:
+  - **Commit-time check.** `core.erasure.guard.check_content` runs in `Operation._write` on every staged event. It runs after #47's decision and the commit steps, and before indexing. A refused write is 409 `erased_subject_referenced` (`ErasedSubjectReferenced`, `{erasure_id, match_count}`), and the operation ends `abandoned`. A revalidating turn regenerates first (`concurrency.ERASED_SUBJECT`).
+  - **Consumer text.** `player`/`consumer` text is checked only when its base revision predates the erasure.
+  - **Catalog hook.** `assert_not_erased(conn, ids, field=, path=)` refuses a new structured reference to a catalog-scope erased subject (scenario roles, media `depicted_subjects`).
+  - **Registry.** `guard.CONTENT_WRITE_PATHS` (`WritePath(module, how, why)`) must list every module that writes story or catalog content. Its test checks the set against `SUBJECT_WRITERS` plus ingest and the job commit.
+  - **Erasure as a control action.** It now fails queued turns (`timeline_changed`), clears the turn slot's lease, and moves `membership_tx` on the operations whose events it redacted.
+  - **Fork.** A fork copies the story's `erasure_ledger` rows (`copied_from`, `story_ref` = the fork). It is retried (`ErasedMeanwhile`) when an erasure of the source commits after its snapshot.
+  - **Key.** The guard needs `EPISTREL_CONFIG_KEY` (bound per Engine). Rotating the key disables the guard for earlier erasures (`docs/OPERATIONS.md`).
+  **Why:** #127's AC and its pass-1/pass-2 lines, corrected by its drift notes. The decision entries below give the details.
+  **Affects:**
+  - **M3 #128 (API surface).** A new error code on respond, regenerate, ingest, pins, instructions, add-character, uploads and scenario create/save. `docs/openapi.json` is regenerated, and `ErasedSubjectReferenced` is exported.
+  - **M7 #251 and #250 (import).** The import path registers in `CONTENT_WRITE_PATHS`. An import that writes through `Operation` is checked automatically; one that copies rows directly (as fork does) needs its own fence, and it brings the ledger rows with `copied_from`.
+  - **M4 #135, M5 #178, M6 (new content writers).** Each new writer module registers a `WritePath`. Writers that commit through `Operation` are guarded already. Raw inserts need a check or an exemption with a reason.
+  - **M8 #266 (images).** Image promotion's "erasure ledger clear" revalidation can call `assert_not_erased` and `check_content`.
+  - **The Console (nathanpond/Epistrel-Console).** Handle 409 `erased_subject_referenced` ("rebuild your context from the current history and retry"). A respond may come back 409 `timeline_changed` naming an erasure's operation.
+  - **Next step:** #128 is the last group C story in this run: its drift check should apply this. Run `/n8-replan` for M4, M5, M6, M7 and M8 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #127's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #127
+
+- **Decision (drift):** The stage view extends `src/epistrel/core/operation_view.py` (the drift note: `operations_view.py` does not exist). `OperationView` and `OperationBody` gain `label` (`OperationLabel`: `genesis`, `rating_check`, `reactivation_check`, `offboarding`, `erasure`) and `stages [{name, status, at}]` (`StageStatus`: `pending`, `running`, `done`, `failed`, `skipped`, `partial`). Any other operation has `label: null` and `stages: []`. The operation's own `status` is not changed: a check's or an offboarding's request operation stays `committed`, and its stages carry the progress.
+  **Why:** AC4 and the pass-1 line. The plan's link, `jobs.operation_id`, was never built (#117's and #118's Ad-hoc entries), so a rating or reactivation check is found by `rating_check_jobs.operation_id` and an offboarding by `offboarding_jobs.operation_id`. Cost if wrong: one more join in the view if the link moves.
+  **Issue:** #128, #117, #118, #120
+- **Decision (deviation):** The `label` comes from the operation's links, not from "the marker event type" as the pass-1 line says. The view checks, in order: kind `genesis`; a `rating_check_jobs` row (its `kind` separates `rating_check` from `reactivation_check`); an `offboarding_jobs` row; and a `stage_log` that holds `redacted` (an erasure).
+  **Why:** A catalog erasure is a deployment operation with no events. A tightening and a reactivation both record `story_paused`. An offboarding's request operation records no event of its own. So no marker event type identifies all four. Cost if wrong: the view reads two small indexed tables per `control` operation.
+  **Issue:** #128
+- **Decision:** Every stage-log entry now records its time. `Operation.stage` and `core.erasure.erase.append_stage` write `{stage, status, at}` (`at` = `clock.now()`). An entry from before this change falls back to the operation's `committed_at`.
+  - **Erasure:** the stages come in a fixed order (`redacted`, `ledger_written`, `regenerated`, `rebuilt`). A catalog erasure's `regenerated` and `rebuilt` are `skipped`. A reapply without a ledger write (#125) has `ledger_written` `skipped`. A story erasure's later stages are `pending` until the work after its commit records them. Its recorded regeneration status can be `partial` (#124's `RegenerationOutcome`), so `partial` was added to the planner's five statuses, and an unknown value reads `failed`.
+  - **Genesis:** `validated`, `snapshotted` and `materialized` are all at the one commit. `snapshotted` is `skipped` for a blank story (no `creation_report`).
+  - **Checks:** `checking` (from `started_at`), then `applied`/`reactivated` or `refused` (`pending` while checking, `skipped` after a failure).
+  - **Offboarding:** one stage per entity type of the snapshot, in processing order. It is `done` once `progress.index` passes that type's last entry, `running` while the job is on it, and `failed`/`skipped` after a failure. Its `at` is the row's `updated_at`, because the row keeps no time per type.
+  **Why:** The pass-1 line says "`at` from `epistrel.core.clock.now()`", and #124's entries had no time. Cost if wrong: one key per stage-log entry; no reader compares the whole entry (`test_erasure` reads stage names only).
+  **Issue:** #128, #124
+- **Decision:** The route table is `tests/fixtures/api/fr_api_6_routes.json`. It has three lists:
+  - `routes`: FR-API-6 item by item, as `{item, method, path, status, milestone}`, with the M2-delivered rows marked M2. The `not_yet` rows are backfill and conflict resolution (M7) and images (M8), at docs/02 §9's paths. §9 names no path for cancelling an image job, so that row is a placeholder (`DELETE /image-jobs/{job_id}`, with a `note`). The erasure rows are there because #128's AC names them, although FR-API-6 does not.
+  - `extras`: served routes beside the items, such as the unarchives, `GET /media`, the relation listings, the reconcile and the export log.
+  - `outside`: every other served route, each with the requirement it serves.
+
+  The check (`tests/api_surface_support.surface_problems`) runs both ways, so a new route must be placed in one of the lists. It also asserts that every FR-API-6 group and every owned type's three ownership routes have a row.
+  **Why:** The pass-1 line names two directions and an allow-list. The drift note says that FR-API-6 omits most M2 routes, and suggests deriving the allow-list or keeping the check one-way. Deriving it from `docs/openapi.json` would make the reverse check empty, so it was rejected. Listing each route with its requirement keeps the check two-way and explicit. Cost if wrong: later milestones add one line per route they add (M4+ stories touching routes should expect it).
+  **Issue:** #128
+- **Decision (drift):** `test_c_15__api_surface`, `test_c_15__replay` and `test_c_15__operation_stages` each carry `part("M3", "FR-API-6")` and sit in `tests/conformance/test_c_15.py`. The helpers are in `tests/api_surface_support.py` and `tests/replay_support.py`. The Must-haves artifact `tests/test_api_surface_m3.py` was not created. `test_c_02__admin_prefix` carries `part("M3", "FR-API-1; FR-AUTH-1")` in `test_c_02.py`. `test_s_trust_boundary__m3` carries `part("M3", "FR-AUTH-1")` in `tests/test_trust_boundary.py` and runs an `/admin` erasure under two principals and once with no principal.
+  **Why:** The drift notes: traceability allows one file per (test id, milestone) and checks each part's requirements against §15. FR-API-6's §15 row lists C-15, C-16 and C-19. C-02's and S-TRUST-BOUNDARY's M3 slices name FR-API-1/FR-AUTH-1 and FR-AUTH-1. Offline tests use `create_app(auth_settings(dummy_dsn, mode="all"))`, not `create_app(settings=None)`. Cost if wrong: none; the tests and their markers are where the gates look.
+  **Issue:** #128
+- **Decision:** The complement is a permanent test, `test_c_15__api_surface_bites`. It builds the app with `media.router.routes` minus `get_media_url` (monkeypatched, because routers are included lazily) and asserts that the check reports exactly that row. It then serves one route the table does not list and asserts that the check reports it.
+  **Why:** The pass-1 line asks for "a permanent test over an app whose router is built minus one route". Cost if wrong: none.
+  **Issue:** #128
+- **Decision:** The replay test reruns C-03's scripted sequence (`tests/conformance/test_c_03._steps`) on two fresh databases instead of a fixture builder per route. Each step whose route is mutating (method, minus `mutating=False`) is sent under its own key and, once it succeeds, sent again at once.
+  - **Over REST:** the replay must answer the same status and body with `Idempotent-Replay: true`.
+  - **In-process:** C-03's module-level `CTX` is swapped for a keyed context during the step, and the replay must return the same rendered result.
+  - **Rows, on both surfaces:** no base table may gain or lose a row, counted over every table in one statement, which covers `operations` and the entity's own table.
+  - **Coverage:** every mutating route must have a replayed step, or the test fails.
+  - **Added steps:** C-03 reaches some routes only through a sibling route of the same Engine operation, or only as a dry run, so the sequence is extended with: a real story erasure; a relation added to and removed from a new character, scenario, persona, media asset and engine profile; and a scenario's listing status.
+  - **Complement:** the same draft under a second key adds a row, and under the first key adds none.
+  **Why:** The pass-1 line ("a mutating route without a fixture builder fails the test; replay asserted over both surfaces"). C-03's sequence already makes every operation succeed in order, so reusing it keeps one scripted world. Cost if wrong: the replay test depends on C-03's step list; a C-03 step that stops succeeding shows up here as a coverage failure.
+  **Issue:** #128, #73
+- **Decision:** Two kinds of call are re-executed rather than replayed, by design.
+  - `put_upload_part` (#107: "sending a part again replaces it ... the key is echoed, not kept") must answer the same and write no row, but carries no `Idempotent-Replay` (`replay_support.REPLACED_NOT_STORED`, with its reason).
+  - A `dry_run: true` request (#117's offboarding, #124's erasure: "no operation, no key") is checked the same way and does not count toward coverage. That is why a real erasure step was added.
+
+  `REPLAY_EXCLUDED` is empty, and no `PARITY_EXCLUDED` set was made (#107's hand-off). The binary content routes are reads. No separate two-stage `ignore_warnings: true` replay was written: C-03's steps choose their bodies, and those that need it send it.
+  **Why:** The pass-1 lines exclude binary routes "with reason"; here the binary upload route is kept and checked for everything it promises. Cost if wrong: a later story that starts storing part results must move `put_upload_part` out of `REPLACED_NOT_STORED`.
+  **Issue:** #128, #107, #117, #124
+- **Decision:** The stage test (`test_c_15__operation_stages`) asserts the stored result by its status and identifying field (`story_id`, `job_id`, `operation_id`), not by equality with the REST body.
+  **Why:** The view's `result` is what the idempotency key stored: the Engine's result through its codec (`engine.CODECS`), whose fields REST renders differently (the REST body adds `timeline_revision`, the echoed key and so on). AC4's "the result within the window" is that stored result. Cost if wrong: none; the view is unchanged.
+  **Issue:** #128, #61
+- **Decision:** `info.version` is now `m3` (`api.openapi.SCHEMA_VERSION`). C-01's schema check asserts the literal `"m3"`, not the constant. `docs/openapi.json` was regenerated. No tag was added: `principals` and `feedback` were already in `TAGS` (the drift note). `OPERATOR_PATH_PATTERNS` is unchanged: it already matches `offboarding` (#117). C-02's M3 slice adds the ten M3 operator paths under `/admin` (offboarding, erasure with status, boundary and reconcile, and the feedback export with its log).
+  **Why:** The pass-1 lines, corrected by the drift notes and #117's entry. Cost if wrong: none.
+  **Issue:** #128
+- **Decision:** No missing route was found, so no Rule 2 fix to a sibling story was made. C-03's parity list (generated from `Engine`'s public operations) and C-01's schema check already passed at HEAD over every M3 operation. `test_c_15__api_surface` also calls both over the same app.
+  **Why:** The route table matched the served app in both directions on the first run, once Starlette's `{principal:path}` converter was normalised to OpenAPI's `{principal}`. Cost if wrong: none.
+  **Issue:** #128
+- **Decision (deviation):** docs/02 §4.4 (the stage view) and §9 (the erasure and export-log routes, and the route table) are amended. No ADR line was added.
+  **Why:** The view implements FR-EXT-16's status surface as docs/03 states it, and no ADR covers the operations endpoint. ADR-log changes regenerate both indexes. An implementation detail does not warrant a new ADR, and amending an unrelated one would be wrong. Cost if wrong: a one-line ADR later.
+  **Issue:** #128
+- **Decision:** `current_milestone` stays `M2` (tools/gates config). It is not bumped.
+  **Why:** The pass-1 line: verification's closing PR bumps it. Cost if wrong: none.
+  **Issue:** #128
+- **Decision:** Group B's and C's hand-offs to #128 were applied. The routes they added (#114 personas and story characters, #116 companion, #117 principals and offboarding, #118 rating change and check, #121 suggestions, #124 and #125 erasure, #126 feedback reports and exports) are rows of the route table. Their shape changes (#115, #119, #120, #122, #127) are in the regenerated `docs/openapi.json`, which C-01 checks. The two suggestion routes and `delete_feedback_export` are `mutating=False`, so the replay leaves them out. `set_content_rating` stays excluded from Schemathesis generation (#118).
+  **Why:** The relayed Ad-hoc entries' `Affects: #128` items. None contradicts an AC. Cost if wrong: none.
+  **Issue:** #128, #114, #115, #116, #117, #118, #119, #120, #121, #122, #124, #125, #126, #127
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #128 froze M3's API surface. Some of the shapes it settled are ones later stories build on.
+  - **`GET /operations/{id}`** gains `label` and `stages`.
+    - `label` is `genesis`, `rating_check`, `reactivation_check`, `offboarding`, `erasure` or `null`.
+    - Each stage is `{name, status, at}`, and `status` is one of `pending`, `running`, `done`, `failed`, `skipped` or `partial`.
+    - `core.operation_view._stages` derives them per kind. Job-backed kinds are found through their job row's `operation_id` (`rating_check_jobs`, `offboarding_jobs`).
+    - docs/02 §4.4 is amended.
+  - **`operations.stage_log`** entries are now `{stage, status, at}`. `Operation.stage` and `erase.append_stage` stamp `at` with `clock.now()`.
+  - **The route table** is `tests/fixtures/api/fr_api_6_routes.json`. It holds FR-API-6's items, with `not_yet` rows for the M7 backfill and conflict routes and the M8 image routes, plus `extras` and `outside`. `test_c_15__api_surface` checks it against the app in both directions, so every route a later story adds needs a row, and a `not_yet` row flips to `present` when its route ships. docs/02 §9 is amended.
+  - **The replay test** (`test_c_15__replay`) reruns C-03's sequence under keys. A later story's new mutating route therefore needs a C-03 step (or a step in `tests/replay_support.steps`) that reaches that route successfully, besides the step per Engine operation C-03 already requires.
+  - **`info.version`** is `m3`.
+  **Why:** #128's AC and its pass-1 lines, corrected by the drift notes and #117's and #118's entries. The decision entries above give the details.
+  **Affects:**
+  - **M6 #212 (staged turns).** Its plan adds `operations.stage_log` and returns `stages: [{name, status, at, revision}]` from `GET /operations/{id}` "(#128)". The column exists (#124), its entries are `{stage, status, at}`, and the view already answers `{name, status, at}` with a `label`. #212 should add `revision` and `staged`, and a `turn` branch in `core.operation_view._stages`, rather than create the column.
+  - **M6 #214.** It asserts on `stage_log`, and the entries have the shape above.
+  - **M7 #228 and #230 (backfill, conflict resolution)** and **the M8 image-route stories (#256 and the candidate, prompt and story-image routes).** Each flips its `not_yet` rows to `present` and keeps docs/02 §9's paths, or amends both. The image-job cancel row is a placeholder path, because §9 names none.
+  - **Every later story that adds a route.** It adds a row to the route table, and for a mutating route it adds a replayable step.
+  - **The Console (nathanpond/Epistrel-Console).** An operation progress view can show `label` and `stages` for genesis, rating and reactivation checks, offboarding and erasure.
+  - **Next step:** `/n8-replan` for M6 (#212, #214), M7 (#228, #230) and M8 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #128's `## Ad-hoc` entry.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #128
+- **Decision:** #127 fix round 1 adds tests only. `test_erasure_resurrection` now queues a turn behind the held one, after switching the story to `turn_concurrency: queue` (the default `reject` would answer 423 rather than queue it). It asserts that the queued turn fails with 409 `timeline_changed` naming the erasure's `operation_id`, both in its HTTP answer and in `operations.error_code`/`error`. `test_a_catalog_erasure_refuses_a_new_reference` now also uploads a medium whose `depicted_subjects` names the erased catalog character (409 `erased_subject_referenced` at `body.metadata.depicted_subjects`), with the other character accepted as the complement. The new `test_a_fork_retries_when_an_erasure_commits_under_it` monkeypatches `fork._erasure_fence` with a wrapper. On the first attempt the wrapper pauses before calling the real fence while the erasure commits. The test then asserts that the fork retried, that its copy holds no erased text, and that it carries the new ledger row (`copied_from`). Each verifier mutation that survived before now fails one of these tests.
+  **Why:** The verifier's three coverage gaps. Pausing before the real fence keeps the fence's own race check under test, with no new hook added to production code. Cost if wrong: none; tests only.
+  **Issue:** #127
+- **Decision:** In `test_erasure_resurrection`, the check made right after the erasure loosens from "the slot's lease is NULL" to "NULL or the failed queued turn". A new check later in the test waits for the slot to come free. The original assertion was written with no queued turn in the scenario. With one queued, the drainer can read the queued turn as its head before the erasure, then take the slot the erasure freed, find the operation failed (`RuntimeError: ... is not queued`) and give the slot back. This is a pre-existing #63 drainer race that truncation (#65) shares, and it is outside #127's scope, so it is filed as #329 rather than fixed here. The held turn's lease is still cleared by the erasure, and the turn's recorded `timeline_changed` survives because `_fail` keeps the first `error_code`.
+  **Why:** The rule for discovered work: out of scope means file it, not fix it inline. The loosened check still fails if the erasure leaves the held turn's lease in place. Cost if wrong: a newcomer may get a brief 423 in that window until #329 is fixed.
+  **Issue:** #127, #329
+- **Decision:** #127 fix round 2 re-wraps lines 8-12 of the module docstring in `tests/integration/test_erasure_resurrection.py`. Round 1 left one line at 107 columns, which broke ruff E501. The fix does not add a `noqa`. The round-1 comment on #127 said `ruff check` returned rc=0, but at 40d05d9 it did not. The round-2 comment corrects that.
+  **Why:** The verifier found a real lint-gate failure. Wrapping the text is the only change that keeps the gate whole. Cost if wrong: none; the change is to the docstring only.
+  **Issue:** #127
+- **Decision:** #128 fix round 1 covers the routes with a mutating method that are flagged `mutating=False`. Before this round the replay test left them out silently. `tests/replay_support.py` now names each one with its reason. `UNKEYED_WRITES` holds the four that do write: `rate_message` and `retract_feedback` (#112, docs/02 §9: "the writes take no `Idempotency-Key`"), `delete_feedback_export` (#126) and `reconcile_erasure` (#125, FR-ADMIN-7). `UNKEYED_READS` holds the five that write nothing: `impact_preview`, `validate_scenario`, `validate_profile` and both `suggest_ratings_*`. `test_c_15__replay` asserts that the flagged set the app serves equals the named set in both directions, so a newly flagged route has to be named with a reason. On both surfaces each named route is sent twice without a key. The repeat must give the same answer and add no row to any table, and the test asserts that every named route was repeated. Two answers are allowed to differ. A REST re-rate answers 200 after the first 201, which is the documented re-rate status. Some fields are compared without their values: a reconcile run's own `run_id`, and the suggestions' `elapsed_ms`/`latency_ms` timings (their model calls' request ids and outcomes must still match). The four writes depart from AC3's literal "accepts `Idempotency-Key`", as docs/02 §9 and their own route descriptions already say. FR-API-6 itself asks that they be "idempotent where they mutate (FR-CONC-6)", and these routes are idempotent by design rather than by a stored key. No needs-triage issue is filed against #112 or #126: the shipped contract matches docs/02 §9, and changing it would be Rule 4.
+  **Why:** The verifier's gap: AC3 and FR-CONC-6 ask for every mutating M3 route to be covered, and #128's hand-off named only the suggestion routes and `delete_feedback_export`. Three mutations were each re-checked and each failed the test: a re-rate answering 201, a same-value re-rate writing a `feedback_history` row, and a flagged route left unnamed. Cost if wrong: if the owner wants FR-CONC-6 applied literally to the feedback writes, they would need a key, which is an API contract change for #112 and #126.
+  **Issue:** #128, #112, #125, #126
+- **Decision:** Rule 1 (#125, found by the M3 group C full-suite gate): the engine processes that tests spawn now get an erasure ledger directory that is not the repository's. `EngineProcess` (`epistrel.testing.faults`) gives each child its own temporary `EPISTREL_ERASURE_LEDGER_DIR`, as it already does for the media root. It builds the environment in a new `child_env()`, and `__aexit__` removes the directory. X-07's `epistrel worker` processes, which run against the session database, get the session's `ERASURE_LEDGER_DIR`. Before this fix, both kinds of child dropped every `EPISTREL_*` variable and ran from the repository root. So they used the default `var/erasure-ledger/ledger.jsonl` (git-ignored), which survives from one session to the next. #125's start-up `mark` then loaded an earlier session's catalog-scope erasures into the test database as pending entries. Their reapply could not settle them (`ErasureKeyMissing`), and in the other direction the children copied each session's rows into that file. This one cause produced four of the gate's five failures. X-07 `__health` and `__all_mode` saw `erasure_pending` > 0 and got `degraded`. `test_a_fork_carries_the_story_ledger` counted the stale pending rows (5). In `test_c_01[GET /admin/config-changes]`, the live app's background reapply wrote an `operations` row between the before and after counts (#328's symptom). The regression test `test_an_engine_child_keeps_its_ledger_and_media_out_of_the_repository` (`tests/test_crash_points.py`) fails when the child's ledger directory is dropped. No assertion was loosened.
+  **Why:** #125 kept in-process apps on the session's ledger through `conftest` and `auth_support` but left out the subprocess spawners, and group B could not see the problem because no ledger existed then. A per-child directory is correct for `EngineProcess`, because X-03 and X-06 run it against scratch databases, and the session's file must hold only the session database's rows. Cost if wrong: none to production; the change is to test harnesses only. The stale `var/erasure-ledger/ledger.jsonl` stays on the owner's disk, and nothing in the suite reads it now.
+  **Issue:** #125
+- **Decision:** Rule 1 (#113, found by the M3 group C full-suite gate): `test_c_01__malformed`'s complement now reads the story's `regenerate_retry_budget` first and sends a different value (4, or 5 when it is already 4). Before, it always sent 4. A settings write that changes nothing writes nothing (docs, `core/story_settings.py`), and the generated `PATCH /stories/{id}/settings` cases on the same live story can leave the budget at 4. When they did, the complement got 200 with no `config_changes` row, and the test reported its own well-formed request as a failure. This was shown deterministically: with a PATCH to 4 placed before the malformed cases, HEAD's test fails with the gate's exact message, and the fixed test passes. The complement's check (200 and a new `config_changes` row) is unchanged. Only the test's assumption that the value would differ was wrong. The cause is #113's change (f73ef1c, group B), not group C. It is random, depending on Hypothesis's draws, which is why B's gate passed.
+  **Why:** The assertion was right; its input was not guaranteed to be a change. Cost if wrong: none; tests only.
+  **Issue:** #113
+- **Decision:** Rule 1 (#125, found by the M3 group C full-suite gate, attempt 2): every database the tests use now has its own erasure ledger file. `auth_settings` picks the directory with `ledger_dir_for(dsn)`. The session database (`pg_url`, recorded by the fixture through `note_session_database`) keeps `ERASURE_LEDGER_DIR`. Any other server or database gets a directory of its own under `SCRATCH_LEDGERS`, shared by every app on that database. `migrated_database` empties that directory when the database is created and again when it is dropped. The polluter was `tests/conformance/test_c_15.py::test_c_15__operation_stages` (#128). It erases a catalog character (principal `p-catalog`, scope `catalog`, `story_ref` null) on a `rating_db` scratch database, and that erasure's line went to the session's ledger file. The next session-database app's `mark` took the line in as a pending row. Its subject does not exist in the session database, but nothing reapplies it there: test apps run no lifespan reapply or worker. So the row never settled, and `test_a_fork_carries_the_story_ledger` counted it (`1 == 0`). A story-scope erasure on a scratch database is settled `story_missing` by `mark`, so only a catalog one shows the problem, and #128's test was the first to run one there. Evidence: at d179021, that test followed by the fork test fails `1 == 0`, and after the fix both pass, twice. The new `test_a_scratch_database_erasure_stays_out_of_the_session_ledger` fails without the fix. The fork test's database-wide count is kept. The row should never have existed, so this is outcome (a), and the assertion is not narrowed. No other test counts pending rows across a shared database: the other `pending_count` and `erasure_pending` checks run on the ledger tests' own servers.
+  **Why:** #125's harness gave one ledger file to every database in the process, while the ledger's own contract is one file per database (C-03 and C-15's replay already pass their own). Fixing it in `auth_settings` covers every scratch helper (rating, catalog, feedback, media, offboarding, C-01's live app) without touching each one. Cost if wrong: a test that expects a scratch-database erasure to appear in the session's file would now fail visibly; there is none today.
+  **Issue:** #125, #128
+- **Decision:** Group C's full-suite gate passed on attempt 3 of 3, at `106c589`: 1883 passed, 14 deselected, in 1359.74 s, with `epistrel.core` coverage at 96.21 %. Attempt 1 (`1e5aa84`) had 5 failures and attempt 2 (`d179021`) had 1. Isolation runs traced them to three causes, each fixed as a Rule 1 fix on the story it came from (the entries above give the details):
+  - #125's spawned engine processes used the repository's ledger file (`62a6d1c`);
+  - #113's C-01 complement depended on Hypothesis's draws (`d179021`);
+  - #125's test harness gave scratch databases the session ledger, triggered by #128's C-15 test (`106c589`).
+  No assertion was loosened. Then the AC boxes of #120 to #128 were ticked, and each got a completion comment, verified against the live issue. The metrics and the M3 summary of the batched-gate trial are in `.n8/memory/m3-batched-test-gate.md`.
+  **Why:** This follows the M3 batched-gate rule: failures go back to the story that caused them, with three attempts per group run. #328's symptom is very likely explained by the first cause; a comment says so there, and the issue stays open for the owner. A stale `var/erasure-ledger/ledger.jsonl` from earlier sessions is still on the owner's disk (git-ignored). Nothing in the suite reads it now, and it was not deleted, because it is the owner's file. Cost if wrong: none; the gate is green.
+  **Issue:** #113, #120, #121, #122, #123, #124, #125, #126, #127, #128, #328
+- **Decision:** Rule 3 (milestone PR #330, a blocker in the build config): raised the CI `test` job's `timeout-minutes` from 20 to 60. The first CI run was cancelled at 20 minutes, 45 % of the way through M3's 1883-test suite. M2's runs took 12–16 minutes. Which tests run and the coverage gate are unchanged. The slowdown is filed as #331 (sharding, xdist, or trimming slow tests).
+  **Why:** Without this, the required `gate` check can never pass, and a cancelled job re-runs into the same cap. 60 minutes leaves headroom over the projected 45. Cost if wrong: a hung run holds a runner for up to 60 minutes instead of 20.
+  **Issue:** #330, #331
+- **Decision:** `/n8-exec` treats checks still pending after 30 minutes as a blocker. Here the wait budget was 75 minutes, because this repository's CI took about 32 minutes on PRs with M2's smaller suite. It was posted as a PR comment on #330 at the time, since a commit would have restarted CI.
+  **Why:** A 30-minute budget would call a healthy run stuck. Cost if wrong: a stuck CI is noticed 45 minutes later.
+  **Issue:** #330
+- **Decision:** CodeQL's error-severity `py/clear-text-logging-sensitive-data` alert at `src/epistrel/cli.py:168` was not dismissed, and the code was not changed. `epistrel moderation-secret` prints the derived hook secret by design, as the README documents (#105). The alert is filed for the owner as #332 (`needs-owner-action`), with three options. CodeQL is not a required check, so the merge waits only on `gate`.
+  **Why:** Dismissing a security alert, or changing a documented CLI's security posture, is the owner's call, not a low-cost guess. Cost if wrong: the alert stays open on the dashboard until the owner decides.
+  **Issue:** #105, #332

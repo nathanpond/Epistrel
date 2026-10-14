@@ -4,13 +4,16 @@ is a no-op. NFR-REL-1 is exercised end to end by X-03."""
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from epistrel.testing import crash, faults
+from tests.conftest import REPO_ROOT
 
 CHILD = (
     "from epistrel.testing import crash\n"
@@ -84,3 +87,21 @@ def test_hits_are_no_ops_in_the_test_process() -> None:
     crash.reset()
     assert crash.armed() is None
     crash.hit("before_lock", "turn")
+
+
+def test_an_engine_child_keeps_its_ledger_and_media_out_of_the_repository() -> None:
+    """``EngineProcess`` gives its child an erasure ledger directory and a media root of its own,
+    outside the working directory, and removes them on exit (#125). Without the ledger directory
+    the child read and wrote ``var/erasure-ledger`` under the repository, which outlives the
+    session: its start-up reconcile loaded an earlier session's erasures into the test database
+    as pending entries, so ``/health`` said ``degraded`` (found by the M3 group C gate)."""
+    child = faults.EngineProcess("postgresql+psycopg://u:p@127.0.0.1:1/x", "c" * 40)
+    env = child.child_env()
+    ledger, media = Path(env["EPISTREL_ERASURE_LEDGER_DIR"]), Path(env["EPISTREL_MEDIA_ROOT"])
+    for path in (ledger, media):
+        assert path.is_dir()
+        assert not path.resolve().is_relative_to(REPO_ROOT)
+    assert ledger != media
+    asyncio.run(child.__aexit__(None, None, None))
+    assert not ledger.exists()
+    assert not media.exists()

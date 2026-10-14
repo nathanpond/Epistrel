@@ -1,4 +1,11 @@
-"""U-29: rating inheritance — the effective-guardrail closure and the cycle check (pure)."""
+"""U-29: rating inheritance and change classification (docs/04 §3).
+
+- M2 (#48): the effective-guardrail closure and the cycle check (pure), and the guidance a story
+  resolves.
+- M3 (#111): ``test_u_29__mismatch``, looser-than (FR-RATE-5), pure over an in-memory graph.
+  Every U-29 (M3) part lives in this file: #118's ``test_u_29__classification`` (FR-RATE-6,7)
+  classifies a rating change the same way.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +15,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.catalog.checks.rating_mismatch import is_looser
 from epistrel.core.ratings import (
     Guardrail,
     RatingNode,
@@ -16,6 +24,7 @@ from epistrel.core.ratings import (
     invalidate_closure_cache,
     story_guidance,
 )
+from epistrel.core.ratings.change import Direction, classify
 from epistrel.core.seeds.ratings import (
     EVERYONE_ID,
     EXPLICIT_ID,
@@ -164,3 +173,95 @@ def test_closure_skips_unknown_ratings() -> None:
     assert effective_guardrails("A", graph) == (Guardrail("a", "A"),)
     assert effective_guardrails("gone", graph) == ()
     assert find_cycle("A", ["gone"], graph) is None
+
+
+def _guarded(rating_id: str, graph: Mapping[str, RatingNode]) -> set[str]:
+    return {g.policy_id for g in effective_guardrails(rating_id, graph)}
+
+
+@pytest.mark.part("M3", "FR-RATE-5")
+def test_u_29__mismatch() -> None:
+    """Looser-than compares guardrail sets, never display order. With the seeded chain and one
+    policy of each rating's own, an Explicit item against an Everyone scenario is looser (it
+    lacks Everyone's, Teen's and Mature's policies), and an Everyone item against an Explicit
+    scenario is not; an item at the scenario's own rating is not looser. Two ratings that each
+    list a policy the other lacks are each looser than the other, and swapping their display
+    orders changes neither answer, nor does giving the looser rating the first place.
+
+    Complement asserted: with no policy at all (the seeded ratings as shipped), nothing is
+    looser in either direction."""
+    invalidate_closure_cache()
+    graph = _seeded()
+    assert is_looser(_guarded(EXPLICIT_ID, graph), _guarded(EVERYONE_ID, graph))
+    assert not is_looser(_guarded(EVERYONE_ID, graph), _guarded(EXPLICIT_ID, graph))
+    assert not is_looser(_guarded(TEEN_ID, graph), _guarded(TEEN_ID, graph))
+    assert is_looser(_guarded(MATURE_ID, graph), _guarded(TEEN_ID, graph))
+
+    for first, second in ((10, 20), (20, 10)):
+        invalidate_closure_cache()
+        sideways = {
+            "violence": _node("violence", first, ("p-violence",), ()),
+            "romance": _node("romance", second, ("p-romance",), ()),
+        }
+        assert is_looser(_guarded("violence", sideways), _guarded("romance", sideways))
+        assert is_looser(_guarded("romance", sideways), _guarded("violence", sideways))
+
+    invalidate_closure_cache()
+    reordered = {
+        rid: replace(node, display_order=-node.display_order) for rid, node in graph.items()
+    }
+    assert is_looser(_guarded(EXPLICIT_ID, reordered), _guarded(EVERYONE_ID, reordered))
+    assert not is_looser(_guarded(EVERYONE_ID, reordered), _guarded(EXPLICIT_ID, reordered))
+
+    invalidate_closure_cache()
+    bare = _seeded({rid: () for rid in OWN})
+    assert not is_looser(_guarded(EXPLICIT_ID, bare), _guarded(EVERYONE_ID, bare))
+    assert not is_looser(_guarded(EVERYONE_ID, bare), _guarded(EXPLICIT_ID, bare))
+    invalidate_closure_cache()
+
+
+def _ids(rating_id: str, graph: Mapping[str, RatingNode]) -> list[str]:
+    return [g.policy_id for g in effective_guardrails(rating_id, graph)]
+
+
+@pytest.mark.part("M3", "FR-RATE-6,7")
+def test_u_29__classification() -> None:
+    """A rating change is classified by guardrail sets, never by display order. With the
+    seeded chain and one policy of each rating's own, Teen to Explicit is relaxing (Explicit's
+    set is a subset of Teen's) and Explicit to Teen is tightening. Two custom ratings
+    Mature-Violence and Mature-Romance, each with a policy the other lacks, are a sideways
+    move: tightening in both directions, whatever their display order.
+
+    Complement asserted: a move between ratings with equal sets (the seeded ratings as shipped,
+    no policies) is relaxing both ways, and reversing every display order changes no
+    answer."""
+    invalidate_closure_cache()
+    graph = _seeded()
+    assert classify(_ids(TEEN_ID, graph), _ids(EXPLICIT_ID, graph)) is Direction.RELAX
+    assert classify(_ids(EXPLICIT_ID, graph), _ids(TEEN_ID, graph)) is Direction.TIGHTEN
+    assert classify(_ids(EVERYONE_ID, graph), _ids(MATURE_ID, graph)) is Direction.RELAX
+    assert classify(_ids(MATURE_ID, graph), _ids(EVERYONE_ID, graph)) is Direction.TIGHTEN
+
+    for first, second in ((10, 20), (20, 10)):
+        invalidate_closure_cache()
+        sideways = {
+            **graph,
+            "violence": _node("violence", first, ("p-violence",), (EXPLICIT_ID,)),
+            "romance": _node("romance", second, ("p-romance",), (EXPLICIT_ID,)),
+        }
+        violence, romance = _ids("violence", sideways), _ids("romance", sideways)
+        assert classify(violence, romance) is Direction.TIGHTEN
+        assert classify(romance, violence) is Direction.TIGHTEN
+
+    invalidate_closure_cache()
+    reordered = {
+        rid: replace(node, display_order=-node.display_order) for rid, node in graph.items()
+    }
+    assert classify(_ids(TEEN_ID, reordered), _ids(EXPLICIT_ID, reordered)) is Direction.RELAX
+    assert classify(_ids(EXPLICIT_ID, reordered), _ids(TEEN_ID, reordered)) is Direction.TIGHTEN
+
+    invalidate_closure_cache()
+    bare = _seeded({rid: () for rid in OWN})
+    assert classify(_ids(EXPLICIT_ID, bare), _ids(TEEN_ID, bare)) is Direction.RELAX
+    assert classify(_ids(TEEN_ID, bare), _ids(EXPLICIT_ID, bare)) is Direction.RELAX
+    invalidate_closure_cache()

@@ -1,15 +1,17 @@
 """Writing a story's settings: ``PATCH /stories/{id}/settings`` (FR-CONC-5,15; #63).
 
 The body is a JSON merge patch (RFC 7396) over ``StorySettings``: a key present changes that
-setting, ``null`` resets it to its default, a nested object (``generation_settings``) is merged
-the same way, and a key ``StorySettings`` does not define is 422 ``validation_error``. The
-default output viewpoint is checked against the cast (``validate_default_viewpoint``: never
-``omniscient``, 422 ``viewpoint_unresolved`` for anyone outside the cast) and stored as
-``character:<id>``.
+setting, ``null`` resets it to its default, and a key ``StorySettings`` does not define is 422
+``validation_error``; one of M2's engine dials, which moved to the story's engine profile (#113,
+``SUPERSEDED_STORY_SETTINGS``), is 422 with ``reason: superseded`` and the profile setting that
+replaced it (``replacement``; a story overrides it with ``PATCH
+/stories/{id}/profile-overrides``). The default output viewpoint is checked against the cast
+(``validate_default_viewpoint``: never ``omniscient``, 422 ``viewpoint_unresolved`` for anyone
+outside the cast) and stored as ``character:<id>``.
 
 A write that changes anything moves the story's ``config_revision`` by one and records one
 ``config_changes`` row per changed leaf setting (scope ``story``, the setting's own class,
-FR-CONC-15, and the acting principal; ``generation_settings.temperature`` is a leaf) through
+FR-CONC-15, and the acting principal) through
 ``record_config_change``, in one transaction under the story row lock, which also records the
 write's ``control`` operation and a ``config_changed`` event per row (#64); a write that changes
 nothing writes nothing. A prospective setting applies to requests that start after the write;
@@ -33,10 +35,12 @@ from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import InvalidRequest, StoryArchived, StoryNotFound
 from epistrel.core.settings_schema import (
     COLUMN_SETTINGS,
+    SUPERSEDED_STORY_SETTINGS,
     StorySettings,
     flatten,
     merge_patch,
     setting_class,
+    superseded,
 )
 from epistrel.core.stories import settings_of, split_settings
 from epistrel.core.tables import characters, stories
@@ -59,8 +63,11 @@ class StorySettingsWrite:
 
 
 def check_keys(patch: Mapping[str, Any]) -> None:
-    """422 for a key ``StorySettings`` does not define (the patch would be silently kept)."""
+    """422 for a key ``StorySettings`` does not define (the patch would be silently kept), and
+    for one of M2's engine dials (#113)."""
     for key in patch:
+        if key in SUPERSEDED_STORY_SETTINGS:
+            raise superseded(key, f"body.{key}")
         if key not in StorySettings.model_fields:
             raise InvalidRequest(
                 f"{key!r} is not a story setting", {"field": f"body.{key}", "reason": "unknown"}

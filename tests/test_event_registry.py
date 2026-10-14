@@ -55,6 +55,20 @@ def test_every_m2_type_is_registered_with_its_category() -> None:
     assert {name: found.get(name) for name in EXPECTED_M2_TYPES} == EXPECTED_M2_TYPES
 
 
+def test_the_erasure_marker_is_a_control_event() -> None:
+    """#124's ``erasure_marker``: a control event of identifiers only (FR-ADMIN-2)."""
+    marker = lookup("erasure_marker")
+    assert marker.category is EventCategory.CONTROL
+    assert set(marker.model.model_fields) == {
+        "erasure_id",
+        "subject_kind",
+        "subject_id",
+        "scope",
+        "record_table",
+        "record_id",
+    }
+
+
 def test_duplicate_registration_raises(scratch_type: str) -> None:
     @register(scratch_type, category=EventCategory.AUDIT)
     class First(EventPayload):

@@ -4,7 +4,9 @@ FR-CONC-8, FR-LITE-7; #72).
 **When it runs.** One coalesced job per story (``coalesce_key`` ``lite_summary:<story>``),
 enqueued after a turn commits and after truncate, untruncate, swap and fork (``timeline``'s
 post-commit membership hook), whenever ``core.summary`` finds work: a whole chunk older than the
-trailing ``lite_window_messages`` verbatim rows, or a summary over ``lite_summary_max_tokens``.
+trailing ``window_messages`` verbatim rows, or a summary over ``compress_threshold_tokens``
+(the story's effective configuration's ``memory.rolling_summary``, #113; nothing with the
+rolling summary off).
 The recurring task of the same name (every 10 minutes) is the safety net: its run has no story
 and enqueues the job of every story with work. Every ``lite_summary`` job runs once
 (``max_attempts`` 1); a failed run is retried by the next trigger.
@@ -60,6 +62,7 @@ from epistrel.core.events.types import (
 from epistrel.core.ids import new_ulid
 from epistrel.core.input_versions import input_key
 from epistrel.core.policies.model import ModelAssistedRule, Policy
+from epistrel.core.ports import RegeneratedText, Regeneration, SummaryWindow
 from epistrel.core.summary import Chunk, Segment
 from epistrel.core.tables import characters, lite_summary_segments, operations, stories
 from epistrel.core.tables import transcript_messages as transcript
@@ -172,7 +175,7 @@ class _Run:
     names: list[str]
     budget: TurnBudget
     cap: int
-    """The summary's token cap (``lite_summary_max_tokens``) the run merges down to."""
+    """The summary's token cap (``compress_threshold_tokens``) the run merges down to."""
     pending: list[_Pending] = field(default_factory=list)
     rejected: list[GuardrailOutputRejected] = field(default_factory=list)
     calls_failed: bool = False
@@ -474,6 +477,75 @@ async def _run(ctx: JobContext) -> JobOutput:
     return output
 
 
+# -- erasure's regeneration (#124) ---------------------------------------------------------------
+
+
+class ErasureCompressor:
+    """The ``SummaryCompressor`` port (``core.ports``) over this module's compression: an
+    erasure's redacted windows (#124) summarised from their transcript rows as they are now,
+    with the story's names, the deterministic output policies and one run's budget
+    (``MAX_CALLS_PER_RUN``), exactly as a job run compresses a chunk. A failed or unaffordable
+    call stops the run; what was made so far is returned."""
+
+    def __init__(self, models: ModelAccessLayer) -> None:
+        self.models = models
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    async def regenerate(
+        self, db: AsyncEngine, story_id: str, windows: Sequence[SummaryWindow]
+    ) -> Regeneration:
+        async with db.connect() as conn:
+            names = await _story_names(conn, story_id)
+            chunks: list[tuple[SummaryWindow, list[Any]]] = []
+            for window in windows:
+                rows = await transcript_rows(
+                    conn,
+                    story_id,
+                    after_turn=window.covers_from - 1,
+                    through_turn=window.covers_to,
+                )
+                chunks.append((window, [transcript_line(row, names) for row in rows]))
+        context = await guard_context(db, story_id)
+        deterministic = tuple(
+            p for p in output_policies(context) if not isinstance(p.rule, ModelAssistedRule)
+        )
+        run = _Run(
+            models=self.models,
+            policies=deterministic,
+            names=list(names.values()),
+            budget=TurnBudget(max_calls=summary.MAX_CALLS_PER_RUN),
+            cap=0,
+        )
+        texts: dict[str, RegeneratedText] = {}
+        capped = failed = False
+        for window, lines in chunks:
+            inputs = LiteSummaryInputs(
+                mode="compress",
+                messages=list(lines),
+                prior_segments=[window.prior] if window.prior else [],
+                character_names=run.names,
+                covers=_covers(window.covers_from, window.covers_to),
+                target_tokens=summary.TARGET_TOKENS,
+            )
+            try:
+                made = await _write(run, inputs)
+            except BudgetExhausted:
+                capped = True
+                break
+            except ModelError as exc:
+                logger.info("erasure summary call failed: %s", type(exc).__name__)
+                failed = True
+                break
+            if made is None:
+                failed = True
+                continue
+            texts[window.segment_id] = RegeneratedText(made.text, made.model, made.prompt_hash)
+        return Regeneration(texts=texts, capped=capped, failed=failed)
+
+
 LITE_SUMMARY_HANDLER = JobHandler(
     kind=LITE_SUMMARY,
     payload=NoPayload,
@@ -491,6 +563,7 @@ __all__ = [
     "LITE_SUMMARY",
     "LITE_SUMMARY_HANDLER",
     "LITE_SUMMARY_TASK",
+    "ErasureCompressor",
     "NoModels",
     "bind",
     "bound",

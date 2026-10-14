@@ -16,10 +16,12 @@ the remainder covers it and then ``hold``s it. Unused slots are released (``rele
 the input gate, after the first generation, and after the first output check.
 
 **Planning** (``plan_lite_budget``): the cap is the request's ``budget.max_calls``, else the
-story's ``max_model_calls_per_turn``, else the deployment's, else the Lite formula
+story's (its effective configuration's ``budgets.model_calls``, #113: its overrides, its
+profile's version or the deployment's profile defaults), else the Lite formula
 ``lite_default_calls(G)`` = 4 + 5 (one primary) + G (NFR-PERF-6 with one primary and no staged
 outcome, so a deployment's cap is not surprising when M4 arrives). A request override above
-the story's cap, or a ``deadline_s`` above its ``turn_deadline``, is 422 ``validation_error``.
+the story's cap, or a ``deadline_s`` above its turn deadline (``budgets.deadline_ms``), is 422
+``validation_error``.
 A cap below ``1 + G`` is 422 ``budget_below_safety_minimum`` with ``minimum_required``,
 ``max_calls`` and ``reserved``, raised before any model call.
 """

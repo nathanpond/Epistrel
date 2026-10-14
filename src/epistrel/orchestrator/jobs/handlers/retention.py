@@ -12,6 +12,26 @@ FR-CONC-6, NFR-REL-5; #71).
   marker. Discarded and dormant continuations are never touched: they are story history, kept
   until the story is deleted.
 - finished (``done``/``failed``) ``jobs`` rows not updated for ``job_retention_days`` (7).
+- finished principal offboardings (``offboarding_jobs``, #117) that ended more than
+  ``offboarding_report_retention_days`` (90) ago: their status and report;
+- finished rating checks (``rating_check_jobs``, #118) that ended more than
+  ``rating_check_retention_days`` (30) ago: their status and violations. First it ends any
+  check whose job ended without ending it (``rating_change.reconcile``), so no story stays
+  paused by a check nothing runs any more.
+- deleted engine profiles that no story uses any more (FR-PROF-1; #106): each is purged with
+  its versions and its relations, its ownership ``deleted`` event recorded by ``system``
+  (``core.profiles.store.purge_deleted``). A deleted profile a story still uses is kept, and
+  the story keeps running on its last version; a fork of that story uses it too, so the purge
+  waits for the fork as well.
+- message feedback past the deployment's ``feedback_retention`` when it is a number of days
+  (FR-FB-2; #112): a rating by when it was first given (``created_at``), a history entry by when
+  it was replaced (``replaced_at``). Feedback never follows the audit records' 90 days: under
+  the default ``story_lifetime`` nothing expires, and a rating goes with its story. These are
+  plain deletes of audit-category rows that no story view reads, so they leave no marker
+  (FR-STORE-1's third exception). The rows are read here by their table, never through
+  ``core.feedback``, which nothing in the Orchestrator imports (FR-FB-3: feedback is
+  flag-only). Until #123 indexes a rating's text there are no subject-index rows to drop with
+  it; #123 drops them here too.
 
 No M2 operation kind writes only audit events, so no operation row is deleted. Every delete
 runs in chunks of ``CHUNK`` rows, each its own transaction, at most ``MAX_CHUNKS`` per table and
@@ -30,6 +50,7 @@ Results hold counts only, never story text.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -45,17 +66,29 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    true,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import clock
+from epistrel.core import clock, offboarding
 from epistrel.core.config_changes import read_section
 from epistrel.core.enums import EventCategory, OperationStatus
-from epistrel.core.idempotency import KeyStatus, purge_expired, read_idempotency_settings
-from epistrel.core.settings_schema import RetentionSettings
+from epistrel.core.erasure.index import drop_many
+from epistrel.core.erasure.records import rating_record_id
+from epistrel.core.idempotency import (
+    KEY_COLUMNS,
+    KeyStatus,
+    drop_results,
+    purge_expired,
+    read_idempotency_settings,
+)
+from epistrel.core.profiles import store as profiles
+from epistrel.core.ratings import change as rating_change
+from epistrel.core.settings_schema import STORY_LIFETIME, FeedbackSettings, RetentionSettings
 from epistrel.core.tables import audit_log, events, idempotency_keys, jobs, operations, stories
 from epistrel.core.tables.events import ALLOW_AUDIT_EXPIRY_GUC
+from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.orchestrator.jobs.recurring import NoPayload, RecurringTask, recording
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
 
@@ -122,6 +155,48 @@ def expired_audit_log(now: datetime, default_days: int) -> Any:
     )
 
 
+def expired_feedback(column: Any, before: datetime) -> Any:
+    """The ids of up to ``CHUNK`` rows of ``column``'s feedback table older than ``before``."""
+    return (
+        select(column.table.c.id)
+        .where(column < before)
+        .limit(CHUNK)
+        .with_for_update(skip_locked=True)
+    )
+
+
+async def _expire_feedback(db: AsyncEngine, moment: datetime) -> dict[str, int]:
+    """Delete the feedback past ``feedback_retention`` days (none under ``story_lifetime``)."""
+    retention = (await read_section(db, FeedbackSettings)).feedback_retention
+    if retention == STORY_LIFETIME:
+        return {"feedback": 0, "feedback_history": 0}
+    before = moment - timedelta(days=int(retention))
+    return {
+        "feedback": await _chunked(
+            db,
+            message_feedback,
+            expired_feedback(message_feedback.c.created_at, before),
+            audit=False,
+        ),
+        "feedback_history": await _chunked(
+            db,
+            feedback_history,
+            expired_feedback(feedback_history.c.replaced_at, before),
+            audit=False,
+        ),
+    }
+
+
+async def _drop_index(conn: AsyncConnection, table: Any, gone: Sequence[Any]) -> None:
+    """The subject-index rows of the deleted records (FR-ADMIN-6; #123): an expired audit event,
+    rating or history entry. A rating's record id is ``<message_id>:<principal>``."""
+    if table is message_feedback:
+        ids = [rating_record_id(str(r.message_id), str(r.principal)) for r in gone]
+    else:
+        ids = [str(r.id) for r in gone]
+    await drop_many(conn, table.name, ids)
+
+
 async def _chunked(db: AsyncEngine, table: Any, ids_query: Any, *, audit: bool) -> int:
     deleted = 0
     for _ in range(MAX_CHUNKS):
@@ -130,9 +205,42 @@ async def _chunked(db: AsyncEngine, table: Any, ids_query: Any, *, audit: bool) 
                 await _allow_audit_expiry(conn)
             ids = list((await conn.scalars(ids_query)).all())
             if ids:
-                await conn.execute(delete(table).where(table.c.id.in_(ids)))
+                gone = (
+                    await conn.execute(delete(table).where(table.c.id.in_(ids)).returning(*table.c))
+                ).all()
+                await _drop_index(conn, table, gone)
         deleted += len(ids)
         if len(ids) < CHUNK:
+            break
+    return deleted
+
+
+async def _purge_rating_checks(db: AsyncEngine, before: datetime) -> int:
+    """Finished rating checks (#118) older than ``rating_check_retention_days``."""
+    deleted = 0
+    for _ in range(MAX_CHUNKS):
+        async with db.begin() as conn:
+            found = await rating_change.purge_finished(conn, before, CHUNK)
+        deleted += found
+        if found < CHUNK:
+            break
+    return deleted
+
+
+async def _end_rating_checks(db: AsyncEngine) -> int:
+    """Rating checks (#118) whose job ended without ending them: ``failed``, story resumed."""
+    async with db.begin() as conn:
+        return await rating_change.reconcile(conn, true())
+
+
+async def _purge_offboarding(db: AsyncEngine, before: datetime) -> int:
+    """Finished offboardings (#117) older than ``offboarding_report_retention_days``."""
+    deleted = 0
+    for _ in range(MAX_CHUNKS):
+        async with db.begin() as conn:
+            found = await offboarding.purge_finished(conn, before, CHUNK)
+        deleted += found
+        if found < CHUNK:
             break
     return deleted
 
@@ -153,6 +261,15 @@ async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[
         "audit_events": await _chunked(db, events, expired_audit_events(moment, days), audit=True),
         "audit_log": await _chunked(db, audit_log, expired_audit_log(moment, days), audit=True),
         "jobs": await _chunked(db, jobs, finished_jobs, audit=False),
+        "engine_profiles": await profiles.purge_deleted(db),
+        "offboarding_jobs": await _purge_offboarding(
+            db, moment - timedelta(days=settings.offboarding_report_retention_days)
+        ),
+        "rating_checks_ended": await _end_rating_checks(db),
+        "rating_check_jobs": await _purge_rating_checks(
+            db, moment - timedelta(days=settings.rating_check_retention_days)
+        ),
+        **await _expire_feedback(db, moment),
     }
 
 
@@ -172,25 +289,35 @@ async def purge_idempotency(db: AsyncEngine, now: datetime | None = None) -> dic
         idempotency_keys.c.lease_until < lapsed_before,
     )
     async with db.begin() as conn:
-        settled = await conn.execute(
-            update(idempotency_keys)
-            .where(stale, op_status == OperationStatus.COMMITTED.value)
-            .values(status=KeyStatus.DONE.value, result=None, expires_at=moment)
-        )
-        freed = await conn.execute(
-            delete(idempotency_keys).where(
-                stale,
-                or_(
-                    idempotency_keys.c.operation_id.is_(None),
-                    op_status.is_(None),
-                    op_status.in_([OperationStatus.FAILED.value, OperationStatus.ABANDONED.value]),
-                ),
+        settled = (
+            await conn.execute(
+                update(idempotency_keys)
+                .where(stale, op_status == OperationStatus.COMMITTED.value)
+                .values(status=KeyStatus.DONE.value, result=None, expires_at=moment)
+                .returning(*KEY_COLUMNS)
             )
-        )
+        ).all()
+        freed = (
+            await conn.execute(
+                delete(idempotency_keys)
+                .where(
+                    stale,
+                    or_(
+                        idempotency_keys.c.operation_id.is_(None),
+                        op_status.is_(None),
+                        op_status.in_(
+                            [OperationStatus.FAILED.value, OperationStatus.ABANDONED.value]
+                        ),
+                    ),
+                )
+                .returning(*KEY_COLUMNS)
+            )
+        ).all()
+        await drop_results(conn, [*settled, *freed])
     return {
         "results_purged": purged,
-        "keys_settled": int(settled.rowcount or 0),
-        "keys_freed": int(freed.rowcount or 0),
+        "keys_settled": len(settled),
+        "keys_freed": len(freed),
     }
 
 

@@ -215,6 +215,31 @@ def _breaks(policy: Policy, found: _Words, text: str) -> bool:
     return False  # pragma: no cover - model-assisted rules are filtered out by the caller
 
 
+def matched_span(text: str, policy: Policy) -> str | None:
+    """The part of ``text`` a ``wordlist`` or ``entity_list`` policy matches, as it stands in the
+    text (its first match, by the policy's own entry order); ``None`` for another rule, or when
+    the words cannot be located again in the original text. A report quotes it (#111): the
+    verdict is ``evaluate``'s, never this function's."""
+    rule = policy.rule
+    if isinstance(rule, WordlistRule):
+        entries: tuple[str, ...] = rule.words
+    elif isinstance(rule, EntityListRule):
+        entries = rule.names
+    else:
+        return None
+    tokens = [(match.start(), match.end(), words(match.group(0))) for match in _WORD.finditer(text)]
+    flat: list[tuple[int, int, str]] = [
+        (start, end, word) for start, end, found in tokens for word in found
+    ]
+    for entry in entries:
+        phrase = words(entry)
+        size = len(phrase)
+        for index in range(len(flat) - size + 1):
+            if size and tuple(word for _, _, word in flat[index : index + size]) == phrase:
+                return text[flat[index][0] : flat[index + size - 1][1]]
+    return None
+
+
 def evaluate(text: str, policies: Iterable[Policy], target: Target) -> list[Violation]:
     """The deterministic policies applying to ``target`` that ``text`` breaks, in order."""
     found = _Words(text)

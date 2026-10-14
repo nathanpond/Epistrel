@@ -48,7 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import turn_gate
+from epistrel.core import pause, turn_gate
 from epistrel.core.concurrency import (
     Abandon,
     Commit,
@@ -362,6 +362,7 @@ async def _prepare(
         raise StoryArchived(
             f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
         )
+    await pause.refuse(db, story_id, story.status)
     await check_expected_revision(db, story_id, expected_revision)
     return prepared
 

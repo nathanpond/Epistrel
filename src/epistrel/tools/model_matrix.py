@@ -17,7 +17,8 @@ into it. The tool then:
    prompt-parameter checks (``capability.check_prompt_params``);
 3. for each row, *policies off* and *minors policy on*, runs one warm-up turn and then
    ``--turns`` (default 20) Lite turns with scripted, benign inputs, timing each one and
-   counting its model calls by purpose (P-08).
+   counting its model calls by purpose (P-08) against the calls the turn was designed to make
+   (#303).
 
 The rows go to ``docs/model-matrix.json`` (raw timings included) and are rendered into
 ``docs/model-matrix.md``. A row is keyed by tier, model and policies, so a re-run replaces its
@@ -30,8 +31,20 @@ input gate for every model-assisted input policy, one ``generation`` call, then 
 the deployment's seeded ``minors_no_sexual_content`` policy (#55) applies through the story's
 own guard context: one ``guardrail_check`` on the input and one on the output per turn. Rows
 measured before #57 went through #53's guarded reply (``GuardedReplyDriver``, an in-memory
-unconditioned policy checked on input and output); each row records the turn path it
-measured, so those rows stand until the next live run.
+unconditioned policy checked on input and output). Each row records the turn path it measured,
+and the md notes a pending re-run only while a guarded-reply row remains.
+
+**Call breakdown (#303).** The mean calls per turn folds every attempt into one number, so each
+turn also reports its design (``TurnCalls``): one ``generation`` call plus the guardrail calls G
+its budget reserved (#69). A row records, beside the mean, the designed calls per turn and the
+extra calls beyond them by purpose, the failed calls by purpose and outcome, the turns that hit
+a model-call deadline or error, and the safe fallbacks by cause (``call_breakdown``). The extra
+calls are structured retries, the empty-reply retry, output-gate regenerations with their
+re-checks, and revision regenerations. A call the deadline cuts is never retried. If it is an
+output check or a regeneration, the turn releases the safe fallback (cause ``deadline``). If it
+is the input check or the first generation, the turn fails and the run writes nothing. A row
+measured before the breakdown holds ``null`` in those fields, and the md shows them as *not
+recorded* until that tier's next live run.
 """
 
 from __future__ import annotations
@@ -47,7 +60,7 @@ import subprocess
 import sys
 import time
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -57,11 +70,12 @@ from cryptography.fernet import Fernet
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
-from epistrel.core.policies.model import Policy
+from epistrel.core.policies.model import ModelAssistedRule, Policy
+from epistrel.core.policies.model import Target as PolicyTarget
 from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
-from epistrel.orchestrator.lite.schemas import PlayerInputBody, RespondRequest
+from epistrel.orchestrator.lite.schemas import SAFE_FALLBACK, PlayerInputBody, RespondRequest
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.capability import (
     CapabilityReport,
@@ -70,8 +84,9 @@ from epistrel.orchestrator.models.capability import (
     check_prompt_params,
 )
 from epistrel.orchestrator.models.errors import ModelError
-from epistrel.orchestrator.models.metrics import CallLog, recording
-from epistrel.orchestrator.models.registry import DELIVERED
+from epistrel.orchestrator.models.metrics import CallLog, ModelCall, recording
+from epistrel.orchestrator.models.registry import GENERATION, GUARDRAIL_CHECK, STORY_PURPOSES
+from epistrel.orchestrator.policies.output_gate import DEADLINE
 from epistrel.tools.generated import REPO_ROOT
 
 MATRIX_PATH = REPO_ROOT / "docs" / "model-matrix.md"
@@ -124,14 +139,61 @@ SCRIPT = (
 # -- the measured turn ------------------------------------------------------------------------
 
 
+class TurnCalls(CallLog):
+    """One measured turn (#303): its model calls in the order they were made (every attempt,
+    failed ones included), the calls it was designed to make by purpose, and the cause of each
+    safe fallback it released (``deadline``, ``retry_budget`` or ``call_budget``)."""
+
+    def __init__(
+        self,
+        calls: Iterable[ModelCall],
+        designed: Mapping[str, int],
+        fallback_causes: Iterable[str] = (),
+    ) -> None:
+        super().__init__()
+        self.calls.extend(calls)
+        self.designed = dict(designed)
+        self.fallback_causes = list(fallback_causes)
+
+    def extra(self) -> dict[str, int]:
+        """The calls made beyond the design, by purpose. A designed call that was never made
+        (a check the deadline skipped) offsets nothing."""
+        made = self.by_purpose()
+        return {
+            purpose: count - self.designed.get(purpose, 0)
+            for purpose, count in made.items()
+            if count > self.designed.get(purpose, 0)
+        }
+
+    def failed(self) -> list[ModelCall]:
+        """The calls whose outcome was not ``ok``."""
+        return [call for call in self.calls if call.outcome != "ok"]
+
+    @property
+    def faulted(self) -> bool:
+        """Whether the turn hit a model-call deadline or error: a call failed, or the deadline
+        released the safe fallback (it can pass before a check is sent, with no call to fail)."""
+        return bool(self.failed()) or DEADLINE in self.fallback_causes
+
+
+def designed_calls(guardrail_calls: int) -> dict[str, int]:
+    """A Lite turn's design (#303): one ``generation`` call plus the ``guardrail_calls`` (G)
+    that its budget reserves (#69). G is one call per model-assisted input policy for the input,
+    plus one per model-assisted output policy for the first output check."""
+    design = {GENERATION.name: 1}
+    if guardrail_calls:
+        design[GUARDRAIL_CHECK.name] = guardrail_calls
+    return design
+
+
 class TurnDriver(Protocol):
-    """Plays one Lite turn of a prepared story and returns its model calls."""
+    """Plays one Lite turn of a prepared story and returns its model calls and design."""
 
     name: str
 
     async def prepare(self, engine: Engine, policies: PolicySet) -> None: ...
 
-    async def turn(self, said: str) -> CallLog: ...
+    async def turn(self, said: str) -> TurnCalls: ...
 
 
 def cast(policies: PolicySet) -> list[CharacterSpec]:
@@ -174,7 +236,7 @@ class RespondDriver:
         self.engine, self.story_id = engine, created.story_id
         self.actor_id = next(c.id for c in created.characters if c.name == spec.characters[0].name)
 
-    async def turn(self, said: str) -> CallLog:
+    async def turn(self, said: str) -> TurnCalls:
         assert self.engine is not None  # noqa: S101 - prepare() ran
         request = RespondRequest(
             actor_character_id=self.actor_id, player_input=PlayerInputBody(say=said)
@@ -182,9 +244,23 @@ class RespondDriver:
         result = await self.engine.respond(
             RequestContext(principal=PRINCIPAL), self.story_id, request
         )
-        calls = CallLog()
-        calls.calls.extend(result.model_calls)
-        return calls
+        assert result.budget is not None  # noqa: S101 - a played turn reports its budget (#69)
+        return TurnCalls(
+            result.model_calls,
+            designed_calls(sum(result.budget.reserved.values())),
+            [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK],
+        )
+
+
+def guarded_checks(policies: Sequence[Policy]) -> int:
+    """The guarded reply's ``guardrail_check`` calls: one per model-assisted policy for each
+    text it applies to, the input and the reply."""
+    return sum(
+        target in policy.applies_to
+        for policy in policies
+        if isinstance(policy.rule, ModelAssistedRule)
+        for target in (PolicyTarget.TEXT_INPUT, PolicyTarget.TEXT_OUTPUT)
+    )
 
 
 @dataclass
@@ -203,7 +279,7 @@ class GuardedReplyDriver:
         self.engine, self.story_id = engine, created.story_id
         self.policies = policy_set(policies)
 
-    async def turn(self, said: str) -> CallLog:
+    async def turn(self, said: str) -> TurnCalls:
         from epistrel.testing.ops import guarded_reply  # lazy: test-only module
 
         assert self.engine is not None  # noqa: S101 - prepare() ran
@@ -216,7 +292,7 @@ class GuardedReplyDriver:
                 policies=self.policies,
                 budget=TurnBudget(deadline_s=TURN_DEADLINE_S),
             )
-        return calls
+        return TurnCalls(calls.calls, designed_calls(guarded_checks(self.policies)))
 
 
 # -- statistics -------------------------------------------------------------------------------
@@ -235,13 +311,65 @@ def nearest_rank(values: Sequence[float], percentile: float) -> float:
 
 
 def calls_per_turn(logs: Iterable[CallLog]) -> dict[str, float]:
-    """The mean number of model calls per turn, by purpose."""
+    """The mean number of model calls per turn, by purpose (every attempt counted)."""
     logs = list(logs)
     totals: dict[str, int] = {}
     for log in logs:
         for purpose, count in log.by_purpose().items():
             totals[purpose] = totals.get(purpose, 0) + count
     return {purpose: round(total / len(logs), 2) for purpose, total in sorted(totals.items())}
+
+
+@dataclass(frozen=True)
+class CallBreakdown:
+    """The measured turns' calls set against their design (#303); the fields are ``Row``'s."""
+
+    designed_calls_per_turn: dict[str, float]
+    extra_calls: dict[str, int]
+    failed_calls: dict[str, dict[str, int]]
+    faulted_turns: list[int]
+    fallbacks: dict[str, int]
+
+
+def _tally(counts: dict[str, int], key: str, n: int = 1) -> None:
+    counts[key] = counts.get(key, 0) + n
+
+
+def call_breakdown(turns: Sequence[TurnCalls]) -> CallBreakdown:
+    """What the mean calls per turn folds together, taken apart (#303). It gives the designed
+    calls per turn, by purpose (a mean over the turns: a whole number while every turn has the
+    same plan), the calls beyond the design, by purpose, summed over the turns, the failed calls
+    by purpose and outcome, the turns (numbered from 1) that hit a model-call deadline or error,
+    and the safe fallbacks by cause."""
+    designed: dict[str, int] = {}
+    extra: dict[str, int] = {}
+    failed: dict[str, dict[str, int]] = {}
+    fallbacks: dict[str, int] = {}
+    faulted: list[int] = []
+    for number, turn in enumerate(turns, start=1):
+        for purpose, count in turn.designed.items():
+            _tally(designed, purpose, count)
+        for purpose, count in turn.extra().items():
+            _tally(extra, purpose, count)
+        for call in turn.failed():
+            _tally(failed.setdefault(call.purpose, {}), call.outcome)
+        for cause in turn.fallback_causes:
+            _tally(fallbacks, cause)
+        if turn.faulted:
+            faulted.append(number)
+    return CallBreakdown(
+        designed_calls_per_turn={
+            purpose: round(total / len(turns), 2) for purpose, total in sorted(designed.items())
+        },
+        extra_calls=dict(sorted(extra.items())),
+        failed_calls={purpose: dict(sorted(by.items())) for purpose, by in sorted(failed.items())},
+        faulted_turns=faulted,
+        fallbacks=dict(sorted(fallbacks.items())),
+    )
+
+
+BREAKDOWN = tuple(f.name for f in fields(CallBreakdown))
+"""The ``Row`` fields of the call breakdown: ``None`` in a row measured before #303."""
 
 
 # -- rows -------------------------------------------------------------------------------------
@@ -266,6 +394,19 @@ class Row:
     p95_ms: int | None
     calls_per_turn: dict[str, float]
     latencies_ms: list[int]
+    designed_calls_per_turn: dict[str, float] | None = None
+    """The call breakdown (#303, ``call_breakdown``) starts here. Every field is ``None`` (not
+    recorded) in a row measured before it. This one holds the calls each turn was designed to
+    make, by purpose."""
+    extra_calls: dict[str, int] | None = None
+    """The calls beyond the design, by purpose, summed over the measured turns."""
+    failed_calls: dict[str, dict[str, int]] | None = None
+    """The calls whose outcome was not ``ok``, by purpose and outcome."""
+    faulted_turns: list[int] | None = None
+    """The measured turns that hit a model-call deadline or error, numbered from 1 in the order
+    of ``latencies_ms``."""
+    fallbacks: dict[str, int] | None = None
+    """The turns whose reply is the safe fallback, by cause."""
 
     @property
     def key(self) -> str:
@@ -306,11 +447,13 @@ def merge(existing: Iterable[Mapping[str, Any]], rows: Iterable[Row]) -> list[di
 
 
 def load_rows(path: Path) -> list[dict[str, Any]]:
+    """The rows of ``path``. A row measured before #303 gets every breakdown field it lacks as
+    ``None``, so it is written back explicitly as not recorded (``null``)."""
     if not path.exists():
         return []
     data = json.loads(path.read_text(encoding="utf-8"))
     rows: list[dict[str, Any]] = data.get("rows", [])
-    return rows
+    return [{**dict.fromkeys(BREAKDOWN), **row} for row in rows]
 
 
 def _mark(value: bool | None) -> str:
@@ -327,7 +470,10 @@ def _capability_text(cell: Mapping[str, Any]) -> str:
 
 
 def _e06_text(cell: Mapping[str, Any]) -> str:
-    lengths = ", ".join(f"{out}/{cap}" for cap, out in cell["lengths"].items())
+    # By cap, numerically: the json's keys are sorted as strings ("128" before "32").
+    lengths = ", ".join(
+        f"{out}/{cap}" for cap, out in sorted(cell["lengths"].items(), key=lambda kv: int(kv[0]))
+    )
     return (
         f"{_mark(cell['passed'])} (tokens {lengths}; temp 0: "
         f"{cell['identical']}/{cell['samples']} identical)"
@@ -338,6 +484,52 @@ def _calls_text(calls: Mapping[str, float]) -> str:
     total = round(sum(calls.values()), 2)
     parts = ", ".join(f"{purpose} {count:g}" for purpose, count in calls.items())
     return f"{total:g} ({parts})" if parts else "0"
+
+
+def _seconds(ms: float | None) -> str:
+    return "—" if ms is None else f"{ms / 1000:.2f} s"
+
+
+def _failed_text(failed: Mapping[str, Mapping[str, int]]) -> str:
+    parts = [f"{p} {outcome} {n}" for p, by in failed.items() for outcome, n in by.items()]
+    total = sum(n for by in failed.values() for n in by.values())
+    return f"{total} ({', '.join(parts)})" if parts else "0"
+
+
+def _faulted_text(faulted: Sequence[int], turns: int) -> str:
+    if not faulted:
+        return f"0 of {turns}"
+    label = "turn" if len(faulted) == 1 else "turns"
+    return f"{len(faulted)} of {turns} ({label} {', '.join(str(n) for n in faulted)})"
+
+
+def _without_text(latencies: Sequence[int], faulted: Sequence[int]) -> str:
+    """The nearest-rank p50 / p95 of the turns not in ``faulted``."""
+    skipped = set(faulted)
+    others = [ms for number, ms in enumerate(latencies, start=1) if number not in skipped]
+    if not others:
+        return "—"
+    return f"{_seconds(nearest_rank(others, 50))} / {_seconds(nearest_rank(others, 95))}"
+
+
+NOT_RECORDED = "not recorded"
+
+
+def _breakdown_cells(row: Mapping[str, Any]) -> list[str]:
+    """``row``'s **Calls** columns (#303); *not recorded* for each field it lacks."""
+    designed = row.get("designed_calls_per_turn")
+    extra = row.get("extra_calls")
+    failed = row.get("failed_calls")
+    faulted = row.get("faulted_turns")
+    fallbacks = row.get("fallbacks")
+    return [
+        NOT_RECORDED if designed is None else _calls_text(designed),
+        NOT_RECORDED if extra is None else _calls_text(extra),
+        NOT_RECORDED if failed is None else _failed_text(failed),
+        NOT_RECORDED if faulted is None else _faulted_text(faulted, row["turns"]),
+        NOT_RECORDED if faulted is None else _without_text(row["latencies_ms"], faulted),
+        NOT_RECORDED if fallbacks is None else _calls_text(fallbacks),
+    ]
 
 
 INTRO = """\
@@ -355,19 +547,60 @@ over 20 calls (`json_schema`, or the schema in the prompt when the endpoint refu
 **E-06** checks the prompt parameters: `tokens_out`/`max_tokens` per length, and how many of 10
 samples at temperature 0 are identical (≥ 8 passes). **p50 / p95** are nearest-rank end-to-end
 turn latencies over the measured Lite turns, after one warm-up turn (NFR-PERF-8). **Calls per
-turn** is the mean number of model calls by purpose.
+turn** is the mean number of model calls by purpose, counting every attempt (failed ones too).
 
+**Calls** breaks those calls down (#303):
+
+- **Designed per turn**: what each turn planned before its first call. That is one `generation`
+  plus one `guardrail_check` per model-assisted policy on the input and on the output, the
+  guardrail calls its budget reserved (#69).
+- **Extra calls**: the calls the measured turns made beyond that design, summed over the turns.
+  They are structured-output retries, the empty-reply retry, regenerations after an output
+  policy flagged the draft (with their re-checks), and regenerations after the story changed
+  under the turn.
+- **Failed calls**: the calls whose outcome was not `ok`, by purpose and outcome. The outcome is
+  `timeout` (the call's timeout or the turn's deadline), `http_error`, `invalid_output` or
+  `cancelled`.
+- **Turns with a deadline or error**: the turns that had a failed call, or whose deadline
+  released the safe fallback. They are numbered from 1 in the order they were measured, which is
+  the order of the raw timings.
+- **p50 / p95 without them**: the percentiles of the other turns, so the latency those turns
+  added stands out against the rest.
+- **Safe fallbacks**: the turns whose reply is the safe fallback line, by cause: `deadline`,
+  `retry_budget` (every regeneration the story allows was flagged too) or `call_budget`.
+
+A call the deadline cuts is never retried. If it is an output check or a regeneration, the turn
+releases the safe fallback. If it is the input check or the first generation, the turn fails and
+the run writes no row.
+"""
+
+NOT_RECORDED_NOTE = """\
+**Not recorded.** Rows measured before the breakdown existed show *not recorded* in the
+**Calls** columns (`null` in the JSON). Those runs kept only the mean calls per turn, and
+nothing is derived from it. The next live run of the tier fills them.
+"""
+
+TURN_PATH_NOTE = """\
 **Turn path.** Rows whose turn path is the guarded reply (#53) were measured before `respond`
 existed; a live re-run through `respond` (#57) is pending and will replace them.
 """
 
 
 def render(rows: Sequence[Mapping[str, Any]]) -> str:
-    """``docs/model-matrix.md`` for ``rows``."""
-    purposes = list(DELIVERED)
+    """``docs/model-matrix.md`` for ``rows``. The notes appear only while they apply: *not
+    recorded* while a row lacks the call breakdown, and the turn-path note while a row was
+    measured on the guarded reply (#303)."""
+    purposes = list(STORY_PURPOSES)  # a turn's purposes: the matrix measures turns
     header = ["Tier", "Policies", "Protocol", *[f"`{p}`" for p in purposes]]
     header += ["E-06", "Turns", "p50", "p95", "Calls per turn"]
-    lines = [INTRO, "## Results", ""]
+    calls_header = ["Tier", "Policies", "Designed per turn", "Extra calls", "Failed calls"]
+    calls_header += ["Turns with a deadline or error", "p50 / p95 without them", "Safe fallbacks"]
+    lines = [INTRO]
+    if any(row.get(name) is None for row in rows for name in BREAKDOWN):
+        lines.append(NOT_RECORDED_NOTE)
+    if any(row["turn_path"] == GUARDED_REPLY_PATH for row in rows):
+        lines.append(TURN_PATH_NOTE)
+    lines += ["## Results", ""]
     if not rows:
         lines += ["No tier has been measured yet.", ""]
     else:
@@ -384,16 +617,20 @@ def render(rows: Sequence[Mapping[str, Any]]) -> str:
             for purpose in purposes:
                 cell = row["capability"].get(purpose)
                 cells.append(_capability_text(cell) if cell else "not run")
-            p50 = f"{row['p50_ms'] / 1000:.2f} s" if row["p50_ms"] is not None else "—"
-            p95 = f"{row['p95_ms'] / 1000:.2f} s" if row["p95_ms"] is not None else "—"
             cells += [
                 _e06_text(row["e06"]) if row["e06"] else "not run",
                 str(row["turns"]),
-                p50,
-                p95,
+                _seconds(row["p50_ms"]),
+                _seconds(row["p95_ms"]),
                 _calls_text(row["calls_per_turn"]),
             ]
             lines.append("| " + " | ".join(cells) + " |")
+        lines += ["", "## Calls", ""]
+        lines += ["| " + " | ".join(calls_header) + " |", "|" + "---|" * len(calls_header)]
+        for row in rows:
+            label = f"{row['tier']}: {row['model']}"
+            policies = POLICY_LABELS.get(row["policies"], row["policies"])
+            lines.append("| " + " | ".join([label, policies, *_breakdown_cells(row)]) + " |")
         lines += ["", "## Runs", ""]
         lines += ["| Tier | Policies | Measured | Engine SHA | Hardware | Server | Turn path |"]
         lines += ["|---|---|---|---|---|---|---|"]
@@ -475,13 +712,13 @@ async def configure(engine: Engine, target: Target) -> None:
 
 async def measure_turns(
     engine: Engine, driver: TurnDriver, policies: PolicySet, turns: int
-) -> tuple[list[int], list[CallLog]]:
+) -> tuple[list[int], list[TurnCalls]]:
     """One warm-up turn, then ``turns`` timed turns: latencies (ms) and each turn's calls."""
     await driver.prepare(engine, policies)
     script = [SCRIPT[i % len(SCRIPT)] for i in range(turns + 1)]
     await driver.turn(script[0])
     latencies: list[int] = []
-    logs: list[CallLog] = []
+    logs: list[TurnCalls] = []
     for said in script[1:]:
         started = time.perf_counter()
         logs.append(await driver.turn(said))
@@ -511,6 +748,7 @@ async def run_matrix(
     for policies in POLICY_SETS:
         driver = driver_factory()
         latencies, logs = await measure_turns(engine, driver, policies, turns)
+        breakdown = call_breakdown(logs)
         rows.append(
             Row(
                 tier=target.tier,
@@ -530,6 +768,11 @@ async def run_matrix(
                 p95_ms=round(nearest_rank(latencies, 95)) if latencies else None,
                 calls_per_turn=calls_per_turn(logs),
                 latencies_ms=latencies,
+                designed_calls_per_turn=breakdown.designed_calls_per_turn,
+                extra_calls=breakdown.extra_calls,
+                failed_calls=breakdown.failed_calls,
+                faulted_turns=breakdown.faulted_turns,
+                fallbacks=breakdown.fallbacks,
             )
         )
     return rows
@@ -607,8 +850,8 @@ async def _main(args: argparse.Namespace) -> int:
 
 def _purpose_model(value: str) -> tuple[str, str]:
     purpose, sep, model = value.partition("=")
-    if not sep or purpose not in DELIVERED or not model:
-        raise argparse.ArgumentTypeError(f"expected <delivered purpose>=<model>, got {value!r}")
+    if not sep or purpose not in STORY_PURPOSES or not model:
+        raise argparse.ArgumentTypeError(f"expected <story purpose>=<model>, got {value!r}")
     return purpose, model
 
 

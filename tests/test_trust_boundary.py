@@ -1,5 +1,6 @@
 """The trust boundary: service credential, requesting principal, `/admin`, no MCP (docs/04
-S-TRUST-BOUNDARY, M2): the auth half (#44) and the respond half (#57)."""
+S-TRUST-BOUNDARY, M2): the auth half (#44) and the respond half (#57). M3 (#128): an `/admin`
+erasure succeeds under any principal ID."""
 
 from __future__ import annotations
 
@@ -33,8 +34,10 @@ from tests.auth_support import (
     make_test_router,
 )
 from tests.conftest import DUMMY_DSN, REPO_ROOT
+from tests.erasure_support import erasure_settings
+from tests.erasure_support import request as erasure_request
 from tests.event_support import rows
-from tests.respond_support import PLAYER, body, new_story, respond_client
+from tests.respond_support import FIRST, PLAYER, body, new_story, respond_client
 from tests.story_support import count
 
 WRITE = f"{TEST_PREFIX}/write"
@@ -130,9 +133,10 @@ def test_s_trust_boundary__auth(client: TestClient, app: FastAPI, spy: AsyncMock
     for path in MCP_PATHS:
         assert client.get(path, headers=bearer()).status_code == 404
 
-    # The API documentation states that Epistrel sits behind the consumer.
+    # The API documentation starts by stating that Epistrel sits behind the consumer (#125
+    # appends more after it).
     schema = client.get("/openapi.json").json()
-    assert schema["info"]["description"] == TRUST_BOUNDARY_STATEMENT
+    assert schema["info"]["description"].startswith(TRUST_BOUNDARY_STATEMENT)
     assert "behind the consumer" in TRUST_BOUNDARY_STATEMENT
     assert schema["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"
 
@@ -296,3 +300,62 @@ async def test_s_trust_boundary__respond(pg_url: str, engine: AsyncEngine) -> No
         assert refused.json()["error"]["code"] == "principal_required"
         after = await count(engine, "SELECT count(*) FROM operations WHERE story_id = :s", s=story)
         assert after == before
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-AUTH-1")
+async def test_s_trust_boundary__m3(pg_url: str, engine: AsyncEngine) -> None:
+    """An ``/admin`` erasure succeeds under any principal ID: two principals each erase a
+    character from their own story, with the same counts, and each is recorded on its own
+    erasure's operation; an erasure with no principal is refused before anything is written.
+
+    Complement asserted: the character's name is gone from its story only after the erasure,
+    so each erasure did its work."""
+    async with respond_client(erasure_settings(pg_url), engine) as (client, _):
+        results: dict[str, tuple[str, dict[str, Any]]] = {}
+        for principal in ("u-1", "u-2"):
+            story, ids = await new_story(client)
+            named = await count(
+                engine,
+                "SELECT count(*) FROM characters WHERE story_id = :s AND name = :n",
+                s=story,
+                n=FIRST,
+            )
+            assert named == 1
+            response = await client.post(
+                f"{ADMIN_PREFIX}/erasure",
+                json=erasure_request("character", ids[FIRST], story),
+                headers={**bearer(), "X-Epistrel-Principal": principal},
+            )
+            assert response.status_code == 200, response.text
+            results[principal] = (story, response.json())
+            named = await count(
+                engine,
+                "SELECT count(*) FROM characters WHERE story_id = :s AND name = :n",
+                s=story,
+                n=FIRST,
+            )
+            assert named == 0
+        counts = {
+            principal: {k: v for k, v in found.items() if isinstance(v, int) and k != "residue"}
+            for principal, (_, found) in results.items()
+        }
+        assert counts["u-1"] == counts["u-2"]
+        for principal, (_, found) in results.items():
+            recorded = await rows(
+                engine,
+                "SELECT principal FROM operations WHERE operation_id = :o",
+                o=found["operation_id"],
+            )
+            assert [r.principal for r in recorded] == [principal]
+
+        story, ids = await new_story(client)
+        before = await count(engine, "SELECT count(*) FROM operations")
+        refused = await client.post(
+            f"{ADMIN_PREFIX}/erasure",
+            json=erasure_request("character", ids[FIRST], story),
+            headers=bearer(),
+        )
+        assert refused.status_code == 400
+        assert refused.json()["error"]["code"] == "principal_required"
+        assert await count(engine, "SELECT count(*) FROM operations") == before

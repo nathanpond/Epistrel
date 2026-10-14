@@ -24,11 +24,13 @@ def ulid_type() -> CHAR:
     return CHAR(ULID_LENGTH)
 
 
-def pg_enum(enum_cls: type[StrEnum], name: str) -> Enum:
-    """A native Postgres enum over ``enum_cls``'s values (created by the migration, not here)."""
+def pg_enum(enum_cls: type[StrEnum], name: str, *, schema: str | None = None) -> Enum:
+    """A native Postgres enum over ``enum_cls``'s values (created by the migration, not here),
+    in ``schema`` (default: the default schema)."""
     return Enum(
         *[member.value for member in enum_cls],
         name=name,
+        schema=schema,
         native_enum=True,
         create_constraint=False,
         metadata=metadata,

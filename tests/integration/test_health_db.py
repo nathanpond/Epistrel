@@ -42,6 +42,9 @@ def test_health_reports_database_error_and_keeps_serving() -> None:
             "workers": {"alive": None, "last_heartbeat_s": None},
             "oldest_overdue_timer_s": None,
             "oldest_overdue_job_s": None,
+            "ffmpeg": "ok",  # installed wherever the suite runs (#107); never the status
+            "ffprobe": "ok",
+            "erasure_pending": None,
         },
         "content_logging": False,
     }

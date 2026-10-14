@@ -13,7 +13,8 @@ operation, event or revision change to roll back.
   only when that character is the ``actor``.
 - **Each text on its own:** ``say`` + ``do`` are one text (#57); each ingested event, each
   pinned item and each character definition is its own. ``locator`` is a dotted path into the
-  request (``player_input``, ``events[3]``, ``characters[0].definition``).
+  request (``player_input``, ``events[3]``, ``characters[0].definition``, or ``definition`` for a
+  character added to a running story).
 - **Order:** every deterministic policy (#49's ``evaluate``, no model call) over every text
   first, then one ``guardrail_check`` call per model-assisted policy per text, sequentially,
   through #55's ``check_text`` (so an ``Uncertain`` takes the policy's ``on_uncertain``). Nothing
@@ -66,6 +67,8 @@ class EntryPoint(StrEnum):
     PINNED_MEMORIES = "pinned_memories"
     CUSTOM_INSTRUCTIONS = "custom_instructions"
     STORY_CREATE = "story_create"
+    STORY_CHARACTER = "story_character"
+    """A character added to a running story (FR-CAT-7; #114)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +144,7 @@ def input_budget(
     deadline_s: float = DEFAULT_TURN_DEADLINE_S,
 ) -> TurnBudget:
     """The budget of a gate outside a turn (ingest, pins, instructions, story creation):
-    exactly G calls, under the story's ``turn_deadline`` (#69; the default for a story not
+    exactly G calls, under the story's turn deadline (#69; the default for a story not
     created yet). It makes no generation call, so it is never below its safety minimum."""
     return TurnBudget(max_calls=calls_needed(policies, texts), deadline_s=deadline_s)
 

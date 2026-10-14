@@ -9,10 +9,10 @@ does to their operations, and every turn makes the still-``discarded`` rows at o
 ``dormant`` (a rewound tail becomes a dormant continuation under the first new turn, #66).
 
 ``role`` comes from (provenance, character): ``player`` for a ``player_input`` (respond's or an
-ingested one, #58), ``narration``
-for a consumer beat with no character, ``character`` otherwise (``actor_character_id`` is null
-for a combined reply). ``channel`` is ``think``/``latent`` for those beats, ``narration`` for
-narration, and ``message`` otherwise.
+ingested one, #58), ``narration`` for a consumer or system beat with no character (an ingested
+narration; a scenario's opening narration, turn 1 of a story created from a scenario, #119),
+``character`` otherwise (``actor_character_id`` is null for a combined reply). ``channel`` is
+``think``/``latent`` for those beats, ``narration`` for narration, and ``message`` otherwise.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ PRIVATE_CHANNELS: dict[type[Beat], str] = {Think: "think", Latent: "latent"}
 def role_of(event: LogEvent) -> str:
     if event.provenance is Provenance.PLAYER or isinstance(event.payload, PlayerInput):
         return "player"
-    if event.provenance is Provenance.CONSUMER and event.character_id is None:
+    if event.provenance in (Provenance.CONSUMER, Provenance.SYSTEM) and event.character_id is None:
         return "narration"
     return "character"
 
@@ -71,6 +71,7 @@ def message_row(event: LogEvent, beat: Beat) -> Row:
         ),
         "text": beat.text,
         "membership": event.membership.value,
+        "redacted": event.redacted_at is not None,
     }
 
 

@@ -26,9 +26,21 @@ CONTENT_FIELDS = frozenset(
         "pinned",
         "instructions",
         "summary",
+        # media metadata (#105): what an upload says about its image or video, and the reason a
+        # moderation hook gave for a rejection
+        "caption",
+        "negative_prompt",
+        "generation_metadata",
+        "reason",
+        # personas (#114): what a player plays as, and a story's copy of it
+        "description",
+        "gender",
+        "persona_snapshot",
+        "background_flavor",
     }
 )
-"""Field names that hold story content (planner's set; any ``*_text`` field also counts)."""
+"""Field names that hold story content (planner's set; any ``*_text`` field also counts, so
+``alt_text`` does)."""
 
 CONTENT_SUFFIX = "_text"
 MAX_UNKNOWN_CHARS = 64
@@ -62,6 +74,13 @@ KNOWN_FIELDS = frozenset(
         "purpose",
         "model",
         "content_logging",
+        # the subject-reference index's counts (#123)
+        "record_table",
+        "record_id",
+        "records",
+        "rows",
+        "missing",
+        "extra",
     }
 )
 """Fields whose values are identifiers, enums, numbers or developer-written messages."""

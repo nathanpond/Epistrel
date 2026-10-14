@@ -245,6 +245,24 @@ class StoryArchived(EpistrelError):
     http_status = 409
 
 
+class StoryPaused(EpistrelError):
+    """The story is paused while a check runs (FR-CONC-5, FR-RATE-7; #118): truth-changing
+    calls are refused with no side effects, and reads are served. The pause ends when the check
+    ends, whatever its outcome. ``details``: ``story_id``, ``job_id`` (the check), ``cause``
+    (``rating_check``; #120 adds ``reactivation_check``) and ``progress {done, total}``."""
+
+    code = "story_paused"
+    http_status = 409
+
+
+class RatingCheckNotFound(EpistrelError):
+    """The rating check a call names is not one of the story's (or its record was purged).
+    ``details``: ``story_id`` and ``job_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
 class StoryBusy(EpistrelError):
     """The story has work in flight that the call would race (#50: archive, unarchive and
     delete wait for a running turn; #63: a second turn under ``turn_concurrency = reject``, or
@@ -371,4 +389,655 @@ class DatabaseUnavailable(EpistrelError):
     Nothing was written."""
 
     code = "database_unavailable"
+    http_status = 503
+
+
+# -- the catalog (#103) -------------------------------------------------------------------------
+
+
+class CharacterNotFound(EpistrelError):
+    """The catalog character (or the version of it) a call names does not exist.
+    ``details``: ``character_id`` and, for a version read, ``version``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class ScenarioNotFound(EpistrelError):
+    """The scenario (or the version of it) a call names does not exist (#108). ``details``:
+    ``scenario_id`` and, for a version read, ``version``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class DraftStale(EpistrelError):
+    """The ``draft_revision`` a save or publish was based on is no longer the draft's
+    (FR-CAT-3): another editor saved or published since. Nothing is written; re-read the draft
+    and retry from its revision. ``details``: the entry (``character_id`` or ``scenario_id``),
+    ``draft_revision`` (sent) and ``current_draft_revision``."""
+
+    code = "draft_stale"
+    http_status = 409
+
+
+class DraftTooLarge(EpistrelError):
+    """The draft, after the patch is applied, is larger than the cap (canonical JSON: 256 KiB
+    for a character, 1 MiB for a scenario). Nothing is written. ``details``: ``size`` and
+    ``limit`` (bytes)."""
+
+    code = "draft_too_large"
+    http_status = 413
+
+
+class EntryArchived(EpistrelError):
+    """The catalog entry is archived: its draft cannot be saved or published until it is
+    unarchived (reads still work). Nothing is written. ``details``: the entry
+    (``character_id`` or ``scenario_id``)."""
+
+    code = "entry_archived"
+    http_status = 422
+
+
+class NotPublished(EpistrelError):
+    """A read of the published entry before its first publish: read the draft
+    (``?draft=true``) instead. ``details``: the entry (``character_id`` or ``scenario_id``)."""
+
+    code = "not_published"
+    http_status = 422
+
+
+class PublishInvalid(EpistrelError):
+    """The draft cannot be published as it stands. Nothing is written. ``details.report`` is the
+    validation report (FR-SCN-5; #111): ``{errors, warnings, unavailable}``, each entry ``{code,
+    location: {entry, version, role, field, seed_id}, text, outcome, source, rule}``, every
+    error's outcome ``rejected`` and its ``location.field`` a dotted path in the draft
+    (``name``, ``cast.roles[0].character``)."""
+
+    code = "publish_invalid"
+    http_status = 422
+
+
+class CastLimitExceeded(EpistrelError):
+    """A scenario's ``max_characters_at_start`` above the deployment's
+    ``max_characters_at_start_ceiling`` (FR-SCN-4; #108). Nothing is written. ``details``:
+    ``field``, ``max_characters_at_start`` and ``ceiling``."""
+
+    code = "cast_limit_exceeded"
+    http_status = 422
+
+
+class CreationRefused(EpistrelError):
+    """A story's creation from a scenario refused with nothing written (FR-SCN-6; #119):
+    ``details.report`` is the full creation report, listing every error. Each subclass is one
+    code (the first of several conditions by precedence, ``core.genesis.create``)."""
+
+    http_status = 422
+
+
+class SlotRequired(CreationRefused):
+    """A required role (or the player's role) is not filled."""
+
+    code = "slot_required"
+
+
+class LockedSlotReassigned(CreationRefused):
+    """A ``locked`` role was given another character."""
+
+    code = "locked_slot_reassigned"
+
+
+class PlayerRoleFixed(CreationRefused):
+    """A player put in a role that is not the scenario's player role, or the player's role
+    filled as a character slot (FR-CAT-6)."""
+
+    code = "player_role_fixed"
+
+
+class PersonaRequired(CreationRefused):
+    """A player's persona names a catalog character (FR-CAT-6)."""
+
+    code = "persona_required"
+
+
+class EligibilityFailed(CreationRefused):
+    """A role's character fails one of its eligibility filters (FR-SCN-3)."""
+
+    code = "eligibility_failed"
+
+
+class OverrideNotAllowed(CreationRefused):
+    """An override names a field the scenario's ``creation_rules.overridable`` does not."""
+
+    code = "override_not_allowed"
+
+
+class RatingCheckFailed(CreationRefused):
+    """The requested rating adds guardrails to the scenario's, and the genesis content fails
+    them (FR-RATE-7)."""
+
+    code = "rating_check_failed"
+
+
+class CreationConflicts(CreationRefused):
+    """``strict`` creation found a conflict (a personality warning, FR-SCN-7)."""
+
+    code = "creation_conflicts"
+
+
+class CreationArchived(CreationRefused):
+    """The scenario or a chosen catalog character is archived."""
+
+    code = EntryArchived.code
+
+
+class CreationNotPublished(CreationRefused):
+    """The scenario or a chosen catalog character has no published version (or the version is
+    gone)."""
+
+    code = NotPublished.code
+
+
+class CreationCastLimit(CreationRefused):
+    """More character slots, player slots included, than the effective starting-cast limit."""
+
+    code = CastLimitExceeded.code
+
+
+class InvalidListingStatus(EpistrelError):
+    """A listing status that is not one of the deployment's ``listing_status_values``
+    (FR-CAT-11; #110): set on an entry, or named as a list filter. Nothing is written.
+    ``details``: ``value`` (as sent, trimmed), ``allowed_values`` (the deployment's, in order)
+    and ``field``."""
+
+    code = "invalid_listing_status"
+    http_status = 422
+
+
+class ListingStatusInUse(EpistrelError):
+    """A ``listing_status_values`` write that removes a value some catalog entry still holds
+    (FR-CAT-11; #110): move those entries to another value first. Nothing is written.
+    ``details``: ``value`` (the first such value, in the old list's order) and ``count`` (the
+    entries holding it: characters and scenarios of every status, companions included)."""
+
+    code = "listing_status_in_use"
+    http_status = 409
+
+
+class CursorInvalid(EpistrelError):
+    """A catalog listing's ``cursor`` that cannot continue this request (#110): it is not a
+    cursor a listing gave (``reason`` ``malformed``), or it was given for another entry type or
+    other filters (``filters_changed``; a cursor binds the filters, not ``limit``). Start again
+    without it. ``details``: ``field`` (``query.cursor``) and ``reason``."""
+
+    code = "cursor_invalid"
+    http_status = 422
+
+
+# -- ownership (#104) ---------------------------------------------------------------------------
+
+
+class EntityNotFound(EpistrelError):
+    """The owned entity a call names does not exist, or its type is not delivered by this
+    version. ``details``: ``entity_type`` and ``entity_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class RelationNotFound(EpistrelError):
+    """The entity has no relation with that name and principal: nothing to remove.
+    ``details``: ``entity_type``, ``entity_id``, ``relation`` and ``principal``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class CompanionFollowsCharacter(EpistrelError):
+    """A companion scenario follows its character (FR-CAT-5, FR-CAT-11, FR-AUTH-5): its owner,
+    relations, listing status, archiving and deletion change only with the character's, so
+    change them on the character. Nothing is written. ``details``: ``entity_type``,
+    ``entity_id`` and ``character_id``."""
+
+    code = "companion_follows_character"
+    http_status = 422
+
+
+class CompanionSlotsFixed(EpistrelError):
+    """A save would add, remove or change a slot of a companion scenario (FR-CAT-5; #116): its
+    two roles, ``npc`` locked to the character and ``player``, keep their ``id``, ``kind``,
+    ``fill`` and ``character``; every other field of the scenario stays editable. Nothing is
+    written. ``details``: ``scenario_id``, ``character_id``, ``role`` (the role id) and
+    ``field`` (the request path of the slot field: ``body.cast.roles[0].fill``)."""
+
+    code = "companion_slots_fixed"
+    http_status = 422
+
+
+# -- media (#105) -------------------------------------------------------------------------------
+
+
+class MediaNotFound(EpistrelError):
+    """The media asset a call names does not exist (or is a private candidate, FR-IMG-7).
+    ``details``: ``media_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class SubjectsRequired(EpistrelError):
+    """An upload that did not declare ``depicted_subjects`` (FR-MEDIA-1, FR-IMG-9): an
+    explicitly empty list is accepted, an omitted one is not. Nothing is stored. ``details``:
+    ``field`` (``body.metadata.depicted_subjects``)."""
+
+    code = "subjects_required"
+    http_status = 422
+
+
+class MediaTypeNotAllowed(EpistrelError):
+    """The upload's bytes are not a type the deployment allows (``media_allowed_types``), are
+    not a type Epistrel recognises, or disagree with the declared ``kind`` or MIME type.
+    Nothing is stored. ``details``: ``reason`` (``unrecognized``, ``not_allowed``,
+    ``declared_mismatch`` or ``kind_mismatch``), ``mime_type`` (sniffed, or null), ``declared``
+    and ``allowed``."""
+
+    code = "media_type_not_allowed"
+    http_status = 415
+
+
+class MediaTooLarge(EpistrelError):
+    """The upload is larger than ``media_max_bytes``. Nothing is stored. ``details``:
+    ``limit`` (bytes) and ``size`` (the bytes seen when the upload was cut, or the request's
+    declared length)."""
+
+    code = "media_too_large"
+    http_status = 413
+
+
+class ModerationRejected(EpistrelError):
+    """The deployment's moderation hook answered ``reject``. Nothing is stored. ``details``:
+    ``reason``, as the hook gave it (never logged)."""
+
+    code = "moderation_rejected"
+    http_status = 422
+
+
+class ModerationUnavailable(EpistrelError):
+    """The moderation hook did not answer ``accept`` or ``reject``: it timed out, could not be
+    reached, answered a status other than 2xx (a redirect included), or answered something that
+    is not ``{"decision": "accept" | "reject"}``. The upload fails closed and nothing is stored.
+    ``details``: ``reason`` (``timeout``, ``connection``, ``status`` or ``malformed``) and, for
+    ``status``, the hook's ``status``."""
+
+    code = "moderation_unavailable"
+    http_status = 503
+
+
+class MediaRetired(EpistrelError):
+    """A new reference to a media asset that cannot take one (FR-MEDIA-2): it was deleted
+    (``retired``), it does not exist (``unknown``), or it is an unattached ``candidate``.
+    Existing references keep their content. ``details``: ``media_id``, ``field`` and
+    ``reason``."""
+
+    code = "media_retired"
+    http_status = 422
+
+
+class SigningKeyMissing(EpistrelError):
+    """``EPISTREL_CONFIG_KEY`` is unset, so the moderation hook's signed content URL and its
+    request signature cannot be made: the upload is refused and nothing is stored."""
+
+    code = "config_key_missing"
+    http_status = 503
+
+
+# -- media delivery (#107) ---------------------------------------------------------------------
+
+
+class UrlExpired(EpistrelError):
+    """A signed media URL presented without the service credential whose signature is good but
+    whose expiry (``exp``, plus 30 s of clock skew) has passed (FR-MEDIA-3). ``details``:
+    ``media_id`` and ``exp``."""
+
+    code = "url_expired"
+    http_status = 403
+
+
+class SignatureInvalid(EpistrelError):
+    """A signed media URL presented without the service credential whose ``sig`` does not
+    sign its path and ``exp`` (tampered, or for another asset). ``details``: ``media_id``."""
+
+    code = "signature_invalid"
+    http_status = 403
+
+
+class RangeNotSatisfiable(EpistrelError):
+    """A ``Range`` no byte of the content satisfies (it starts at or past the end). The REST
+    answer carries ``Content-Range: bytes */<size>``. ``details``: ``size``."""
+
+    code = "range_not_satisfiable"
+    http_status = 416
+
+    def response_headers(self) -> dict[str, str]:
+        return {"Content-Range": f"bytes */{self.details.get('size', 0)}"}
+
+
+class ConfigMissing(EpistrelError):
+    """A deployment setting the call needs is unset (``details.setting``), so it cannot be
+    answered: ``GET /media/{id}/url`` on the local store without ``public_base_url``."""
+
+    code = "config_missing"
+    http_status = 503
+
+
+class MediaStoreUnavailable(EpistrelError):
+    """The S3-compatible store did not answer, or answered an error, while a call needed it.
+    Nothing was written. ``details``: ``operation`` and ``reason`` (the store's error code or
+    ``connection``)."""
+
+    code = "media_store_unavailable"
+    http_status = 503
+
+
+class UseMultipart(EpistrelError):
+    """A direct upload larger than ``media_multipart_threshold``: such an upload must use a
+    resumable session (``POST /media/uploads``). Nothing is stored. ``details``: ``threshold``
+    and ``size`` (the declared length, or the bytes seen when the upload was cut)."""
+
+    code = "use_multipart"
+    http_status = 413
+
+
+class LengthRequired(EpistrelError):
+    """An upload part sent without a ``Content-Length`` (a chunked body): a part's size must be
+    declared. Nothing is stored."""
+
+    code = "length_required"
+    http_status = 411
+
+
+class PartInvalid(EpistrelError):
+    """An upload part numbered outside ``1..part_count``, or whose size is not the session's
+    ``part_size`` (the last part: the remainder), or whose bytes do not match their declared
+    length. Nothing is stored for it. ``details``: ``part``, ``reason`` and the sizes."""
+
+    code = "part_invalid"
+    http_status = 422
+
+
+class UploadClosed(EpistrelError):
+    """A part or a completion for an upload session that is no longer ``open``: completed,
+    aborted, expired, or being completed by another call. ``details``: ``upload_id`` and
+    ``state``."""
+
+    code = "upload_closed"
+    http_status = 409
+
+
+class UploadIncomplete(EpistrelError):
+    """A completion before every part arrived. The session stays open. ``details``:
+    ``upload_id`` and ``missing`` (the part numbers)."""
+
+    code = "upload_incomplete"
+    http_status = 409
+
+
+class ChecksumMismatch(EpistrelError):
+    """The bytes' SHA-256 is not the one declared: the assembled upload's (the session stays
+    open and no asset is created), or a part's ``X-Part-SHA256``. ``details``: ``declared``
+    and ``actual`` (and ``part`` for a part)."""
+
+    code = "checksum_mismatch"
+    http_status = 422
+
+
+class PosterRequired(EpistrelError):
+    """A video uploaded without a poster while ffmpeg, which would extract one from its first
+    frame, is unavailable. Nothing is stored. ``details``: ``setting`` (``ffmpeg_path``)."""
+
+    code = "poster_required"
+    http_status = 422
+
+
+class PosterExtractionFailed(EpistrelError):
+    """ffmpeg could not take a poster from the video's first frame (it failed, timed out or
+    wrote no image). The whole upload is rolled back. ``details``: ``reason``."""
+
+    code = "poster_extraction_failed"
+    http_status = 422
+
+
+class PosterInvalid(EpistrelError):
+    """A supplied poster (``poster``) that is not an image asset. ``details``: ``media_id``,
+    ``field`` and ``reason`` (``not_image``)."""
+
+    code = "poster_invalid"
+    http_status = 422
+
+
+class UploadNotFound(EpistrelError):
+    """The upload session a call names does not exist (or its row was swept). ``details``:
+    ``upload_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+# -- engine profiles (#106) -------------------------------------------------------------------
+
+
+class ProfileNotFound(EpistrelError):
+    """The engine profile a call names does not exist (or was purged), or has no such version.
+    ``details``: ``profile_id`` (and ``version``)."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class InvalidProfile(EpistrelError):
+    """A profile's settings (or a story's effective configuration, #113) cannot run: they name a
+    module or level this deployment has not delivered, or a module whose dependencies are off
+    (FR-PROF-2,4). Nothing is written, and ``ignore_warnings`` never overrides it (FR-PROF-7).
+    ``details``: ``missing_dependencies`` (``[{module, level, requires: [{module, levels}]}]``)
+    and ``undelivered`` (``[{module, level, setting}]``)."""
+
+    code = "invalid_profile"
+    http_status = 422
+
+
+class ProfileDeleted(EpistrelError):
+    """A deleted engine profile cannot be newly assigned (as the deployment default) or edited;
+    it still reads, copies, and serves the stories that use it (FR-PROF-1). An unknown profile
+    named as the default is refused the same way. ``details``: ``profile_id``, ``field`` and
+    ``reason`` (``deleted`` or ``unknown``)."""
+
+    code = "profile_deleted"
+    http_status = 422
+
+
+# -- message feedback (#112) --------------------------------------------------------------------
+
+
+class MessageNotFound(EpistrelError):
+    """The message a rating names is not a generated message of the story: no ``message_rendered``
+    event of the story has that id, or it is the consumer's own narration, which no
+    configuration produced (FR-FB-1). ``details``: ``story_id`` and ``message_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class UnknownFeedbackTag(EpistrelError):
+    """A rating names a reason tag that is not one of the deployment's ``feedback_tags``
+    (FR-FB-1). Nothing is written. ``details``: ``field`` (``body.tags``), ``unknown_tags`` (as
+    compared: trimmed and lower-cased) and ``allowed_tags`` (the deployment's, in order)."""
+
+    code = "unknown_feedback_tag"
+    http_status = 422
+
+
+class FeedbackTagInUse(EpistrelError):
+    """A ``feedback_tags`` write that removes a tag a rating or a history entry still carries
+    (FR-FB-1; #112). Nothing is written. ``details``: ``field`` (``body.feedback_tags``) and
+    ``in_use``: one ``{tag, current, history}`` per such tag, in the old list's order, counting
+    the ratings and the history entries that carry it."""
+
+    code = "feedback_tag_in_use"
+    http_status = 409
+
+
+class FeedbackExportDisabled(EpistrelError):
+    """A feedback export asked for while the deployment's ``feedback_export`` setting is off
+    (FR-FB-4; #126; the default). Nothing is written: no export, no log row, no idempotency
+    key. ``details``: ``setting`` (``feedback_export``)."""
+
+    code = "feedback_export_disabled"
+    http_status = 403
+
+
+class FeedbackExportNotFound(EpistrelError):
+    """The feedback export a call names does not exist, or (``reason`` ``deleted``) its file was
+    deleted, by an operator or by the media sweep after seven days; the log row stays.
+    ``details``: ``export_id`` and, for a deleted file, ``reason``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+# -- personas and story characters (#114) -------------------------------------------------------
+
+
+class PersonaNotFound(EpistrelError):
+    """The persona a call names does not exist (or was deleted). ``details``: ``persona_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class PersonaNameTaken(EpistrelError):
+    """The owner already has a persona with that name, ignoring case (FR-CAT-6): a creation, a
+    rename, or an owner transfer that would give one principal two personas of one name.
+    Nothing is written. ``details``: ``field``, ``owner_principal`` and, when the write names
+    one, ``persona_id``."""
+
+    code = "persona_name_taken"
+    http_status = 409
+
+
+class StoryCharacterNotFound(EpistrelError):
+    """The story has no character with that id (it may belong to another story). ``details``:
+    ``story_id`` and ``character_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class OffboardingNotFound(EpistrelError):
+    """The offboarding job a call names does not exist (or its report was purged).
+    ``details``: ``job_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class PrincipalReserved(EpistrelError):
+    """An offboarding of ``system``, the principal background work and the presets act as
+    (FR-AUTH-7; #117). Nothing is written. ``details``: ``field``, ``principal``."""
+
+    code = "principal_reserved"
+    http_status = 422
+
+
+class TransferTargetRequired(EpistrelError):
+    """An offboarding names a ``transfer`` action but no ``transfer_to`` (FR-AUTH-7; #117).
+    Nothing is written. ``details``: ``field`` and ``types`` (the types that transfer)."""
+
+    code = "transfer_target_required"
+    http_status = 422
+
+
+class TransferTargetInvalid(EpistrelError):
+    """An offboarding's ``transfer_to`` is the offboarded principal itself or ``system``
+    (FR-AUTH-7; #117). Nothing is written. ``details``: ``field``, ``reason`` (``same_principal``
+    or ``reserved``)."""
+
+    code = "transfer_target_invalid"
+    http_status = 422
+
+
+class OffboardingInProgress(EpistrelError):
+    """The principal already has a queued or running offboarding (FR-AUTH-7; #117): read its
+    progress, and ask again once it finishes. Nothing is written. ``details``: ``principal`` and
+    ``job_id``."""
+
+    code = "offboarding_in_progress"
+    http_status = 409
+
+
+# -- erasure (#124) -----------------------------------------------------------------------------
+
+
+class InvalidErasureScope(EpistrelError):
+    """An erasure pairs a subject kind with a scope it cannot have (FR-ADMIN-2; #124): a story
+    ``character`` exists only in its story, so its erasure is story-scoped. Nothing is written.
+    ``details``: ``field``, ``subject_kind`` and ``scope``."""
+
+    code = "invalid_erasure_scope"
+    http_status = 422
+
+
+class SubjectNotFound(EpistrelError):
+    """The subject an erasure names is unknown in its scope (no such character in the story, no
+    catalog character or persona by that id, and no earlier erasure of it there): nothing to
+    erase or to ledger (#124). A dry run answers zero counts instead. ``details``:
+    ``subject_kind``, ``subject_id`` and, for the story scope, ``story_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class ErasureKeyMissing(EpistrelError):
+    """``EPISTREL_CONFIG_KEY`` is unset, so the erasure ledger's keyed hashes of the scanned
+    terms cannot be made (an unkeyed hash of a name could be reversed by guessing): the erasure
+    is refused and nothing is written (#124). ``details``: ``setting``."""
+
+    code = "config_key_missing"
+    http_status = 503
+
+
+class ErasedSubjectReferenced(EpistrelError):
+    """The operation's text names, or its records reference, a subject erased from the story
+    after the context it was built from (FR-ADMIN-9; #127): an in-flight turn, a late worker
+    result or a model output built before the erasure would write the subject back, so nothing
+    is written and the operation ends ``abandoned``. The caller's context is stale: rebuild it
+    from the current history and retry. ``details``: ``erasure_id`` (the erasure matched) and
+    ``match_count`` (the texts and references that matched it)."""
+
+    code = "erased_subject_referenced"
+    http_status = 409
+
+
+class ErasurePending(EpistrelError):
+    """The story is blocked by the erasure reconciler (FR-ADMIN-7; #125): the erasure ledger
+    holds an erasure of a subject in it that this database has not applied (a restored backup
+    that predates it), so the story is not served until the erasure is reapplied. Every read
+    and write of the story is refused, except deleting it; retry after ``Retry-After`` seconds.
+    ``details``: ``story_id``, ``erasure_id`` (the first pending erasure) and ``pending_count``
+    (the story's pending erasures)."""
+
+    code = "erasure_pending"
+    http_status = 503
+    RETRY_AFTER_S = 30
+
+    def response_headers(self) -> dict[str, str]:
+        return {"Retry-After": str(self.RETRY_AFTER_S)}
+
+
+class LedgerUnavailable(EpistrelError):
+    """The erasure ledger's file (``EPISTREL_ERASURE_LEDGER_DIR``) could not be written or read,
+    or its hash chain is broken (FR-ADMIN-7; #125): an erasure is refused and nothing is
+    written, since an erasure the file does not hold would not survive a restore. ``details``:
+    ``reason`` (``unwritable``, ``unreadable``, ``chain_broken``, ``mismatch``)."""
+
+    code = "ledger_unavailable"
     http_status = 503

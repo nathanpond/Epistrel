@@ -14,11 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.api import create_app
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
-from epistrel.core.deployment import read_lite_defaults, update_lite_defaults
 from epistrel.engine import Engine
 from epistrel.orchestrator.models.stub import StubAdapter, StubCall
 from tests.event_support import rows
-from tests.story_support import WRITE, create, story_body
+from tests.story_support import WRITE, create, override, story_body
 
 PLAYER = "Wren"
 FIRST = "Ada"
@@ -44,10 +43,16 @@ async def respond_client(
 
 
 async def new_story(
-    client: httpx.AsyncClient, *names: str, **fields: Any
+    client: httpx.AsyncClient,
+    *names: str,
+    overrides: dict[str, Any] | None = None,
+    **fields: Any,
 ) -> tuple[str, dict[str, str]]:
-    """A story whose first character is the player; returns its id and ids by name."""
+    """A story whose first character is the player, with ``overrides`` of its engine profile's
+    dials when given (#113); returns its id and ids by name."""
     created = await create(client, story_body(*(names or (PLAYER, FIRST, SECOND)), **fields))
+    if overrides:
+        await override(client, created["story_id"], overrides)
     return created["story_id"], {c["name"]: c["id"] for c in created["characters"]}
 
 
@@ -110,22 +115,6 @@ async def story_text(engine: AsyncEngine, story_id: str) -> str:
     return "\n".join(r.row for r in found)
 
 
-@asynccontextmanager
-async def lite_defaults(engine: AsyncEngine, **changes: Any) -> AsyncIterator[None]:
-    """Set the deployment's Lite defaults for the block, then restore them (shared database)."""
-    before = await read_lite_defaults(engine)
-    await update_lite_defaults(engine, principal="p-operator", **changes)
-    try:
-        yield
-    finally:
-        await update_lite_defaults(
-            engine,
-            principal="p-operator",
-            generation=before.lite_generation_defaults,
-            window_messages=before.lite_window_messages,
-        )
-
-
 __all__ = [
     "AUTHOR",
     "FIRST",
@@ -134,7 +123,6 @@ __all__ = [
     "body",
     "everything_sent",
     "generation_calls",
-    "lite_defaults",
     "new_story",
     "played",
     "respond",

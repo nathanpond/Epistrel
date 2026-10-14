@@ -24,34 +24,41 @@ from tests.event_support import new_story, play_turn
 from tests.projection_support import Snapshot, snapshot
 
 SCHEMA = {
+    # Both schemas the engine's objects live in: ``public`` and ``catalog`` (#103).
+    "schemas": "SELECT nspname FROM pg_namespace WHERE nspname IN ('public', 'catalog')",
     "columns": (
-        "SELECT table_name, column_name, data_type, udt_name, is_nullable, column_default "
-        "FROM information_schema.columns WHERE table_schema = 'public'"
+        "SELECT table_schema || '.' || table_name, column_name, data_type, udt_name, "
+        "is_nullable, column_default "
+        "FROM information_schema.columns WHERE table_schema IN ('public', 'catalog')"
     ),
-    "indexes": "SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'",
+    "indexes": (
+        "SELECT schemaname || '.' || tablename, indexname, indexdef FROM pg_indexes "
+        "WHERE schemaname IN ('public', 'catalog')"
+    ),
     "constraints": (
         "SELECT c.conrelid::regclass::text, c.conname, pg_get_constraintdef(c.oid) "
         "FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace "
-        "WHERE n.nspname = 'public'"
+        "WHERE n.nspname IN ('public', 'catalog')"
     ),
     "triggers": (
         "SELECT tgrelid::regclass::text, tgname, pg_get_triggerdef(oid) FROM pg_trigger "
         "WHERE NOT tgisinternal"
     ),
     "functions": (
-        "SELECT p.proname, md5(regexp_replace(p.prosrc, '\\s+', ' ', 'g')) FROM pg_proc p "
+        "SELECT n.nspname || '.' || p.proname, "
+        "md5(regexp_replace(p.prosrc, '\\s+', ' ', 'g')) FROM pg_proc p "
         "JOIN pg_namespace n "
-        "ON n.oid = p.pronamespace WHERE n.nspname = 'public'"
+        "ON n.oid = p.pronamespace WHERE n.nspname IN ('public', 'catalog')"
     ),
     "enums": (
-        "SELECT t.typname, e.enumlabel, e.enumsortorder FROM pg_enum e "
-        "JOIN pg_type t ON t.oid = e.enumtypid"
+        "SELECT n.nspname || '.' || t.typname, e.enumlabel, e.enumsortorder FROM pg_enum e "
+        "JOIN pg_type t ON t.oid = e.enumtypid JOIN pg_namespace n ON n.oid = t.typnamespace"
     ),
     "extensions": "SELECT extname FROM pg_extension",
 }
 
 
-KEPT_ON_DOWNGRADE = {("operation_status", "queued")}
+KEPT_ON_DOWNGRADE = {("public.operation_status", "queued")}
 """Enum labels a downgrade cannot remove (PostgreSQL has no ``DROP VALUE``): 0015 adds
 ``queued`` and documents that its downgrade leaves it, after failing any queued operation."""
 
@@ -96,7 +103,8 @@ def test_i_08__round_trip(scratch_database: str) -> None:
     """From head, step down one revision at a time to base and back up again: at every revision
     the schema on the way up equals the schema on the way down (function bodies compared with
     whitespace collapsed; only the documented ``KEPT_ON_DOWNGRADE`` enum labels may linger on
-    the way down), and head is reached again.
+    the way down), and head is reached again. Every schema the engine owns is compared
+    (``SCHEMA``).
 
     Complement asserted: base is empty and head differs from the first revision, so the equal
     fingerprints are not vacuous."""
@@ -110,6 +118,7 @@ def test_i_08__round_trip(scratch_database: str) -> None:
     command.downgrade(cfg, "base")
     empty = _schema(scratch_database)
     assert not any(empty[a] for a in ("columns", "indexes", "constraints", "triggers"))
+    assert empty["schemas"] == [("public",)]  # the downgrade removed every other schema
     for target in revisions:
         command.upgrade(cfg, target)
         _same(_schema(scratch_database), down[target])
@@ -133,11 +142,18 @@ async def _seed(url: str) -> tuple[str, Snapshot, list[tuple[Any, ...]]]:
         await engine.dispose()
 
 
+DROPPED_BELOW_0019 = ("checked_guardrails",)
+"""``operations`` columns a later revision adds, which the downgrade below ``0019`` drops with
+it: #118's guardrail stamp (``0035``), a record of the checks a turn passed, not of the log."""
+
+
 async def _log(engine: AsyncEngine, story: str) -> list[tuple[Any, ...]]:
+    dropped = " - ".join(f"'{c}'" for c in DROPPED_BELOW_0019)
     async with engine.connect() as conn:
         found = await conn.execute(
             text(
-                "SELECT 'o', o::text FROM operations o WHERE story_id = :s "
+                f"SELECT 'o', (to_jsonb(o) - {dropped})::text FROM operations o "  # noqa: S608
+                "WHERE story_id = :s "
                 "UNION ALL SELECT 'e', e::text FROM events e WHERE story_id = :s ORDER BY 1, 2"
             ),
             {"s": story},

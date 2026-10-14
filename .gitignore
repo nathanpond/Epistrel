@@ -12,3 +12,5 @@ htmlcov/
 .env
 .DS_Store
 .venv-runtime/
+# The local blob store's default root (EPISTREL_MEDIA_ROOT, #105) when the engine runs outside Docker.
+/var/

@@ -33,6 +33,22 @@ class ForkedFrom(EventPayload):
     variant_chain: dict[str, int] | None = None
 
 
+class ScenarioOrigin(EventPayload):
+    """The scenario version a story was created from (#119): identifiers only. The version's
+    document is the story's ``scenario_snapshot``, never copied into the log."""
+
+    id: str
+    version: int = Field(ge=1)
+
+
+class CatalogSource(EventPayload):
+    """The catalog character version a story character was created from (#119): its
+    ``character_snapshots`` row holds the content, which the log never duplicates."""
+
+    catalog_id: str
+    version: int = Field(ge=1)
+
+
 @register("story_created", category=EventCategory.CONTROL)
 class StoryCreated(EventPayload):
     """The genesis event of every story (#50): its name, cast, settings and rating version.
@@ -48,6 +64,8 @@ class StoryCreated(EventPayload):
     rating_version_id: str | None = None
     forked_from: ForkedFrom | None = None
     """Set on a fork's own genesis (#67): the story, revision and turn it was copied from."""
+    scenario: ScenarioOrigin | None = Field(default=None, exclude_if=lambda v: v is None)
+    """Set on the genesis of a story created from a scenario (#119)."""
 
 
 @register("story_archived", category=EventCategory.CONTROL)
@@ -58,6 +76,27 @@ class StoryArchivedEvent(EventPayload):
 @register("story_unarchived", category=EventCategory.CONTROL)
 class StoryUnarchivedEvent(EventPayload):
     """The story is writable again (#50)."""
+
+
+@register("story_paused", category=EventCategory.CONTROL)
+class StoryPausedEvent(EventPayload):
+    """The story is paused while a check runs (FR-RATE-7; #118): ``job_id`` names the check,
+    ``cause`` why (``rating_check``), and ``target_rating_id`` the rating a tightening asks
+    for. A control event with no revision bump; truth-changing calls answer ``story_paused``
+    until the matching ``story_resumed``."""
+
+    job_id: str
+    cause: str
+    target_rating_id: str | None = None
+
+
+@register("story_resumed", category=EventCategory.CONTROL)
+class StoryResumedEvent(EventPayload):
+    """The check that paused the story ended (#118): ``outcome`` is ``applied``, ``refused``
+    or ``failed``. Never names a violating text."""
+
+    job_id: str
+    outcome: str
 
 
 @register("story_deleted", category=EventCategory.AUDIT)
@@ -72,10 +111,20 @@ class StoryDeletedEvent(EventPayload):
 
 @register("character_defined", category=EventCategory.CONTROL)
 class CharacterDefined(EventPayload):
-    """A character joins the story (shell; #50 extends)."""
+    """A character joins a running story (FR-CAT-7; #114): an ad-hoc character the author adds,
+    named as the genesis event names its cast (id, name, ``is_player``), never with its age or
+    its definition, which live only in ``characters`` (FR-CAT-12). A character added in a story
+    is never a player character. A story created from a scenario (#119) records one at genesis
+    for every cast member, the player's included, with its role and catalog source."""
 
     character_id: str
     name: str
+    is_player: bool = False
+    role_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """The scenario role the character fills (#119's genesis records one event per cast
+    member); ``None`` for a character added later."""
+    source: CatalogSource | None = Field(default=None, exclude_if=lambda v: v is None)
+    """The catalog version a genesis character was created from (its snapshot row)."""
 
 
 @register("player_input", category=EventCategory.INPUT)
@@ -106,6 +155,10 @@ class MessageRendered(EventPayload):
     fallback_used: bool = False
     """The reply is the safe fallback line (#68): every generated draft broke an output policy
     (``model``/``prompt_hash`` null, ``finish_reason`` ``fallback``)."""
+    present_character_ids: tuple[str, ...] = Field(default=(), exclude_if=lambda v: not v)
+    """A scenario's opening narration (turn 1 of a story created from a scenario, #119): the
+    characters of the roles present when the story opens (stored; the Lite pipeline does not
+    use it)."""
 
 
 @register("think", category=EventCategory.NARRATIVE_STATE)
@@ -268,3 +321,20 @@ class LiteSummarySegment(EventPayload):
     source_versions: tuple[SummarySource, ...] = ()
     model: str | None = None
     prompt_hash: str | None = None
+
+
+@register("erasure_marker", category=EventCategory.CONTROL)
+class ErasureMarker(EventPayload):
+    """Where erasure (FR-ADMIN-2,6; #124) deleted a structured record of the story: the
+    ledger entry (``erasure_id``), the subject (``subject_kind``, ``subject_id``), the
+    ``scope`` (``story``), and the record it removed (``record_table``, ``record_id``).
+    Identifiers only, never content. Written by the erasure's ``control`` operation, which has
+    no turn position, so a truncation never discards it; the audit view shows it as
+    ``[erasure marker: <subject id>, <scope>]``."""
+
+    erasure_id: str
+    subject_kind: str
+    subject_id: str
+    scope: str
+    record_table: str
+    record_id: str

@@ -29,35 +29,38 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from types import SimpleNamespace
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import and_, func, insert, null, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency
-from epistrel.core.enums import (
-    Authority,
-    EventCategory,
-    OperationKind,
-    OperationStatus,
-    Provenance,
-)
+from epistrel.core import control
+from epistrel.core.enums import Authority, EventCategory, Provenance
+from epistrel.core.erasure.index import index_records
+from epistrel.core.erasure.records import config_change_record, event_record
 from epistrel.core.errors import InvalidRequest
-from epistrel.core.ids import new_ulid
+from epistrel.core.ids import new_ulid, ulid_after
+from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
 from epistrel.core.settings_schema import (
+    DEFAULT_FEEDBACK_TAGS,
+    DEFAULT_LISTING_STATUS_VALUES,
+    DEFAULT_MAX_CHARACTERS_AT_START,
     DEPLOYMENT_COLUMNS,
+    CatalogValidationSettings,
     ConfigClass,
     DeploymentSettings,
+    FeedbackSettings,
     GuardrailSettings,
     IdempotencySettings,
     LiteDefaults,
+    MediaSettings,
     StoryTextCaps,
     StructuredSettings,
-    TurnBudgetDefaults,
     TurnQueueDefaults,
 )
-from epistrel.core.tables import config_changes, deployment_state, events, operations
+from epistrel.core.tables import config_changes, deployment_state, events
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
 ChangeClass = ConfigClass
@@ -79,6 +82,8 @@ CONFIG_CHANGED = "config_changed"
 
 _WRITE_OPERATION = "epistrel.config_write_operation"
 """``conn.info`` key: ``(transaction id, operation id)`` of the write in progress."""
+_LAST_CHANGE = "epistrel.config_last_change"
+"""``conn.info`` key: ``(transaction id, change id)`` of the write's latest row (#113)."""
 
 
 def rating_setting(rating_id: str) -> str:
@@ -90,30 +95,23 @@ async def _write_operation(
     conn: AsyncConnection, *, story_id: str | None, actor: str
 ) -> tuple[str, bool]:
     """The ``control`` operation of the configuration write running in ``conn``'s transaction,
-    recorded (committed, with the write) at its first change; ``(id, created now)``."""
+    recorded (committed, with the write, its key bound; ``core.control``) at its first change;
+    ``(id, created now)``."""
     transaction = int(await conn.scalar(select(func.txid_current())) or 0)
     known = conn.info.get(_WRITE_OPERATION)
     if known is not None and known[0] == transaction:
         return str(known[1]), False
-    operation_id = new_ulid()
-    call = idempotency.current_call()
-    now = func.transaction_timestamp()
-    await conn.execute(
-        insert(operations).values(
-            operation_id=operation_id,
-            story_id=story_id,
-            kind=OperationKind.CONTROL.value,
-            principal=actor,
-            status=OperationStatus.COMMITTED.value,
-            membership_tx=now,
-            committed_at=now,
-            idempotency_key=call.key if call is not None and call.claimed else None,
-        )
-    )
+    operation_id = await control.record_control_operation(conn, actor=actor, story_id=story_id)
     conn.info[_WRITE_OPERATION] = (transaction, operation_id)
-    if call is not None:
-        await call.bind_configuration(conn, operation_id=operation_id)
     return operation_id, True
+
+
+async def write_operation(conn: AsyncConnection, *, story_id: str | None, actor: str) -> str:
+    """The id of the configuration write's ``control`` operation in ``conn``'s transaction,
+    recorded now if the write has none yet: a caller that records more of the write's events
+    under it (a rating change's ``story_resumed``, #118) asks for it before its first change."""
+    operation_id, _ = await _write_operation(conn, story_id=story_id, actor=actor)
+    return operation_id
 
 
 async def _story_event(
@@ -133,9 +131,10 @@ async def _story_event(
     last = await conn.scalar(
         select(func.coalesce(func.max(events.c.seq), 0)).where(events.c.story_id == story_id)
     )
+    event_id = new_ulid()
     await conn.execute(
         insert(events).values(
-            id=new_ulid(),
+            id=event_id,
             story_id=story_id,
             seq=int(last or 0) + 1,
             operation_id=operation_id,
@@ -146,6 +145,14 @@ async def _story_event(
             provenance=Provenance.CONSUMER.value,
             authority=Authority.AUTHORITATIVE.value,
         )
+    )
+    await index_records(
+        conn,
+        [
+            event_record(
+                SimpleNamespace(id=event_id, story_id=story_id, character_id=None, payload=payload)
+            )
+        ],
     )
 
 
@@ -175,7 +182,7 @@ async def record_config_change(
             new=new,
             actor=actor,
         )
-    change_id = new_ulid()
+    change_id = _change_id(conn)
     await conn.execute(
         insert(config_changes).values(
             change_id=change_id,
@@ -189,6 +196,27 @@ async def record_config_change(
             actor=actor,
         )
     )
+    await index_records(
+        conn,
+        [
+            config_change_record(
+                SimpleNamespace(
+                    change_id=change_id, scope=scope.value, scope_id=scope_id, old=old, new=new
+                )
+            )
+        ],
+    )
+    return change_id
+
+
+def _change_id(conn: AsyncConnection) -> str:
+    """The id of the write's next row, after its previous one: the rows of one write (one
+    revision) list in the order they were recorded, newest first (#113: a profile version's
+    rows; before, ids minted in one millisecond sorted at random)."""
+    transaction = conn.info[_WRITE_OPERATION][0]
+    last = conn.info.get(_LAST_CHANGE)
+    change_id = ulid_after(last[1]) if last is not None and last[0] == transaction else new_ulid()
+    conn.info[_LAST_CHANGE] = (transaction, change_id)
     return change_id
 
 
@@ -199,12 +227,15 @@ SECTIONS: tuple[type[BaseModel], ...] = (
     StoryTextCaps,
     IdempotencySettings,
     TurnQueueDefaults,
-    TurnBudgetDefaults,
     StructuredSettings,
     GuardrailSettings,
+    MediaSettings,
+    CatalogValidationSettings,
+    FeedbackSettings,
 )
 """The views of ``deployment_state.settings`` earlier stories read
-(#53/#57/#60/#61/#63/#68/#69)."""
+(#53/#57/#60/#61/#63/#68), the media settings (#105), the catalog validation's (#111) and
+message feedback's (#112). #69's call cap moved to ``profile_defaults`` (#113)."""
 
 
 def section[M: BaseModel](view: type[M], document: Mapping[str, Any] | None) -> M:
@@ -220,13 +251,22 @@ def section[M: BaseModel](view: type[M], document: Mapping[str, Any] | None) -> 
 
 @dataclass(frozen=True, slots=True)
 class DeploymentState:
-    """``deployment_state``: the configuration revision, the two column settings and the
-    ``settings`` document (every section, defaults filled in) — what ``/admin/settings``
-    returns."""
+    """``deployment_state``: the configuration revision, the column settings
+    (``DEPLOYMENT_COLUMNS``) and the ``settings`` document (every section, defaults filled in)
+    — what ``/admin/settings`` returns."""
 
     config_revision: int
     default_content_rating_id: str
     minor_age_threshold: int
+    max_characters_at_start_default: int = DEFAULT_MAX_CHARACTERS_AT_START
+    max_characters_at_start_ceiling: int | None = None
+    default_engine_profile_id: str = LITE_PRESET_ID
+    listing_status_values: list[str] = field(
+        default_factory=lambda: list(DEFAULT_LISTING_STATUS_VALUES)
+    )
+    feedback_tags: list[str] = field(default_factory=lambda: list(DEFAULT_FEEDBACK_TAGS))
+    profile_defaults: dict[str, Any] = field(default_factory=lite_settings)
+    """The engine profiles' deployment defaults (``deployment_state.profile_defaults``, #113)."""
     settings: dict[str, Any] = field(default_factory=dict)
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
@@ -238,6 +278,12 @@ class DeploymentState:
                 **self.settings,
                 "default_content_rating_id": self.default_content_rating_id,
                 "minor_age_threshold": self.minor_age_threshold,
+                "max_characters_at_start_default": self.max_characters_at_start_default,
+                "max_characters_at_start_ceiling": self.max_characters_at_start_ceiling,
+                "default_engine_profile_id": self.default_engine_profile_id,
+                "listing_status_values": self.listing_status_values,
+                "feedback_tags": self.feedback_tags,
+                "profile_defaults": self.profile_defaults,
             }
         )
 
@@ -255,6 +301,12 @@ def _state(row: Any) -> DeploymentState:
         config_revision=int(row.config_revision),
         default_content_rating_id=row.default_content_rating_id,
         minor_age_threshold=int(row.minor_age_threshold),
+        max_characters_at_start_default=int(row.max_characters_at_start_default),
+        max_characters_at_start_ceiling=row.max_characters_at_start_ceiling,
+        default_engine_profile_id=row.default_engine_profile_id,
+        listing_status_values=list(row.listing_status_values),
+        feedback_tags=list(row.feedback_tags),
+        profile_defaults=dict(row.profile_defaults),
         settings=document_settings(row.settings),
     )
 
@@ -263,6 +315,12 @@ _COLUMNS = (
     deployment_state.c.config_revision,
     deployment_state.c.default_content_rating_id,
     deployment_state.c.minor_age_threshold,
+    deployment_state.c.max_characters_at_start_default,
+    deployment_state.c.max_characters_at_start_ceiling,
+    deployment_state.c.default_engine_profile_id,
+    deployment_state.c.listing_status_values,
+    deployment_state.c.feedback_tags,
+    deployment_state.c.profile_defaults,
     deployment_state.c.settings,
 )
 
@@ -415,8 +473,9 @@ async def list_config_changes(
     limit: int = DEFAULT_PAGE,
 ) -> ConfigChangePage:
     """A page of the scope's changes, newest first (by revision, then row). ``settings`` keeps
-    rows whose setting is one of them or a leaf under one of them (``generation_settings``
-    matches ``generation_settings.temperature``); a name ending in ``:`` is a prefix
+    rows whose setting is one of them or a leaf under one of them (``profile_overrides``
+    matches ``profile_overrides.models.generation.temperature``); a name ending in ``:`` is a
+    prefix
     (``rating:`` matches every rating's rows)."""
     if not 1 <= limit <= MAX_PAGE:
         raise InvalidRequest(f"limit must be 1 to {MAX_PAGE}", {"field": "limit"})

@@ -19,10 +19,25 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
 FROM python:3.14-slim AS runtime
+# EPISTREL_MEDIA_ROOT: the local blob store (#105). Compose mounts the `media` volume there; the
+# directory is created owned by the runtime user, so a fresh named volume inherits that owner.
+# EPISTREL_ERASURE_LEDGER_DIR: the erasure ledger's file, outside the database and its backups
+# (#125); compose mounts the `erasure-ledger` volume there, created the same way.
 ENV PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/.venv/bin:$PATH" \
+    EPISTREL_MEDIA_ROOT=/var/lib/epistrel/media \
+    EPISTREL_ERASURE_LEDGER_DIR=/var/lib/epistrel/erasure-ledger
+# ffmpeg (and its ffprobe) take a video's poster from its first frame and probe videos (#107).
+# It is a GPL program run as a separate process, never linked or imported, and no Python
+# dependency (project invariant 2's exception, ADR-151). Debian's package, unpinned: Dependabot
+# cannot track apt, so each image build installs the current one.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 epistrel \
-    && useradd --system --uid 10001 --gid 10001 --home-dir /app --shell /usr/sbin/nologin epistrel
+    && useradd --system --uid 10001 --gid 10001 --home-dir /app --shell /usr/sbin/nologin epistrel \
+    && mkdir -p /var/lib/epistrel/media /var/lib/epistrel/erasure-ledger \
+    && chown -R 10001:10001 /var/lib/epistrel
 WORKDIR /app
 COPY --from=builder --chown=epistrel:epistrel /app/.venv /app/.venv
 COPY --chown=epistrel:epistrel alembic.ini ./alembic.ini

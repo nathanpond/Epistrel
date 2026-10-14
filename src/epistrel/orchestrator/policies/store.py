@@ -251,16 +251,21 @@ async def rating_sources(db: AsyncEngine, story_id: str) -> dict[str, str]:
 
 
 async def creation_context(
-    db: AsyncEngine, rating_id: str, cast: Sequence[CastMember]
+    db: AsyncEngine, rating_id: str | None, cast: Sequence[CastMember]
 ) -> GuardContext:
     """The guard context of a story about to be created with ``rating_id`` and ``cast``: the
     live global policies and the rating closure's (a new story has no policies of its own),
-    the cast as given, and the live threshold."""
+    the cast as given, and the live threshold. Without a rating (a catalog entry that names
+    none, #111), the global policies only."""
     async with db.connect() as conn:
         conn = await conn.execution_options(isolation_level="REPEATABLE READ")
         async with conn.begin():
             graph = await load_graph(conn)
-            rating_ids = [g.policy_id for g in effective_guardrails(rating_id, graph)]
+            rating_ids = (
+                []
+                if rating_id is None
+                else [g.policy_id for g in effective_guardrails(rating_id, graph)]
+            )
             found = await _live_for_story(conn, None, rating_ids)
             threshold = (await read_settings(conn)).minor_age_threshold
     return GuardContext(policies=_arrange(found, rating_ids), cast=tuple(cast), threshold=threshold)

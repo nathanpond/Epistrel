@@ -19,9 +19,24 @@ Ulid = Annotated[str, StringConstraints(pattern=ULID_PATTERN)]
 
 def new_ulid() -> str:
     """A ULID: 48-bit millisecond timestamp + 80 random bits, Crockford base32, 26 chars."""
-    value = (time.time_ns() // 1_000_000) << 80 | secrets.randbits(80)
+    return _encode((time.time_ns() // 1_000_000) << 80 | secrets.randbits(80))
+
+
+def _encode(value: int) -> str:
     chars = []
     for _ in range(ULID_LENGTH):
         chars.append(CROCKFORD[value & 0x1F])
         value >>= 5
     return "".join(reversed(chars))
+
+
+def ulid_after(previous: str) -> str:
+    """A new ULID that sorts after ``previous``: ``new_ulid()``, or ``previous`` + 1 when the
+    new one would not (two ids minted in the same millisecond sort at random otherwise)."""
+    candidate = new_ulid()
+    if candidate > previous:
+        return candidate
+    value = 0
+    for char in previous:
+        value = value * 32 + CROCKFORD.index(char)
+    return _encode(value + 1)

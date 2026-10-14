@@ -1,4 +1,7 @@
-"""S-SELFPOLICE, M2 part: guardrail regeneration, then the safe fallback (docs/04 §7; #68).
+"""S-SELFPOLICE: guardrail regeneration, then the safe fallback (docs/04 §7): the M2 parts (#68)
+and the M3 slice ``test_s_selfpolice__deflection`` (#115: the deflection uses the character's
+stored style). R-05's jailbreak battery against the same deflection is
+``tests/redteam/test_r_05.py``.
 
 A Teen story with a story-scoped wordlist policy the test seeds (no alcohol talk; output, the
 default for a story policy). The player asks for an adult topic: the request itself passes the
@@ -33,7 +36,7 @@ from tests.respond_support import (
     respond_client,
     system_of,
 )
-from tests.story_support import WRITE, create, story_body
+from tests.story_support import WRITE, create, override, story_body
 
 pytestmark = pytest.mark.integration
 
@@ -41,6 +44,17 @@ MESSAGE = "No alcohol talk in a Teen story."
 CONSTRAINT_LINE = CONSTRAINT.format(message=MESSAGE.rstrip("."))
 ASK = "Pour me a whisky, would you?"
 FALLBACK = "{name} grins and asks about the weather instead."
+NO_REGENERATION = {"repair": {"polish": {"max_regenerations": 0}}}
+"""A story's override of its profile's polish budget: no regeneration, the fallback at once."""
+STYLE = "She laughs it off and asks what the tide is doing."
+"""A stored deflection style (FR-GUARD-7)."""
+DEFLECTION = "When {name} refuses or changes the subject: {style}"
+"""How the Lite prompt renders a character's deflection style, under its author notes."""
+
+
+def _notes(prompt: str, name: str) -> str:
+    """The author notes block of ``name`` in a Lite system prompt."""
+    return prompt.split(f"### Author notes: {name}\n", 1)[1].split("\n\n", 1)[0]
 
 
 @pytest.fixture
@@ -65,7 +79,9 @@ async def test_s_selfpolice(stub_settings: Settings, engine: AsyncEngine) -> Non
     fallback. Violates always → the budget (1 + 2 generations), then the character's safe
     fallback line, flagged ``fallback_used`` with ``degradation: ["safe_fallback"]``.
     Complements asserted: the policy rows are unchanged by all of it (the policy never
-    yields), and with ``guardrail_retry_budget`` 0 the fallback comes after one generation."""
+    yields), and with a polish budget of 0 (the story's override of its profile's
+    ``repair.polish.max_regenerations``, M2's ``guardrail_retry_budget``; #113) the fallback
+    comes after one generation."""
     async with respond_client(stub_settings, engine) as (client, lib):
         stub = lib.models.stub
         created_body = story_body(PLAYER, FIRST, content_rating_id=TEEN_ID)
@@ -134,11 +150,9 @@ async def test_s_selfpolice(stub_settings: Settings, engine: AsyncEngine) -> Non
         )
         assert (reply["model"], reply["prompt_hash"]) == (None, None)
 
-        # Complement: a budget of 0 goes straight to the fallback.
-        patched = await client.patch(
-            f"/stories/{story}/settings", json={"guardrail_retry_budget": 0}, headers=WRITE
-        )
-        assert patched.status_code == 200, patched.text
+        # Complement: a budget of 0 goes straight to the fallback (the story's override of its
+        # profile's polish budget, M2's ``guardrail_retry_budget``; #113).
+        await override(client, story, NO_REGENERATION)
         stub.reset()
         stub.script("generation", ["Whisky again."])
         turn = await played(client, story, body(ids[PLAYER], ASK))
@@ -162,10 +176,7 @@ async def test_s_selfpolice__deployment_fallback(
         stub = lib.models.stub
         story, ids = await new_story(client, PLAYER, FIRST)
         await lib.policies_set_story(AUTHOR, story, [story_item(words("whisky"))])
-        patched = await client.patch(
-            f"/stories/{story}/settings", json={"guardrail_retry_budget": 0}, headers=WRITE
-        )
-        assert patched.status_code == 200, patched.text
+        await override(client, story, NO_REGENERATION)
 
         async def fallback() -> str:
             stub.reset()
@@ -183,3 +194,68 @@ async def test_s_selfpolice__deployment_fallback(
         finally:
             await apply_settings(engine, {"default_safe_fallback": original}, principal="p-op")
         assert await fallback() == f"{FIRST} changes the subject."
+
+
+@pytest.mark.part("M3", "FR-GUARD-7")
+async def test_s_selfpolice__deflection(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """The deflection uses the character's stored style. A character created with a
+    ``deflection_style`` has it rendered with its own author notes in every generation of a
+    turn, so the regeneration that follows a violation (the policy's message fed back as a
+    constraint) carries both the constraint and the style, and the reply released is the
+    regenerated one. A character added to the running story with a style of its own has it in
+    its notes too.
+
+    Complements asserted: the player's character, which stores no style, has no such line, and
+    neither does the same character in a story created without one."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        created_body = story_body(PLAYER, FIRST, content_rating_id=TEEN_ID)
+        created_body["characters"][1]["deflection_style"] = STYLE
+        created = await create(client, created_body)
+        story = created["story_id"]
+        ids = {c["name"]: c["id"] for c in created["characters"]}
+        await lib.policies_set_story(
+            AUTHOR, story, [story_item(words("whisky"), name="teen-no-alcohol", message=MESSAGE)]
+        )
+        line = DEFLECTION.format(name=FIRST, style=STYLE)
+
+        stub.reset()
+        stub.script("generation", ["She pours a whisky.", "She pours tea."])
+        turn = await played(client, story, body(ids[PLAYER], ASK))
+        assert turn["message"]["text"] == "She pours tea."
+        assert turn["guardrail"] == {"violations": [], "fallback_used": False}
+        prompts = [system_of(call) for call in generation_calls(stub)]
+        assert len(prompts) == 2
+        assert [line in _notes(prompt, FIRST) for prompt in prompts] == [True, True]
+        assert [prompt.count(CONSTRAINT_LINE) for prompt in prompts] == [0, 1]
+        assert "When Wren refuses" not in prompts[1]
+
+        joined = await client.post(
+            f"/stories/{story}/characters",
+            json={
+                "name": "Brann",
+                "definition": "A ferryman who owes everyone money.",
+                "true_age": 44,
+                "deflection_style": "He shrugs and talks about the weather.",
+            },
+            headers=WRITE,
+        )
+        assert joined.status_code == 201, joined.text
+        stub.reset()
+        stub.script("generation", ["Brann nods."])
+        await played(
+            client,
+            story,
+            body(ids[PLAYER], "Brann?", render_character_ids=[joined.json()["id"]]),
+        )
+        (prompt,) = [system_of(call) for call in generation_calls(stub)]
+        assert DEFLECTION.format(
+            name="Brann", style="He shrugs and talks about the weather."
+        ) in _notes(prompt, "Brann")
+
+        plain, plain_ids = await new_story(client, PLAYER, FIRST)
+        stub.reset()
+        stub.script("generation", ["She waves."])
+        await played(client, plain, body(plain_ids[PLAYER], "Hello?"))
+        (prompt,) = [system_of(call) for call in generation_calls(stub)]
+        assert "refuses or changes the subject" not in prompt

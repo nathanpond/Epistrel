@@ -5,11 +5,21 @@ the prompt is built from are exactly the ones the read set hashed (FR-CONC-2,4).
 the Engine's own record (FR-RESP-2): the story rating's current prompt guidance (FR-RATE-4),
 the custom instructions and pinned memories (the ``story_texts`` projection, #60), the
 rolling-summary segments a prompt includes (``core.summary.included_segments``, #72, each as a
-``Turns a-b:`` line), the cast's definitions, and every **verbatim** transcript row: each active
+``Turns a-b:`` line), the cast's definitions, a scenario story's scenario text and director
+notes (rendered from its snapshot on every turn, ``core.genesis.render``; #122), and every
+**verbatim** transcript row: each active
 row after the last turn the included segments cover, and never fewer than the latest
-``lite_window_messages`` rows (FR-LITE-1,2). The background summary job keeps the uncovered
-rows near ``lite_window_messages``; a row is never dropped from the prompt before a segment
-covers it. Nothing the consumer sends as scene context is read here (FR-RESP-4).
+``window_messages`` rows (FR-LITE-1,2). The background summary job keeps the uncovered rows
+near ``window_messages``; a row is never dropped from the prompt before a segment covers it.
+Nothing the consumer sends as scene context is read here (FR-RESP-4).
+
+**The configuration** (#113) is the story's effective configuration as the turn captured it at
+its start (``core.profiles.effective``): ``memory.rolling_summary.window_messages`` is the
+verbatim window, ``models.generation`` the generation settings (the profile's, with the story's
+overrides; the request's ``prompt_params`` go on top, FR-LITE-4). With the rolling summary off
+(``memory.rolling_summary.enabled``) the prompt has no summary and keeps the latest
+``window_messages`` rows; with pinned memories off (``pins.enabled``) it has no pinned
+memories.
 
 ``read_turn_inputs(before_turn=N)`` reads the inputs of a regenerated turn N (#66): everything
 positioned at N or later (the variant being replaced) is left out, so the new variant is built
@@ -31,11 +41,14 @@ from typing import Any, Literal
 from sqlalchemy import and_, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.config_changes import read_guardrail_settings, read_lite_defaults
+from epistrel.core.config_changes import read_guardrail_settings
 from epistrel.core.enums import Authority, Membership, OperationKind, OperationStatus, Provenance
 from epistrel.core.errors import InvalidRequest, NothingToRegenerate, StoryNotFound
 from epistrel.core.events import Operation
 from epistrel.core.events.types import GuardrailOutputRejected, MessageRendered, PlayerInput
+from epistrel.core.genesis.render import read_rendered
+from epistrel.core.profiles.effective import StoryProfile, effective_configuration
+from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.ratings import story_guidance
 from epistrel.core.settings_schema import (
     DEFAULT_SAFE_FALLBACK,
@@ -54,6 +67,8 @@ from epistrel.core.tables import (
 
 INPUT_BEAT = 1
 REPLY_BEAT = 2
+OPENING_FINISH = "opening"
+"""``finish_reason`` of a scenario story's opening narration (#119's ``genesis.create``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +81,9 @@ class CastEntry:
     is_player: bool
     safe_fallback_text: str | None = None
     """The character's own safe fallback line (#50, #68); never part of a prompt."""
+    deflection_style: str | None = None
+    """How the character refuses or changes the subject (FR-GUARD-7; #115): rendered with its
+    author notes, so a reply regenerated after a guardrail violation stays in character."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +113,9 @@ class WindowRow:
     text: str
     say: str | None
     do: str | None
+    opening: bool = False
+    """The opening narration of a story created from a scenario (turn 1, stored verbatim,
+    ``finish_reason: opening``; #119): the prompt labels it ``Narrator:`` (#122)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,13 +128,17 @@ class TurnInputs:
     segments: tuple[str, ...]
     cast: tuple[CastEntry, ...]
     window: tuple[WindowRow, ...]
-    deployment_generation: GenerationSettings
-    """The deployment's Lite generation defaults (FR-LITE-4)."""
-    story_generation: GenerationSettings | None
-    """The story's override; the request's own ``prompt_params`` go on top, per request."""
+    generation: GenerationSettings
+    """The story's generation settings: its effective configuration's ``models.generation``
+    (FR-LITE-4); the request's own ``prompt_params`` go on top, per request."""
     window_messages: int
     default_safe_fallback: str = DEFAULT_SAFE_FALLBACK
     """The deployment's safe fallback line in force when the turn started (#68)."""
+    scenario_text: str = ""
+    """A story created from a scenario: its ``## Scenario`` block, rendered from the snapshot
+    on every turn (``core.genesis.render``; #122). ``""`` for a blank story."""
+    director_notes: str = ""
+    """A story created from a scenario: its ``## Author notes (not facts)`` block (#122)."""
 
 
 def _cast_query(story_id: str) -> Any:
@@ -124,6 +149,7 @@ def _cast_query(story_id: str) -> Any:
             characters.c.definition,
             characters.c.is_player,
             characters.c.safe_fallback_text,
+            characters.c.deflection_style,
         )
         .where(characters.c.story_id == story_id)
         .order_by(characters.c.ordinal)
@@ -138,6 +164,7 @@ def _cast(rows: Any) -> tuple[CastEntry, ...]:
             definition=r.definition,
             is_player=bool(r.is_player),
             safe_fallback_text=r.safe_fallback_text,
+            deflection_style=r.deflection_style,
         )
         for r in rows
     )
@@ -231,6 +258,7 @@ async def transcript_rows(
                 text=r.text,
                 say=payload.get("say") if player else None,
                 do=payload.get("do") if player else None,
+                opening=not player and payload.get("finish_reason") == OPENING_FINISH,
             )
         )
     return tuple(rows)
@@ -242,10 +270,17 @@ async def _verbatim(
     covered: int,
     window_messages: int,
     before_turn: int | None,
+    *,
+    summarised: bool = True,
 ) -> tuple[WindowRow, ...]:
     """Every row after the summary's ``covered`` turn, and never fewer than the latest
     ``window_messages`` rows (FR-LITE-1: after a rewind leaves few uncovered rows, the latest N
-    are still verbatim, even where a segment also covers them)."""
+    are still verbatim, even where a segment also covers them). Without a rolling summary
+    (``summarised`` false, #113) the latest ``window_messages`` rows only: nothing summarises
+    the older ones, and the prompt drops them."""
+    if not summarised:
+        every = await transcript_rows(conn, story_id, before_turn=before_turn)
+        return every[-window_messages:]
     uncovered = await transcript_rows(conn, story_id, after_turn=covered, before_turn=before_turn)
     if covered == 0 or len(uncovered) >= window_messages:
         return uncovered
@@ -253,16 +288,32 @@ async def _verbatim(
     return every[-window_messages:]
 
 
+def generation_of(settings: ProfileSettings) -> GenerationSettings:
+    """A configuration's generation settings as a layer of ``resolve_generation`` (FR-LITE-4):
+    ``response_length`` is the turn's ``length``."""
+    generation = settings.models.generation
+    return GenerationSettings(
+        temperature=generation.temperature,
+        top_p=generation.top_p,
+        length=generation.response_length,
+    )
+
+
 async def read_turn_inputs(
-    conn: AsyncConnection, story_id: str, *, before_turn: int | None = None
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    before_turn: int | None = None,
+    configuration: StoryProfile | None = None,
 ) -> TurnInputs:
     """The prompt inputs of the next turn of ``story_id`` (call inside the read snapshot), or
-    of a regenerated turn ``before_turn`` (only what is positioned before it)."""
-    defaults = await read_lite_defaults(conn)
+    of a regenerated turn ``before_turn`` (only what is positioned before it), under
+    ``configuration`` (the one the turn captured at its start; read now when ``None``)."""
+    if configuration is None:
+        configuration = await effective_configuration(conn, story_id)
+    settings = configuration.settings
     guardrails = await read_guardrail_settings(conn)
-    raw_settings = await conn.scalar(select(stories.c.settings).where(stories.c.id == story_id))
-    settings = StorySettings.from_row(raw_settings)
-    window_messages = settings.lite_window_messages or defaults.lite_window_messages
+    window_messages = settings.memory.rolling_summary.window_messages
     guidance = await story_guidance(conn, story_id)
     texts = (
         await conn.execute(
@@ -271,19 +322,37 @@ async def read_turn_inputs(
             )
         )
     ).one_or_none()
-    segments = await included_segments(conn, story_id, before_turn=before_turn)
+    segments = (
+        await included_segments(conn, story_id, before_turn=before_turn)
+        if settings.memory.rolling_summary.enabled
+        else ()
+    )
+    pins = (
+        tuple(str(item["text"]) for item in texts.pinned)
+        if texts is not None and settings.pins.enabled
+        else ()
+    )
     cast = _cast((await conn.execute(_cast_query(story_id))).all())
+    scenario = await read_rendered(conn, story_id)
     return TurnInputs(
         guidance=guidance.prompt_guidance or "",
         instructions=texts.custom_instructions if texts is not None else "",
-        pins=tuple(str(item["text"]) for item in texts.pinned) if texts is not None else (),
+        pins=pins,
         segments=tuple(segment.label for segment in segments),
         cast=cast,
-        window=await _verbatim(conn, story_id, covered_to(segments), window_messages, before_turn),
-        deployment_generation=defaults.lite_generation_defaults,
-        story_generation=settings.generation_settings,
+        window=await _verbatim(
+            conn,
+            story_id,
+            covered_to(segments),
+            window_messages,
+            before_turn,
+            summarised=settings.memory.rolling_summary.enabled,
+        ),
+        generation=generation_of(settings),
         window_messages=window_messages,
         default_safe_fallback=guardrails.default_safe_fallback,
+        scenario_text=scenario.scenario_text,
+        director_notes=scenario.director_notes,
     )
 
 
@@ -436,6 +505,7 @@ __all__ = [
     "StoryCast",
     "TurnInputs",
     "WindowRow",
+    "generation_of",
     "joined_input",
     "read_regenerable",
     "read_story_cast",

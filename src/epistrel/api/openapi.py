@@ -7,7 +7,7 @@ at ``/openapi.json``. ``epistrel.tools.openapi`` writes the same document to
 
 What ``build`` adds or changes:
 
-- OpenAPI 3.1, ``info.version`` fixed at the milestone (``"m2"``, not the package version, so a
+- OpenAPI 3.1, ``info.version`` fixed at the milestone (``"m3"``, not the package version, so a
   release does not churn the file), no ``servers``.
 - FastAPI's default validation components (``HTTPValidationError``, ``ValidationError``) are
   removed: every error answers the one envelope (``Error``), and each operation declares the
@@ -16,10 +16,23 @@ What ``build`` adds or changes:
   every mutation), ``Idempotency-Key``, ``X-Epistrel-Expected-Revision`` (story-scoped
   mutations), ``Prefer: respond-async`` (respond and ingest) and the ``viewpoint`` query.
 - Response headers: ``Idempotency-Key`` and ``Idempotent-Replay`` on every mutation's success,
-  ``Location`` on creations and 202s, ``Retry-After`` on 423 and 503.
-- Components only the document needs: ``Error``, ``QueuedTurn`` (a queued turn's 202) and
-  ``StorySettingsPatch`` (``PATCH /stories/{id}/settings``'s body, which the Engine validates).
-- Tags: stories, timeline, history, operations, settings, admin, ops.
+  ``Location`` on creations and 202s, ``Retry-After`` on 423 and 503, ``Content-Range`` on 416.
+- ``GET /media/{media_id}/content`` (``auth.SIGNED_ROUTES``, #107) is documented as taking the
+  credential or nothing (``security: [{HTTPBearer: []}, {}]``): a valid signed URL's ``exp`` and
+  ``sig`` are its query parameters. ``PUT /media/uploads/{id}/parts/{n}`` takes raw bytes
+  (``RAW_BODIES``).
+- Components only the document needs: ``Error``, ``QueuedTurn`` (a queued turn's 202),
+  ``StorySettingsPatch`` (``PATCH /stories/{id}/settings``'s body, which the Engine validates)
+  and ``MediaUpload`` (the ``metadata`` part of ``POST /media``'s multipart body, which the
+  route reads itself, #105; ``MULTIPART_BODIES``).
+- Tags: stories, timeline, history, operations, settings, catalog, media, profiles, personas,
+  principals, ownership, feedback, admin, ops. Every
+  owned type's owner and relation routes (``routes.ownership``, #104) are tagged ``ownership``,
+  whichever router serves them, and a story character's promotion (#114) ``catalog``.
+- A route flagged ``mutating=False`` (``deps.route_flags``) is documented as a read with a
+  principal: no ``Idempotency-Key``, idempotency errors, replay headers or expected revision.
+- A read that answers the requesting principal's own record (``PRINCIPAL_READS``: a principal's
+  rating of a message, #112) documents ``X-Epistrel-Principal`` as required, with its 400.
 """
 
 from __future__ import annotations
@@ -34,17 +47,24 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import models_json_schema
 
-from epistrel.api.auth import EXEMPT_ROUTES, MUTATING_METHODS, PRINCIPAL_HEADER
-from epistrel.api.deps import EXPECTED_REVISION_HEADER, PREFER_HEADER, RESPOND_ASYNC
+from epistrel.api.auth import EXEMPT_ROUTES, MUTATING_METHODS, PRINCIPAL_HEADER, SIGNED_ROUTES
+from epistrel.api.deps import (
+    EXPECTED_REVISION_HEADER,
+    MUTATING_EXTRA,
+    PREFER_HEADER,
+    RESPOND_ASYNC,
+)
 from epistrel.api.responses import STORY_PATH_PARAMETER
+from epistrel.api.routes.ownership import OWNERSHIP_TAG, ownership_operation_ids
 from epistrel.api.routes.stories import StorySettingsPatch
+from epistrel.core.context import PRINCIPAL_PATTERN
+from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
+from epistrel.core.media.assets import POSTER_FILE_FIELD, MediaUpload
+from epistrel.core.ownership import REGISTRY
+from epistrel.core.stories import StorySpec
 
-PRINCIPAL_PATTERN = r"^[\t ]*[^\x00-\x1f\x7f]{1,256}[\t ]*$"
-"""``X-Epistrel-Principal`` as sent: 1 to 256 characters without control characters, between
-optional spaces and tabs (``require_principal`` trims those)."""
-
-SCHEMA_VERSION = "m2"
+SCHEMA_VERSION = "m3"
 """``info.version``: the milestone whose contract the document describes."""
 OPENAPI_VERSION = "3.1.0"
 TITLE = "Epistrel Engine"
@@ -56,6 +76,55 @@ TAGS: list[dict[str, str]] = [
     {"name": "history", "description": "The corrected history, for one output viewpoint."},
     {"name": "operations", "description": "One operation: the reference of a retried call."},
     {"name": "settings", "description": "A story's settings, guardrails and config changes."},
+    {
+        "name": "catalog",
+        "description": "Catalog characters and scenarios: drafts, immutable published versions "
+        "and their `card`/`full` projections (FR-CAT, FR-SCN-1..4,10).",
+    },
+    {
+        "name": "media",
+        "description": "Media assets: immutable, content-addressed images and videos with their "
+        "declared depicted subjects, an optional moderation hook, and delete-as-retire "
+        "(FR-MEDIA-1,2); byte ranges, short-lived signed URLs, resumable uploads and a poster "
+        "for every video (FR-MEDIA-3).",
+    },
+    {
+        "name": "profiles",
+        "description": "Engine profiles: named, versioned sets of capability modules and dials "
+        "that set how hard the engine works for a story (FR-PROF-1..4). The schema exposes only "
+        "the modules and levels this deployment has delivered; presets are ordinary profiles. A "
+        "story runs under its profile's latest version with its own overrides over it, on top "
+        "of the deployment's defaults (FR-PROF-5,6).",
+    },
+    {
+        "name": "personas",
+        "description": "Player personas (FR-CAT-6): the name, gender, age and short description "
+        "a player plays as, saved per principal for reuse. A persona is not a catalog entry, "
+        "and a story keeps a snapshot of the one it was created with, so editing or deleting a "
+        "persona never changes a story.",
+    },
+    {
+        "name": "principals",
+        "description": "Principal lookup (FR-AUTH-7): everything linked to a principal, owned "
+        "and related, by type, with counts and pages. Principals are opaque and never "
+        "resolved; offboarding is under `/admin/offboarding`.",
+    },
+    {
+        "name": OWNERSHIP_TAG,
+        "description": "Each owned entity's one owner and its relations (FR-AUTH-5,6): "
+        "transfers and relation changes, recorded with the acting principal. Ownership and "
+        "relations exist for listing, attribution and offboarding only; nothing gates on them "
+        "(FR-AUTH-8).",
+    },
+    {
+        "name": "feedback",
+        "description": "Message feedback: each principal's rating (1 to 5) of a generated message, "
+        "with reason tags and free text, recorded with the configuration the message was "
+        "produced under (FR-FB-1). Feedback is an audit record: nothing in the story reads it, "
+        "and it changes no engine behavior (FR-FB-2). Its aggregates with the implicit signals, "
+        "the guardrail and memory review lists (FR-FB-3), and the operator's opt-in export of "
+        "labelled cases under `/admin/feedback` (FR-FB-4) are flag-only reports.",
+    },
     {"name": "admin", "description": "Operator endpoints, all under `/admin` (FR-AUTH-1)."},
     {"name": "ops", "description": "Unauthenticated operational probes."},
 ]
@@ -66,8 +135,21 @@ ROUTE_TAGS: dict[str, str] = {
     "story_settings": "settings",
     "update_story_settings": "settings",
     "config_changes_story": "settings",
+    "promote_character": "catalog",
+    # The feedback export (#126) is an operator endpoint under ``/admin``, filed under feedback.
+    "export_feedback": "feedback",
+    "list_feedback_exports": "feedback",
+    "get_feedback_export": "feedback",
+    "get_feedback_export_content": "feedback",
+    "delete_feedback_export": "feedback",
+    **{
+        operation_id: OWNERSHIP_TAG
+        for entity_type in REGISTRY
+        for operation_id in ownership_operation_ids(entity_type)
+    },
 }
-"""Operations whose router tag is broader than the tag they belong under."""
+"""Operations whose router tag is broader than the tag they belong under: some story routes,
+and every owned type's owner and relation routes."""
 
 
 class ErrorBody(BaseModel):
@@ -128,29 +210,83 @@ ERROR_STATUS: dict[str, int] = {
     "principal_required": 400,
     "unauthenticated": 401,
     "omniscient_required": 403,
+    "signature_invalid": 403,
+    "url_expired": 403,
+    "feedback_export_disabled": 403,
     "not_found": 404,
     "client_event_conflict": 409,
     "idempotency_conflict": 409,
     "nothing_to_undo": 409,
     "revision_conflict": 409,
     "story_archived": 409,
+    "story_paused": 409,
     "timeline_changed": 409,
+    "erased_subject_referenced": 409,
     "unknown_chain": 409,
     "config_conflict": 409,
+    "draft_stale": 409,
+    "feedback_tag_in_use": 409,
+    "listing_status_in_use": 409,
+    "offboarding_in_progress": 409,
+    "persona_name_taken": 409,
+    "upload_closed": 409,
+    "upload_incomplete": 409,
+    "length_required": 411,
+    "draft_too_large": 413,
+    "media_too_large": 413,
+    "use_multipart": 413,
+    "media_type_not_allowed": 415,
+    "range_not_satisfiable": 416,
     "budget_below_safety_minimum": 422,
     "cannot_relax": 422,
+    "cast_limit_exceeded": 422,
+    "checksum_mismatch": 422,
+    "companion_follows_character": 422,
+    "companion_slots_fixed": 422,
+    "creation_conflicts": 422,
+    "cursor_invalid": 422,
+    "eligibility_failed": 422,
+    "entry_archived": 422,
     "guardrail_violation": 422,
     "inheritance_cycle": 422,
+    "invalid_erasure_scope": 422,
+    "invalid_listing_status": 422,
+    "invalid_profile": 422,
+    "locked_slot_reassigned": 422,
+    "media_retired": 422,
+    "moderation_rejected": 422,
+    "not_published": 422,
     "nothing_to_regenerate": 422,
+    "override_not_allowed": 422,
+    "part_invalid": 422,
+    "persona_required": 422,
+    "player_role_fixed": 422,
+    "poster_extraction_failed": 422,
+    "poster_invalid": 422,
+    "poster_required": 422,
+    "principal_reserved": 422,
+    "profile_deleted": 422,
+    "publish_invalid": 422,
+    "rating_check_failed": 422,
     "rating_retired": 422,
+    "slot_required": 422,
+    "subjects_required": 422,
+    "transfer_target_invalid": 422,
+    "transfer_target_required": 422,
+    "unknown_feedback_tag": 422,
     "unsupported_event_kind": 422,
     "validation_error": 422,
     "viewpoint_unresolved": 422,
     "story_busy": 423,
     "budget_exhausted": 503,
     "config_key_missing": 503,
+    "config_missing": 503,
     "database_unavailable": 503,
+    "erasure_pending": 503,
+    "ledger_unavailable": 503,
+    "media_store_unavailable": 503,
     "model_unavailable": 503,
+    "moderation_unavailable": 503,
     "original_in_flight_timeout": 503,
     "turn_interrupted": 503,
 }
@@ -161,24 +297,79 @@ a configuration write the current state refuses (its ``code`` is ``validation_er
 STATUS_TEXT = {
     400: "Bad request",
     401: "No valid service credential",
-    403: "Forbidden for the requested viewpoint",
+    403: "Forbidden",
     404: "Not found",
     409: "Conflict; nothing was written",
+    411: "The body's length is required; nothing was written",
+    413: "Too large; nothing was written",
+    415: "Unsupported media type; nothing was written",
+    416: "Range not satisfiable",
     422: "Invalid request; nothing was written",
     423: "The story is busy",
     503: "Unavailable; nothing was written",
 }
 
-_TURN = ("model_unavailable", "budget_exhausted", "turn_interrupted", "timeline_changed")
+_TURN = (
+    "model_unavailable",
+    "budget_exhausted",
+    "turn_interrupted",
+    "timeline_changed",
+    "erased_subject_referenced",
+)
+_UPLOADED = (
+    "subjects_required",
+    "media_type_not_allowed",
+    "media_too_large",
+    "rating_retired",
+    "moderation_rejected",
+    "moderation_unavailable",
+    "config_key_missing",
+    "media_retired",
+    "poster_invalid",
+    "poster_required",
+    "poster_extraction_failed",
+    "media_store_unavailable",
+    "erased_subject_referenced",
+)
+"""What storing an upload can answer, directly or from a resumable session (#105, #107)."""
 _GATED = ("guardrail_violation", "budget_below_safety_minimum", "model_unavailable")
+_SCENARIO_SAVE = (
+    "draft_too_large",
+    "cast_limit_exceeded",
+    "rating_retired",
+    "media_retired",
+    "erased_subject_referenced",
+)
+"""What a scenario's create or save can answer besides the rules' ``validation_error`` (#108)."""
 _ADMIN_CONFIG = ("config_conflict",)
+_TEXT_EDIT = ("story_archived", "story_paused", "timeline_changed", "erased_subject_referenced")
+"""A pinned-memory or custom-instruction edit (#127: one prepared before an erasure that names
+the erased subject is refused)."""
 
 OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
-    "create_story": (*_GATED, "rating_retired", "viewpoint_unresolved"),
+    "create_story": (
+        *_GATED,
+        "rating_retired",
+        "viewpoint_unresolved",
+        # a creation from a scenario (#119)
+        "creation_conflicts",
+        "slot_required",
+        "locked_slot_reassigned",
+        "player_role_fixed",
+        "persona_required",
+        "entry_archived",
+        "not_published",
+        "override_not_allowed",
+        "eligibility_failed",
+        "cast_limit_exceeded",
+        "rating_check_failed",
+        "profile_deleted",
+    ),
     "respond": (
         *_GATED,
         *_TURN,
         "story_archived",
+        "story_paused",
         "story_busy",
         "viewpoint_unresolved",
     ),
@@ -186,6 +377,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         *_GATED,
         *_TURN,
         "story_archived",
+        "story_paused",
         "story_busy",
         "viewpoint_unresolved",
         "nothing_to_regenerate",
@@ -193,21 +385,42 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "ingest": (
         *_GATED,
         "story_archived",
+        "story_paused",
         "story_busy",
         "client_event_conflict",
         "timeline_changed",
         "unsupported_event_kind",
+        "erased_subject_referenced",
     ),
-    "set_pinned_memories": (*_GATED, "story_archived", "timeline_changed"),
-    "set_custom_instructions": (*_GATED, "story_archived", "timeline_changed"),
-    "truncate": ("story_archived", "story_busy"),
-    "untruncate": ("story_archived", "story_busy", "nothing_to_undo"),
-    "swap": ("story_archived", "story_busy", "unknown_chain"),
-    "fork": ("unknown_chain", "database_unavailable"),
-    "archive_story": ("story_busy",),
-    "unarchive_story": ("story_busy",),
+    "set_pinned_memories": (*_GATED, *_TEXT_EDIT),
+    "set_custom_instructions": (*_GATED, *_TEXT_EDIT),
+    "truncate": ("story_archived", "story_paused", "story_busy"),
+    "untruncate": ("story_archived", "story_paused", "story_busy", "nothing_to_undo"),
+    "swap": ("story_archived", "story_paused", "story_busy", "unknown_chain"),
+    "fork": ("story_paused", "unknown_chain", "database_unavailable"),
+    "archive_story": ("story_paused", "story_busy"),
+    "unarchive_story": ("story_paused", "story_busy"),
     "delete_story": ("story_busy",),
-    "update_story_settings": ("cannot_relax", "viewpoint_unresolved", "story_archived"),
+    # A story's characters (#114): one added to a running story is gated and refused on an
+    # archived or busy story; a promotion's rating must be assignable.
+    "add_story_character": (
+        *_GATED,
+        "story_archived",
+        "story_paused",
+        "story_busy",
+        "media_retired",
+        "erased_subject_referenced",
+    ),
+    "promote_character": ("rating_retired",),
+    # Its ``policies`` are refused while the story is paused (#118); its settings are not.
+    "update_story_settings": (
+        "cannot_relax",
+        "viewpoint_unresolved",
+        "story_archived",
+        "story_paused",
+    ),
+    # A story's rating (#118): a tightening pauses the story, so a second change waits.
+    "set_content_rating": ("story_archived", "story_paused", "rating_retired"),
     "rebuild_projections": ("story_busy",),
     "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
     "get_story": ("viewpoint_unresolved",),
@@ -215,7 +428,14 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "create_content_rating": (*_ADMIN_CONFIG, "inheritance_cycle", "rating_retired"),
     "update_content_rating": (*_ADMIN_CONFIG, "inheritance_cycle", "rating_retired"),
     "retire_content_rating": _ADMIN_CONFIG,
-    "update_deployment_settings": (*_ADMIN_CONFIG, "rating_retired"),
+    "update_deployment_settings": (
+        *_ADMIN_CONFIG,
+        "rating_retired",
+        "profile_deleted",
+        "invalid_profile",
+        "listing_status_in_use",
+        "feedback_tag_in_use",
+    ),
     "policies_create": (*_ADMIN_CONFIG, "cannot_relax"),
     "policies_update": (*_ADMIN_CONFIG, "cannot_relax"),
     "policies_retire": _ADMIN_CONFIG,
@@ -223,6 +443,131 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "remove_model_override": _ADMIN_CONFIG,
     "set_model_api_key": (*_ADMIN_CONFIG, "config_key_missing"),
     "remove_model_api_key": _ADMIN_CONFIG,
+    # A character's create or save checks what it adds: an assignable rating, live images and
+    # reference images (#114, #115); a publish holds the rating while it records its version.
+    "create_character_draft": ("draft_too_large", "rating_retired", "media_retired"),
+    "save_character_draft": (
+        "draft_stale",
+        "draft_too_large",
+        "entry_archived",
+        "rating_retired",
+        "media_retired",
+    ),
+    # A character's publish makes its companion's version too (#116): each refusal may be the
+    # companion's (``details.entity``).
+    "publish_character": ("draft_stale", "entry_archived", "publish_invalid", "rating_retired"),
+    "get_character": ("not_published",),
+    "create_scenario_draft": _SCENARIO_SAVE,
+    # A companion scenario (#116): its slots are fixed, and it is archived, unarchived and
+    # deleted only with its character.
+    "save_scenario_draft": (
+        "draft_stale",
+        "entry_archived",
+        *_SCENARIO_SAVE,
+        "companion_slots_fixed",
+    ),
+    "publish_scenario": ("draft_stale", "entry_archived", "publish_invalid", "rating_retired"),
+    "archive_scenario": ("companion_follows_character",),
+    "unarchive_scenario": ("companion_follows_character",),
+    "delete_scenario": ("companion_follows_character",),
+    # The dry run (#111): a draft revision the draft has moved on from.
+    "validate_scenario": ("draft_stale",),
+    "get_scenario": ("not_published",),
+    # Listing status and listings (#110): a value outside the deployment's set, a companion's
+    # status (it follows its character's), a cursor given for other filters.
+    "set_listing_status_character": ("invalid_listing_status",),
+    "set_listing_status_scenario": ("invalid_listing_status", "companion_follows_character"),
+    "search_catalog_character": ("invalid_listing_status", "cursor_invalid"),
+    "search_catalog_scenario": ("invalid_listing_status", "cursor_invalid"),
+    "upload_media": (
+        *_UPLOADED,
+        "use_multipart",
+    ),
+    "get_media_content": (
+        "url_expired",
+        "signature_invalid",
+        "range_not_satisfiable",
+        "media_store_unavailable",
+    ),
+    "get_media_url": ("config_missing", "config_key_missing", "media_store_unavailable"),
+    "open_upload": (
+        "subjects_required",
+        "media_type_not_allowed",
+        "media_too_large",
+        "rating_retired",
+        "media_retired",
+        "poster_invalid",
+        "poster_required",
+        "media_store_unavailable",
+    ),
+    "put_upload_part": (
+        "length_required",
+        "part_invalid",
+        "checksum_mismatch",
+        "upload_closed",
+        "media_store_unavailable",
+    ),
+    "complete_upload": (
+        *_UPLOADED,
+        "upload_incomplete",
+        "upload_closed",
+        "checksum_mismatch",
+    ),
+    # Personas (#114): a name the owner already uses (a transfer too), a list's cursor.
+    "create_persona": ("persona_name_taken",),
+    "update_persona": ("persona_name_taken",),
+    "list_personas": ("cursor_invalid",),
+    "transfer_owner_persona": ("persona_name_taken",),
+    # Engine profiles (#106): settings that cannot run, a deleted profile, the default.
+    "create_profile": ("invalid_profile",),
+    "update_profile": ("invalid_profile", "profile_deleted"),
+    "validate_profile": ("invalid_profile",),
+    "delete_profile": _ADMIN_CONFIG,
+    # A story's configuration (#109): a preview refuses what the change itself would; the
+    # assignment and the overrides (#113) are story configuration writes.
+    "impact_preview": ("invalid_profile", "profile_deleted"),
+    "assign_engine_profile": ("invalid_profile", "profile_deleted", "story_archived"),
+    "set_profile_overrides": ("invalid_profile", "story_archived"),
+    # Principal lookup and offboarding (#117): a page's cursor another page gave; a request
+    # that cannot run, or a principal already being offboarded.
+    "lookup_principal": ("cursor_invalid",),
+    # Erasure (#124): a story character scoped to the catalog; no config key for the ledger.
+    "erase": (
+        "invalid_erasure_scope",
+        "not_found",
+        "revision_conflict",
+        "config_key_missing",
+        "ledger_unavailable",
+    ),
+    # The reconciler (#125): a ledger file that cannot be read or disagrees with the database.
+    "reconcile_erasure": ("ledger_unavailable",),
+    "offboard_principal": (
+        "principal_reserved",
+        "transfer_target_required",
+        "transfer_target_invalid",
+        "offboarding_in_progress",
+    ),
+    # Message feedback (#112): a tag outside the deployment's set; the read of one's own rating
+    # needs the principal.
+    "rate_message": ("unknown_feedback_tag",),
+    "get_feedback": ("principal_required",),
+    # Feedback reports and export (#126): a cursor another listing gave; the export while it is
+    # off; a file since deleted (404, documented by the path rule).
+    # ``story_id`` is a query parameter there: an unknown story is 404, a blocked one 503.
+    "feedback_aggregates": ("not_found", "erasure_pending"),
+    "feedback_review_guardrail": ("cursor_invalid", "not_found", "erasure_pending"),
+    "feedback_review_memory": ("cursor_invalid", "not_found", "erasure_pending"),
+    "export_feedback": ("feedback_export_disabled", "media_store_unavailable"),
+    "list_feedback_exports": ("cursor_invalid",),
+    "get_feedback_export_content": ("media_store_unavailable",),
+    "delete_feedback_export": ("media_store_unavailable",),
+    # A companion scenario's owner and relations follow its character (#104, #116).
+    **{
+        operation_id: ("companion_follows_character",)
+        for entity_type, owned in REGISTRY.items()
+        if owned.follows is not None
+        for operation_id in ownership_operation_ids(entity_type)[:3]
+    },
 }
 """Error codes beyond the ones every operation of its kind can answer (``_rule_errors``)."""
 
@@ -232,20 +577,87 @@ QUEUEING_OPERATIONS = frozenset({"respond", "ingest"})
 VIEWPOINT_OPERATIONS = frozenset({"respond", "regenerate", "history", "get_story", "get_operation"})
 """Operations that read the output viewpoint from ``?viewpoint=`` (FR-RESP-12)."""
 
+PRINCIPAL_READS = frozenset({"get_feedback"})
+"""Reads that answer the requesting principal's own record, so ``X-Epistrel-Principal`` is
+required on them too: a principal's rating of a message (FR-FB-1, FR-AUTH-4; #112)."""
+
 CREATING_OPERATIONS = frozenset({"create_story", "fork"})
 """Operations that answer 201 with ``Location: /stories/{id}``."""
 
-DOCUMENTED_BODIES = {"update_story_settings": "StorySettingsPatch"}
-"""Operations whose handler takes a raw JSON object (validated by the Engine) and the component
-that documents it."""
+MEDIA_CREATING_OPERATIONS = frozenset({"complete_upload"})
+"""Operations that answer 201 with ``Location: /media/{id}`` (#107)."""
+
+CATALOG_CREATING_OPERATIONS = frozenset({"promote_character"})
+"""Operations that answer 201 with ``Location: /catalog/characters/{id}`` (#114)."""
+
+OFFBOARDING_OPERATIONS = frozenset({"offboard_principal"})
+"""Operations that answer 202 with ``Location: /admin/offboarding/{job_id}`` (#117)."""
+
+DOCUMENTED_BODIES: dict[str, str | tuple[str, ...]] = {
+    "update_story_settings": "StorySettingsPatch",
+    "create_story": ("StorySpec", "StoryFromScenario"),
+}
+"""Operations whose handler takes a raw JSON object (validated by the Engine or the handler) and
+the component that documents it, or the components it is one of (``anyOf``: ``POST /stories``
+takes a blank story or one from a scenario, #119)."""
+
+MULTIPART_BODIES = {"upload_media": "MediaUpload"}
+"""Operations whose handler reads a ``multipart/form-data`` body itself (#105): a ``metadata``
+part (the component named here, as JSON) followed by a binary ``file`` part and, for a video,
+an optional binary ``poster_file`` part (#107)."""
+
+RAW_BODIES = frozenset({"put_upload_part"})
+"""Operations whose handler streams a raw ``application/octet-stream`` body itself (#107)."""
 
 
-def _rule_errors(method: str, path: str) -> list[str]:
+def _multipart_body(component: str) -> dict[str, Any]:
+    return {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "required": ["metadata", "file"],
+                    "properties": {
+                        "metadata": {"$ref": REF.format(model=component)},
+                        "file": {
+                            "type": "string",
+                            "format": "binary",
+                            "description": "The bytes, as the part's own `Content-Type` "
+                            "declares them (or `application/octet-stream`).",
+                        },
+                        POSTER_FILE_FIELD: {
+                            "type": "string",
+                            "format": "binary",
+                            "description": "A video only, after `file`: its poster image "
+                            "(stored with the video's rating, owner and subjects), instead of "
+                            "`poster` or a frame ffmpeg extracts.",
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                "encoding": {"metadata": {"contentType": "application/json"}},
+            }
+        },
+    }
+
+
+ERASURE_UNGATED_ROUTES = frozenset({("DELETE", "/stories/{story_id}")})
+"""Story routes a story blocked by the erasure reconciler still answers (#125)."""
+
+
+def _rule_errors(method: str, path: str, *, mutating: bool) -> list[str]:
     codes = ["unauthenticated", "validation_error", "database_unavailable"]
     if "{" in path:
         codes.append("not_found")
+    if STORY_PATH_PARAMETER in path and (method, path) not in ERASURE_UNGATED_ROUTES:
+        # A story the erasure reconciler blocked is refused until its erasures are reapplied
+        # (#125); ``ledger_unavailable`` when the ledger cannot be compared on the first call.
+        codes += ["erasure_pending", "ledger_unavailable"]
     if method in MUTATING_METHODS:
-        codes += ["principal_required", "idempotency_conflict", "original_in_flight_timeout"]
+        codes.append("principal_required")
+    if mutating:
+        codes += ["idempotency_conflict", "original_in_flight_timeout"]
         if STORY_PATH_PARAMETER in path:
             codes.append("revision_conflict")
     return codes
@@ -268,6 +680,8 @@ def _error_responses(codes: Iterable[str]) -> dict[str, Any]:
             response["headers"] = {"Retry-After": _header("Seconds to wait before retrying.")}
         if status == 401:
             response["headers"] = {"WWW-Authenticate": _header("`Bearer`.")}
+        if status == 416:
+            response["headers"] = {"Content-Range": _header("`bytes */<size>`.")}
         responses[str(status)] = response
     return responses
 
@@ -291,10 +705,11 @@ def _parameter(
     }
 
 
-def _parameters(operation_id: str, method: str, path: str) -> list[dict[str, Any]]:
+def _parameters(
+    operation_id: str, method: str, path: str, *, mutating: bool
+) -> list[dict[str, Any]]:
     added: list[dict[str, Any]] = []
-    mutating = method in MUTATING_METHODS
-    if mutating:
+    if method in MUTATING_METHODS:
         added.append(
             _parameter(
                 PRINCIPAL_HEADER,
@@ -303,6 +718,19 @@ def _parameters(operation_id: str, method: str, path: str) -> list[dict[str, Any
                 "`principal_required` when missing, blank, longer than 256 characters, holding a "
                 "control character, or the reserved `system`), recorded for attribution and "
                 "never interpreted. Surrounding spaces and tabs are trimmed.",
+                required=True,
+                pattern=PRINCIPAL_PATTERN,
+            )
+        )
+    elif operation_id in PRINCIPAL_READS:
+        added.append(
+            _parameter(
+                PRINCIPAL_HEADER,
+                "header",
+                "The opaque requesting principal (FR-AUTH-4), whose own record this read "
+                "answers: required (400 `principal_required` when missing, blank, longer than "
+                "256 characters, holding a control character, or the reserved `system`). "
+                "Surrounding spaces and tabs are trimmed.",
                 required=True,
                 pattern=PRINCIPAL_PATTERN,
             )
@@ -348,15 +776,23 @@ def _parameters(operation_id: str, method: str, path: str) -> list[dict[str, Any
     return added
 
 
-def _success_headers(operation_id: str, method: str, status: str) -> dict[str, Any]:
+def _success_headers(
+    operation_id: str, method: str, status: str, *, mutating: bool
+) -> dict[str, Any]:
     headers: dict[str, Any] = {}
-    if method in MUTATING_METHODS:
+    if mutating:
         headers[IDEMPOTENCY_HEADER] = _header("The request's key, echoed (generated if absent).")
         headers[IDEMPOTENT_REPLAY_HEADER] = _header(
             "`true` when this is a stored response replayed for a retry.", schema={"enum": ["true"]}
         )
     if status == "201" and operation_id in CREATING_OPERATIONS:
         headers["Location"] = _header("`/stories/{id}` of the new story.")
+    if status == "201" and operation_id in MEDIA_CREATING_OPERATIONS:
+        headers["Location"] = _header("`/media/{id}` of the new asset.")
+    if status == "201" and operation_id in CATALOG_CREATING_OPERATIONS:
+        headers["Location"] = _header("`/catalog/characters/{id}` of the new draft entry.")
+    if status == "202" and operation_id in OFFBOARDING_OPERATIONS:
+        headers["Location"] = _header("`/admin/offboarding/{job_id}` of the offboarding.")
     if status == "202" and operation_id in QUEUEING_OPERATIONS:
         headers["Location"] = _header("`/operations/{id}` of the queued turn.")
     return headers
@@ -371,6 +807,9 @@ def _extra_components() -> dict[str, Any]:
             (Error, "serialization"),
             (QueuedTurn, "serialization"),
             (StorySettingsPatch, "validation"),
+            (StorySpec, "validation"),
+            (StoryFromScenario, "validation"),
+            (MediaUpload, "validation"),
         ],
         ref_template=REF,
     )
@@ -414,14 +853,28 @@ def _finish_operation(operation: dict[str, Any], method: str, path: str) -> None
     if operation_id in ROUTE_TAGS:
         operation["tags"] = [ROUTE_TAGS[operation_id]]
     if operation_id in DOCUMENTED_BODIES:
+        documented = DOCUMENTED_BODIES[operation_id]
+        body_schema: dict[str, Any] = (
+            {"$ref": REF.format(model=documented)}
+            if isinstance(documented, str)
+            else {"anyOf": [{"$ref": REF.format(model=name)} for name in documented]}
+        )
+        operation["requestBody"] = {
+            "required": True,
+            "content": {"application/json": {"schema": body_schema}},
+        }
+    if operation_id in MULTIPART_BODIES:
+        operation["requestBody"] = _multipart_body(MULTIPART_BODIES[operation_id])
+    if operation_id in RAW_BODIES:
         operation["requestBody"] = {
             "required": True,
             "content": {
-                "application/json": {
-                    "schema": {"$ref": REF.format(model=DOCUMENTED_BODIES[operation_id])}
-                }
+                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
             },
         }
+    if (method, path) in SIGNED_ROUTES:
+        # The credential, or nothing but a valid signed URL's ``exp`` and ``sig`` (#107).
+        operation["security"] = [*operation.get("security", []), {}]
     responses: dict[str, Any] = operation.setdefault("responses", {})
     exempt = (method, path) in EXEMPT_ROUTES or (
         method == "HEAD" and ("GET", path) in EXEMPT_ROUTES
@@ -429,21 +882,27 @@ def _finish_operation(operation: dict[str, Any], method: str, path: str) -> None
     responses.pop("422", None)
     if exempt:
         return
+    # A route flagged ``mutating=False`` (``deps.route_flags``) keeps the principal rule of its
+    # method but takes no key and checks no revision.
+    mutating = method in MUTATING_METHODS and operation.get(MUTATING_EXTRA, True) is not False
     for status, response in responses.items():
         if status.startswith("2"):
-            headers = _success_headers(operation_id, method, status)
+            headers = _success_headers(operation_id, method, status, mutating=mutating)
             if headers:
                 response.setdefault("headers", {}).update(headers)
     if operation_id in QUEUEING_OPERATIONS:
         responses["202"] = {
             "description": "The turn is queued behind the running one (FR-CONC-5).",
-            "headers": _success_headers(operation_id, method, "202"),
+            "headers": _success_headers(operation_id, method, "202", mutating=mutating),
             "content": {"application/json": {"schema": {"$ref": REF.format(model="QueuedTurn")}}},
         }
-    codes = [*_rule_errors(method, path), *OPERATION_ERRORS.get(operation_id, ())]
+    codes = [
+        *_rule_errors(method, path, mutating=mutating),
+        *OPERATION_ERRORS.get(operation_id, ()),
+    ]
     responses.update(_error_responses(codes))
     present = {(p["name"], p["in"]) for p in operation.get("parameters", [])}
-    for parameter in _parameters(operation_id, method, path):
+    for parameter in _parameters(operation_id, method, path, mutating=mutating):
         if (parameter["name"], parameter["in"]) not in present:
             operation.setdefault("parameters", []).append(parameter)
 
@@ -466,6 +925,7 @@ def install(app: FastAPI) -> None:
 
 
 __all__ = [
+    "MULTIPART_BODIES",
     "OPERATION_ERRORS",
     "SCHEMA_VERSION",
     "TAG_NAMES",

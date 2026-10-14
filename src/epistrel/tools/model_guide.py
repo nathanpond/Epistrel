@@ -16,6 +16,7 @@ rendered: ``GuideError`` names it, so the generator and the check both fail.
 
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 
@@ -49,6 +50,19 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
     ),
     ContentCategory.SUBJECT_TRUE_AGE: "A resolved subject's true age.",
     ContentCategory.CHECKED_TEXT: "The text a guardrail check is judging (input or output).",
+    ContentCategory.CATALOG_TEXT: (
+        "A catalog entry's text under review, private fields included, with where each part "
+        "sits (a rating suggestion; author-facing, FR-RATE-8)."
+    ),
+    ContentCategory.RATING_DESCRIPTION: "A content rating's name and content-policy description.",
+    ContentCategory.SCENARIO_TEXT: (
+        "A scenario story's world, seeded facts, relationships, starting places and player "
+        "persona, as text (#122)."
+    ),
+    ContentCategory.DIRECTOR_NOTES: (
+        "A scenario story's director notes: plot hooks, objectives, guidance, planned reveals, "
+        "milestones and endings (#122)."
+    ),
 }
 
 STRUCTURED_LABELS: Mapping[StructuredOutput, str] = {
@@ -149,7 +163,11 @@ def _purpose(purpose: Purpose) -> list[str]:
         "",
         f"- **Hot path:** {'yes' if purpose.hot_path else 'no'}",
         f"- **Default model:** the {_code(purpose.default_model_key)} row of `model_config`, "
-        "unless the purpose has its own",
+        + (
+            "unless the purpose has its own"
+            if purpose.default_model_key == "default"
+            else "then the `default` row, per field, unless the purpose has its own"
+        ),
         f"- **Template:** {_code(purpose.template)}",
         "- **Capability floor:** structured output: "
         f"{STRUCTURED_LABELS[floor.structured_output]}; minimum context "
@@ -160,9 +178,10 @@ def _purpose(purpose: Purpose) -> list[str]:
         lines.append("- **Returns:** free text")
     else:
         fields = ", ".join(_code(name) for name in schema.model_fields)
+        free_text = '"type": "string"' in json.dumps(schema.model_json_schema())
         lines.append(
-            f"- **Returns:** {_code(schema.__name__)} ({fields}), validated strictly; no "
-            "free-text field"
+            f"- **Returns:** {_code(schema.__name__)} ({fields}), validated strictly; "
+            + ("its free text is author-facing" if free_text else "no free-text field")
         )
     lines += ["", "**Receives**", "", "| Field | Content category |", "|---|---|"]
     for path, category in _leaf_paths(field_categories(purpose.input_schema)):

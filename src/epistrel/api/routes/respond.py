@@ -12,6 +12,8 @@ from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.history import ItemModel, item_model
+from epistrel.core.profiles.effective import ProfileVersionRef
+from epistrel.core.profiles.fingerprint import QualityStatus
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
 from epistrel.orchestrator.models.metrics import ModelCall
 
@@ -33,14 +35,16 @@ RESPOND_DESCRIPTION = (
     "per model-assisted output policy) and none of its claims is checked against the story's "
     "facts. Before it is released the reply is checked against the "
     "story's output policies: a reply that breaks one is generated again with the policy's "
-    "message as a constraint, up to the story's `guardrail_retry_budget`, and then the "
+    "message as a constraint, up to the story's polish budget (its configuration's "
+    "`repair.polish.max_regenerations`; none with the polish pass off), and then the "
     "character's safe fallback line is returned instead (`guardrail.fallback_used`, "
     '`degradation: ["safe_fallback"]`). Rejected drafts are audit records only. '
     "Several characters are voiced in one generation, and "
     "their knowledge is kept apart only by instructions in that shared prompt."
-    "\n\nEvery turn runs under a model-call budget and a deadline: the story's "
-    "`max_model_calls_per_turn` (default `9 + G`, where G is one call per model-assisted input "
-    "policy plus one per model-assisted output policy) and `turn_deadline`, or a smaller "
+    "\n\nEvery turn runs under a model-call budget and a deadline from the story's effective "
+    "configuration (`GET /stories/{id}/effective-config`): `budgets.model_calls` (`null`, "
+    "Lite's: `9 + G`, where G is one call per model-assisted input policy plus one per "
+    "model-assisted output policy) and `budgets.deadline_ms`, or a smaller "
     "`budget: {max_calls, deadline_s}` in the request (above the story's is 422). A budget "
     "below one generation plus G is refused with 422 `budget_below_safety_minimum` "
     "(`details.minimum_required`) before any model call. The response reports `model_calls` "
@@ -50,12 +54,22 @@ RESPOND_DESCRIPTION = (
     "the story's turn queue (null when it never queued) and `first_call_offset_ms` the delay "
     "from the turn reaching the front (a queued turn starting, else the request arriving) to "
     "its first model call; `elapsed_ms` starts at that same moment."
+    "\n\nThe turn captures the story's configuration when it starts and runs under it to the "
+    "end: the deployment's profile defaults, then the story's engine profile at its latest "
+    "version, then the story's overrides (FR-PROF-5,6). The generation settings come from it, "
+    "then from the request's prompt parameters (FR-LITE-4). Every response states that "
+    "configuration (FR-PROF-16): the engine `profile` (`{id, version}`) and the story's "
+    "`config_revision` then, its `fingerprint` (`sha256:` over the profile version, each "
+    "purpose's model and every quality-relevant setting, prompt templates included), the "
+    "`capabilities` it enables, and its `quality_status` (`uncertified` until a certification "
+    "matches the fingerprint, which no M3 configuration can have)."
     "\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and "
     "`X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written)."
     "\n\nWhile another turn of the story runs, a story with `turn_concurrency: reject` (the "
     "default) answers 423 `story_busy` with `Retry-After`, and one with `queue` queues the turn "
     "and plays the queued turns in order, each after the previous one finished. The request "
-    "waits for its queued turn up to the story's `turn_deadline`, then answers 202 "
+    "waits for its queued turn up to the story's turn deadline (`budgets.deadline_ms`), then "
+    "answers 202 "
     "`{operation_id, position}` with `Location: /operations/{id}` while the turn stays queued; "
     "`Prefer: respond-async` answers 202 at once. A retry under the same `Idempotency-Key` "
     "waits for the same turn. A full queue (`turn_queue_max`) is 423."
@@ -105,7 +119,11 @@ class DegradationBody(BaseModel):
 
 class RespondResponse(MutationResponse):
     """One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,
-    the story's new revision, the model calls it made, and where its time went."""
+    the story's new revision, the model calls it made, where its time went, and the
+    configuration it ran under: ``fingerprint``, ``capabilities`` and ``quality_status``
+    (FR-PROF-16; null only on a replay of a turn stored before fingerprints existed), the engine
+    ``profile`` and version it captured at its start, and the story's ``config_revision`` then
+    (#113, C-16; null only on a replay of a turn stored before #113)."""
 
     message: MessageBody
     beats: list[ItemModel]
@@ -122,6 +140,11 @@ class RespondResponse(MutationResponse):
     budget: BudgetBody | None
     queued_ms: int | None = None
     first_call_offset_ms: int | None = None
+    fingerprint: str | None
+    capabilities: list[str]
+    quality_status: QualityStatus | None
+    profile: ProfileVersionRef | None
+    config_revision: int | None
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -142,6 +165,11 @@ class RespondResponse(MutationResponse):
             call_counts=result.call_counts,
             queued_ms=result.queued_ms,
             first_call_offset_ms=result.first_call_offset_ms,
+            fingerprint=result.fingerprint,
+            capabilities=list(result.capabilities),
+            quality_status=result.quality_status,
+            profile=result.profile,
+            config_revision=result.config_revision,
             budget=(
                 None
                 if result.budget is None

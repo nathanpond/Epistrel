@@ -22,7 +22,10 @@ one transaction that does all of the following:
    dormant continuation at the first new turn over it, #66);
 4. assigns dense per-story ``seq`` values (``max(seq)+1`` under the lock), writes the events,
    and maintains every projection for them (``projections.apply_events``, FR-STORE-4), then
-   runs any commit steps the caller added;
+   runs any commit steps the caller added; then the resurrection guard checks the events
+   against the erasure ledger (``core.erasure.guard``, FR-ADMIN-9: 409
+   ``erased_subject_referenced``, the operation ``abandoned``; a revalidating turn regenerates
+   within its budget first) before they are indexed;
 5. finalises the operation (``committed``, ``membership_tx`` = the commit's ``tx_time``, the
    story's resulting ``timeline_revision``), bumps ``stories.timeline_revision`` by one when the
    operation ``bumps_revision`` (FR-CONC-1), records a control action on the story, and checks
@@ -48,7 +51,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import Any, Literal, Self
 
 from sqlalchemy import and_, delete, func, insert, select, text, update
@@ -56,13 +59,16 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.orm import aliased
 
 from epistrel.core import (
+    clock,
     config_dependencies,
     idempotency,
+    pause,
     projections,
     summary_port,
     turn_gate,
 )
 from epistrel.core.concurrency import (
+    ERASED_SUBJECT,
     Abandon,
     ConfigRecheck,
     Decide,
@@ -83,8 +89,13 @@ from epistrel.core.enums import (
     Provenance,
     StoryStatus,
 )
+from epistrel.core.erasure import guard as erasure_guard
+from epistrel.core.erasure import ledger as erasure_ledger
+from epistrel.core.erasure.index import index_records
+from epistrel.core.erasure.records import event_record
 from epistrel.core.errors import (
     ChainBroken,
+    ErasedSubjectReferenced,
     InvalidRequest,
     PrincipalRequired,
     StoryArchived,
@@ -92,6 +103,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
+from epistrel.core.ratings.stamp import guardrail_stamp
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import events, operations, stories, turn_queue
 from epistrel.observability import context as telemetry
@@ -124,6 +136,14 @@ edit, ingest, …) declares ``bumps_revision=True`` explicitly; settings and arc
 NEVER_BUMPING_KINDS = frozenset({OperationKind.CONSOLIDATION, OperationKind.MAINTENANCE})
 """Derived and maintenance work never bumps the revision (FR-CONC-1), so background work never
 invalidates in-flight turns. Audit-only records are written by such operations."""
+
+
+def _failure_status(error: BaseException) -> OperationStatus:
+    """A commit that raised ends ``failed``, except one the resurrection guard refused (#127):
+    nothing went wrong, the work's context is stale, so it ends ``abandoned``."""
+    if isinstance(error, ErasedSubjectReferenced):
+        return OperationStatus.ABANDONED
+    return OperationStatus.FAILED
 
 
 class Withdrawn(Exception):
@@ -178,6 +198,7 @@ class Operation:
         operation_id: str | None = None,
         queued: bool = False,
         source_window: dict[str, Any] | None = None,
+        erasure: bool = False,
     ) -> None:
         if principal is None or not principal.strip():
             raise PrincipalRequired("an operation needs a requesting principal")
@@ -229,6 +250,10 @@ class Operation:
         ``{from_turn, to_turn}``), written with the row at ``begin()``."""
         self.provenance = provenance
         self.authority = authority
+        self.erasure = erasure
+        """An erasure's operation (#124): it runs on an archived or paused story too, since an
+        erasure must reach every story the subject appears in (FR-ADMIN-2)."""
+        self._stages: list[dict[str, Any]] = []
         self.status: OperationStatus | None = None
         self.narrative_turn: int | None = None
         self.turn_variant: int | None = None
@@ -316,6 +341,54 @@ class Operation:
         telemetry.operation_opened(self.operation_id, self.story_id)
         return result
 
+    async def begin_in(self, conn: AsyncConnection) -> None:
+        """Begin inside ``conn``'s open transaction, which the caller owns (#119's genesis,
+        which creates the story row in that transaction, as #67's fork does): the base, the
+        story settings and the configuration the operation runs under are read there, and the
+        ``in_flight`` row is inserted there. ``write_in(conn)`` then does the commit work in the
+        same transaction, and ``settle`` records the outcome once it has ended. A rollback
+        removes the row with everything else, so no ``failed`` row is left behind."""
+        if self.status is not None:
+            raise RuntimeError(f"operation {self.operation_id} has already begun")
+        if self.queued:
+            raise RuntimeError("a queued operation is started from the queue")
+        if self.story_id is not None:
+            found = (
+                await conn.execute(
+                    select(
+                        stories.c.timeline_revision,
+                        stories.c.settings,
+                        stories.c.status,
+                    ).where(stories.c.id == self.story_id)
+                )
+            ).one_or_none()
+            if found is None:
+                raise StoryNotFound(f"story {self.story_id} does not exist")
+            await self._refuse_blocked(conn, found.status)
+            self._refuse_archived(found.status)
+            self.base_revision = int(found.timeline_revision)
+            self.story_settings = StorySettings.from_row(found.settings)
+            self.config_revisions = await config_dependencies.capture(
+                conn, self.story_id, self.config_captured
+            )
+        await conn.execute(
+            insert(operations).values(
+                operation_id=self.operation_id,
+                story_id=self.story_id,
+                kind=self.kind.value,
+                principal=self.principal,
+                base_revision=self.base_revision,
+                read_set=self.read_set,
+                config_revisions=self.config_revisions,
+                idempotency_key=self.idempotency_key,
+                viewpoint=self.viewpoint,
+                origin=self.origin,
+                source_window=self.source_window,
+            )
+        )
+        self.status = OperationStatus.IN_FLIGHT
+        telemetry.operation_opened(self.operation_id, self.story_id)
+
     def _span_attributes(self) -> dict[str, str]:
         """The commit span's identifiers (#74): never a payload."""
         found = {"epistrel.operation_id": self.operation_id, "epistrel.kind": self.kind.value}
@@ -383,7 +456,12 @@ class Operation:
             )
         ).one_or_none()
         if found is not None:
+            await self._refuse_blocked(conn, found.status)
             self._refuse_archived(found.status)
+            if self.bumps_revision and not self.erasure:
+                # A paused story (#118) refuses new truth-changing work; work that began before
+                # the pause still commits (no check at commit). Erasure is never refused.
+                await pause.refuse(conn, self.story_id, found.status)
             self.base_revision = int(found.timeline_revision)
             self.story_settings = StorySettings.from_row(found.settings)
             self.config_revisions = await config_dependencies.capture(
@@ -444,6 +522,13 @@ class Operation:
         )
         return model
 
+    def stage(self, name: str, status: str = "done") -> None:
+        """Record one stage of the operation's work (``stage_log``, #124: an erasure's
+        ``redacted``, ``ledger_written``, …), written with the commit. Identifiers, outcomes
+        and the time (``at``, ``clock.now()``; #128's stage view) only."""
+        self._require_in_flight("record a stage of")
+        self._stages.append({"stage": name, "status": status, "at": clock.now().isoformat()})
+
     def add_commit_step(self, step: CommitStep) -> None:
         """Run ``step(conn)`` inside the commit transaction, after the events and projections
         are written and before the operation is finalised (e.g. a rebuild's refold)."""
@@ -477,7 +562,7 @@ class Operation:
             raise
         except BaseException as exc:
             self._reset_position()
-            await self._finish(OperationStatus.FAILED, exc)
+            await self._finish(_failure_status(exc), exc)
             raise
         self.status = OperationStatus.COMMITTED
         if self.kind is OperationKind.TURN:
@@ -537,7 +622,7 @@ class Operation:
         elif isinstance(error, Withdrawn):
             await self._finish(OperationStatus.ABANDONED, error)
         else:
-            await self._finish(OperationStatus.FAILED, error)
+            await self._finish(_failure_status(error), error)
 
     def _reset_position(self) -> None:
         self.narrative_turn = self.turn_variant = self.parent_variant = self.tx_time = None
@@ -567,6 +652,7 @@ class Operation:
             ).one_or_none()
             if locked is None:
                 raise StoryNotFound(f"story {self.story_id} does not exist")
+            await self._refuse_blocked(conn, locked.status)
             self._refuse_archived(locked.status)
             current_revision = int(locked.timeline_revision)
             if decide is not None:
@@ -623,7 +709,32 @@ class Operation:
             )
         for step in self._commit_steps:
             await step(conn)
+        await self._check_erased(conn, decide, current_revision)
+        if self._staged:
+            # The subject-reference index (FR-ADMIN-6; #123), after the commit steps so a
+            # character a step adds is one of the story's subjects.
+            await index_records(
+                conn,
+                [
+                    event_record(
+                        SimpleNamespace(
+                            id=event_id,
+                            story_id=self.story_id,
+                            character_id=staged.character_id,
+                            payload=staged.payload.model_dump(mode="json"),
+                        )
+                    )
+                    for event_id, staged in zip(ids, self._staged, strict=True)
+                ],
+            )
         await self._finalise(conn, advance, current_revision)
+        if self.story_id is not None and self.kind is OperationKind.TURN:
+            # The guardrail set the turn variant passed (FR-RATE-7, #118), in force now.
+            await conn.execute(
+                update(operations)
+                .where(operations.c.operation_id == self.operation_id)
+                .values(checked_guardrails=await guardrail_stamp(conn, self.story_id))
+            )
         if self.story_id is not None and (
             self.kind is OperationKind.TURN or self.control_action or self._commit_steps
         ):
@@ -667,6 +778,45 @@ class Operation:
         self.attempts.append(attempt_record(state, outcome))
         if isinstance(outcome, Regenerate | Abandon | ConfigRecheck):
             raise RevalidationRequired(outcome, state)
+
+    async def _check_erased(
+        self, conn: AsyncConnection, decide: Decide | None, current_revision: int
+    ) -> None:
+        """The resurrection guard (FR-ADMIN-9; #127, ``core.erasure.guard``): refuse events that
+        name or reference a subject erased from the story since the context they were built
+        from. It runs after #47's decision and the commit steps, on the final text. A
+        revalidating turn regenerates instead (``ERASED_SUBJECT``, within its budget); an
+        erasure's own operations are exempt."""
+        if self.story_id is None or self.erasure or not self._staged:
+            return
+        try:
+            await erasure_guard.check_content(
+                conn,
+                self.story_id,
+                [
+                    erasure_guard.staged_content(
+                        staged.payload.model_dump(mode="json"),
+                        staged.character_id,
+                        staged.provenance,
+                    )
+                    for staged in self._staged
+                ],
+                base_revision=self.base_revision,
+            )
+        except ErasedSubjectReferenced as refusal:
+            if decide is None or self.kind is not OperationKind.TURN or not self.attempts:
+                raise
+            state = RevalidationState(
+                attempt=len(self.attempts),
+                base_revision=self.base_revision or 0,
+                current_revision=current_revision,
+                control_since_base=False,
+                control_operation_id=None,
+                touched=(),
+            )
+            outcome = Regenerate(reason=ERASED_SUBJECT)
+            self.attempts[-1] = attempt_record(state, outcome)
+            raise RevalidationRequired(outcome, state) from refusal
 
     async def _parent_variant(self, conn: AsyncConnection) -> int | None:
         """The active variant of the turn before this one (``None`` for turn 1)."""
@@ -870,6 +1020,7 @@ class Operation:
                 committed_at=now,
                 attempts=self.attempts,
                 timeline_revision=self.timeline_revision,
+                **({"stage_log": list(self._stages)} if self._stages else {}),
             )
             .returning(operations.c.membership_tx)
         )
@@ -900,12 +1051,20 @@ class Operation:
 
     # -- helpers -----------------------------------------------------------------------------
 
+    async def _refuse_blocked(self, conn: AsyncConnection, status: str) -> None:
+        """A story the erasure reconciler blocked (#125) takes no work at all, background jobs
+        included (503 ``erasure_pending``), until its pending erasures are reapplied; an erasure
+        runs, and so do the reapply's own operations. Checked at ``begin()`` and again under the
+        story lock at commit."""
+        if not self.erasure and self.story_id is not None:
+            await erasure_ledger.refuse_blocked(conn, self.story_id, status)
+
     def _refuse_archived(self, status: str) -> None:
         """An archived story is read-only: work that changes story truth (bumps the revision)
         is refused with ``story_archived``; archive, unarchive, maintenance and derived work
-        still run (#50). Checked at ``begin()``, before the operations row is written, and again
-        under the story lock at commit."""
-        if self.bumps_revision and status == StoryStatus.ARCHIVED.value:
+        still run (#50), and so does an erasure (#124). Checked at ``begin()``, before the
+        operations row is written, and again under the story lock at commit."""
+        if self.bumps_revision and not self.erasure and status == StoryStatus.ARCHIVED.value:
             raise StoryArchived(
                 f"story {self.story_id} is archived; unarchive it to change it",
                 {"story_id": self.story_id},

@@ -20,6 +20,7 @@ per model tier are in [model-matrix.md](model-matrix.md).
 | `generation` | yes | `default` | `none` | 8,192 tokens |
 | `guardrail_check` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
 | `lite_summary` | no | `default` | `none` | 8,192 tokens |
+| `rating_suggestion` | no | `guardrail_check` | `parse_validate_retry` | 8,192 tokens |
 
 ### `generation`
 
@@ -37,8 +38,11 @@ Writes the reply of a Lite turn from the story's prompt sections.
 |---|---|
 | `rating_guidance` | `rating_guidance` |
 | `custom_instructions` | `custom_instructions` |
+| `scenario_text` | `scenario_text` |
 | `character_definitions.name` | `character_definition` |
 | `character_definitions.definition` | `character_definition` |
+| `character_definitions.deflection_style` | `character_definition` |
+| `director_notes` | `director_notes` |
 | `pinned_memories` | `pinned_memory` |
 | `summary_segments` | `rolling_summary` |
 | `recent_messages.name` | `recent_message` |
@@ -73,7 +77,7 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 | `subjects.label` | `policy_text` |
 | `subjects.age` | `subject_true_age` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`
 
 ### `lite_summary`
 
@@ -103,6 +107,37 @@ Folds old messages into a Lite story's rolling summary (FR-LITE-2).
 
 **Never receives:** `policy_text`, `subject_true_age`, `checked_text`
 
+### `rating_suggestion`
+
+Reviews one catalog entry against one rating's content policy: its description, guidance and model-assisted policies (FR-RATE-8).
+
+- **Hot path:** no
+- **Default model:** the `guardrail_check` row of `model_config`, then the `default` row, per field, unless the purpose has its own
+- **Template:** `rating_suggestion.j2`
+- **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
+- **Returns:** `RatingSuggestionVerdict` (`concerns`), validated strictly; its free text is author-facing
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `rating_name` | `rating_description` |
+| `rating_description` | `rating_description` |
+| `rating_guidance` | `rating_guidance` |
+| `policies.policy_id` | `policy_text` |
+| `policies.name` | `policy_text` |
+| `policies.prompt` | `policy_text` |
+| `deterministic_hits.policy_id` | `policy_text` |
+| `deterministic_hits.kind` | `catalog_text` |
+| `deterministic_hits.location` | `catalog_text` |
+| `subjects.label` | `policy_text` |
+| `subjects.age` | `subject_true_age` |
+| `elements.kind` | `catalog_text` |
+| `elements.location` | `catalog_text` |
+| `elements.text` | `catalog_text` |
+
+**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`
+
 ## Reserved purposes
 
 Declared now and delivered later (docs/03 §22). Each joins the sections above, with
@@ -119,7 +154,6 @@ its floor and data-flow row, in the milestone that delivers it.
 | `quality_judge` | purpose | M4 | — | Pairwise prose comparisons (eval only). |
 | `belief_adjudication` | purpose | M5 | `entailment` | Adjudicated belief transitions. |
 | `time_estimation` | purpose | M6 | `extraction_backstop` | Best-guess duration of a narrated skip. |
-| `rating_suggestion` | purpose | M3 | `guardrail_check` | Per-rating content-policy review. |
 | `image_prompt` | purpose | M8 | `generation` | Writes image prompts. |
 | `image_check` | purpose | M8 | — | Vision checks of image outputs; no default. |
 | `embedding` | port | M4 | — | The embedding port (FR-EMBED). |
@@ -139,6 +173,10 @@ its floor and data-flow row, in the milestone that delivers it.
 | `policy_text` | A policy's prompt text and opaque subject labels; for generation, only the messages of output policies an earlier draft broke. |
 | `subject_true_age` | A resolved subject's true age. |
 | `checked_text` | The text a guardrail check is judging (input or output). |
+| `catalog_text` | A catalog entry's text under review, private fields included, with where each part sits (a rating suggestion; author-facing, FR-RATE-8). |
+| `rating_description` | A content rating's name and content-policy description. |
+| `scenario_text` | A scenario story's world, seeded facts, relationships, starting places and player persona, as text (#122). |
+| `director_notes` | A scenario story's director notes: plot hooks, objectives, guidance, planned reveals, milestones and endings (#122). |
 
 ## Hosted providers and retention
 

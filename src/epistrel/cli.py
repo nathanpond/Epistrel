@@ -1,5 +1,8 @@
 """`epistrel` command line: `serve --mode all|api|worker` runs the Engine (default ``all``: the
-API and the background workers in one process); `worker` is `serve --mode worker`."""
+API and the background workers in one process); `worker` is `serve --mode worker`;
+`moderation-secret` prints the secret a media moderation hook verifies Epistrel's requests with
+(#105); `backup dump` and `backup verify <dump>` take and check a database backup (#125:
+erasure markers are expected gaps, and the dump's erasure ledger is checked against the file)."""
 
 from __future__ import annotations
 
@@ -13,6 +16,7 @@ import uvicorn
 
 from epistrel.config import PROCESS_MODES, ConfigError, ProcessMode, Settings, load_settings
 from epistrel.observability import configure_process
+from epistrel.tools import backup as backup_tool
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -39,6 +43,12 @@ def _build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--port", type=int, help="override EPISTREL_PORT")
     worker.add_argument(
         "--concurrency", type=_positive, help="override EPISTREL_WORKER_CONCURRENCY"
+    )
+    backup_tool.add_parser(sub)
+    sub.add_parser(
+        "moderation-secret",
+        help="print the secret a media moderation hook verifies X-Epistrel-Signature with "
+        "(derived from EPISTREL_CONFIG_KEY, which it never reveals)",
     )
     return parser
 
@@ -71,12 +81,28 @@ def app_factory() -> FastAPI:
 
 
 async def _preflight(settings: Settings) -> str | None:
-    """Checks that need the database; ``None`` when the server may start."""
+    """Start-up checks: the media root is writable and, on S3, the bucket exists (#105, #107);
+    the erasure ledger's directory is writable and its file's chain intact (#125); then those
+    that need the database: the media are in the store ``EPISTREL_MEDIA_STORE`` names (#107)
+    and a stored model API key has its config key; ``None`` when the server may start."""
     from epistrel.core.db import make_engine
+    from epistrel.core.erasure.ledger import LedgerFile, ledger_problem
+    from epistrel.core.media.store import MediaRootUnwritable
+    from epistrel.core.media.stores import make_store, store_kind_problem
     from epistrel.orchestrator.models.config import config_key_problem
 
+    try:
+        await asyncio.to_thread(make_store(settings).prepare)
+    except MediaRootUnwritable as exc:
+        return str(exc)
+    ledger = await asyncio.to_thread(ledger_problem, LedgerFile(settings.erasure_ledger_dir))
+    if ledger is not None:
+        return ledger
     engine = make_engine(settings)
     try:
+        problem = await store_kind_problem(settings, engine)
+        if problem is not None:
+            return problem
         return await config_key_problem(settings, engine)
     finally:
         await engine.dispose()
@@ -126,9 +152,30 @@ def serve(
     return 0
 
 
+def moderation_secret() -> int:
+    """``epistrel moderation-secret``: the hook secret derived from ``EPISTREL_CONFIG_KEY``
+    (``core.media.signing``); exit 78 when the key is unset or malformed."""
+    from epistrel.config import ENV_PREFIX, is_fernet_key
+    from epistrel.core.media.signing import moderation_secret as derive
+
+    key = os.environ.get(f"{ENV_PREFIX}CONFIG_KEY", "").strip()
+    if not is_fernet_key(key):
+        print(
+            "error: EPISTREL_CONFIG_KEY: must be set to URL-safe base64 of 32 bytes",
+            file=sys.stderr,
+        )
+        return EX_CONFIG
+    print(derive(key))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.command == "moderation-secret":
+        return moderation_secret()
+    if args.command == "backup":
+        return backup_tool.run(args)
     if args.command == "serve":
         return serve(args.host, args.port, args.mode, args.concurrency)
     if args.command == "worker":

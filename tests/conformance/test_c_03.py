@@ -6,9 +6,10 @@ Each surface gets its own fresh database (migrated to head), and the same script
 calls (``STEPS``) runs on both, so stories, ratings, policies and deployment settings evolve the
 same way and even the revisions must agree. A library result is rendered through the response
 model its route uses (``…Body.of``), so the two surfaces are compared on the JSON a consumer
-sees. Normalised away: ids (each ULID becomes its first-seen position), timestamps, durations,
-the stub's request ids and the echoed ``Idempotency-Key``; ``Prefer: respond-async``, 204 bodies
-and replay flags are out of scope.
+sees. Normalised away: ids (each ULID becomes its first-seen position), configuration
+fingerprints (likewise: a fingerprint hashes its profile's id, which each surface mints; #109),
+timestamps, durations, the stub's request ids and the echoed ``Idempotency-Key``;
+``Prefer: respond-async``, 204 bodies and replay flags are out of scope.
 
 The parity list is generated from ``Engine``'s public operations (``epistrel.engine.operations``):
 an operation without a route, or without a step here, fails ``test_c_03``.
@@ -16,6 +17,7 @@ an operation without a route, or without a step here, fails ``test_c_03``.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -30,27 +32,75 @@ from pydantic import BaseModel, SecretStr
 
 from epistrel.api import create_app
 from epistrel.api.config_changes import ConfigChangesBody
+from epistrel.api.routes.admin.feedback_export import FeedbackExportWrittenBody
 from epistrel.api.routes.admin.model_config import (
     ModelConfigBody,
     ModelConfigEntry,
     ModelConfigItem,
     ModelConfigMutation,
 )
+from epistrel.api.routes.admin.offboarding import OffboardingPlanBody, OffboardingQueuedBody
 from epistrel.api.routes.admin.policies import PolicyBody, PolicyList, PolicyMutation
 from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, RatingMutation
 from epistrel.api.routes.admin.settings import SettingsBody
 from epistrel.api.routes.admin.stories import RebuildQueuedResponse, RebuildResponse
+from epistrel.api.routes.catalog_characters import (
+    CharacterDraftBody,
+    CharacterListBody,
+    CharacterPublishedBody,
+    CharacterStatusBody,
+    CharacterVersionsBody,
+)
+from epistrel.api.routes.catalog_listing import ListingStatusBody
+from epistrel.api.routes.catalog_scenarios import (
+    ScenarioDraftBody,
+    ScenarioListBody,
+    ScenarioPublishedBody,
+    ScenarioStatusBody,
+    ScenarioVersionsBody,
+)
+from epistrel.api.routes.engine_profiles import (
+    ProfileBody,
+    ProfileDeletedBody,
+    ProfileEditBody,
+    ProfileListBody,
+    ProfileSchemaBody,
+    ProfileVersionsBody,
+)
 from epistrel.api.routes.history import HistoryResponse
+from epistrel.api.routes.media import (
+    MediaListBody,
+    MediaUploadedBody,
+    MediaUrlBody,
+    PartStoredBody,
+    UploadOpenedBody,
+)
 from epistrel.api.routes.operations import OperationBody
+from epistrel.api.routes.ownership import (
+    OwnerBody,
+    RelationBody,
+    RelationsBody,
+    StoryOwnerBody,
+    StoryRelationBody,
+)
+from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.stories import (
     IngestResponse,
+    PromotionBody,
     StatusBody,
     StoryBody,
+    StoryCharacterBody,
     StoryCreatedBody,
     StoryList,
     StorySettingsBody,
     StorySettingsWriteBody,
+)
+from epistrel.api.routes.story_profile import StoryProfileWriteBody
+from epistrel.api.routes.story_rating import (
+    RatingAppliedBody,
+    RatingCheckBody,
+    RatingCheckStartedBody,
 )
 from epistrel.api.routes.story_texts import (
     CustomInstructionsBody,
@@ -67,19 +117,45 @@ from epistrel.api.routes.timeline import (
     VariantsBody,
 )
 from epistrel.config import Settings
+from epistrel.core.catalog.characters import (
+    CharacterCreate,
+    CharacterPatch,
+    CharacterPublishRequest,
+    Projection,
+    PublishRequest,
+)
+from epistrel.core.catalog.listing import ListingStatusRequest
+from epistrel.core.catalog.personas import PersonaCreate, PersonaPatch
+from epistrel.core.catalog.promote import PromoteRequest
+from epistrel.core.catalog.scenario_models import ScenarioCreate, ScenarioPatch
+from epistrel.core.catalog.service import ValidateRequest
 from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.deployment import SettingsPatch
 from epistrel.core.errors import EpistrelError
-from epistrel.core.fork import ForkRequest
+from epistrel.core.feedback import FeedbackRequest
+from epistrel.core.feedback_export import FeedbackExportRequest
+from epistrel.core.feedback_reporting import FeedbackGroupBy, FeedbackReviewList
+from epistrel.core.fork import Forked, ForkRequest
 from epistrel.core.ingest import IngestRequest
+from epistrel.core.media.assets import MediaUpload
+from epistrel.core.media.uploads import UploadOpen
+from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
+from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
+from epistrel.core.profiles.impact import ImpactPreviewRequest
+from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpdate, ProfileValidate
+from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.ratings import RatingFields, RatingReplacement
-from epistrel.core.seeds.ratings import EVERYONE_ID
-from epistrel.core.stories import StorySpec
+from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
+from epistrel.core.ratings.suggest import SuggestionRequest
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
+from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
+from epistrel.core.stories import AdHocCharacter, StorySpec
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
-from epistrel.core.timeline import TruncateRequest, UntruncateRequest
+from epistrel.core.tables.ownership import EntityType
+from epistrel.core.timeline import Swapped, TruncateRequest, UntruncateRequest, Untruncation
 from epistrel.core.variants import ChainRef, SwapRequest
 from epistrel.engine import Engine, operations
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
@@ -89,14 +165,21 @@ from epistrel.orchestrator.policies.schemas import PolicyFields, PolicyReplaceme
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from epistrel.testing.normalize import Normalizer
 from tests.auth_support import auth_settings, bearer
+from tests.character_support import complete as complete_character
 from tests.conformance.conftest import migrated_database
+from tests.media_support import files, metadata, png
 from tests.model_support import config_key
+from tests.scenario_support import complete_with as complete_scenario
 from tests.story_support import story_body
 
 PRINCIPAL = "p-parity"
 CTX = RequestContext(principal=PRINCIPAL)
 REPLY = "The innkeeper sets down a mug and says nothing."
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+SIGNED = re.compile(r"([?&](?:exp|sig)=)[^&]*")
+"""A signed media URL's expiry and signature (#107): the signature covers the real asset id."""
+FINGERPRINT = re.compile(r"^sha256:[0-9a-f]{64}$")
+"""A configuration's fingerprint (#109): it hashes the profile's id, minted per surface."""
 DROPPED = frozenset({"idempotency_key"})
 """Transport fields: the key REST echoes (generated per request)."""
 ZEROED = frozenset(
@@ -116,12 +199,15 @@ Rendered = tuple[int, dict[str, Any]]
 @dataclass(frozen=True)
 class Rest:
     """The REST form of a step: method, path (``{name}`` filled from the surface's ids), JSON
-    body and query parameters."""
+    body, query parameters, a multipart body (``files``, an upload's; #105), and a raw body
+    (``content``, an upload part's; #107)."""
 
     method: str
     path: str
     json: Any = None
     params: dict[str, Any] = field(default_factory=dict)
+    files: dict[str, Any] | None = None
+    content: bytes | None = None
 
 
 Library = Callable[[Engine, Ids], Awaitable[Any]]
@@ -134,6 +220,11 @@ class Step:
     rest: Callable[[Ids], Rest]
     library: Library
     capture: Callable[[dict[str, Any], Ids], None] = lambda body, ids: None
+    group: str = ""
+    """Steps checked together by their statuses (``ENTRY_GROUP``)."""
+    status: Callable[[dict[str, Any]], int] | None = None
+    """The library result's REST status, when the route's own status is not it (a 202 the
+    route answers beside its 200, #117)."""
 
     @property
     def label(self) -> str:
@@ -200,6 +291,18 @@ def _keep(name: str, *path: str | int) -> Callable[[dict[str, Any], Ids], None]:
     return capture
 
 
+def _both(
+    *captures: Callable[[dict[str, Any], Ids], None],
+) -> Callable[[dict[str, Any], Ids], None]:
+    """Every capture in turn."""
+
+    def capture(body: dict[str, Any], ids: Ids) -> None:
+        for each in captures:
+            each(body, ids)
+
+    return capture
+
+
 def _keep_story(body: dict[str, Any], ids: Ids) -> None:
     ids["story"] = body["story_id"]
     ids["wren"] = body["characters"][0]["id"]
@@ -240,7 +343,248 @@ GLOBAL_POLICY = {
     "message": "Never say zzqx.",
 }
 RATING = {"name": "Parity rating", "description": "Made by C-03.", "inherits_from": [EVERYONE_ID]}
+CHARACTER = complete_character("Mara Venn", public_description="Keeps the light on Gull Rock.")
+"""A complete character (#115): it publishes as it is."""
+CHARACTER_PATCH = {
+    "draft_revision": 1,
+    "public_card": {"public_description": "Keeps the Gull Rock light."},
+}
+GHOST = {"public_card": {"name": "Ghost", "public_description": "Never published."}}
+
+
+def _scenario_body(ids: dict[str, Any]) -> dict[str, Any]:
+    """A scenario filling every group (#108), its locked and default roles filled with the
+    surface's published catalog character at version 1, which a publish validates (#111). Its
+    seeds' ids are minted per surface, as ids are."""
+    return complete_scenario(ids["character"], ids["character"], locked_version=1)
+
+
+SCENARIO_PATCH = {"draft_revision": 1, "drivers": {"plot_hooks": ["A stranger knocks."]}}
+SCENARIO_GHOST = {"public_card": {"name": "Ghost"}}
+COMPANION_PATCH = {
+    "draft_revision": 2,
+    "world": {"description": "A lighthouse on Gull Rock."},
+    "starting_state": {"opening": {"narration": "Mara hangs her coat by the stove."}},
+}
+"""The character's companion scenario (#116), at draft revision 2 (its pin moved by the
+character's first publish), given a world and an opening, so its draft publishes."""
+PAIR = {"draft_revision": 3, "companion_draft_revision": 3}
+"""The character's draft and its companion's, published together (#116)."""
+ENTRY_ANSWERS = [
+    ("create_scenario_draft", 201),
+    ("save_scenario_draft", 200),
+    ("save_scenario_draft", 409),
+    ("publish_scenario", 201),
+    ("validate_scenario", 200),
+    ("validate_scenario", 200),
+    ("validate_scenario", 409),
+    ("get_scenario", 200),
+    ("get_scenario", 200),
+    ("get_scenario", 200),
+    ("list_scenario_versions", 200),
+    ("archive_scenario", 200),
+    ("unarchive_scenario", 200),
+    ("create_scenario_draft", 201),
+    ("get_scenario", 422),
+    ("delete_scenario", 204),
+    ("transfer_owner", 200),
+    ("add_relation", 201),
+    ("list_relations", 200),
+    ("get_companion", 200),
+    ("save_scenario_draft", 200),
+    ("publish_character", 201),
+    ("get_companion", 200),
+]
+"""What the scenario steps (#108) answer on both surfaces: a draft created, saved, refused as
+stale, published, validated (#111: the draft, version 1, and a stale draft revision refused),
+read as its card, as version 1 in full and as its draft in full, its versions listed, archived
+and unarchived; a second draft never published (422 ``not_published``) and deleted; and the
+first scenario's owner and relations. Then the character's companion scenario (#116): read
+through the character, its draft saved, published with the character as a pair, and its
+version 2 read in full."""
+ENTRY_GROUP = "scenario"
+"""The ``Step.group`` of the scenario steps (#108)."""
+SUGGESTION_ANSWERS = [("suggest_ratings", 200), ("suggest_ratings", 200), ("suggest_ratings", 404)]
+"""What the rating-suggestion steps (#121) answer on both surfaces: a scenario's version 1 and a
+character's draft get the table; a version the scenario does not have is 404."""
+SUGGESTION_GROUP = "suggestion"
+"""The ``Step.group`` of the rating-suggestion steps (#121)."""
+PUBLIC = {"value": "public"}
+CHARACTER_SEARCH = {"q": "Mara", "listing_status": "public"}
+SCENARIO_SEARCH = {"label": ["family"]}
+LISTING_ANSWERS = [
+    ("set_listing_status", 200),
+    ("search_catalog", 200),
+    ("search_catalog", 200),
+]
+"""What the listing steps (#110) answer on both surfaces: the character's listing status set,
+the character found by a search filtered by that status, and the scenarios listed by a label."""
+LISTING_GROUP = "listing"
+"""The ``Step.group`` of the listing steps (#110)."""
+NEW_OWNER = {"principal": "p-parity-owner"}
+RELATION = {"principal": "p-parity-d", "relation": "co_author"}
 MODEL_OVERRIDE = {"model": "parity-model", "params": {"temperature": 0.5}}
+MEDIA_BYTES = png(nonce="c-03 parity")
+MEDIA = metadata(
+    alt_text="The lighthouse door",
+    caption="Gull Rock",
+    generation_metadata={"model": "sdxl", "seed": 9},
+    depicted_subjects=[{"kind": "persona", "id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"}],
+)
+UNDECLARED = metadata(depicted_subjects=None)
+MEDIA_ANSWERS = [
+    ("upload_media", 201),
+    ("upload_media", 422),
+    ("get_media", 200),
+    ("get_media_content", 200),
+    ("list_media", 200),
+    ("get_media_url", 200),
+    ("delete_media", 204),
+    ("get_media", 200),
+]
+"""What the media steps (#105) answer on both surfaces: an upload, one refused for its missing
+``depicted_subjects``, the reads, a signed URL (#107), the delete (a retire) and a read of the
+retired asset."""
+SESSION_BYTES = png(nonce="c-03 session")
+SESSION = {
+    **metadata(caption="Sent in parts"),
+    "size": len(SESSION_BYTES),
+    "mime_type": "image/png",
+    "sha256": hashlib.sha256(SESSION_BYTES).hexdigest(),
+}
+PUBLIC_BASE = {"public_base_url": "https://media.example.test"}
+SESSION_ANSWERS = [
+    ("open_upload", 201),
+    ("put_upload_part", 200),
+    ("get_upload", 200),
+    ("complete_upload", 201),
+    ("open_upload", 201),
+    ("abort_upload", 204),
+]
+"""What the resumable-upload steps (#107) answer on both surfaces: a session opened, its one
+part sent, read back and completed into an asset, and a second session opened and aborted."""
+SESSION_OPERATIONS = frozenset(operation for operation, _ in SESSION_ANSWERS)
+PROFILE = {
+    "name": "Parity profile",
+    "settings": {
+        "memory": {"rolling_summary": {"window_messages": 24}},
+        "budgets": {"deadline_ms": 30_000},
+    },
+}
+PROFILE_EDIT = {"name": "Parity profile", "settings": {"pins": {"max_pinned": 10}}}
+PROFILE_COPY = {"name": "Parity copy"}
+PROFILE_DRY_RUN = {"settings": {"pipeline": "structured"}}
+PROFILE_ANSWERS = [
+    ("create_profile", 201),
+    ("get_profile", 200),
+    ("list_profiles", 200),
+    ("update_profile", 200),
+    ("get_profile", 200),
+    ("list_profile_versions", 200),
+    ("copy_profile", 201),
+    ("validate_profile", 200),
+    ("validate_profile", 200),
+    ("validate_profile", 422),
+    ("profile_schema", 200),
+    ("delete_profile", 409),
+    ("delete_profile", 200),
+    ("transfer_owner", 200),
+    ("impact_preview", 200),
+    ("get_effective_config", 200),
+    ("assign_engine_profile", 200),
+    ("set_profile_overrides", 200),
+    ("get_effective_config", 200),
+]
+"""What the engine-profile steps (#106) answer on both surfaces: a profile created, read, listed,
+edited into version 2 (two-stage, #109: no story follows it, so it applies at once), read at
+version 1, its versions listed, copied, validated (and refused for an undelivered level), the
+schema read, the default refused deletion, the copy deleted, and the profile transferred; then
+(#109) the impact of assigning it to the story previewed, and the story's effective
+configuration read; then (#113) the profile assigned to the story (no capability changes, so it
+applies at once), one of its dials overridden, and its configuration read again."""
+STORY_OVERRIDES = {"settings": {"memory": {"rolling_summary": {"window_messages": 12}}}}
+"""A story's override of its profile's verbatim window (#113)."""
+DEPLOYMENT_PATCH = {"profile_defaults": {"memory": {"rolling_summary": {"window_messages": 40}}}}
+"""A deployment settings write: the engine profiles' default verbatim window (#113)."""
+PROFILE_GROUP = "profiles"
+"""The ``Step.group`` of the engine-profile steps (#106)."""
+MESSAGE_RATING = {"rating": 4, "tags": ["too_long"], "text": "Shorter, please."}
+RATING_ANSWERS = [("rate_message", 201), ("get_feedback", 200), ("retract_feedback", 204)]
+"""What the message-rating steps (#112) answer on both surfaces: the first turn's reply rated
+(the principal's first rating), the rating read back, and retracted."""
+RATING_GROUP = "ratings"
+EXPORT_ON = {"feedback_export": True}
+"""A deployment settings write that switches the feedback export on (#126)."""
+EXPORT_FIVES = {"filters": {"min_rating": 5}}
+"""An export of the ratings of 5: none (the reply is rated 4), so both surfaces write the same
+empty file; the cases themselves are compared in ``test_feedback_reporting``."""
+REPORT_ANSWERS = [
+    ("feedback_aggregates", 200),
+    ("feedback_review", 200),
+    ("feedback_review", 200),
+    ("export_feedback", 403),
+    ("update_deployment_settings", 200),
+    ("export_feedback", 201),
+    ("get_feedback_export", 200),
+    ("get_feedback_export_content", 200),
+    ("list_feedback_exports", 200),
+    ("delete_feedback_export", 204),
+]
+"""What the feedback report and export steps (#126) answer on both surfaces: the aggregates by
+tag and both review lists while the first reply is rated, the export refused while off, then
+switched on, written (the ratings of 5: none), read, downloaded, listed and its file deleted."""
+REPORT_GROUP = "reports"
+"""The ``Step.group`` of the feedback report and export steps (#126)."""
+"""The ``Step.group`` of the message-rating steps (#112)."""
+DRIVER = {"name": "Dale", "definition": "A delivery driver in a hurry.", "true_age": 52}
+"""A character added to the running story, then promoted (#114)."""
+PERSONA = {"name": "Sam Ortiz", "gender": "man", "age": 23, "description": "Quick to anger."}
+PERSONA_EDIT = {"age": 24, "gender": None}
+PLAYER_ANSWERS = [
+    ("create_persona", 201),
+    ("get_persona", 200),
+    ("list_personas", 200),
+    ("update_persona", 200),
+    ("create_persona", 409),
+    ("transfer_owner", 200),
+    ("add_relation", 201),
+    ("list_relations", 200),
+    ("delete_persona", 204),
+]
+"""What the persona steps (#114) answer on both surfaces: a player's persona saved, read,
+listed by owner, edited, refused a second time under its name (409 ``persona_name_taken``),
+transferred, related, its relations listed, and deleted."""
+UNKNOWN_JOB = "01J9Z8Q4N5V6W7X8Y9Z0A1B2D1"
+"""A job id that names no rating check of the story (#118): 404 on both surfaces."""
+PLAYER_GROUP = "player"
+"""The ``Step.group`` of the persona steps (#114)."""
+LEAVING = {
+    "principal": PRINCIPAL,
+    "actions": {
+        "stories": "delete",
+        "characters": "delete",
+        "scenarios": "delete",
+        "personas": "delete",
+        "media": "delete",
+        "engine_profiles": "delete",
+        "relations": "remove",
+    },
+    "dry_run": True,
+}
+"""A dry run of removing everything of the parity principal's (#117): counts and warnings,
+nothing written."""
+KEEPING = {"principal": NEW_OWNER["principal"]}
+"""The new owner's request that keeps everything (#117): enqueued (202); no worker runs it."""
+PRINCIPAL_ANSWERS = [
+    ("lookup_principal", 200),
+    ("offboard_principal", 200),
+    ("offboard_principal", 202),
+    ("get_offboarding", 200),
+]
+"""What the principal steps (#117) answer on both surfaces: the parity principal's lookup, a dry
+run that writes nothing, the new owner's request enqueued, and its job read back (queued)."""
+PRINCIPAL_GROUP = "principals"
+"""The ``Step.group`` of the principal steps (#117)."""
 
 
 def _steps() -> list[Step]:
@@ -267,10 +611,12 @@ def _steps() -> list[Step]:
         Step(
             "update_story_settings",
             lambda ids: Rest(
-                "PATCH", f"{s}/settings", {"turn_deadline": 40, "policies": [STORY_POLICY]}
+                "PATCH",
+                f"{s}/settings",
+                {"regenerate_retry_budget": 4, "policies": [STORY_POLICY]},
             ),
             lambda e, ids: _settings_write(
-                e, ids["story"], {"turn_deadline": 40, "policies": [STORY_POLICY]}
+                e, ids["story"], {"regenerate_retry_budget": 4, "policies": [STORY_POLICY]}
             ),
         ),
         Step(
@@ -282,6 +628,19 @@ def _steps() -> list[Step]:
             "config_changes",
             lambda ids: Rest("GET", f"{s}/config-changes"),
             lambda e, ids: _changes(e, ConfigScope.STORY, ids["story"]),
+        ),
+        # -- the story's rating (#118): the seeded ratings' guardrails are equal, so the move
+        # relaxes and applies at once; no tightening (no worker runs here), and a check id that
+        # is not the story's is 404 on both surfaces.
+        Step(
+            "set_content_rating",
+            lambda ids: Rest("PUT", f"{s}/content-rating", {"content_rating_id": EXPLICIT_ID}),
+            lambda e, ids: _rating_change(e, ids["story"], EXPLICIT_ID),
+        ),
+        Step(
+            "get_rating_check",
+            lambda ids: Rest("GET", f"{s}/content-rating/checks/{UNKNOWN_JOB}"),
+            lambda e, ids: _rating_check(e, ids["story"], UNKNOWN_JOB),
         ),
         Step(
             "set_pinned_memories",
@@ -310,7 +669,10 @@ def _steps() -> list[Step]:
             "respond",
             lambda ids: Rest("POST", f"{s}/respond", _respond_request(ids)),
             lambda e, ids: _respond(e, ids),
-            _keep("turn_operation", "beats", 0, "operation_id"),
+            _both(
+                _keep("turn_operation", "beats", 0, "operation_id"),
+                _keep("reply", "message", "message_id"),
+            ),
         ),
         Step(
             "ingest",
@@ -338,6 +700,90 @@ def _steps() -> list[Step]:
                 params={"viewpoint": f"character:{ids['wren']}"},
             ),
             lambda e, ids: _operation(e, ids),
+        ),
+        # -- message ratings (#112): the first turn's reply rated, the rating read, retracted
+        Step(
+            "rate_message",
+            lambda ids: Rest("PUT", f"{s}/messages/{{reply}}/feedback", MESSAGE_RATING),
+            lambda e, ids: _message_rated(e, ids),
+            group=RATING_GROUP,
+        ),
+        Step(
+            "get_feedback",
+            lambda ids: Rest("GET", f"{s}/messages/{{reply}}/feedback"),
+            lambda e, ids: _message_rating(e, ids),
+            group=RATING_GROUP,
+        ),
+        # -- feedback reports and export (#126), while the rating stands: the aggregates and
+        # both review lists; the export refused while off, switched on, written, read, listed,
+        # downloaded and deleted
+        Step(
+            "feedback_aggregates",
+            lambda ids: Rest("GET", "/feedback/aggregates", params={"group_by": "tag"}),
+            lambda e, ids: _feedback_aggregates(e),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "feedback_review",
+            lambda ids: Rest("GET", "/feedback/review/guardrail"),
+            lambda e, ids: _feedback_review(e, FeedbackReviewList.GUARDRAIL),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "feedback_review",
+            lambda ids: Rest("GET", "/feedback/review/memory", params={"limit": 5}),
+            lambda e, ids: _feedback_review(e, FeedbackReviewList.MEMORY, limit=5),
+            group=REPORT_GROUP,
+        ),
+        Step(  # off by default: 403 feedback_export_disabled on both
+            "export_feedback",
+            lambda ids: Rest("POST", "/admin/feedback/export", {}),
+            lambda e, ids: _feedback_exported(e),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "update_deployment_settings",
+            lambda ids: Rest("PUT", "/admin/settings", EXPORT_ON),
+            lambda e, ids: _deployment_write(e, EXPORT_ON),
+            group=REPORT_GROUP,
+        ),
+        Step(  # no rating of 5: an empty file, the same bytes on both surfaces
+            "export_feedback",
+            lambda ids: Rest("POST", "/admin/feedback/export", EXPORT_FIVES),
+            lambda e, ids: _feedback_exported(e, EXPORT_FIVES),
+            _keep("feedback_export", "export_id"),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "get_feedback_export",
+            lambda ids: Rest("GET", "/admin/feedback/exports/{feedback_export}"),
+            lambda e, ids: _feedback_export(e, ids["feedback_export"]),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "get_feedback_export_content",
+            lambda ids: Rest("GET", "/admin/feedback/exports/{feedback_export}/content"),
+            lambda e, ids: _feedback_export_content(e, ids["feedback_export"]),
+            group=REPORT_GROUP,
+            status=lambda body: 200,
+        ),
+        Step(
+            "list_feedback_exports",
+            lambda ids: Rest("GET", "/admin/feedback/exports"),
+            lambda e, ids: _feedback_exports(e),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "delete_feedback_export",
+            lambda ids: Rest("DELETE", "/admin/feedback/exports/{feedback_export}"),
+            lambda e, ids: _no_content(e.delete_feedback_export(CTX, ids["feedback_export"])),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "retract_feedback",
+            lambda ids: Rest("DELETE", f"{s}/messages/{{reply}}/feedback"),
+            lambda e, ids: _no_content(e.retract_feedback(CTX, ids["story"], ids["reply"])),
+            group=RATING_GROUP,
         ),
         # -- timeline
         Step(
@@ -407,6 +853,62 @@ def _steps() -> list[Step]:
             lambda ids: Rest("DELETE", "/stories/{fork}"),
             lambda e, ids: _deleted(e, ids["fork"]),
         ),
+        # -- ownership (#104): a story's owner and relations
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", f"{s}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX, EntityType.STORY, ids["story"], OwnerTransferRequest(**NEW_OWNER)
+                )
+            ),
+        ),
+        Step(
+            "add_relation",
+            lambda ids: Rest("POST", f"{s}/relations", RELATION),
+            lambda e, ids: _relation(
+                e.add_relation(CTX, EntityType.STORY, ids["story"], RelationRequest(**RELATION))
+            ),
+        ),
+        Step(
+            "list_relations",
+            lambda ids: Rest("GET", f"{s}/relations"),
+            lambda e, ids: _relations(e, EntityType.STORY, ids["story"]),
+        ),
+        Step(
+            "list_stories",
+            lambda ids: Rest(
+                "GET",
+                "/stories",
+                params={"owner": "p-parity-owner", "relation": "co_author:p-parity-d"},
+            ),
+            lambda e, ids: _listed_by(e, owner="p-parity-owner", relation=["co_author:p-parity-d"]),
+        ),
+        Step(
+            "remove_relation",
+            lambda ids: Rest("DELETE", f"{s}/relations/co_author/p-parity-d"),
+            lambda e, ids: _no_content(
+                e.remove_relation(CTX, EntityType.STORY, ids["story"], "co_author", "p-parity-d")
+            ),
+        ),
+        # -- a character added to the running story, then promoted to a catalog draft (#114)
+        Step(
+            "add_story_character",
+            lambda ids: Rest("POST", f"{s}/characters", DRIVER),
+            lambda e, ids: _added(
+                e.add_story_character(CTX, ids["story"], AdHocCharacter(**DRIVER))
+            ),
+            _keep("dale", "id"),
+        ),
+        Step(
+            "promote_character",
+            lambda ids: Rest("POST", f"{s}/characters/{{dale}}/promote", {"owner": "p-curator"}),
+            lambda e, ids: _promoted(
+                e.promote_character(
+                    CTX, ids["story"], ids["dale"], PromoteRequest(owner="p-curator")
+                )
+            ),
+        ),
         # -- error paths: the same error on both surfaces
         Step(
             "truncate",
@@ -432,6 +934,720 @@ def _steps() -> list[Step]:
             "set_custom_instructions",
             lambda ids: Rest("PUT", f"{s}/custom-instructions", {"text": "a\x00b"}),
             lambda e, ids: _instructions(e, ids["story"], "a\x00b"),
+        ),
+        # -- the character catalog (#103)
+        Step(
+            "create_character_draft",
+            lambda ids: Rest("POST", "/catalog/characters", CHARACTER),
+            lambda e, ids: _draft(e.create_character_draft(CTX, CharacterCreate(**CHARACTER))),
+            _keep("character", "id"),
+        ),
+        Step(
+            "save_character_draft",
+            lambda ids: Rest("PATCH", "/catalog/characters/{character}", CHARACTER_PATCH),
+            lambda e, ids: _draft(
+                e.save_character_draft(CTX, ids["character"], CharacterPatch(**CHARACTER_PATCH))
+            ),
+        ),
+        Step(  # stale: the same patch again, from revision 1 (409 draft_stale on both)
+            "save_character_draft",
+            lambda ids: Rest("PATCH", "/catalog/characters/{character}", CHARACTER_PATCH),
+            lambda e, ids: _draft(
+                e.save_character_draft(CTX, ids["character"], CharacterPatch(**CHARACTER_PATCH))
+            ),
+        ),
+        Step(
+            "publish_character",
+            lambda ids: Rest(
+                "POST", "/catalog/characters/{character}/publish", {"draft_revision": 2}
+            ),
+            lambda e, ids: _published(
+                e.publish_character(CTX, ids["character"], PublishRequest(draft_revision=2))
+            ),
+        ),
+        Step(
+            "get_character",
+            lambda ids: Rest("GET", "/catalog/characters/{character}"),
+            lambda e, ids: _character(e, ids["character"]),
+        ),
+        Step(
+            "get_character",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/characters/{character}",
+                params={"version": 1, "projection": "full"},
+            ),
+            lambda e, ids: _character(e, ids["character"], version=1, projection=Projection.FULL),
+        ),
+        Step(
+            "get_character",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/characters/{character}",
+                params={"draft": "true", "projection": "full"},
+            ),
+            lambda e, ids: _character(e, ids["character"], draft=True, projection=Projection.FULL),
+        ),
+        Step(
+            "list_character_versions",
+            lambda ids: Rest("GET", "/catalog/characters/{character}/versions"),
+            lambda e, ids: _character_versions(e, ids["character"]),
+        ),
+        Step(
+            "archive_character",
+            lambda ids: Rest("POST", "/catalog/characters/{character}/archive"),
+            lambda e, ids: _character_status(e.archive_character(CTX, ids["character"])),
+        ),
+        Step(
+            "unarchive_character",
+            lambda ids: Rest("POST", "/catalog/characters/{character}/unarchive"),
+            lambda e, ids: _character_status(e.unarchive_character(CTX, ids["character"])),
+        ),
+        Step(
+            "create_character_draft",
+            lambda ids: Rest("POST", "/catalog/characters", GHOST),
+            lambda e, ids: _draft(e.create_character_draft(CTX, CharacterCreate(**GHOST))),
+            _keep("ghost", "id"),
+        ),
+        Step(  # never published: 422 not_published on both
+            "get_character",
+            lambda ids: Rest("GET", "/catalog/characters/{ghost}"),
+            lambda e, ids: _character(e, ids["ghost"]),
+        ),
+        Step(
+            "delete_character",
+            lambda ids: Rest("DELETE", "/catalog/characters/{ghost}"),
+            lambda e, ids: _no_content(e.delete_character(CTX, ids["ghost"])),
+        ),
+        # -- ownership (#104): a catalog character's owner and relations
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", "/catalog/characters/{character}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX, EntityType.CHARACTER, ids["character"], OwnerTransferRequest(**NEW_OWNER)
+                )
+            ),
+        ),
+        Step(
+            "add_relation",
+            lambda ids: Rest("POST", "/catalog/characters/{character}/relations", RELATION),
+            lambda e, ids: _relation(
+                e.add_relation(
+                    CTX, EntityType.CHARACTER, ids["character"], RelationRequest(**RELATION)
+                )
+            ),
+        ),
+        Step(
+            "list_relations",
+            lambda ids: Rest("GET", "/catalog/characters/{character}/relations"),
+            lambda e, ids: _relations(e, EntityType.CHARACTER, ids["character"]),
+        ),
+        # -- the scenario catalog (#108)
+        Step(
+            "create_scenario_draft",
+            lambda ids: Rest("POST", "/catalog/scenarios", _scenario_body(ids)),
+            lambda e, ids: _scenario_draft(
+                e.create_scenario_draft(CTX, ScenarioCreate.model_validate(_scenario_body(ids)))
+            ),
+            _keep("scenario", "id"),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "save_scenario_draft",
+            lambda ids: Rest("PATCH", "/catalog/scenarios/{scenario}", SCENARIO_PATCH),
+            lambda e, ids: _scenario_draft(
+                e.save_scenario_draft(
+                    CTX, ids["scenario"], ScenarioPatch.model_validate(SCENARIO_PATCH)
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(  # stale: the same patch again, from revision 1 (409 draft_stale on both)
+            "save_scenario_draft",
+            lambda ids: Rest("PATCH", "/catalog/scenarios/{scenario}", SCENARIO_PATCH),
+            lambda e, ids: _scenario_draft(
+                e.save_scenario_draft(
+                    CTX, ids["scenario"], ScenarioPatch.model_validate(SCENARIO_PATCH)
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "publish_scenario",
+            lambda ids: Rest(
+                "POST", "/catalog/scenarios/{scenario}/publish", {"draft_revision": 2}
+            ),
+            lambda e, ids: _scenario_published(
+                e.publish_scenario(CTX, ids["scenario"], PublishRequest(draft_revision=2))
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(  # the draft, as a dry run (#111): no body
+            "validate_scenario",
+            lambda ids: Rest("POST", "/catalog/scenarios/{scenario}/validate"),
+            lambda e, ids: _validated(e.validate_scenario(CTX, ids["scenario"])),
+            group=ENTRY_GROUP,
+        ),
+        Step(  # version 1
+            "validate_scenario",
+            lambda ids: Rest(
+                "POST", "/catalog/scenarios/{scenario}/validate", params={"version": 1}
+            ),
+            lambda e, ids: _validated(e.validate_scenario(CTX, ids["scenario"], version=1)),
+            group=ENTRY_GROUP,
+        ),
+        Step(  # a draft revision the draft has moved on from: 409 draft_stale on both
+            "validate_scenario",
+            lambda ids: Rest(
+                "POST", "/catalog/scenarios/{scenario}/validate", {"draft_revision": 1}
+            ),
+            lambda e, ids: _validated(
+                e.validate_scenario(CTX, ids["scenario"], ValidateRequest(draft_revision=1))
+            ),
+            group=ENTRY_GROUP,
+        ),
+        # -- the advisory rating table (#121): the scenario's version 1, the character's draft,
+        # and a version the scenario does not have (404 on both)
+        Step(
+            "suggest_ratings",
+            lambda ids: Rest(
+                "POST", "/catalog/scenarios/{scenario}/rating-suggestion", {"version": 1}
+            ),
+            lambda e, ids: _validated(
+                e.suggest_ratings(
+                    CTX, EntityType.SCENARIO, ids["scenario"], SuggestionRequest(version=1)
+                )
+            ),
+            group=SUGGESTION_GROUP,
+        ),
+        Step(
+            "suggest_ratings",
+            lambda ids: Rest(
+                "POST", "/catalog/characters/{character}/rating-suggestion", {"version": "draft"}
+            ),
+            lambda e, ids: _validated(
+                e.suggest_ratings(
+                    CTX, EntityType.CHARACTER, ids["character"], SuggestionRequest(version="draft")
+                )
+            ),
+            group=SUGGESTION_GROUP,
+        ),
+        Step(
+            "suggest_ratings",
+            lambda ids: Rest(
+                "POST", "/catalog/scenarios/{scenario}/rating-suggestion", {"version": 9}
+            ),
+            lambda e, ids: _validated(
+                e.suggest_ratings(
+                    CTX, EntityType.SCENARIO, ids["scenario"], SuggestionRequest(version=9)
+                )
+            ),
+            group=SUGGESTION_GROUP,
+        ),
+        Step(
+            "get_scenario",
+            lambda ids: Rest("GET", "/catalog/scenarios/{scenario}"),
+            lambda e, ids: _scenario(e, ids["scenario"]),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "get_scenario",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/scenarios/{scenario}",
+                params={"version": 1, "projection": "full"},
+            ),
+            lambda e, ids: _scenario(e, ids["scenario"], version=1, projection=Projection.FULL),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "get_scenario",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/scenarios/{scenario}",
+                params={"draft": "true", "projection": "full"},
+            ),
+            lambda e, ids: _scenario(e, ids["scenario"], draft=True, projection=Projection.FULL),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "list_scenario_versions",
+            lambda ids: Rest("GET", "/catalog/scenarios/{scenario}/versions"),
+            lambda e, ids: _scenario_versions(e, ids["scenario"]),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "archive_scenario",
+            lambda ids: Rest("POST", "/catalog/scenarios/{scenario}/archive"),
+            lambda e, ids: _scenario_status(e.archive_scenario(CTX, ids["scenario"])),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "unarchive_scenario",
+            lambda ids: Rest("POST", "/catalog/scenarios/{scenario}/unarchive"),
+            lambda e, ids: _scenario_status(e.unarchive_scenario(CTX, ids["scenario"])),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "create_scenario_draft",
+            lambda ids: Rest("POST", "/catalog/scenarios", SCENARIO_GHOST),
+            lambda e, ids: _scenario_draft(
+                e.create_scenario_draft(CTX, ScenarioCreate.model_validate(SCENARIO_GHOST))
+            ),
+            _keep("ghost_scenario", "id"),
+            group=ENTRY_GROUP,
+        ),
+        Step(  # never published: 422 not_published on both
+            "get_scenario",
+            lambda ids: Rest("GET", "/catalog/scenarios/{ghost_scenario}"),
+            lambda e, ids: _scenario(e, ids["ghost_scenario"]),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "delete_scenario",
+            lambda ids: Rest("DELETE", "/catalog/scenarios/{ghost_scenario}"),
+            lambda e, ids: _no_content(e.delete_scenario(CTX, ids["ghost_scenario"])),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", "/catalog/scenarios/{scenario}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX, EntityType.SCENARIO, ids["scenario"], OwnerTransferRequest(**NEW_OWNER)
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "add_relation",
+            lambda ids: Rest("POST", "/catalog/scenarios/{scenario}/relations", RELATION),
+            lambda e, ids: _relation(
+                e.add_relation(
+                    CTX, EntityType.SCENARIO, ids["scenario"], RelationRequest(**RELATION)
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "list_relations",
+            lambda ids: Rest("GET", "/catalog/scenarios/{scenario}/relations"),
+            lambda e, ids: _relations(e, EntityType.SCENARIO, ids["scenario"]),
+            group=ENTRY_GROUP,
+        ),
+        # -- the character's companion scenario (#116): read, saved, published with the
+        # character, and read again
+        Step(
+            "get_companion",
+            lambda ids: Rest("GET", "/catalog/characters/{character}/companion"),
+            lambda e, ids: _scenario_of(e.get_companion(CTX, ids["character"])),
+            _keep("companion", "id"),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "save_scenario_draft",
+            lambda ids: Rest("PATCH", "/catalog/scenarios/{companion}", COMPANION_PATCH),
+            lambda e, ids: _scenario_draft(
+                e.save_scenario_draft(
+                    CTX, ids["companion"], ScenarioPatch.model_validate(COMPANION_PATCH)
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "publish_character",
+            lambda ids: Rest(
+                "POST",
+                "/catalog/characters/{character}/publish",
+                PAIR,
+                params={"with_companion": "true"},
+            ),
+            lambda e, ids: _published(
+                e.publish_character(
+                    CTX,
+                    ids["character"],
+                    CharacterPublishRequest(**PAIR),
+                    with_companion=True,
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "get_companion",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/characters/{character}/companion",
+                params={"version": 2, "projection": "full"},
+            ),
+            lambda e, ids: _scenario_of(
+                e.get_companion(CTX, ids["character"], version=2, projection=Projection.FULL)
+            ),
+            group=ENTRY_GROUP,
+        ),
+        # -- listing status and listings (#110): the character made `public`, then found by a
+        # search with that status, and the scenarios listed by a label
+        Step(
+            "set_listing_status",
+            lambda ids: Rest("PUT", "/catalog/characters/{character}/listing-status", PUBLIC),
+            lambda e, ids: _listing_status(
+                e.set_listing_status(
+                    CTX, EntityType.CHARACTER, ids["character"], ListingStatusRequest(**PUBLIC)
+                )
+            ),
+            group=LISTING_GROUP,
+        ),
+        Step(
+            "search_catalog",
+            lambda ids: Rest("GET", "/catalog/characters", params=CHARACTER_SEARCH),
+            lambda e, ids: _characters_found(e, CHARACTER_SEARCH),
+            group=LISTING_GROUP,
+        ),
+        Step(
+            "search_catalog",
+            lambda ids: Rest("GET", "/catalog/scenarios", params=SCENARIO_SEARCH),
+            lambda e, ids: _scenarios_found(e, SCENARIO_SEARCH),
+            group=LISTING_GROUP,
+        ),
+        # -- personas (#114)
+        Step(
+            "create_persona",
+            lambda ids: Rest("POST", "/personas", PERSONA),
+            lambda e, ids: _persona_write(e.create_persona(CTX, PersonaCreate(**PERSONA))),
+            _keep("persona", "id"),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "get_persona",
+            lambda ids: Rest("GET", "/personas/{persona}"),
+            lambda e, ids: _persona(e, ids["persona"]),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "list_personas",
+            lambda ids: Rest("GET", "/personas", params={"owner": PRINCIPAL}),
+            lambda e, ids: _personas(e),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "update_persona",
+            lambda ids: Rest("PATCH", "/personas/{persona}", PERSONA_EDIT),
+            lambda e, ids: _persona_write(
+                e.update_persona(CTX, ids["persona"], PersonaPatch(**PERSONA_EDIT))
+            ),
+            group=PLAYER_GROUP,
+        ),
+        Step(  # the same name again: 409 persona_name_taken on both
+            "create_persona",
+            lambda ids: Rest("POST", "/personas", PERSONA),
+            lambda e, ids: _persona_write(e.create_persona(CTX, PersonaCreate(**PERSONA))),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", "/personas/{persona}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX, EntityType.PERSONA, ids["persona"], OwnerTransferRequest(**NEW_OWNER)
+                )
+            ),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "add_relation",
+            lambda ids: Rest("POST", "/personas/{persona}/relations", RELATION),
+            lambda e, ids: _relation(
+                e.add_relation(CTX, EntityType.PERSONA, ids["persona"], RelationRequest(**RELATION))
+            ),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "list_relations",
+            lambda ids: Rest("GET", "/personas/{persona}/relations"),
+            lambda e, ids: _relations(e, EntityType.PERSONA, ids["persona"]),
+            group=PLAYER_GROUP,
+        ),
+        Step(
+            "delete_persona",
+            lambda ids: Rest("DELETE", "/personas/{persona}"),
+            lambda e, ids: _no_content(e.delete_persona(CTX, ids["persona"])),
+            group=PLAYER_GROUP,
+        ),
+        # -- principals (#117)
+        Step(
+            "lookup_principal",
+            lambda ids: Rest("GET", f"/principals/{PRINCIPAL}"),
+            lambda e, ids: _lookup(e),
+            group=PRINCIPAL_GROUP,
+        ),
+        Step(
+            "offboard_principal",
+            lambda ids: Rest("POST", "/admin/offboarding", LEAVING),
+            lambda e, ids: _offboard(e, LEAVING),
+            group=PRINCIPAL_GROUP,
+        ),
+        Step(
+            "offboard_principal",
+            lambda ids: Rest("POST", "/admin/offboarding", KEEPING),
+            lambda e, ids: _offboard(e, KEEPING),
+            _keep("offboarding", "job_id"),
+            group=PRINCIPAL_GROUP,
+            status=lambda body: 202 if "job_id" in body else 200,
+        ),
+        Step(
+            "get_offboarding",
+            lambda ids: Rest("GET", "/admin/offboarding/{offboarding}"),
+            lambda e, ids: _offboarding(e, ids["offboarding"]),
+            group=PRINCIPAL_GROUP,
+        ),
+        # -- erasure (#124): a dry run of the story's second character (it writes nothing)
+        Step(
+            "erase",
+            lambda ids: Rest("POST", "/admin/erasure", _erasure_request(ids)),
+            lambda e, ids: _erase(e, _erasure_request(ids)),
+        ),
+        # -- the erasure ledger's reconciliation and the boundary (#125)
+        Step(
+            "reconcile_erasure",
+            lambda ids: Rest("POST", "/admin/erasure/reconcile"),
+            lambda e, ids: _reconcile_erasure(e),
+        ),
+        Step(
+            "erasure_status",
+            lambda ids: Rest("GET", "/admin/erasure/status"),
+            lambda e, ids: _erasure_status(e),
+        ),
+        Step(
+            "erasure_boundary",
+            lambda ids: Rest("GET", "/admin/erasure/boundary"),
+            lambda e, ids: _erasure_boundary(e),
+        ),
+        # -- media assets (#105)
+        Step(
+            "upload_media",
+            lambda ids: Rest("POST", "/media", files=files(MEDIA_BYTES, MEDIA)),
+            lambda e, ids: _uploaded(e, MEDIA),
+            _keep("media", "id"),
+        ),
+        Step(  # no depicted subjects: 422 subjects_required on both
+            "upload_media",
+            lambda ids: Rest("POST", "/media", files=files(MEDIA_BYTES, UNDECLARED)),
+            lambda e, ids: _uploaded(e, UNDECLARED),
+        ),
+        Step(
+            "get_media",
+            lambda ids: Rest("GET", "/media/{media}"),
+            lambda e, ids: _media(e, ids["media"]),
+        ),
+        Step(
+            "get_media_content",
+            lambda ids: Rest("GET", "/media/{media}/content"),
+            lambda e, ids: _media_content(e, ids["media"]),
+        ),
+        Step(
+            "list_media",
+            lambda ids: Rest("GET", "/media", params={"kind": "image"}),
+            lambda e, ids: _media_list(e),
+        ),
+        # -- media delivery (#107): a signed URL (its base set first), and resumable uploads
+        Step(
+            "update_deployment_settings",
+            lambda ids: Rest("PUT", "/admin/settings", PUBLIC_BASE),
+            lambda e, ids: _deployment_write(e, PUBLIC_BASE),
+        ),
+        Step(
+            "get_media_url",
+            lambda ids: Rest("GET", "/media/{media}/url", params={"ttl": 60}),
+            lambda e, ids: _media_url(e, ids["media"]),
+        ),
+        Step(
+            "open_upload",
+            lambda ids: Rest("POST", "/media/uploads", SESSION),
+            lambda e, ids: _upload_opened(e),
+            _keep("upload", "upload_id"),
+        ),
+        Step(
+            "put_upload_part",
+            lambda ids: Rest("PUT", "/media/uploads/{upload}/parts/1", content=SESSION_BYTES),
+            lambda e, ids: _part_stored(e, ids["upload"]),
+        ),
+        Step(
+            "get_upload",
+            lambda ids: Rest("GET", "/media/uploads/{upload}"),
+            lambda e, ids: _upload(e, ids["upload"]),
+        ),
+        Step(
+            "complete_upload",
+            lambda ids: Rest("POST", "/media/uploads/{upload}/complete"),
+            lambda e, ids: _completed(e, ids["upload"]),
+        ),
+        Step(
+            "open_upload",
+            lambda ids: Rest("POST", "/media/uploads", SESSION),
+            lambda e, ids: _upload_opened(e),
+            _keep("dropped", "upload_id"),
+        ),
+        Step(
+            "abort_upload",
+            lambda ids: Rest("DELETE", "/media/uploads/{dropped}"),
+            lambda e, ids: _no_content(e.abort_upload(CTX, ids["dropped"])),
+        ),
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", "/media/{media}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX, EntityType.MEDIA, ids["media"], OwnerTransferRequest(**NEW_OWNER)
+                )
+            ),
+        ),
+        Step(
+            "delete_media",
+            lambda ids: Rest("DELETE", "/media/{media}"),
+            lambda e, ids: _no_content(e.delete_media(CTX, ids["media"])),
+        ),
+        Step(  # retired: still read
+            "get_media",
+            lambda ids: Rest("GET", "/media/{media}"),
+            lambda e, ids: _media(e, ids["media"]),
+        ),
+        # -- engine profiles (#106)
+        Step(
+            "create_profile",
+            lambda ids: Rest("POST", "/engine-profiles", PROFILE),
+            lambda e, ids: _profile_write(e.create_profile(CTX, ProfileCreate(**PROFILE))),
+            _keep("profile", "id"),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "get_profile",
+            lambda ids: Rest("GET", "/engine-profiles/{profile}"),
+            lambda e, ids: _profile(e, ids["profile"]),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "list_profiles",
+            lambda ids: Rest("GET", "/engine-profiles", params={"owner": PRINCIPAL}),
+            lambda e, ids: _profiles(e),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "update_profile",
+            lambda ids: Rest("PUT", "/engine-profiles/{profile}", PROFILE_EDIT),
+            lambda e, ids: _profile_edit(
+                e.update_profile(CTX, ids["profile"], ProfileUpdate(**PROFILE_EDIT))
+            ),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "get_profile",
+            lambda ids: Rest("GET", "/engine-profiles/{profile}", params={"version": 1}),
+            lambda e, ids: _profile(e, ids["profile"], version=1),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "list_profile_versions",
+            lambda ids: Rest("GET", "/engine-profiles/{profile}/versions"),
+            lambda e, ids: _profile_versions(e, ids["profile"]),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "copy_profile",
+            lambda ids: Rest("POST", "/engine-profiles/{profile}/copy", PROFILE_COPY),
+            lambda e, ids: _profile_write(
+                e.copy_profile(CTX, ids["profile"], ProfileCopy(**PROFILE_COPY))
+            ),
+            _keep("profile_copy", "id"),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "validate_profile",
+            lambda ids: Rest("POST", "/engine-profiles/{profile}/validate", {}),
+            lambda e, ids: _profile_check(e, ids["profile"], {}),
+            group=PROFILE_GROUP,
+        ),
+        Step(  # no body: the latest version on both (the library takes no request)
+            "validate_profile",
+            lambda ids: Rest("POST", "/engine-profiles/{profile}/validate"),
+            lambda e, ids: _profile_check(e, ids["profile"], None),
+            group=PROFILE_GROUP,
+        ),
+        Step(  # an undelivered level: 422 invalid_profile on both
+            "validate_profile",
+            lambda ids: Rest("POST", "/engine-profiles/{profile}/validate", PROFILE_DRY_RUN),
+            lambda e, ids: _profile_check(e, ids["profile"], PROFILE_DRY_RUN),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "profile_schema",
+            lambda ids: Rest("GET", "/engine-profiles/schema"),
+            lambda e, ids: _profile_schema(e),
+            group=PROFILE_GROUP,
+        ),
+        Step(  # the deployment's default: 409 on both
+            "delete_profile",
+            lambda ids: Rest("DELETE", f"/engine-profiles/{LITE_PRESET_ID}"),
+            lambda e, ids: _profile_deleted(e.delete_profile(CTX, LITE_PRESET_ID)),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "delete_profile",
+            lambda ids: Rest("DELETE", "/engine-profiles/{profile_copy}"),
+            lambda e, ids: _profile_deleted(e.delete_profile(CTX, ids["profile_copy"])),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "transfer_owner",
+            lambda ids: Rest("PUT", "/engine-profiles/{profile}/owner", NEW_OWNER),
+            lambda e, ids: _owner(
+                e.transfer_owner(
+                    CTX,
+                    EntityType.ENGINE_PROFILE,
+                    ids["profile"],
+                    OwnerTransferRequest(**NEW_OWNER),
+                )
+            ),
+            group=PROFILE_GROUP,
+        ),
+        # -- a story's configuration (#109): a preview that writes nothing, and the read
+        Step(
+            "impact_preview",
+            lambda ids: Rest("POST", f"{s}/impact-preview", {"profile_id": ids["profile"]}),
+            lambda e, ids: _impact(e, ids["story"], {"profile_id": ids["profile"]}),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "get_effective_config",
+            lambda ids: Rest("GET", f"{s}/effective-config"),
+            lambda e, ids: _effective(e, ids["story"]),
+            group=PROFILE_GROUP,
+        ),
+        # -- the story's profile and overrides (#113), then its configuration read again
+        Step(
+            "assign_engine_profile",
+            lambda ids: Rest("PUT", f"{s}/engine-profile", {"profile_id": ids["profile"]}),
+            lambda e, ids: _story_profile_write(
+                e.assign_engine_profile(
+                    CTX, ids["story"], ProfileAssignment(profile_id=ids["profile"])
+                )
+            ),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "set_profile_overrides",
+            lambda ids: Rest("PATCH", f"{s}/profile-overrides", STORY_OVERRIDES),
+            lambda e, ids: _story_profile_write(
+                e.set_profile_overrides(
+                    CTX, ids["story"], ProfileOverridesPatch.model_validate(STORY_OVERRIDES)
+                )
+            ),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "get_effective_config",
+            lambda ids: Rest("GET", f"{s}/effective-config"),
+            lambda e, ids: _effective(e, ids["story"]),
+            group=PROFILE_GROUP,
         ),
         # -- the operator surface
         Step(
@@ -476,8 +1692,8 @@ def _steps() -> list[Step]:
         ),
         Step(
             "update_deployment_settings",
-            lambda ids: Rest("PUT", "/admin/settings", {"lite_window_messages": 40}),
-            lambda e, ids: _deployment_write(e, {"lite_window_messages": 40}),
+            lambda ids: Rest("PUT", "/admin/settings", DEPLOYMENT_PATCH),
+            lambda e, ids: _deployment_write(e, DEPLOYMENT_PATCH),
         ),
         Step(
             "config_changes",
@@ -559,6 +1775,26 @@ async def _listed(engine: Engine) -> dict[str, Any]:
     return dump(StoryList.of(await engine.list_stories(CTX, status=StoryStatus.ACTIVE)))
 
 
+async def _listed_by(engine: Engine, **filters: Any) -> dict[str, Any]:
+    return dump(StoryList.of(await engine.list_stories(CTX, **filters)))
+
+
+async def _owner(call: Awaitable[Any]) -> dict[str, Any]:
+    transfer = await call
+    model = StoryOwnerBody if transfer.entity_type is EntityType.STORY else OwnerBody
+    return dump(model.of(transfer))
+
+
+async def _relation(call: Awaitable[Any]) -> dict[str, Any]:
+    write = await call
+    model = StoryRelationBody if write.entity_type is EntityType.STORY else RelationBody
+    return dump(model.of(write))
+
+
+async def _relations(engine: Engine, entity_type: EntityType, entity_id: str) -> dict[str, Any]:
+    return dump(RelationsBody.of(await engine.list_relations(CTX, entity_type, entity_id)))
+
+
 async def _changes(engine: Engine, scope: ConfigScope, story_id: str | None) -> dict[str, Any]:
     page = await engine.config_changes(CTX, scope=scope, story_id=story_id)
     return dump(ConfigChangesBody.of(page))
@@ -606,6 +1842,46 @@ async def _operation(engine: Engine, ids: Ids) -> dict[str, Any]:
     return dump(OperationBody.of(view))
 
 
+async def _message_rated(engine: Engine, ids: Ids) -> dict[str, Any]:
+    request = FeedbackRequest.model_validate(MESSAGE_RATING)
+    write = await engine.rate_message(CTX, ids["story"], ids["reply"], request)
+    return dump(write.feedback)
+
+
+async def _message_rating(engine: Engine, ids: Ids) -> dict[str, Any]:
+    return dump(await engine.get_feedback(CTX, ids["story"], ids["reply"]))
+
+
+async def _feedback_aggregates(engine: Engine) -> dict[str, Any]:
+    return dump(await engine.feedback_aggregates(CTX, FeedbackGroupBy.TAG))
+
+
+async def _feedback_review(
+    engine: Engine, which: FeedbackReviewList, **params: Any
+) -> dict[str, Any]:
+    return dump(await engine.feedback_review(CTX, which, **params))
+
+
+async def _feedback_exported(engine: Engine, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    request = FeedbackExportRequest.model_validate(body or {})
+    written = await engine.export_feedback(CTX, request)
+    return dump(FeedbackExportWrittenBody.of(written))
+
+
+async def _feedback_export(engine: Engine, export_id: str) -> dict[str, Any]:
+    return dump(await engine.get_feedback_export(CTX, export_id))
+
+
+async def _feedback_export_content(engine: Engine, export_id: str) -> dict[str, Any]:
+    found = await engine.get_feedback_export_content(CTX, export_id)
+    # An empty file reads as REST reads an empty body (``{}``), with the route's 200.
+    return _bytes(found.data, found.media_type) if found.data else {}
+
+
+async def _feedback_exports(engine: Engine) -> dict[str, Any]:
+    return dump(await engine.list_feedback_exports(CTX))
+
+
 async def _regenerate(engine: Engine, story_id: str) -> dict[str, Any]:
     request = RegenerateRequest.model_validate({"prompt_params": {"length": "short"}})
     result = await engine.regenerate(CTX, story_id, request)
@@ -618,7 +1894,9 @@ async def _variants(engine: Engine, story_id: str) -> dict[str, Any]:
 
 async def _swap(engine: Engine, story_id: str, turn: int, *, variant: int = 1) -> dict[str, Any]:
     request = SwapRequest.model_validate({"to_variant_chain": {"turn": turn, "variant": variant}})
-    return dump(SwappedBody.of(await engine.swap(CTX, story_id, request)))
+    done = await engine.swap(CTX, story_id, request)
+    assert isinstance(done, Swapped)
+    return dump(SwappedBody.of(done))
 
 
 async def _truncate(engine: Engine, story_id: str, to_turn: int) -> dict[str, Any]:
@@ -627,12 +1905,16 @@ async def _truncate(engine: Engine, story_id: str, to_turn: int) -> dict[str, An
 
 
 async def _untruncate(engine: Engine, story_id: str) -> dict[str, Any]:
-    return dump(UntruncatedBody.of(await engine.untruncate(CTX, story_id, UntruncateRequest())))
+    done = await engine.untruncate(CTX, story_id, UntruncateRequest())
+    assert isinstance(done, Untruncation)
+    return dump(UntruncatedBody.of(done))
 
 
 async def _fork(engine: Engine, story_id: str) -> dict[str, Any]:
     request = ForkRequest(at_turn=1, name="Parity fork")
-    return dump(ForkedBody.of(await engine.fork(CTX, story_id, request)))
+    done = await engine.fork(CTX, story_id, request)
+    assert isinstance(done, Forked)
+    return dump(ForkedBody.of(done))
 
 
 async def _status(call: Awaitable[Any]) -> dict[str, Any]:
@@ -644,9 +1926,250 @@ async def _deleted(engine: Engine, story_id: str) -> dict[str, Any]:
     return {}
 
 
+async def _rating_change(engine: Engine, story_id: str, rating_id: str) -> dict[str, Any]:
+    result = await engine.set_content_rating(
+        CTX, story_id, RatingChangeRequest(content_rating_id=rating_id)
+    )
+    if isinstance(result, RatingCheckStarted):
+        return dump(RatingCheckStartedBody.of(result))
+    return dump(RatingAppliedBody.of(result))
+
+
+async def _rating_check(engine: Engine, story_id: str, job_id: str) -> dict[str, Any]:
+    return dump(RatingCheckBody.of(await engine.get_rating_check(CTX, story_id, job_id)))
+
+
 async def _no_content(call: Awaitable[Any]) -> dict[str, Any]:
     await call
     return {}
+
+
+async def _draft(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CharacterDraftBody.of(await call))
+
+
+async def _published(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CharacterPublishedBody.of(await call))
+
+
+async def _character_status(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CharacterStatusBody.of(await call))
+
+
+async def _character(engine: Engine, character_id: str, **params: Any) -> dict[str, Any]:
+    return dump(await engine.get_character(CTX, character_id, **params))
+
+
+async def _character_versions(engine: Engine, character_id: str) -> dict[str, Any]:
+    found = await engine.list_character_versions(CTX, character_id)
+    return dump(CharacterVersionsBody.of(found))
+
+
+async def _scenario_draft(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ScenarioDraftBody.of(await call))
+
+
+async def _scenario_published(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ScenarioPublishedBody.of(await call))
+
+
+async def _scenario_status(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ScenarioStatusBody.of(await call))
+
+
+async def _validated(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(await call)
+
+
+async def _scenario(engine: Engine, scenario_id: str, **params: Any) -> dict[str, Any]:
+    return dump(await engine.get_scenario(CTX, scenario_id, **params))
+
+
+async def _scenario_of(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(await call)
+
+
+async def _scenario_versions(engine: Engine, scenario_id: str) -> dict[str, Any]:
+    return dump(ScenarioVersionsBody.of(await engine.list_scenario_versions(CTX, scenario_id)))
+
+
+async def _listing_status(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ListingStatusBody.of(await call))
+
+
+async def _characters_found(engine: Engine, filters: dict[str, Any]) -> dict[str, Any]:
+    page = await engine.search_catalog(CTX, EntityType.CHARACTER, **filters)
+    return dump(CharacterListBody.of(page))
+
+
+async def _scenarios_found(engine: Engine, filters: dict[str, Any]) -> dict[str, Any]:
+    page = await engine.search_catalog(CTX, EntityType.SCENARIO, **filters)
+    return dump(ScenarioListBody.of(page))
+
+
+async def _uploaded(engine: Engine, fields: dict[str, Any]) -> dict[str, Any]:
+    request = MediaUpload.model_validate(fields)
+    written = await engine.upload_media(CTX, request, MEDIA_BYTES, content_type="image/png")
+    return dump(MediaUploadedBody.of(written))
+
+
+async def _media(engine: Engine, media_id: str) -> dict[str, Any]:
+    return dump(await engine.get_media(CTX, media_id))
+
+
+async def _media_content(engine: Engine, media_id: str) -> dict[str, Any]:
+    content = await engine.get_media_content(CTX, media_id)
+    return _bytes(await content.read(), content.mime_type)
+
+
+async def _media_url(engine: Engine, media_id: str) -> dict[str, Any]:
+    return dump(MediaUrlBody.of(await engine.get_media_url(CTX, media_id, ttl=60)))
+
+
+async def _upload_opened(engine: Engine) -> dict[str, Any]:
+    opened = await engine.open_upload(CTX, UploadOpen.model_validate(SESSION))
+    return dump(UploadOpenedBody.of(opened))
+
+
+async def _part_stored(engine: Engine, upload_id: str) -> dict[str, Any]:
+    stored = await engine.put_upload_part(CTX, upload_id, 1, SESSION_BYTES)
+    return dump(PartStoredBody.of(stored))
+
+
+async def _upload(engine: Engine, upload_id: str) -> dict[str, Any]:
+    return dump(await engine.get_upload(CTX, upload_id))
+
+
+async def _completed(engine: Engine, upload_id: str) -> dict[str, Any]:
+    return dump(MediaUploadedBody.of(await engine.complete_upload(CTX, upload_id)))
+
+
+async def _media_list(engine: Engine) -> dict[str, Any]:
+    from epistrel.core.tables.media import MediaKind
+
+    return dump(MediaListBody.of(await engine.list_media(CTX, kind=MediaKind.IMAGE)))
+
+
+async def _profile_write(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ProfileBody.of(await call))
+
+
+async def _added(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StoryCharacterBody.of(await call))
+
+
+async def _promoted(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(PromotionBody.of(await call))
+
+
+async def _persona_write(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(PersonaBody.of(await call))
+
+
+async def _persona(engine: Engine, persona_id: str) -> dict[str, Any]:
+    return dump(await engine.get_persona(CTX, persona_id))
+
+
+async def _personas(engine: Engine) -> dict[str, Any]:
+    return dump(PersonaListBody.of(await engine.list_personas(CTX, owner=PRINCIPAL)))
+
+
+async def _lookup(engine: Engine) -> dict[str, Any]:
+    return dump(await engine.lookup_principal(CTX, PRINCIPAL))
+
+
+async def _offboard(engine: Engine, body: dict[str, Any]) -> dict[str, Any]:
+    result = await engine.offboard_principal(CTX, OffboardingRequest.model_validate(body))
+    if isinstance(result, OffboardingPlan):
+        return dump(OffboardingPlanBody.of(result))
+    return dump(OffboardingQueuedBody.of(result))
+
+
+def _erasure_request(ids: Ids) -> dict[str, Any]:
+    return {
+        "subject": {"kind": "character", "id": ids["ada"]},
+        "scope": {"story": ids["story"]},
+        "dry_run": True,
+    }
+
+
+async def _erase(engine: Engine, body: dict[str, Any]) -> dict[str, Any]:
+    from epistrel.api.routes.admin.erasure import ErasureBody
+    from epistrel.core.erasure.erase import ErasureRequest
+
+    return dump(ErasureBody.of(await engine.erase(CTX, ErasureRequest.model_validate(body))))
+
+
+async def _reconcile_erasure(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.erasure import ReconcileRunBody
+
+    return dump(ReconcileRunBody.of(await engine.reconcile_erasure(CTX)))
+
+
+async def _erasure_status(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.erasure import ErasureStatusBody
+
+    return dump(ErasureStatusBody.of(await engine.erasure_status(CTX)))
+
+
+async def _erasure_boundary(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.erasure import ErasureBoundaryBody
+
+    return dump(ErasureBoundaryBody.of(await engine.erasure_boundary(CTX)))
+
+
+async def _offboarding(engine: Engine, job_id: str) -> dict[str, Any]:
+    return dump(await engine.get_offboarding(CTX, job_id))
+
+
+async def _profile_edit(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ProfileEditBody.of(await call))
+
+
+async def _story_profile_write(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StoryProfileWriteBody.of(await call))
+
+
+async def _impact(engine: Engine, story_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    request = ImpactPreviewRequest.model_validate(body)
+    return dump(await engine.impact_preview(CTX, story_id, request))
+
+
+async def _effective(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(await engine.get_effective_config(CTX, story_id))
+
+
+async def _profile(engine: Engine, profile_id: str, **params: Any) -> dict[str, Any]:
+    return dump(await engine.get_profile(CTX, profile_id, **params))
+
+
+async def _profiles(engine: Engine) -> dict[str, Any]:
+    return dump(ProfileListBody.of(await engine.list_profiles(CTX, owner=PRINCIPAL)))
+
+
+async def _profile_versions(engine: Engine, profile_id: str) -> dict[str, Any]:
+    found = await engine.list_profile_versions(CTX, profile_id)
+    return dump(ProfileVersionsBody(items=found))
+
+
+async def _profile_check(
+    engine: Engine, profile_id: str, body: dict[str, Any] | None
+) -> dict[str, Any]:
+    request = None if body is None else ProfileValidate.model_validate(body)
+    return dump(await engine.validate_profile(CTX, profile_id, request))
+
+
+async def _profile_schema(engine: Engine) -> dict[str, Any]:
+    return dump(ProfileSchemaBody.of(await engine.profile_schema(CTX)))
+
+
+async def _profile_deleted(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ProfileDeletedBody.of(await call))
+
+
+def _bytes(data: bytes, content_type: str) -> dict[str, Any]:
+    """A content read as compared: the bytes' digest and type."""
+    return {"content_sha256": hashlib.sha256(data).hexdigest(), "content_type": content_type}
 
 
 async def _ratings(engine: Engine) -> dict[str, Any]:
@@ -748,6 +2271,10 @@ def normalise(value: Any, normalizer: Normalizer) -> Any:
         return [normalise(item, normalizer) for item in value]
     if isinstance(value, str) and TIMESTAMP.match(value):
         return "<time>"
+    if isinstance(value, str) and FINGERPRINT.match(value):
+        return normalizer.placeholder(value)
+    if isinstance(value, str):
+        value = SIGNED.sub(r"\1<signed>", value)
     return normalizer(value)
 
 
@@ -786,9 +2313,15 @@ async def run_rest(settings: Settings, steps: list[Step]) -> list[Rendered]:
                     call.path.format(**ids),
                     json=call.json,
                     params=call.params,
+                    files=call.files,
+                    content=call.content,
                     headers=headers,
                 )
-                body = response.json() if response.content else {}
+                kind = response.headers.get("content-type", "application/json")
+                if response.content and not kind.startswith("application/json"):
+                    body = _bytes(response.content, kind)
+                else:
+                    body = response.json() if response.content else {}
                 if response.is_success:
                     step.capture(body, ids)
                 out.append((response.status_code, body))
@@ -807,7 +2340,7 @@ async def run_library(settings: Settings, steps: list[Step]) -> list[Rendered]:
                 out.append((error.http_status, error_body(error)))
                 continue
             step.capture(body, ids)
-            out.append((statuses[step.operation](body), body))
+            out.append(((step.status or statuses[step.operation])(body), body))
     return out
 
 
@@ -854,14 +2387,25 @@ def parity_gaps(engine_class: type[Engine], app: FastAPI, steps: list[Step]) -> 
 
 
 @pytest.fixture(scope="module")
-def surfaces(pg_url: str) -> Any:
+def surfaces(pg_url: str, tmp_path_factory: pytest.TempPathFactory) -> Any:
+    # Each surface's database has its own erasure ledger file (#125), as a deployment has.
     with (
         migrated_database(pg_url, "epistrel_c03_rest") as rest_url,
         migrated_database(pg_url, "epistrel_c03_lib") as lib_url,
     ):
         yield (
-            auth_settings(rest_url, model_adapter="stub", config_key=config_key()),
-            auth_settings(lib_url, model_adapter="stub", config_key=config_key()),
+            auth_settings(
+                rest_url,
+                model_adapter="stub",
+                config_key=config_key(),
+                erasure_ledger_dir=tmp_path_factory.mktemp("c03-rest-ledger"),
+            ),
+            auth_settings(
+                lib_url,
+                model_adapter="stub",
+                config_key=config_key(),
+                erasure_ledger_dir=tmp_path_factory.mktemp("c03-lib-ledger"),
+            ),
         )
 
 
@@ -882,7 +2426,8 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
     """The same calls give the same results over REST and in-process, for every operation.
 
     Complement asserted: the comparison sees real results (the turn's reply text came back on
-    both surfaces, and the error steps answered errors, not successes)."""
+    both surfaces, the error steps answered errors, not successes, each character, media and
+    message-rating step its intended status, and the rating recorded its turn's operation)."""
     steps = _steps()
     app = create_app(auth_settings(dummy_dsn))
     assert parity_gaps(Engine, app, steps) == []
@@ -892,7 +2437,117 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
     replies = [b["message"]["text"] for _, b in rest if isinstance(b.get("message"), dict)]
     assert replies
     assert all(text == REPLY for text in replies)
-    assert sorted({status for status, _ in rest if status >= 400}) == [403, 409, 422]
+    # 404: the rating check read of a job that is no check of the story (#118).
+    assert sorted({status for status, _ in rest if status >= 400}) == [403, 404, 409, 422]
+    rating = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.operation in ("set_content_rating", "get_rating_check")
+    ]
+    assert rating == [("set_content_rating", 200), ("get_rating_check", 404)]
+    # The character steps (#103) answered what they were written to answer, on both surfaces.
+    answered = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if "character" in step.operation
+    ]
+    assert answered == [
+        ("add_story_character", 201),
+        ("promote_character", 201),
+        ("create_character_draft", 201),
+        ("save_character_draft", 200),
+        ("save_character_draft", 409),
+        ("publish_character", 201),
+        ("get_character", 200),
+        ("get_character", 200),
+        ("get_character", 200),
+        ("list_character_versions", 200),
+        ("archive_character", 200),
+        ("unarchive_character", 200),
+        ("create_character_draft", 201),
+        ("get_character", 422),
+        ("delete_character", 204),
+        ("publish_character", 201),
+    ]
+    # The media steps (#105) too (``MEDIA_ANSWERS``), and the session steps' (#107).
+    media = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if "media" in step.operation
+    ]
+    assert media == MEDIA_ANSWERS
+    sessions = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.operation in SESSION_OPERATIONS
+    ]
+    assert sessions == SESSION_ANSWERS
+    entries = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == ENTRY_GROUP
+    ]
+    assert entries == ENTRY_ANSWERS
+    suggestions = [
+        (step.operation, status, body)
+        for step, (status, body) in zip(steps, rest, strict=True)
+        if step.group == SUGGESTION_GROUP
+    ]
+    assert [(operation, status) for operation, status, _ in suggestions] == SUGGESTION_ANSWERS
+    tables = [body for _, status, body in suggestions if status == 200]
+    assert all(table["advisory"] is True and table["rows"] for table in tables)
+    listings = [
+        (step.operation, status, body)
+        for step, (status, body) in zip(steps, rest, strict=True)
+        if step.group == LISTING_GROUP
+    ]
+    assert [(operation, status) for operation, status, _ in listings] == LISTING_ANSWERS
+    found = [len(body["items"]) for _, _, body in listings if "items" in body]
+    assert found == [1, 1], "each list found its one entry"
+    profiles = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == PROFILE_GROUP
+    ]
+    assert profiles == PROFILE_ANSWERS
+    players = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == PLAYER_GROUP
+    ]
+    assert players == PLAYER_ANSWERS
+    principals = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == PRINCIPAL_GROUP
+    ]
+    assert principals == PRINCIPAL_ANSWERS
+    ratings = [
+        (step.operation, status, body)
+        for step, (status, body) in zip(steps, rest, strict=True)
+        if step.group == RATING_GROUP
+    ]
+    assert [(operation, status) for operation, status, _ in ratings] == RATING_ANSWERS
+    first_turn = next(
+        body for step, (_, body) in zip(steps, rest, strict=True) if step.operation == "respond"
+    )
+    rated, read = ratings[0][2], ratings[1][2]
+    assert (rated["rating"], rated["tags"], rated["context"]["operation_id"]) == (
+        4,
+        ["too_long"],
+        first_turn["beats"][0]["operation_id"],
+    )
+    assert read == rated
+    reports = [
+        (step.operation, status, body)
+        for step, (status, body) in zip(steps, rest, strict=True)
+        if step.group == REPORT_GROUP
+    ]
+    assert [(operation, status) for operation, status, _ in reports] == REPORT_ANSWERS
+    by_tag = reports[0][2]
+    assert [(g["key"], g["count"]) for g in by_tag["groups"]] == [("too_long", 1)]
+    assert reports[5][2]["case_count"] == 0
+    assert reports[7][2] == {}, "the empty file reads back empty"
 
 
 def test_c_03_bites_on_a_method_without_a_route_or_step(dummy_dsn: str) -> None:

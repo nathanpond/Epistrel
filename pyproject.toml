@@ -7,15 +7,19 @@ license = "Apache-2.0"
 requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.14",
+    "boto3>=1.43.112",
     "cryptography>=50.0.2",
     "fastapi>=0.115",
+    "httpx2>=2.13.1",
     "jinja2>=3.1.6",
     "openai>=3.28.0",
     "opentelemetry-exporter-otlp-proto-http>=1.45.1",
     "opentelemetry-sdk>=1.45.1",
+    "pillow>=12.3.0",
     "prometheus-client>=0.26.0",
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.7",
+    "python-multipart>=0.0.32",
     "sqlalchemy[asyncio]>=2.0",
     "structlog>=26.1.0",
     "uvicorn[standard]>=0.30",
@@ -23,7 +27,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "httpx2>=2.13.1",
+    "boto3-stubs[s3]>=1.43.112",
     "hypothesis>=6.168.5",
     "import-linter>=2",
     "mypy>=1.13",
@@ -68,6 +72,9 @@ infra = [
 allow = [
     "Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "PSF-2.0", "Python-2.0", "0BSD",
     "Zlib", "Unlicense", "MPL-2.0",
+    # Pillow (#105): the Historical Permission Notice and Disclaimer family; Pillow 12 declares
+    # MIT-CMU, earlier releases HPND. Both are permissive, OSI-approved and Apache-2.0-compatible.
+    "MIT-CMU", "HPND",
     # LGPL: acceptable for libraries used unmodified through their public API (invariant 2, amended
     # 2026-10-08 for psycopg 3). Modifying or vendoring an LGPL library is still out.
     "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later",
@@ -106,6 +113,50 @@ source_modules = [
     "epistrel.orchestrator.policies.store",
 ]
 forbidden_modules = ["epistrel.orchestrator.policies.admin"]
+
+[[tool.importlinter.contracts]]
+# FR-RATE-8 (#121): the rating suggestion is advisory. No guardrail (the deterministic evaluator
+# and the Orchestrator's gates), catalog/publish, story-creation or rating-change code reads it,
+# directly or through another module; `tests/gates/test_rating_suggestion_contract.py` checks
+# that the contract exists and is kept.
+name = "rating-suggestion-is-advisory"
+type = "forbidden"
+source_modules = [
+    "epistrel.core.policies",
+    "epistrel.orchestrator.policies",
+    "epistrel.core.catalog",
+    "epistrel.core.genesis",
+    "epistrel.core.ratings.change",
+]
+forbidden_modules = ["epistrel.core.ratings.suggest", "epistrel.orchestrator.ratings.suggest"]
+
+[[tool.importlinter.contracts]]
+# FR-FB-3 (#126): feedback is flag-only. Nothing that plays a turn (the Orchestrator, the Lite
+# pipeline and its jobs), creates a story, runs a guardrail (`core.policies`, and the
+# Orchestrator's gates), changes a rating, resolves a profile or folds a projection reads
+# feedback, its reports or its exports, directly or through another module. The two ignored
+# edges are erasure's (#123, #124): it reads a rating's text to index and redact the subjects it
+# names (FR-ADMIN-6), which changes nothing in a turn. `tests/gates/test_feedback_contract.py`
+# checks that the contract exists as written, is kept and bites.
+name = "feedback-is-flag-only"
+type = "forbidden"
+source_modules = [
+    "epistrel.orchestrator",
+    "epistrel.core.genesis",
+    "epistrel.core.policies",
+    "epistrel.core.ratings",
+    "epistrel.core.profiles",
+    "epistrel.core.projections",
+]
+forbidden_modules = [
+    "epistrel.core.feedback",
+    "epistrel.core.feedback_reporting",
+    "epistrel.core.feedback_export",
+]
+ignore_imports = [
+    "epistrel.core.erasure.records -> epistrel.core.feedback",
+    "epistrel.core.erasure.erase -> epistrel.core.feedback",
+]
 
 [build-system]
 requires = ["hatchling"]

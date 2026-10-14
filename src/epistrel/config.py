@@ -11,6 +11,7 @@ import base64
 import binascii
 import logging
 import os
+from pathlib import Path
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
@@ -29,6 +30,10 @@ FERNET_KEY_LENGTH = 44
 log = logging.getLogger(__name__)
 
 LogLevel = Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"]
+MediaStoreKind = Literal["local", "s3"]
+DEFAULT_S3_REGION = "us-east-1"
+S3_BUCKET_PATTERN = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+"""An S3 bucket name: 3 to 63 lowercase letters, digits, dots and hyphens."""
 ProcessMode = Literal["all", "api", "worker"]
 PROCESS_MODES: tuple[ProcessMode, ...] = ("all", "api", "worker")
 
@@ -67,6 +72,11 @@ class Settings(BaseSettings):
     # A projection rebuild of a story with more events than this runs as a background job
     # (``rebuild_projections``, #70); smaller stories rebuild synchronously in the request.
     rebuild_async_threshold: int = Field(default=10_000, ge=1)
+    # Keep each story's resolved engine configuration in this process (FR-PROF-5; #113): it is
+    # used only while the story's profile version, its overrides' revision and the deployment's
+    # configuration revision are unchanged, so a turn resolves its configuration in one query.
+    # Tests turn it off.
+    effective_config_cache: bool = True
     # Background workers (NFR-REL-5, #70): poll for due jobs every ``worker_poll_interval``
     # seconds whether or not a notification arrived; a claim holds a ``job_lease_seconds`` lease
     # renewed every third of it; a job fails for good after ``job_max_attempts`` failed
@@ -88,6 +98,39 @@ class Settings(BaseSettings):
     # OpenTelemetry traces over OTLP/HTTP (FR-OBS-1; #74), e.g. ``http://collector:4318``; unset
     # (the default) leaves tracing off. ``OTEL_EXPORTER_OTLP_*`` variables tune the exporter.
     otlp_endpoint: str | None = None
+    # Where the local blob store keeps media bytes (FR-MEDIA-1; #105): ``<root>/<sha256[:2]>/
+    # <sha256>``, with uploads staged under ``<root>/tmp``. Created at start-up; a root that
+    # cannot be written refuses the start (exit 78). The image sets /var/lib/epistrel/media.
+    media_root: Path = Path("var/media")
+    # Where the blobs live (FR-MEDIA-1,3; #107): ``local`` (under ``media_root``) or ``s3``, any
+    # S3-compatible endpoint. Uploads are staged under ``media_root`` either way. The store kind is
+    # recorded in the database at the first start-up; switching it while media exist is refused
+    # (exit 78). The bucket must exist (checked at start-up, exit 78).
+    media_store: MediaStoreKind = "local"
+    # The S3-compatible endpoint (unset: AWS's own), the endpoint presigned URLs name when it
+    # differs from the one the server reaches (``media_s3_public_endpoint``), the bucket, the
+    # region (signature v4), the access key pair (unset: boto3's credential chain), path-style
+    # addressing (``http://host/bucket/key``, which MinIO needs) and TLS verification.
+    media_s3_endpoint: str | None = None
+    media_s3_public_endpoint: str | None = None
+    media_s3_bucket: str | None = Field(default=None, pattern=S3_BUCKET_PATTERN)
+    media_s3_region: str = Field(default=DEFAULT_S3_REGION, min_length=1, max_length=64)
+    media_s3_access_key: str | None = None
+    media_s3_secret_key: SecretStr | None = None
+    media_s3_path_style: bool = False
+    media_s3_verify_tls: bool = True
+    # The ffmpeg executable that extracts a video's poster from its first frame (FR-MEDIA-3;
+    # #107): a name looked up on ``PATH`` or a path. ``ffprobe`` is taken from beside it. ffmpeg is
+    # a separate GPL program run as a process, never linked (invariant 2's exception); without it,
+    # a video uploaded without a poster is refused (422 ``poster_required``).
+    ffmpeg_path: str = Field(default="ffmpeg", min_length=1, max_length=1024)
+    # The erasure ledger's authoritative copy (FR-ADMIN-7; #125): ``<dir>/ledger.jsonl``, one
+    # hash-chained JSON line per erasure, kept outside the database and its backups (the
+    # ``erasure_ledger`` table is the copy every ``pg_dump`` carries). Created at start-up; a
+    # directory that cannot be written, or a file whose chain is broken, refuses the start
+    # (exit 78). The image sets /var/lib/epistrel/erasure-ledger (compose: the
+    # ``erasure-ledger`` volume, separate from ``pgdata`` and ``media``).
+    erasure_ledger_dir: Path = Path("var/erasure-ledger")
 
     @field_validator("database_url")
     @classmethod
@@ -124,6 +167,28 @@ class Settings(BaseSettings):
                     f"credential #{index + 1} is shorter than {MIN_CREDENTIAL_LENGTH} characters"
                 )
         return value
+
+    @field_validator("media_s3_endpoint", "media_s3_public_endpoint")
+    @classmethod
+    def _s3_endpoint_is_http(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            return None
+        if value is not None and not value.startswith(("http://", "https://")):
+            raise ValueError("must be an http:// or https:// URL")
+        return value
+
+    @model_validator(mode="after")
+    def _s3_store_needs_a_bucket(self) -> Self:
+        if self.media_store == "s3" and self.media_s3_bucket is None:
+            raise ValueError(
+                f"{_env_name('media_s3_bucket')}: is required when {_env_name('media_store')} is s3"
+            )
+        if (self.media_s3_access_key is None) != (self.media_s3_secret_key is None):
+            raise ValueError(
+                f"{_env_name('media_s3_access_key')} and {_env_name('media_s3_secret_key')}: set "
+                "both, or neither (boto3's credential chain)"
+            )
+        return self
 
     @field_validator("otlp_endpoint")
     @classmethod

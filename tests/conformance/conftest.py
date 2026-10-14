@@ -32,7 +32,7 @@ from epistrel.core.errors import EpistrelError
 from epistrel.core.stories import StorySpec
 from epistrel.engine import Engine
 from epistrel.orchestrator.lite.schemas import RespondRequest
-from tests.auth_support import auth_settings, bearer
+from tests.auth_support import auth_settings, bearer, forget_ledger
 from tests.conftest import alembic_config
 from tests.respond_support import respond_client
 
@@ -142,6 +142,9 @@ class Surface:
                 "characters": [
                     {"id": c.id, "name": c.name, "is_player": c.is_player}
                     | ({} if c.true_age is None else {"true_age": c.true_age})
+                    # An omniscient read also names the catalog entries promoted from the
+                    # character (#114).
+                    | ({} if c.promoted_to is None else {"promoted_to": list(c.promoted_to)})
                     for c in story.characters
                 ]
             }
@@ -207,7 +210,9 @@ async def both(stub_settings: Settings, engine: AsyncEngine) -> AsyncIterator[di
 @contextmanager
 def migrated_database(pg_url: str, name: str) -> Iterator[str]:
     """A fresh database on the session's server, migrated to head, dropped afterwards (#73:
-    C-01 and C-03 write deployment-wide state that must not reach the shared database)."""
+    C-01 and C-03 write deployment-wide state that must not reach the shared database). An app
+    that ``auth_settings`` makes for it gets the database's own erasure ledger directory, emptied
+    when the database is made and when it is dropped (#125)."""
     admin = make_sync_engine(pg_url, isolation_level="AUTOCOMMIT")
     drop = text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
     try:
@@ -215,9 +220,11 @@ def migrated_database(pg_url: str, name: str) -> Iterator[str]:
             conn.execute(drop)
             conn.execute(text(f'CREATE DATABASE "{name}"'))
         url = pg_url.rsplit("/", 1)[0] + f"/{name}"
+        forget_ledger(url)
         command.upgrade(alembic_config(url), "head")
         yield url
     finally:
         with admin.connect() as conn:
             conn.execute(drop)
         admin.dispose()
+        forget_ledger(pg_url.rsplit("/", 1)[0] + f"/{name}")

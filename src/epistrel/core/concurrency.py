@@ -37,10 +37,13 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import summary
-from epistrel.core.config_changes import read_lite_defaults
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
-from epistrel.core.errors import RevisionConflict, StoryNotFound, TimelineChanged
-from epistrel.core.settings_schema import StorySettings, resolve_generation
+from epistrel.core.errors import (
+    ErasedSubjectReferenced,
+    RevisionConflict,
+    StoryNotFound,
+    TimelineChanged,
+)
 from epistrel.core.tables import (
     characters,
     content_rating_versions,
@@ -64,10 +67,16 @@ READ_SET_MEMBERS: tuple[str, ...] = (
     "instructions",
     "definitions",
     "guidance_text",
-    "generation_settings",
+    "scenario_text",
+    "director_notes",
 )
-"""The Lite read set (FR-CONC-4: the assembled prompt's inputs). Guardrail and policy sets are
-not members: they belong to #64's configuration dependency set, which is re-checked."""
+"""The Lite read set (FR-CONC-4: the assembled prompt's inputs); a story created from a
+scenario adds its two rendered blocks (``scenario_text``, ``director_notes``: each the block's
+text, hashed; #122). Guardrail and policy sets are
+not members: they belong to #64's configuration dependency set, which is re-checked. Neither is
+the configuration (the generation settings, the window): a turn captures it at its start and
+runs under it, so a change of the profile, the overrides or the defaults is prospective and
+never touches a turn in flight (FR-CONC-15; #113 dropped M2's ``generation_settings``)."""
 
 
 # -- outcomes ---------------------------------------------------------------------------------
@@ -85,6 +94,12 @@ class Rebase:
     """The story moved but nothing the operation read changed; the re-checks passed."""
 
     name: str = "rebase"
+
+
+ERASED_SUBJECT = "erased_subject_referenced"
+"""``Regenerate.reason`` when a turn's output names a subject erased since its context was
+built (#127's resurrection guard, ``core.erasure.guard``): it regenerates within the budget, then
+the guard's 409 ``erased_subject_referenced`` is the answer."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,18 +357,18 @@ async def _guidance_text(conn: AsyncConnection, story_id: str, spec: LiteReadSet
     )
 
 
-async def _generation_settings(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
-    """The generation settings and window size a turn of the story starts from: the
-    deployment's Lite defaults with the story's overrides applied (FR-LITE-4, #57). A request's
-    own ``prompt_params`` are fixed for the turn, so they are not part of the read set."""
-    defaults = await read_lite_defaults(conn)
-    raw = await conn.scalar(select(stories.c.settings).where(stories.c.id == story_id))
-    story = StorySettings.from_row(raw)
-    resolved = resolve_generation(defaults.lite_generation_defaults, story.generation_settings)
-    return {
-        "generation": resolved.model_dump(mode="json"),
-        "window_messages": story.lite_window_messages or defaults.lite_window_messages,
-    }
+async def _scenario_text(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
+    """A scenario story's ``## Scenario`` block as the prompt renders it (#122)."""
+    from epistrel.core.genesis.render import read_rendered
+
+    return (await read_rendered(conn, story_id)).scenario_text
+
+
+async def _director_notes(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
+    """A scenario story's ``## Author notes (not facts)`` block as the prompt renders it."""
+    from epistrel.core.genesis.render import read_rendered
+
+    return (await read_rendered(conn, story_id)).director_notes
 
 
 for _name, _loader in (
@@ -363,7 +378,8 @@ for _name, _loader in (
     ("instructions", _instructions),
     ("definitions", _definitions),
     ("guidance_text", _guidance_text),
-    ("generation_settings", _generation_settings),
+    ("scenario_text", _scenario_text),
+    ("director_notes", _director_notes),
 ):
     register_read_set_member(_name, _loader)
 
@@ -493,6 +509,11 @@ async def run_with_revalidation(
                 else:
                     reason = outcome.reason
                 if regenerations >= limit:
+                    refusal = signal.__cause__
+                    if reason == ERASED_SUBJECT and isinstance(refusal, ErasedSubjectReferenced):
+                        # The output keeps naming an erased subject: the guard's refusal.
+                        await op.abandon()
+                        raise refusal from None
                     raise await conflict(state.current_revision, reason) from None
                 regenerations += 1
                 inputs = await op.restart(read=begin)

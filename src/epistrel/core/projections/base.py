@@ -12,6 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, ClassVar
 
 from sqlalchemy import Table
@@ -47,6 +48,9 @@ class LogEvent:
     provenance: Provenance
     type: str
     payload: EventPayload
+    redacted_at: datetime | None = None
+    """When erasure rewrote the event in place (#124): the projections mark their row
+    redacted. An event being committed never is."""
 
 
 class Rows:

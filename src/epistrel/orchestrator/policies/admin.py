@@ -31,6 +31,7 @@ from typing import Any
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import pause
 from epistrel.core.config_changes import (
     RETIRED,
     ConfigScope,
@@ -39,6 +40,7 @@ from epistrel.core.config_changes import (
     record_config_change,
 )
 from epistrel.core.enums import StoryStatus
+from epistrel.core.erasure.records import index_rows, policy_record
 from epistrel.core.errors import (
     CannotRelax,
     ConfigConflict,
@@ -263,7 +265,13 @@ async def _insert(
             **content.values(),
         )
     )
+    await _index(conn, policy_id)
     return await _require(conn, policy_id)
+
+
+async def _index(conn: AsyncConnection, policy_id: str) -> None:
+    """The policy's subject-reference rows (FR-ADMIN-6; #123): its name, message and rule."""
+    await index_rows(conn, policies, policies.c.id == policy_id, policy_record)
 
 
 async def _replace(
@@ -279,6 +287,7 @@ async def _replace(
             **content.values(),
         )
     )
+    await _index(conn, current.id)
     return await _require(conn, current.id)
 
 
@@ -452,6 +461,7 @@ async def set_story_policies(
             raise StoryArchived(
                 f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
             )
+        await pause.refuse(conn, story_id, story.status)
         revision = int(story.config_revision) + 1
         written: list[Policy] = []
         changes: list[tuple[str, Any, Any]] = []
@@ -481,6 +491,21 @@ async def set_story_policies(
                 scope_id=story_id,
             )
     return StoryPoliciesWrite(policies=tuple(written), config_revision=revision, changed=True)
+
+
+async def upsert_story_item(
+    conn: AsyncConnection,
+    story_id: str,
+    item: StoryPolicyItem,
+    *,
+    principal: str,
+    field: str,
+) -> tuple[Policy, tuple[str, Any, Any] | None]:
+    """Upsert one story or character policy of ``story_id`` inside the caller's transaction
+    (``set_story_policies``' item step; #119's genesis writes a scenario's policies as the new
+    story's with it, in the genesis transaction): the policy, and the configuration change it
+    made (``None`` when it changed nothing)."""
+    return await _upsert_story_item(conn, story_id, item, principal=principal, field=field)
 
 
 async def _upsert_story_item(

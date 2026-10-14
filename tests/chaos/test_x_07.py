@@ -63,7 +63,7 @@ from epistrel.orchestrator.jobs.worker import (
     WorkerConfig,
     recovery_pass,
 )
-from tests.auth_support import CREDENTIAL_A, auth_settings
+from tests.auth_support import CREDENTIAL_A, ERASURE_LEDGER_DIR, MEDIA_ROOT, auth_settings
 from tests.conftest import REPO_ROOT
 from tests.event_support import new_story, play_turn
 from tests.integration import test_jobs as jt
@@ -824,6 +824,12 @@ def _spawn(pg_url: str, port: int) -> subprocess.Popen[str]:
         "EPISTREL_WORKER_POLL_INTERVAL": "0.3",
         "EPISTREL_LOG_LEVEL": "WARNING",
         "EPISTREL_HOST": "127.0.0.1",
+        # The start-up check needs a writable media root (#105); never one under the repository.
+        "EPISTREL_MEDIA_ROOT": str(MEDIA_ROOT),
+        # The session's ledger, which matches ``pg_url``; the default ``var/erasure-ledger``
+        # under the repository outlives the session, and the start-up reconcile would load an
+        # earlier session's erasures into this database as pending entries (#125).
+        "EPISTREL_ERASURE_LEDGER_DIR": str(ERASURE_LEDGER_DIR),
     }
     return subprocess.Popen(
         [sys.executable, "-m", "epistrel.cli", "worker", "--port", str(port)],

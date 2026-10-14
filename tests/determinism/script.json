@@ -5,8 +5,14 @@
    "op": "create_story",
    "alias": "s1",
    "settings": {
-    "lite_window_messages": 6,
     "lite_summary_chunk": 4
+   },
+   "overrides": {
+    "memory": {
+     "rolling_summary": {
+      "window_messages": 6
+     }
+    }
    },
    "key": "det-00"
   },

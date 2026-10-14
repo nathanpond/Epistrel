@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -11,10 +12,19 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from epistrel import __version__
 from epistrel.api import errors, openapi, routes
-from epistrel.api.auth import PROTECTED_DEPENDENCIES, TRUST_BOUNDARY_STATEMENT
+from epistrel.api.auth import (
+    PROTECTED_DEPENDENCIES,
+    SIGNED_DEPENDENCIES,
+    TRUST_BOUNDARY_STATEMENT,
+)
 from epistrel.api.validation import strict_json_body
 from epistrel.config import ConfigError, Settings, load_settings
 from epistrel.core.db import database_url, make_engine
+from epistrel.core.erasure import ledger as erasure_ledger
+from epistrel.core.erasure.boundary import render_boundary
+from epistrel.core.erasure.ledger import ledger_problem
+from epistrel.core.media.store import MediaRootUnwritable
+from epistrel.core.media.stores import store_kind_problem
 from epistrel.engine import Engine
 from epistrel.observability import metrics
 from epistrel.observability.instrument import TelemetryMiddleware
@@ -25,16 +35,42 @@ from epistrel.orchestrator.models.config import config_key_problem
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Own the database engine for the life of the server process.
 
-    Refuses to start when a model API key is stored but ``EPISTREL_CONFIG_KEY`` is unset
-    (skipped under the stub adapter); ``epistrel serve`` runs the same check first and exits 78.
+    Refuses to start when the media root cannot be written or the S3 bucket cannot be used
+    (#105, #107), when the media are in another store than ``EPISTREL_MEDIA_STORE`` names
+    (#107), or when a model API key is stored but ``EPISTREL_CONFIG_KEY`` is unset (skipped under
+    the stub adapter); ``epistrel serve`` runs the same checks first and exits 78. ffmpeg and
+    ffprobe are probed once here, for ``/health`` (#107).
+
+    The erasure ledger (#125): its directory must be writable and its file's chain intact; then,
+    before the first request, the ledger is compared with the database (stories a restored
+    backup unerased are blocked) and the reapply starts in the background. A ledger that
+    disagrees with the database refuses the start; an unreachable database does not.
     """
+    epistrel: Engine = app.state.epistrel
+    try:
+        await asyncio.to_thread(epistrel.prepare_media)
+    except MediaRootUnwritable as exc:
+        raise ConfigError([str(exc)]) from None
+    problem = await asyncio.to_thread(ledger_problem, epistrel.ledger)
+    if problem is not None:
+        raise ConfigError([problem])
     engine = make_engine(app.state.settings)
-    problem = await config_key_problem(app.state.settings, engine)
+    problem = await store_kind_problem(app.state.settings, engine)
+    if problem is None:
+        problem = await config_key_problem(app.state.settings, engine)
     if problem is not None:
         await engine.dispose()
         raise ConfigError([problem])
+    await app.state.epistrel.posters.status()
     app.state.engine = engine
     app.state.epistrel.bind(engine)
+    try:
+        await epistrel.start_erasure_reconcile()
+    except (erasure_ledger.LedgerCorrupt, erasure_ledger.LedgerMismatch) as exc:
+        epistrel.bind(None)
+        app.state.engine = None
+        await engine.dispose()
+        raise ConfigError([str(exc)]) from None
     # ``all``/``worker``: the job worker runs here as an asyncio task (#71); ``api``: queued turns
     # left by a stopped process are drained once (#63).
     await app.state.epistrel.start_workers()
@@ -74,23 +110,32 @@ def include_protected(app: FastAPI, router: APIRouter) -> None:
     app.include_router(router, dependencies=[*PROTECTED_DEPENDENCIES, Depends(strict_json_body)])
 
 
+def include_signed(app: FastAPI, router: APIRouter) -> None:
+    """Include ``router`` (``routes.signed_router``: ``GET /media/{id}/content`` only) behind
+    the credential-or-signed-URL guard (invariant 4's one conditional exemption, #107), the
+    principal rule and the strict body check."""
+    app.include_router(router, dependencies=[*SIGNED_DEPENDENCIES, Depends(strict_json_body)])
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the app. `settings` is loaded from the environment when not given.
 
     The engine is created by the lifespan, so an app that is never started (plain
     `TestClient(app)` without `with`) has no engine and `/health` reports `skipped`.
 
-    ``settings.mode`` decides the routes: ``all`` and ``api`` serve every route; ``worker``
-    serves only the public operational routes (``/health``, ``/metrics``), since it takes no API
-    calls (#71). Process-wide logging and tracing are ``epistrel serve``'s
-    (``observability.configure_process``), not the app's: an embedder keeps its own.
+    ``settings.mode`` decides the routes: ``all`` and ``api`` serve every route (the media
+    content route behind its credential-or-signed-URL guard, #107); ``worker`` serves only the
+    public operational routes (``/health``, ``/metrics``), since it takes no API calls (#71).
+    Process-wide logging and tracing are ``epistrel serve``'s (``observability.configure_process``),
+    not the app's: an embedder keeps its own.
     """
     if settings is None:
         settings = load_settings()
     app = FastAPI(
         title="Epistrel Engine",
         version=__version__,
-        description=TRUST_BOUNDARY_STATEMENT,
+        # The trust boundary first (FR-AUTH-2), then the erasure boundary (FR-ADMIN-8; #125).
+        description=f"{TRUST_BOUNDARY_STATEMENT}\n\n{render_boundary()}",
         lifespan=lifespan,
         # No OAuth flow exists; the redirect page would be a sixth unauthenticated route.
         swagger_ui_oauth2_redirect_url=None,
@@ -106,5 +151,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes.public_router)
     if settings.mode != "worker":
         include_protected(app, routes.router)
+        include_signed(app, routes.signed_router)
     openapi.install(app)
     return app

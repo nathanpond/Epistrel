@@ -8,22 +8,27 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel import Engine
+from epistrel import Engine, ProfileOverridesPatch, RelationRequest
 from epistrel.config import Settings
 from epistrel.core import clock, turn_gate
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind
 from epistrel.core.errors import GuardrailViolation
+from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
+from epistrel.core.tables.ownership import EntityType
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import timers
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
+from tests import erasure_support as erasure
+from tests import genesis_support as g
 from tests.event_support import interleave, play_turn, rows
 from tests.policy_support import unique, words
+from tests.respond_support import respond_client
 from tests.story_support import WRITE, create, dump, public_tables, rest, story_body
 
 AUTHOR = RequestContext(principal="p-author")
@@ -31,11 +36,25 @@ AUTHOR = RequestContext(principal="p-author")
 
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:
     """Turns, background work between them, story and character policies, a rebuild, an
-    ingested narration (a ``client_events`` row, #58), and a rejected input (an ``audit_log``
-    row naming the story). The victim also gets a queued turn (``turn_queue``, #63)."""
+    ingested narration (a ``client_events`` row, #58), a rejected input (an ``audit_log``
+    row naming the story), a relation (``entity_relations``, #104), a story-scoped subject
+    reference (``subject_references``: #105 creates the index, #123 writes its story rows, so
+    the row is planted), a reply rated and rated again (a rating and its history, #112), an
+    override of its profile's dials (``story_profile_overrides``, #113), and a finished rating
+    check with a cached verdict (``rating_check_jobs``, ``guardrail_check_results``, #118,
+    planted). The victim also gets a
+    queued turn (``turn_queue``, #63)."""
     for n in range(1, 3):
         await play_turn(engine, story_id, f"turn {n} of {story_id}")
         await interleave(engine, story_id, after_turn=n)
+    (reply, *_) = await rows(
+        engine,
+        "SELECT id FROM events WHERE story_id = :s AND type = 'message_rendered' ORDER BY seq",
+        s=story_id,
+    )
+    rater = RequestContext(principal=f"p-rater-{story_id}")
+    for rating in (2, 4):
+        await lib.rate_message(rater, story_id, reply.id, FeedbackRequest(rating=rating))
     await lib.policies_set_story(
         AUTHOR,
         story_id,
@@ -63,11 +82,64 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
         ],
     )
     await lib.rebuild_projections(AUTHOR, story_id)
+    await lib.set_profile_overrides(
+        AUTHOR, story_id, ProfileOverridesPatch(settings={"pins": {"max_pinned": 9}})
+    )
+    reader = RelationRequest(principal=f"p-reader-{story_id}", relation="player")
+    await lib.add_relation(AUTHOR, EntityType.STORY, story_id, reader)
     narration = {"client_event_id": "narration-1", "kind": "narration", "text": f"of {story_id}"}
     await lib.ingest(AUTHOR, story_id, IngestRequest.model_validate({"events": [narration]}))
     with pytest.raises(GuardrailViolation):
         await lib.gate_input(
             AUTHOR, story_id, EntryPoint.INGEST, [GateText("events[0]", "an unsayable thing")]
+        )
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO subject_references (id, subject_kind, subject_id, scope, story_id, "
+                "record_table, record_id, field, ref_kind) VALUES (:id, 'character', :c, "
+                "'story', :s, 'events', :r, 'payload.text', 'mentioned')"
+            ),
+            {"id": new_ulid(), "c": character_id, "s": story_id, "r": new_ulid()},
+        )
+        # A finished rating check and a cached verdict (#118), planted: a check needs a worker.
+        await conn.execute(
+            text(
+                "INSERT INTO rating_check_jobs (id, story_id, from_rating_id, target_rating_id, "
+                "target_rating_version, status, progress, violations, started_by, started_at, "
+                "finished_at) SELECT :id, :s, content_rating_id, content_rating_id, "
+                "(SELECT current_version_id FROM content_ratings r "
+                "WHERE r.id = stories.content_rating_id), 'refused', "
+                "'{\"done\": 1, \"total\": 1}', '[]', 'p-author', now(), now() "
+                "FROM stories WHERE id = :s"
+            ),
+            {"id": new_ulid(), "s": story_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO guardrail_check_results (story_id, record_key, policy_id, "
+                "policy_version, verdict) VALUES (:s, :r, 'p-any', 1, 'pass')"
+            ),
+            {"s": story_id, "r": new_ulid()},
+        )
+        # A genesis snapshot (#119), planted on the victim's character: the story table a
+        # creation from a scenario writes.
+        await conn.execute(
+            text(
+                "INSERT INTO character_snapshots (story_id, character_id, source_catalog_id, "
+                "version, content, published_at) VALUES (:s, :c, :e, 1, "
+                '\'{"public_card": {"name": "Ada"}}\', now())'
+            ),
+            {"s": story_id, "c": character_id, "e": new_ulid()},
+        )
+        # A deferred genesis item (#122), planted: the story table a Lite genesis writes.
+        await conn.execute(
+            text(
+                "INSERT INTO genesis_deferred (id, story_id, operation_id, field_ref, "
+                "field_class, location, capability_needed, payload) VALUES (:id, :s, :o, "
+                "'starting_state.rules[0]', 'story_rule', '{}', 'structured', '{}')"
+            ),
+            {"id": new_ulid(), "s": story_id, "o": new_ulid()},
         )
 
 
@@ -79,8 +151,9 @@ async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
     """Every row that belongs to ``story_id``, as text, per table. The tables come from
     ``information_schema`` (every table with a ``story_id`` column), not from ``STORY_TABLES``,
     so a table the deletion forgets shows up as rows left behind; plus the story-scoped rows of
-    ``config_changes`` and ``idempotency_keys`` (#61), which name the story by ``scope_id``, and
-    the key of the story's creation (#61), which names its operation."""
+    ``config_changes`` and ``idempotency_keys`` (#61), which name the story by ``scope_id``, the
+    key of the story's creation (#61), which names its operation, with those keys' subject-index
+    rows (#123), and the story's relations (#104), which name it by ``entity_id``."""
     owned: dict[str, set[str]] = {}
     async with engine.connect() as conn:
         scoped = await conn.scalars(
@@ -117,14 +190,39 @@ async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
                 {"s": story_id},
             )
         )
+        # The index rows of those keys' stored results (#123): a deployment-scoped result's are
+        # catalog-scoped (no story_id), and they go with the key.
+        owned["subject_references"] |= set(
+            await conn.scalars(
+                text(
+                    "SELECT t::text FROM subject_references t "
+                    "WHERE t.record_table = 'idempotency_keys' AND t.record_id IN "
+                    "(SELECT k.scope || ':' || k.scope_id || ':' || k.key FROM idempotency_keys k "
+                    "WHERE (k.scope = 'story' AND k.scope_id = :s) OR k.operation_id IN "
+                    "(SELECT operation_id FROM operations WHERE story_id = :s))"
+                ),
+                {"s": story_id},
+            )
+        )
+        owned["entity_relations"] = set(
+            await conn.scalars(
+                text(
+                    "SELECT t::text FROM entity_relations t "
+                    "WHERE entity_type = 'story' AND entity_id = :s"
+                ),
+                {"s": story_id},
+            )
+        )
     return owned
 
 
 @pytest.mark.part("M2", "FR-STORE-14,16")
 async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
     """Delete one story among three: exactly its rows are removed, every other row of every
-    table is byte-identical, and the only new rows are the deletion's own record. Complement:
-    the deleted story had rows in every story-scoped table, so the comparison bites."""
+    table is byte-identical, and the only new rows are the deletion's own record (its
+    operation, event, audit row and key, and the ``deleted`` ownership event naming the owner
+    and the relations removed, #104). Complement: the deleted story had rows in every
+    story-scoped table and a relation, so the comparison bites."""
     lib = Engine(settings, db=engine)
     async with rest(settings, engine) as client:
         created = [await create(client, story_body("Ada", "Brann")) for _ in range(3)]
@@ -168,7 +266,26 @@ async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
         "events",
         "audit_log",
         "idempotency_keys",
+        "ownership_events",
     }
+    (dropped,) = await rows(
+        engine,
+        "SELECT entity_type, entity_id, kind, old, new, acting_principal FROM ownership_events "
+        "WHERE kind = 'deleted' AND entity_id = :s",
+        s=victim,
+    )
+    assert tuple(dropped) == (
+        "story",
+        victim,
+        "deleted",
+        {
+            "owner_principal": "p-author",
+            "relations": [{"principal": f"p-reader-{victim}", "relation": "player"}],
+        },
+        None,
+        "p-author",
+    )
+    assert len(added["ownership_events"]) == 1
     # The deletion's own Idempotency-Key (#61): deployment-scoped, so it outlives the story.
     (key,) = await rows(
         engine,
@@ -272,3 +389,52 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
         )
         assert crossed == 0
     assert "stories" in await public_tables(engine)
+
+
+@pytest.mark.part("M3", "FR-ADMIN-2; FR-STORE-14")
+async def test_s_delete__erasure(pg_url: str, engine: AsyncEngine) -> None:
+    """Right-to-be-forgotten reaches each story the subject appears in, and no other: catalog
+    character Halvard (alias "Hal") is in two stories created from one scenario; a third story
+    never had him. Erasing him in the first leaves the other two byte-identical (every row of
+    theirs, by ``story_id``, ``scope_id`` and their operations' keys) while the first names him
+    nowhere and no longer has his character (his reconstruction fails there); erasing him in
+    the second reaches it too, and the third is still byte-identical."""
+    settings = erasure.erasure_settings(pg_url)
+    terms = ("Halvard Quist", "Hal")
+    async with respond_client(settings, engine) as (client, _):
+        halvard = await erasure.linda(client, "Halvard Quist", "Hal")
+        scenario = g.scenario_body(
+            g.role("uncle", fill="default", character={"catalog_id": halvard}),
+            g.role("player", kind="player", label="The eldest"),
+        )
+        scenario["starting_state"]["seeded_memories"] = [
+            {
+                "text": "Hal buried the boat keys.",
+                "holder": "world",
+                "audience": ["self"],
+                "disclosure": "secret",
+            }
+        ]
+        scenario_id, _ = await g.published_scenario(client, scenario)
+        first, second = [
+            await g.create_from(client, g.from_scenario(scenario_id, ignore_warnings=True))
+            for _ in range(2)
+        ]
+        third = await create(client, story_body("Ada", "Brann"))
+        stories = [first["story_id"], second["story_id"], third["story_id"]]
+        for story in stories[:2]:
+            assert sum((await erasure.residue(engine, story, terms)).values()) > 0
+
+        untouched = {s: await _rows_of(engine, s) for s in stories[1:]}
+        await erasure.erase(client, "catalog_character", halvard, stories[0])
+        assert {s: await _rows_of(engine, s) for s in stories[1:]} == untouched
+        assert sum((await erasure.residue(engine, stories[0], terms)).values()) == 0
+        assert sum((await erasure.residue(engine, stories[1], terms)).values()) > 0
+        read = await client.get(f"/stories/{stories[0]}", headers=WRITE)
+        assert read.status_code == 200, read.text
+        assert [c["role_id"] for c in read.json()["characters"]] == ["player"]
+
+        unrelated = await _rows_of(engine, stories[2])
+        await erasure.erase(client, "catalog_character", halvard, stories[1])
+        assert sum((await erasure.residue(engine, stories[1], terms)).values()) == 0
+        assert await _rows_of(engine, stories[2]) == unrelated

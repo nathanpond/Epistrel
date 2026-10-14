@@ -38,6 +38,7 @@ from tests.event_support import (
     story_row,
 )
 from tests.gate_support import audit_rows, input_policies
+from tests.profile_support import WINDOW, nest, store_overrides
 from tests.projection_support import snapshot, swap, truncate, untruncate
 from tests.respond_support import PLAYER, body, generation_calls, played, respond_client
 from tests.respond_support import new_story as new_rest_story
@@ -432,8 +433,10 @@ async def edit_segment(engine: AsyncEngine, story: str, payload: dict[str, Any])
     )
 
 
-SUMMARY_SETTINGS = {"lite_window_messages": 2, "lite_summary_chunk": 4}
-"""Two verbatim rows and two turns (four rows) per level-0 segment."""
+SUMMARY_SETTINGS = {"lite_summary_chunk": 4}
+SUMMARY_OVERRIDES = nest(WINDOW, 2)
+"""Two verbatim rows (the story's override of its profile's window, #113) and two turns (four
+rows) per level-0 segment."""
 
 
 @pytest.fixture
@@ -452,6 +455,7 @@ async def _summary_story(engine: AsyncEngine, turns: int) -> str:
             {"s": story, "patch": json.dumps(SUMMARY_SETTINGS)},
         ),
     )
+    await store_overrides(engine, story, SUMMARY_OVERRIDES)
     summary_port.set_scheduler(None)
     try:
         for n in range(1, turns + 1):

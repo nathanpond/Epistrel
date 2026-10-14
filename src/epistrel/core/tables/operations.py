@@ -41,12 +41,19 @@ MUTABLE_OPERATION_COLUMNS: tuple[str, ...] = (
     "error_code",
     "error",
     "parent_variant",
+    "checked_guardrails",
+    "stage_log",
 )
 """The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list)."""
 
 ORIGIN_CHECK = "origin IN ('generated', 'ingested')"
 """``generated``: the Engine produced the operation's records; ``ingested``: a consumer recorded
 them through ``ingest`` (#58). Written once at ``begin()``."""
+
+REGENERATED_VARIANT = "regenerated_variant"
+"""The ``turn_report`` key of a regenerate's operation that names the variant of the turn it
+replaced (#126; the Lite pipeline writes it, the feedback aggregates read it). A turn written over
+a rewound tail also has ``turn_variant > 1`` but is no regeneration, so it has none."""
 
 ACTIVE_TURN_PREDICATE = "kind = 'turn' AND membership = 'active' AND status = 'committed'"
 """The rows ``uq_operations_active_turn`` covers: a story's active committed turn variants."""
@@ -99,6 +106,15 @@ operations = Table(
     # ``{status, message, details}`` so the waiter answers with the same error.
     Column("error_code", Text, nullable=True),
     Column("error", JSONB, nullable=True),
+    # The effective guardrail set a turn variant last passed (FR-RATE-7; #118): ``{rating_id,
+    # rating_version_id, global, rating, story, character}``, each ``{policy id: version}``.
+    # Stamped when the turn commits and restamped when a tightening of the story's rating
+    # applies; #120's reactivation check reads it.
+    Column("checked_guardrails", JSONB, nullable=True),
+    # The stages an erasure's operations record (#124; ``Operation.stage``), in order:
+    # ``[{stage, status}]`` (``redacted``, ``ledger_written``, ``regenerated``, ``rebuilt``;
+    # status ``done``, ``partial``, ``skipped`` or ``failed``). Identifiers and outcomes only.
+    Column("stage_log", JSONB, nullable=True),
     CheckConstraint(ORIGIN_CHECK, name="origin"),
     CheckConstraint(
         "kind <> 'turn' OR status <> 'committed' OR narrative_turn IS NOT NULL",

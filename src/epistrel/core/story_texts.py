@@ -9,9 +9,10 @@ Both are edited by replacing the whole value: ``PUT /stories/{id}/pinned-memorie
 - **Ids.** Items get server-minted ULIDs. An item naming an ``id`` keeps it (an id the story
   does not have is 422); an item without one takes the id of a stored item with the same text
   that no other item claims, or a new id. Duplicate ids or duplicate texts in one body are 422.
-- **Caps** (deployment settings, prospective): ``max_pinned_memories`` and
-  ``max_custom_instructions_chars``; exceeding one is 422 ``validation_error`` with
-  ``details.{cap, limit, actual}``.
+- **Caps** (prospective): the deployment's ``max_pinned_memories`` and
+  ``max_custom_instructions_chars``, and the story's effective ``pins.max_pinned`` (#113: its
+  profile's, or its own override; the deployment's cap is a ceiling over it); exceeding one is
+  422 ``validation_error`` with ``details.{cap, limit, actual}``, ``cap`` naming the smaller.
 - **Order of checks** (#44/#56): the body (422, before the handler) → the story (404) → ids,
   duplicates and caps (422) → archived (409) → the expected revision (409) → no change → the
   input gate over every text (``gate``, passed in by the Engine, which owns the Orchestrator)
@@ -52,6 +53,7 @@ from epistrel.core.errors import InvalidRequest, StoryNotFound
 from epistrel.core.events import Operation
 from epistrel.core.events.types import CustomInstructionsSet, PinnedItem, PinnedMemoriesSet
 from epistrel.core.ids import new_ulid
+from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.settings_schema import PINNED_ITEM_MAX_CHARS, StoryTextCaps
 from epistrel.core.stories import require_writable
 from epistrel.core.tables import stories, story_texts
@@ -220,7 +222,19 @@ def _over_cap(cap: str, limit: int, actual: int, field: str) -> InvalidRequest:
     )
 
 
-def check_pinned_cap(items: Sequence[PinnedItemIn], caps: StoryTextCaps) -> None:
+PINS_CAP = "pins.max_pinned"
+"""The story's own cap on pinned memories: its effective configuration's (#113)."""
+
+
+def check_pinned_cap(
+    items: Sequence[PinnedItemIn], caps: StoryTextCaps, story_cap: int | None = None
+) -> None:
+    """At most the smaller of the deployment's ``max_pinned_memories`` and the story's
+    ``pins.max_pinned`` (``story_cap``)."""
+    if story_cap is not None and story_cap < caps.max_pinned_memories:
+        if len(items) > story_cap:
+            raise _over_cap(PINS_CAP, story_cap, len(items), "body.items")
+        return
     if len(items) > caps.max_pinned_memories:
         raise _over_cap("max_pinned_memories", caps.max_pinned_memories, len(items), "body.items")
 
@@ -338,7 +352,11 @@ async def set_pinned_memories(
 ) -> PinnedMemories:
     """Replace the story's pinned memories (FR-LITE-3); see the module for the rules."""
     stored = await _stored(db, story_id)
-    check_pinned_cap(request.items, await read_story_text_caps(db))
+    async with db.connect() as conn:
+        configuration = await effective_configuration(conn, story_id)
+    check_pinned_cap(
+        request.items, await read_story_text_caps(db), configuration.settings.pins.max_pinned
+    )
     resolved = resolve_items(request.items, stored.pinned)
     await require_writable(db, story_id)
     revision = await check_expected_revision(db, story_id, expected_revision)
@@ -395,6 +413,7 @@ async def set_custom_instructions(
 
 __all__ = [
     "EDIT_RETRY_BUDGET",
+    "PINS_CAP",
     "CustomInstructions",
     "CustomInstructionsRequest",
     "Gate",

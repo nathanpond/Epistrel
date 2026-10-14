@@ -1,8 +1,8 @@
-"""Request-scoped dependencies shared by every handler."""
+"""Request-scoped dependencies shared by every handler, and the route flags they read."""
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, Path, Request, Response
 
@@ -15,6 +15,30 @@ from epistrel.engine import Engine
 from epistrel.orchestrator.policies.schemas import POLICY_ID_PATTERN
 
 EXPECTED_REVISION_HEADER = "X-Epistrel-Expected-Revision"
+
+MUTATING_EXTRA = "x-epistrel-mutating"
+"""The ``openapi_extra`` key ``route_flags(mutating=False)`` sets (``false``): the operation's
+OpenAPI object carries it too, so the document says which POST changes nothing."""
+
+
+def route_flags(*, mutating: bool = True) -> dict[str, Any]:
+    """Keyword arguments for a route decorator: ``@router.post(..., **route_flags(mutating=False))``
+    marks a ``POST``/``PUT``/``PATCH``/``DELETE`` that changes nothing (a validation, a preview, a
+    suggestion; #103 for #109, #111, #121), or whose write is idempotent by itself and records no
+    operation and no story change (a message rating and its retraction, #112). Such a route takes
+    no ``Idempotency-Key`` (none is generated or echoed), checks no expected revision, and
+    answers without a revision base; its method still requires ``X-Epistrel-Principal``
+    (docs/02 §9: every POST/PUT/PATCH/DELETE)."""
+    return {} if mutating else {"openapi_extra": {MUTATING_EXTRA: False}}
+
+
+def mutates(method: str, route: Any) -> bool:
+    """Whether a ``method`` request to ``route`` (an ``APIRoute``, or anything else) is a
+    mutation: a mutating method, unless the route was flagged ``mutating=False``."""
+    if method.upper() not in MUTATING_METHODS:
+        return False
+    extra = getattr(route, "openapi_extra", None) or {}
+    return extra.get(MUTATING_EXTRA, True) is not False
 
 
 def get_engine(request: Request) -> Engine:
@@ -36,7 +60,8 @@ def get_request_context(
 
     ``Idempotency-Key`` is optional on every mutating call (FR-RESP-6): a malformed key is 422
     (``headers.Idempotency-Key``), and a missing one is generated (a ULID). Every mutating
-    response echoes the key in its ``Idempotency-Key`` header (#61).
+    response echoes the key in its ``Idempotency-Key`` header (#61). A route flagged
+    ``mutating=False`` (``route_flags``) is not a mutation here: no key is generated or echoed.
     """
     revision_raw = request.headers.get(EXPECTED_REVISION_HEADER)
     expected_revision: int | None = None
@@ -49,7 +74,7 @@ def get_request_context(
                 details={"field": f"headers.{EXPECTED_REVISION_HEADER}"},
             ) from None
     key = request.headers.get(IDEMPOTENCY_HEADER)
-    if request.method.upper() in MUTATING_METHODS:
+    if mutates(request.method, request.scope.get("route")):
         key = new_ulid() if key is None else validate_key(key)
         response.headers[IDEMPOTENCY_HEADER] = key
     return RequestContext(
@@ -99,12 +124,78 @@ OperationId = Annotated[
         examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"],
     ),
 ]
+MessageId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The message's id: its `message_rendered` event's id (a ULID), as respond, "
+        "regenerate and the history answer it. A `turn:variant` form is not a message id.",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C8"],
+    ),
+]
 RatingId = Annotated[
     str,
     Path(
         pattern=ULID_PATTERN,
         description="The content rating's id (a ULID).",
         examples=["00000000000000000000RAT002"],
+    ),
+]
+CharacterId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The catalog character's id (a ULID).",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"],
+    ),
+]
+ScenarioId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The scenario's id (a ULID).",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"],
+    ),
+]
+MediaId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The media asset's id (a ULID).",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C6"],
+    ),
+]
+ProfileId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The engine profile's id (a ULID).",
+        examples=["00000000000000000000PRF001"],
+    ),
+]
+JobId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The background job's id (a ULID), as its 202 answered it.",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2D1"],
+    ),
+]
+PersonaId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The persona's id (a ULID).",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"],
+    ),
+]
+StoryCharacterId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description="The id of one of the story's characters (a ULID), as `GET /stories/{id}` "
+        "lists them.",
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2CA"],
     ),
 ]
 PolicyIdPath = Annotated[

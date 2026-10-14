@@ -12,7 +12,8 @@
   once. A timer whose kind has no handler, or whose target the handler's payload refuses, is
   deleted and logged.
 - ``reconcile(db)`` writes the registered recurring tasks into rows (a missing row is due now,
-  a changed interval is updated); rows nothing is registered for are logged and left alone.
+  a changed interval is updated; a task with an ``interval_setting`` takes the deployment
+  setting's value, #105); rows nothing is registered for are logged and left alone.
 
 Due-ness is decided by ``core.clock.now()``, passed into the SQL, so tests move time without
 sleeping.
@@ -22,18 +23,20 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock
+from epistrel.core.config_changes import read_settings
 from epistrel.core.ids import new_ulid
+from epistrel.core.settings_schema import DeploymentSettings
 from epistrel.core.tables import recurring_tasks, timers
 from epistrel.observability import instrument
 from epistrel.orchestrator.jobs import handlers, queue
-from epistrel.orchestrator.jobs.recurring import registered_tasks
+from epistrel.orchestrator.jobs.recurring import RecurringTask, registered_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -178,15 +181,23 @@ async def _fire_due(db: AsyncEngine, now: datetime | None) -> Fired:
     return fired
 
 
+def _interval(task: RecurringTask, settings: DeploymentSettings) -> timedelta:
+    """The task's interval: its deployment setting's value (seconds) when it names one."""
+    if task.interval_setting is None:
+        return task.interval
+    return timedelta(seconds=int(getattr(settings, task.interval_setting)))
+
+
 async def reconcile(db: AsyncEngine) -> list[str]:
     """Write every registered recurring task into ``recurring_tasks`` (missing rows due now,
     intervals updated); returns the names of rows no task is registered for (logged)."""
     tasks = registered_tasks()
     now = clock.now()
     async with db.begin() as conn:
+        settings = (await read_settings(conn)).as_settings()
         for task in tasks.values():
             statement = insert(recurring_tasks).values(
-                name=task.name, interval=task.interval, next_run_at=now
+                name=task.name, interval=_interval(task, settings), next_run_at=now
             )
             await conn.execute(
                 statement.on_conflict_do_update(

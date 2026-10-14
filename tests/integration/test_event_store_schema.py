@@ -14,10 +14,14 @@ from tests.event_support import rows, scalar
 
 
 async def test_enum_labels_match_python_enums(engine: AsyncEngine) -> None:
+    """Every enum type in the database, in any schema (named ``<schema>.<type>`` outside
+    ``public``, e.g. ``catalog.entry_status``, #103), holds exactly its Python enum's values."""
     found = await rows(
         engine,
-        "SELECT t.typname, e.enumlabel FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid "
-        "ORDER BY t.typname, e.enumsortorder",
+        "SELECT CASE WHEN n.nspname = 'public' THEN t.typname "
+        "ELSE n.nspname || '.' || t.typname END AS typname, e.enumlabel "
+        "FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid "
+        "JOIN pg_namespace n ON n.oid = t.typnamespace ORDER BY typname, e.enumsortorder",
     )
     labels: dict[str, list[str]] = {}
     for row in found:

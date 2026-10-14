@@ -7,13 +7,13 @@ import pytest
 from pydantic import ValidationError
 
 from epistrel.core.errors import ViewpointUnresolved
+from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.settings_schema import (
     DEFAULT_LITE_GENERATION,
     GenerationSettings,
-    LiteDefaults,
     resolve_generation,
 )
-from epistrel.core.turns import CastEntry, TurnInputs, WindowRow
+from epistrel.core.turns import CastEntry, TurnInputs, WindowRow, generation_of
 from epistrel.core.viewpoint import OMNISCIENT, resolve_viewpoint
 from epistrel.orchestrator.lite.cast import ResolvedCast
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
@@ -36,8 +36,7 @@ def _inputs(**fields: object) -> TurnInputs:
         "segments": (),
         "cast": (WREN, ADA, BO),
         "window": (),
-        "deployment_generation": DEFAULT_LITE_GENERATION,
-        "story_generation": None,
+        "generation": DEFAULT_LITE_GENERATION,
         "window_messages": 30,
     }
     values.update(fields)
@@ -62,7 +61,14 @@ def test_settings_precedence_and_lengths() -> None:
     for bad in ({"temperature": 2.5}, {"top_p": -0.1}, {"length": 0}, {"length": 4001}):
         with pytest.raises(ValidationError):
             GenerationSettings.model_validate(bad)
-    assert LiteDefaults().lite_window_messages == 30
+    assert ProfileSettings().memory.rolling_summary.window_messages == 30
+    # A configuration's generation settings are the bottom layer, its response length the
+    # turn's length (#113).
+    tuned = ProfileSettings.model_validate(
+        {"models": {"generation": {"temperature": 0.3, "top_p": None, "response_length": 99}}}
+    )
+    assert generation_of(tuned) == GenerationSettings(temperature=0.3, top_p=None, length=99)
+    assert generation_of(ProfileSettings()) == DEFAULT_LITE_GENERATION
 
 
 def test_viewpoint_resolution() -> None:

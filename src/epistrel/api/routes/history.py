@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.core.history import DEFAULT_LIMIT, History, HistoryItem, SummaryItem, TurnSummary
@@ -53,6 +53,12 @@ class HistoryItemModel(BaseModel):
     operation_id: str
     message_id: str
     origin: Literal["generated", "ingested"]
+    redacted: bool = Field(
+        default=False,
+        exclude_if=lambda redacted: not redacted,
+        description="Present (`true`) when an erasure rewrote the item in place: each span "
+        "that named the erased subject reads `[erased]` (#124).",
+    )
 
 
 class OmniscientHistoryItemModel(HistoryItemModel):

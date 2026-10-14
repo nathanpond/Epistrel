@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from epistrel.core.config_changes import lite_defaults, read_settings
 from epistrel.core.context import RequestContext
-from epistrel.core.deployment import read_lite_defaults, update_lite_defaults
-from epistrel.core.settings_schema import GenerationSettings, LiteDefaults
+from epistrel.core.deployment import update_profile_defaults
+from epistrel.core.settings_schema import LiteDefaults
 from epistrel.orchestrator.lite.schemas import PlayerInputBody, RespondRequest
 from tests.auth_support import auth_settings
 from tests.concurrency_support import set_pins
@@ -211,12 +211,16 @@ async def test_empty_reply_is_asked_again_once(
 async def test_window_size_counts_transcript_rows(
     stub_settings: Settings, engine: AsyncEngine
 ) -> None:
-    """A story's ``lite_window_messages`` bounds the verbatim window through the rolling summary
-    (#72): no row is dropped before a segment covers it, and once the summary job has run the
-    prompt carries the segments, then every row after them."""
+    """A story's verbatim window (its override of ``memory.rolling_summary.window_messages``,
+    #113) bounds the window through the rolling summary (#72): no row is dropped before a
+    segment covers it, and once the summary job has run the prompt carries the segments, then
+    every row after them."""
     async with respond_client(stub_settings, engine) as (client, lib):
-        settings = {"lite_window_messages": 3, "lite_summary_chunk": 2}
-        story, ids = await new_story(client, settings=settings)
+        story, ids = await new_story(
+            client,
+            settings={"lite_summary_chunk": 2},
+            overrides={"memory": {"rolling_summary": {"window_messages": 3}}},
+        )
         for said in ("one", "two", "three"):
             await played(client, story, body(ids[PLAYER], said))
         stub = lib.models.stub
@@ -311,18 +315,18 @@ async def test_openapi_calls_the_message_finished_never_verified(
 
 
 async def test_lite_defaults_write_is_recorded(engine: AsyncEngine) -> None:
-    """The deployment's Lite defaults are a recorded configuration write: one revision and one
-    prospective ``config_changes`` row per changed leaf; the same values again write nothing; a
-    corrupt stored document reads as the defaults."""
-    before = await read_lite_defaults(engine)
+    """The deployment's Lite defaults (since #113 the engine profiles' ``profile_defaults``)
+    are a recorded configuration write: one revision and one prospective ``config_changes`` row
+    per changed leaf; the same values again write nothing; a corrupt stored document reads as
+    the defaults."""
+    before = (await read_settings(engine)).profile_defaults
     start = (await read_settings(engine)).config_revision
+    lowered = {
+        "models": {"generation": {"temperature": 0.1, "top_p": None, "response_length": "short"}},
+        "memory": {"rolling_summary": {"window_messages": 7}},
+    }
     try:
-        await update_lite_defaults(
-            engine,
-            principal="p-operator",
-            generation=GenerationSettings(temperature=0.1, length="short"),
-            window_messages=7,
-        )
+        await update_profile_defaults(engine, lowered, principal="p-operator")
         assert (await read_settings(engine)).config_revision == start + 1
         changes = await rows(
             engine,
@@ -331,20 +335,21 @@ async def test_lite_defaults_write_is_recorded(engine: AsyncEngine) -> None:
             r=start + 1,
         )
         assert [(c.setting, c.change_class, c.actor) for c in changes] == [
-            ("lite_generation_defaults.length", "prospective", "p-operator"),
-            ("lite_generation_defaults.temperature", "prospective", "p-operator"),
-            ("lite_generation_defaults.top_p", "prospective", "p-operator"),  # replaced: None
-            ("lite_window_messages", "prospective", "p-operator"),
+            (
+                "profile_defaults.memory.rolling_summary.window_messages",
+                "prospective",
+                "p-operator",
+            ),
+            ("profile_defaults.models.generation.response_length", "prospective", "p-operator"),
+            ("profile_defaults.models.generation.temperature", "prospective", "p-operator"),
+            ("profile_defaults.models.generation.top_p", "prospective", "p-operator"),  # None
         ]
-        again = await update_lite_defaults(engine, principal="p-operator", window_messages=7)
-        assert again.lite_window_messages == 7
+        again = await update_profile_defaults(
+            engine, {"memory": {"rolling_summary": {"window_messages": 7}}}, principal="p-operator"
+        )
+        assert again["memory"]["rolling_summary"]["window_messages"] == 7
         assert (await read_settings(engine)).config_revision == start + 1
     finally:
-        await update_lite_defaults(
-            engine,
-            principal="p-operator",
-            generation=before.lite_generation_defaults,
-            window_messages=before.lite_window_messages,
-        )
-    assert lite_defaults({"lite_window_messages": "lots"}) == LiteDefaults()
+        await update_profile_defaults(engine, before, principal="p-operator")
+    assert lite_defaults({"lite_summary_chunk": "lots"}) == LiteDefaults()
     assert lite_defaults(None) == LiteDefaults()

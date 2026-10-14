@@ -5,7 +5,8 @@ A story-scoped mutating response carries the story's ``timeline_revision`` after
 (FR-CONC-14). A route is story-scoped when its path names ``{story_id}``, and so is a route
 that creates a story (``STORY_CREATING_ROUTES``): it returns the new story's revision. A route
 whose status is 204 returns no body, so it carries no revision (``DELETE /stories/{id}``: the
-story is gone).
+story is gone), and a route flagged ``mutating=False`` (``deps.route_flags``) changes nothing,
+so it carries none either.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import BaseModel, Field
 
-from epistrel.api.auth import MUTATING_METHODS
+from epistrel.api.deps import mutates
 
 STORY_PATH_PARAMETER = "{story_id}"
 STORY_CREATING_ROUTES = frozenset({("POST", "/stories")})
@@ -46,7 +47,7 @@ def response_base_problems(app: FastAPI) -> list[str]:
         original = route.original_route
         if not isinstance(original, APIRoute):
             continue
-        methods = sorted(m for m in (route.methods or set()) if m in MUTATING_METHODS)
+        methods = sorted(m for m in (route.methods or set()) if mutates(m, original))
         if not methods:
             continue
         if original.status_code == NO_CONTENT:

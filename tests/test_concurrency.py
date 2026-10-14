@@ -93,7 +93,8 @@ def test_read_set_members_are_fixed() -> None:
         "instructions",
         "definitions",
         "guidance_text",
-        "generation_settings",
+        "scenario_text",
+        "director_notes",
     )
     with pytest.raises(ValueError, match="not a Lite read-set member"):
         register_read_set_member("guardrails", lambda conn, story, spec: None)  # type: ignore[arg-type,return-value]

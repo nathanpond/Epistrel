@@ -37,9 +37,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core.ids import CROCKFORD, ULID_LENGTH
 
 OPERATIONAL_TABLES = frozenset(
-    {"jobs", "timers", "recurring_tasks", "worker_heartbeats", "turn_queue", "idempotency_keys"}
+    {
+        "jobs",
+        "timers",
+        "recurring_tasks",
+        "worker_heartbeats",
+        "turn_queue",
+        "idempotency_keys",
+        "rating_check_jobs",
+        "guardrail_check_results",
+    }
 )
-"""Excluded: background work, timers, heartbeats, the turn queue and idempotency bookkeeping."""
+"""Excluded: background work, timers, heartbeats, the turn queue and idempotency bookkeeping,
+and a rating change's check and its verdict cache (#118)."""
 
 VOLATILE_KEYS = frozenset(
     {"elapsed_ms", "latency_ms", "queued_ms", "first_call_offset_ms", "worker_id", "attempt"}
@@ -59,11 +69,41 @@ TIMESTAMP_MARK = "«ts»"
 HASH_MARK = "«hash»"
 
 _STORY_RANK = "(SELECT s.created_at FROM stories s WHERE s.id = t.story_id)"
+_CAST_RANK = "(SELECT c.ordinal FROM characters c WHERE c.id = t.character_id)"
+
+_RECORD_RANK = (
+    "(SELECT e.seq FROM events e WHERE e.story_id = t.story_id AND e.id::text = t.record_id) "
+    "NULLS FIRST, "
+    "(SELECT c.ordinal FROM characters c WHERE c.story_id = t.story_id "
+    "AND (c.id::text = t.record_id OR t.record_id = t.story_id::text || ':' || c.id::text)) "
+    "NULLS FIRST, "
+    "(SELECT o.started_at FROM operations o WHERE o.operation_id::text = t.record_id) NULLS FIRST, "
+    "(SELECT d.field_ref FROM genesis_deferred d WHERE d.id::text = t.record_id) NULLS FIRST, "
+    "(SELECT p.name FROM policies p WHERE p.id = t.record_id) NULLS FIRST, "
+    "(SELECT f.turn * 100 + f.variant FROM message_feedback f WHERE f.story_id = t.story_id "
+    "AND f.message_id::text || ':' || f.principal = t.record_id) NULLS FIRST, "
+    "(SELECT h.replaced_at FROM feedback_history h WHERE h.id::text = t.record_id) NULLS FIRST, "
+    "(SELECT x.at FROM config_changes x WHERE x.change_id::text = t.record_id) NULLS FIRST, "
+    "split_part(t.record_id, ':', 3)"
+)
+"""A subject-index row's record by its natural position: an event's seq, a character's (or its
+snapshot's) ordinal, an operation's start, a deferred item's field, a policy's name, a rating's
+turn, a history entry's or change's time, a stored result's key."""
+_SUBJECT_RANK = (
+    "(SELECT min(c.ordinal) FROM characters c WHERE c.story_id = t.story_id AND "
+    "(c.id::text = t.subject_id OR c.source_catalog_id::text = t.subject_id "
+    "OR c.persona_id::text = t.subject_id))"
+)
+"""A subject by the cast ordinal of the story character it is (or that links it)."""
 
 ORDER: dict[str, str] = {
     "deployment_state": "t.id",
     "stories": "t.created_at",
     "characters": f"{_STORY_RANK}, t.ordinal",
+    # A story's genesis snapshots (#119): one row per catalog character, in cast order.
+    "character_snapshots": f"{_STORY_RANK}, {_CAST_RANK}",
+    # What a story's genesis deferred (#122): one row per item, by its field.
+    "genesis_deferred": f"{_STORY_RANK}, t.field_ref",
     "operations": (
         f"{_STORY_RANK}, t.started_at, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST,"
         " t.kind"
@@ -77,14 +117,29 @@ ORDER: dict[str, str] = {
     ),
     "story_heads": _STORY_RANK,
     "story_texts": _STORY_RANK,
+    # A story's overrides of its engine profile (#113): one row per story.
+    "story_profile_overrides": _STORY_RANK,
     "policies": f"{_STORY_RANK}, t.created_at, t.name",
     "client_events": f"{_STORY_RANK}, t.client_event_id",
     "audit_log": f"{_STORY_RANK} NULLS FIRST, t.at, t.kind",
     "config_changes": "t.at, t.config_revision, t.setting",
+    # The subject index (#105, #123): by record (its own natural position), field and subject.
+    "subject_references": (
+        f"{_STORY_RANK}, t.record_table, {_RECORD_RANK}, t.field NULLS FIRST, t.ref_kind, "
+        f"t.subject_kind, {_SUBJECT_RANK}"
+    ),
+    # Message feedback (#112): a principal's rating of a message variant, and its history.
+    "message_feedback": f"{_STORY_RANK}, t.turn, t.variant, t.principal",
+    "feedback_history": (
+        f"{_STORY_RANK}, t.turn, t.variant, t.principal, t.replaced_at, t.rated_at, t.kind"
+    ),
 }
 """Each compared table's ``ORDER BY`` (``t`` is the table): natural keys, never an id."""
 
-WHERE: dict[str, str] = {"config_changes": "t.scope = 'story'"}
+WHERE: dict[str, str] = {
+    "config_changes": "t.scope = 'story'",
+    "subject_references": "t.scope = 'story'",
+}
 """Rows of a compared table that are not story state are left out."""
 
 

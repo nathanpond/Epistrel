@@ -22,18 +22,21 @@ over ``Engine``; the rules are in ``epistrel.core.timeline`` and ``epistrel.core
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Response
 from fastapi import status as http_status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.respond import RespondResponse
+from epistrel.api.routes.story_rating import CHECK_PATH, RatingCheckStartedBody
 from epistrel.core.enums import Membership
 from epistrel.core.fork import Forked, ForkRequest
+from epistrel.core.ratings.change import RatingCheckStarted
 from epistrel.core.timeline import (
     Swapped,
     TruncateRequest,
@@ -51,6 +54,35 @@ CONTROL_RULES = (
     "it commits is abandoned with 409 `timeline_changed`. `Idempotency-Key` and "
     "`X-Epistrel-Expected-Revision` are optional."
 )
+REACTIVATION_RULES = (
+    "\n\nReactivation check (FR-RATE-7): when a turn this would make active was last checked "
+    "against a guardrail set that lacks a policy now in effect (a stricter rating since it was "
+    "set aside, a policy added since, or no recorded set at all), the story is paused and "
+    "those turns are checked first: 202 `{job_id, operation_id, status: checking}` with "
+    "`Location` (the check, `GET /stories/{id}/content-rating/checks/{job_id}`). If every turn "
+    "passes, the check applies this edit and ends `reactivated` with its answer as `outcome`; "
+    "otherwise it ends `refused` with each violation by position and policy, and nothing "
+    "changes. Turns already checked against the current set are not checked again, and when "
+    "there are none to check the edit answers synchronously as described. "
+    "`X-Epistrel-Expected-Revision` is checked when the request is made."
+)
+CHECK_STARTED: dict[int | str, dict[str, Any]] = {
+    202: {
+        "model": RatingCheckStartedBody,
+        "description": "The turns it would make active are checked first; the story is "
+        "paused (read the check at the `Location`).",
+    }
+}
+
+
+def _check_started(
+    started: RatingCheckStarted, ctx: Any, response: Response, story_id: str
+) -> JSONResponse:
+    """The 202 of an edit held back for a reactivation check (#120)."""
+    body = answered(RatingCheckStartedBody.of(started), ctx, response, replayed=started.replayed)
+    headers: dict[str, Any] = dict(response.headers)
+    headers["Location"] = CHECK_PATH.format(story_id, started.job_id)
+    return JSONResponse(body.model_dump(mode="json"), status_code=202, headers=headers)
 
 
 class TruncatedBody(MutationResponse):
@@ -162,6 +194,10 @@ class VariantChainBody(BaseModel):
     turn_count: int
     membership_tx: datetime | None
     parent: ChainRefBody | None
+    requires_check: bool
+    """For a chain that is not active: whether making it active (swap, untruncate, fork)
+    checks its turns against the current guardrails first (one of them lacks a policy now in
+    effect)."""
 
     @classmethod
     def of(cls, chain: Chain) -> VariantChainBody:
@@ -173,6 +209,7 @@ class VariantChainBody(BaseModel):
             turn_count=chain.turn_count,
             membership_tx=chain.membership_tx,
             parent=None if chain.parent is None else ChainRefBody.of(chain.parent),
+            requires_check=chain.requires_check,
         )
 
 
@@ -270,6 +307,7 @@ async def truncate(
 @router.post(
     "/{story_id}/untruncate",
     response_model=UntruncatedBody,
+    responses=CHECK_STARTED,
     operation_id="untruncate",
     summary="Undo the most recent truncation",
     description=(
@@ -279,7 +317,7 @@ async def truncate(
         '`options: ["swap", "fork"]` and the `dormant_chains` when there are any). When newer '
         "turns were written after the truncation, undoing it is a swap: the original "
         "continuation becomes active and the newer one dormant, nothing is lost, and the "
-        "answer says `swapped: true` with the `active_chain`." + CONTROL_RULES
+        "answer says `swapped: true` with the `active_chain`." + CONTROL_RULES + REACTIVATION_RULES
     ),
 )
 async def untruncate(
@@ -288,8 +326,10 @@ async def untruncate(
     ctx: ContextDep,
     engine: EngineDep,
     body: Annotated[UntruncateRequest | None, Body()] = None,
-) -> UntruncatedBody:
+) -> UntruncatedBody | JSONResponse:
     done = await engine.untruncate(ctx, story_id, body)
+    if isinstance(done, RatingCheckStarted):
+        return _check_started(done, ctx, response, story_id)
     answer = UntruncatedBody.of(done)
     return answered(answer, ctx, response, replayed=done.replayed)
 
@@ -297,6 +337,7 @@ async def untruncate(
 @router.post(
     "/{story_id}/swap",
     response_model=SwappedBody,
+    responses=CHECK_STARTED,
     operation_id="swap",
     summary="Make another continuation the active one",
     description=(
@@ -307,7 +348,7 @@ async def untruncate(
         "exact prior state. Swapping to the active chain writes nothing (200, `operation_id` "
         "null). A chain that names no variant, or continues in more than one way, is 409 "
         "`unknown_chain` (with the `candidates` to choose from). Turns waiting in the story's "
-        "queue fail with `timeline_changed`." + CONTROL_RULES
+        "queue fail with `timeline_changed`." + CONTROL_RULES + REACTIVATION_RULES
     ),
 )
 async def swap(
@@ -316,8 +357,10 @@ async def swap(
     response: Response,
     ctx: ContextDep,
     engine: EngineDep,
-) -> SwappedBody:
+) -> SwappedBody | JSONResponse:
     done = await engine.swap(ctx, story_id, body)
+    if isinstance(done, RatingCheckStarted):
+        return _check_started(done, ctx, response, story_id)
     answer = SwappedBody.of(done)
     return answered(answer, ctx, response, replayed=done.replayed)
 
@@ -362,7 +405,9 @@ async def regenerate(
         "another with the same membership, named by the `{turn, variant}` of its first turn. "
         "The `active` chains make up the story; `dormant` ones are continuations a swap can "
         "bring back (a regenerated reply, a rewound tail newer turns were written over); "
-        "`discarded` ones are rewound tails `untruncate` can reactivate."
+        "`discarded` ones are rewound tails `untruncate` can reactivate. A chain that is not "
+        "active says `requires_check: true` when making it active would first check its turns "
+        "against the story's current guardrails (FR-RATE-7)."
     ),
 )
 async def variants(story_id: StoryId, ctx: ContextDep, engine: EngineDep) -> VariantsBody:
@@ -373,12 +418,20 @@ async def variants(story_id: StoryId, ctx: ContextDep, engine: EngineDep) -> Var
     "/{story_id}/fork",
     status_code=http_status.HTTP_201_CREATED,
     response_model=ForkedBody,
+    responses={
+        202: {
+            "model": RatingCheckStartedBody,
+            "description": "The dormant continuation's turns are checked first; the source is "
+            "paused, and the check creates the fork if they pass (read it at the `Location`).",
+        }
+    },
     operation_id="fork",
     summary="Fork the story at a turn",
     description=(
         "Copy the story's corrected history through `at_turn` (default the head) into a new "
         "story: every active record positioned at or before it, the cast, settings, rating, "
-        "pinned memories, custom instructions and story policies, under new ids. The copy reads "
+        "engine profile (a deleted one too: the fork runs on its last version), pinned "
+        "memories, custom instructions and story policies, under new ids. The copy reads "
         "one snapshot of the source, so it equals the source at exactly one timeline revision "
         "(`forked_from.revision`), and the two stories are independent from then on. "
         '`variant_chain` (`{turn, variant}` or `"turn:variant"`) copies another chain, e.g. a '
@@ -387,7 +440,13 @@ async def variants(story_id: StoryId, ctx: ContextDep, engine: EngineDep) -> Var
         "is 409 `unknown_chain`. `at_turn` above the head is 422. An archived story can be "
         "forked; the fork is active. Answers 201 with `Location`. The source records a `fork` "
         "event and keeps its revision. `Idempotency-Key` (per deployment, like story creation) "
-        "and `X-Epistrel-Expected-Revision` (the source's) are optional."
+        "and `X-Epistrel-Expected-Revision` (the source's) are optional.\n\nReactivation check "
+        "(FR-RATE-7): when `variant_chain` names a continuation that is not active and one of "
+        "the turns it would copy was last checked against a guardrail set that lacks a policy "
+        "now in effect, the source is paused and those turns are checked first: 202 `{job_id, "
+        "operation_id, status: checking}` with `Location` (the check). If they all pass, the "
+        "check creates the fork and ends `reactivated` with this answer as its `outcome`; "
+        "otherwise it ends `refused` with each violation and no fork is created."
     ),
 )
 async def fork(
@@ -396,8 +455,10 @@ async def fork(
     ctx: ContextDep,
     engine: EngineDep,
     body: Annotated[ForkRequest | None, Body()] = None,
-) -> ForkedBody:
+) -> ForkedBody | JSONResponse:
     done = await engine.fork(ctx, story_id, body or ForkRequest())
+    if isinstance(done, RatingCheckStarted):
+        return _check_started(done, ctx, response, story_id)
     response.headers["Location"] = f"/stories/{done.story_id}"
     answer = ForkedBody.of(done)
     return answered(answer, ctx, response, replayed=done.replayed)

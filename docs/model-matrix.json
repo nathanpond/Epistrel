@@ -53,6 +53,7 @@
           ]
         }
       },
+      "designed_calls_per_turn": null,
       "e06": {
         "identical": 10,
         "lengths": {
@@ -62,6 +63,10 @@
         "passed": true,
         "samples": 10
       },
+      "extra_calls": null,
+      "failed_calls": null,
+      "fallbacks": null,
+      "faulted_turns": null,
       "hardware": "Apple M3 Max, 128 GB; context 16,384",
       "latencies_ms": [
         15232,
@@ -150,6 +155,7 @@
           ]
         }
       },
+      "designed_calls_per_turn": null,
       "e06": {
         "identical": 10,
         "lengths": {
@@ -159,6 +165,10 @@
         "passed": true,
         "samples": 10
       },
+      "extra_calls": null,
+      "failed_calls": null,
+      "fallbacks": null,
+      "faulted_turns": null,
       "hardware": "Apple M3 Max, 128 GB; context 16,384",
       "latencies_ms": [
         11831,

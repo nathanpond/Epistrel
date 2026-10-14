@@ -67,3 +67,31 @@ def test_compose_environment_loads_as_settings(monkeypatch: pytest.MonkeyPatch) 
     for name, value in _compose()["services"]["engine"]["environment"].items():
         monkeypatch.setenv(name, str(value))
     assert load_settings().service_credentials
+
+
+MINIO_OVERRIDE = REPO_ROOT / "docker" / "compose.minio.yml"
+
+
+def test_the_minio_override_is_a_separate_file_on_the_tests_image() -> None:
+    """MinIO for local S3 development (#107) is an override file, not a profile of the default
+    stack (which stays ``engine`` and ``db``). It runs the image the S3 tests pin, on a loopback
+    port, creates the bucket before the engine starts, and points the engine at it; its
+    secrets say they are dev-only."""
+    from tests.conftest import MINIO_IMAGE
+
+    assert set(_compose()["services"]) == {"engine", "db"}
+    override: dict[str, Any] = yaml.safe_load(MINIO_OVERRIDE.read_text())
+    services = override["services"]
+    assert services["minio"]["image"] == MINIO_IMAGE
+    assert services["minio-bucket"]["image"] == MINIO_IMAGE
+    assert services["minio"]["ports"] == ["127.0.0.1:9000:9000"]
+    assert "restart" not in services["minio"]
+    bucket = services["engine"]["depends_on"]["minio-bucket"]
+    assert bucket["condition"] == "service_completed_successfully"
+    engine = services["engine"]["environment"]
+    assert engine["EPISTREL_MEDIA_STORE"] == "s3"
+    assert engine["EPISTREL_MEDIA_S3_BUCKET"] in services["minio-bucket"]["command"][0]
+    text = MINIO_OVERRIDE.read_text()
+    for name in ("MINIO_ROOT_PASSWORD", "EPISTREL_MEDIA_S3_SECRET_KEY"):
+        line = next(line for line in text.splitlines() if f"{name}:" in line)
+        assert AUTH_DEV_ONLY_COMMENT in line, name

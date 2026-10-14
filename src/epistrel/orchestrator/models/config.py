@@ -3,8 +3,10 @@ writes behind ``/admin/model-config``, and encrypted keys (FR-MODEL-1,3,4,8; NFR
 NFR-SEC-3).
 
 ``model_config`` holds one row per configured purpose and a ``default`` row. Resolution is
-per field: a purpose's ``base_url``, ``model`` and API key are its own when set, else the
-``default`` row's; ``params`` inherit per key. A purpose with no row is the ``default`` row.
+per field: a purpose's ``base_url``, ``model`` and API key are its own when set, else those of
+the purpose it defaults to when the registry names one (``rating_suggestion`` defaults to
+``guardrail_check``, FR-MODEL-2; #121), else the ``default`` row's; ``params`` inherit per key
+the same way. A purpose with no row is its parent's row, then the ``default`` row.
 
 **Writes** (FR-MODEL-4) follow every deployment-scoped configuration write (#48): take
 ``lock_deployment``, move ``deployment_state.config_revision`` by exactly one, and record one
@@ -58,7 +60,7 @@ MAX_BASE_URL_CHARS = 2048
 UNREADABLE_KEY = "unreadable"
 """What a change row records for a stored key that cannot be decrypted (no fingerprint)."""
 
-type Source = Literal["own", "default"]
+type Source = Literal["own", "inherited", "default"]
 
 log = logging.getLogger(__name__)
 
@@ -170,18 +172,38 @@ def _params(raw: Mapping[str, Any], purpose: str) -> ModelParams:
         raise ModelUnavailable(purpose, "not_configured", "stored params are invalid") from None
 
 
+def parent_of(purpose: str) -> str | None:
+    """The purpose whose row ``purpose`` inherits from before ``default`` (its registry
+    ``default_model_key``: ``rating_suggestion`` → ``guardrail_check``, FR-MODEL-2), or
+    ``None`` when it inherits from ``default`` directly."""
+    declared = DELIVERED.get(purpose)
+    if declared is None or declared.default_model_key == DEFAULT_MODEL_KEY:
+        return None
+    return declared.default_model_key
+
+
 def resolve(
-    purpose: str, own: ConfigRow | None, default: ConfigRow, revision: int
+    purpose: str,
+    own: ConfigRow | None,
+    default: ConfigRow,
+    revision: int,
+    parent: ConfigRow | None = None,
 ) -> EffectiveConfig:
-    """Per-field inheritance: the purpose's own value when set, else ``default``'s."""
+    """Per-field inheritance: the purpose's own value when set, else its ``parent`` row's (the
+    purpose it defaults to, when it names one and that purpose has a row), else ``default``'s.
+    ``params`` inherit per key the same way."""
+    chain = [row for row in (own, parent) if row is not None]
 
     def pick(name: str) -> Any:
-        value = getattr(own, name) if own is not None else None
-        return value if value is not None else getattr(default, name)
+        for row in chain:
+            value = getattr(row, name)
+            if value is not None:
+                return value
+        return getattr(default, name)
 
     params = _params(default.params, purpose)
-    if own is not None:
-        params = params.merged(_params(own.params, purpose))
+    for row in reversed(chain):
+        params = params.merged(_params(row.params, purpose))
     return EffectiveConfig(
         purpose=purpose,
         base_url=pick("base_url"),
@@ -192,19 +214,37 @@ def resolve(
     )
 
 
+def _parent_row(rows: Mapping[str, ConfigRow], purpose: str) -> ConfigRow | None:
+    parent = parent_of(purpose)
+    return None if parent is None else rows.get(parent)
+
+
 def describe(purpose: str, rows: Mapping[str, ConfigRow], keybox: KeyBox) -> ConfigEntry:
-    """``purpose``'s effective configuration with a ``source`` (``own``/``default``) per field;
-    ``params`` carry a source per key. Every field of ``default`` is its own."""
+    """``purpose``'s effective configuration with a ``source`` per field: ``own``,
+    ``inherited`` (from the purpose it defaults to, ``parent_of``) or ``default``; ``params``
+    carry a source per key. Every field of ``default`` is its own."""
     default = _default_row(rows, purpose)
     own = rows.get(purpose) if purpose != DEFAULT_MODEL_KEY else None
-    effective = resolve(purpose, own, default, 0)
+    parent = _parent_row(rows, purpose)
+    effective = resolve(purpose, own, default, 0, parent)
 
     def source(name: str) -> Source:
         if purpose == DEFAULT_MODEL_KEY:
             return "own"
-        return "own" if own is not None and getattr(own, name) is not None else "default"
+        if own is not None and getattr(own, name) is not None:
+            return "own"
+        if parent is not None and getattr(parent, name) is not None:
+            return "inherited"
+        return "default"
 
     own_params = _params(own.params, purpose).wire() if own is not None else {}
+    parent_params = _params(parent.params, purpose).wire() if parent is not None else {}
+
+    def param_source(key: str) -> Source:
+        if purpose == DEFAULT_MODEL_KEY or key in own_params:
+            return "own"
+        return "inherited" if key in parent_params else "default"
+
     params = effective.params.wire()
     return ConfigEntry(
         purpose=purpose,
@@ -217,10 +257,7 @@ def describe(purpose: str, rows: Mapping[str, ConfigRow], keybox: KeyBox) -> Con
             "base_url": source("base_url"),
             "model": source("model"),
             "api_key": source("api_key_ciphertext"),
-            "params": {
-                key: "own" if purpose == DEFAULT_MODEL_KEY or key in own_params else "default"
-                for key in params
-            },
+            "params": {key: param_source(key) for key in params},
         },
     )
 
@@ -321,7 +358,7 @@ class ConfigCache:
         revision, rows = await self.rows(db)
         default = _default_row(rows, purpose)
         own = rows.get(purpose) if purpose != DEFAULT_MODEL_KEY else None
-        return resolve(purpose, own, default, revision)
+        return resolve(purpose, own, default, revision, _parent_row(rows, purpose))
 
 
 def configurable() -> tuple[str, ...]:

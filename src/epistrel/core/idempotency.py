@@ -44,11 +44,12 @@ import json
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
+from types import SimpleNamespace
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
@@ -58,6 +59,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock
 from epistrel.core.enums import OperationStatus
+from epistrel.core.erasure.index import drop_many, index_records
+from epistrel.core.erasure.records import idempotency_id, idempotency_record
 from epistrel.core.errors import IdempotencyConflict, InvalidRequest, OriginalInFlightTimeout
 from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import IdempotencySettings
@@ -600,15 +603,27 @@ class IdempotentCall:
     async def _store(
         self, conn: AsyncConnection, stored: StoredResult, revision: int | None
     ) -> None:
+        result = stored.to_json()
         await conn.execute(
             update(idempotency_keys)
             .where(self._where(), idempotency_keys.c.owner_token == self.token)
             .values(
                 status=KeyStatus.DONE.value,
-                result=stored.to_json(),
+                result=result,
                 revision=revision,
                 expires_at=clock.now() + timedelta(hours=self.window.idempotency_result_window),
             )
+        )
+        # A stored result can quote anything the call answered (FR-ADMIN-6; #123).
+        await index_records(
+            conn,
+            [
+                idempotency_record(
+                    SimpleNamespace(
+                        scope=self.scope.value, scope_id=self.scope_id, key=self.key, result=result
+                    )
+                )
+            ],
         )
 
     async def finish(self, value: Any) -> Any:
@@ -663,12 +678,30 @@ async def purge_expired(db: AsyncEngine, now: Any = None) -> int:
     request hash, operation id). Returns the number purged. #71's sweep calls it."""
     moment = now or clock.now()
     async with db.begin() as conn:
-        result = await conn.execute(
-            update(idempotency_keys)
-            .where(idempotency_keys.c.result.is_not(None), idempotency_keys.c.expires_at <= moment)
-            .values(result=None)
-        )
-    return int(result.rowcount or 0)
+        purged = (
+            await conn.execute(
+                update(idempotency_keys)
+                .where(
+                    idempotency_keys.c.result.is_not(None), idempotency_keys.c.expires_at <= moment
+                )
+                .values(result=None)
+                .returning(*KEY_COLUMNS)
+            )
+        ).all()
+        await drop_results(conn, purged)
+    return len(purged)
+
+
+KEY_COLUMNS = (idempotency_keys.c.scope, idempotency_keys.c.scope_id, idempotency_keys.c.key)
+"""The columns that identify a key (``RETURNING`` them gives ``drop_results`` its rows)."""
+
+
+async def drop_results(conn: AsyncConnection, keys: Sequence[Any]) -> int:
+    """Drop the subject-index rows of the stored results of ``keys`` (rows of
+    ``KEY_COLUMNS``), whose results were purged or deleted (#123)."""
+    return await drop_many(
+        conn, idempotency_keys.name, [idempotency_id(k.scope, k.scope_id, k.key) for k in keys]
+    )
 
 
 async def stored_result(conn: AsyncConnection, operation_id: str) -> StoredResult | None:
@@ -694,6 +727,7 @@ __all__ = [
     "DEPLOYMENT_SCOPE_ID",
     "IDEMPOTENCY_HEADER",
     "IDEMPOTENT_REPLAY_HEADER",
+    "KEY_COLUMNS",
     "KEY_MAX",
     "LEASE_S",
     "QUEUE_OWNER_PREFIX",
@@ -707,6 +741,7 @@ __all__ = [
     "StoredResult",
     "calling",
     "current_call",
+    "drop_results",
     "idempotency_settings",
     "mark_replayed",
     "purge_expired",

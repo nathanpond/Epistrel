@@ -1,6 +1,7 @@
 """The model matrix tool's library (NFR-PORT-3, NFR-PERF-8; #54): percentiles, rows, merge and
-rendering, and E-06's prompt-parameter check against the stub. The end-to-end run against a
-local OpenAI-compatible server is ``tests/integration/test_model_matrix_run.py``."""
+rendering, the call breakdown (#303), and E-06's prompt-parameter check against the stub. The
+end-to-end runs against a local OpenAI-compatible server and against the stub with scripted
+deadline faults are ``tests/integration/test_model_matrix_run.py``."""
 
 from __future__ import annotations
 
@@ -13,9 +14,13 @@ import pytest
 
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.capability import check_prompt_params, context_prompt
-from epistrel.orchestrator.models.metrics import CallLog, ModelCall
+from epistrel.orchestrator.models.metrics import CallLog, ModelCall, Outcome
+from epistrel.orchestrator.policies.output_gate import DEADLINE
 from epistrel.tools import model_matrix as mm
 from tests.auth_support import auth_settings
+
+MINORS_DESIGN = {"generation": 1, "guardrail_check": 2}
+"""A minors-row turn's plan: one generation, the input check and the output check."""
 
 
 def row(**changes: Any) -> mm.Row:
@@ -51,10 +56,52 @@ def row(**changes: Any) -> mm.Row:
     return mm.Row(**values)
 
 
-def entry(purpose: str) -> ModelCall:
+def entry(purpose: str, outcome: Outcome = "ok", attempt: int = 1) -> ModelCall:
     return ModelCall(
-        purpose=purpose, model="m", attempt=1, outcome="ok", latency_ms=1, tokens_in=1, tokens_out=1
+        purpose=purpose,
+        model="m",
+        attempt=attempt,
+        outcome=outcome,
+        latency_ms=1,
+        tokens_in=1,
+        tokens_out=1,
     )
+
+
+def on_design() -> list[ModelCall]:
+    """A minors-row turn that made exactly its designed calls: input check, generation, output
+    check."""
+    return [entry("guardrail_check"), entry("generation"), entry("guardrail_check")]
+
+
+def scripted_turns() -> list[mm.TurnCalls]:
+    """Five minors-row turns, as #303's live run had them and worse:
+
+    1. on design;
+    2. the output check flagged the draft, and the regeneration was cut at the deadline;
+    3. the regeneration answered, and its re-check was cut at the deadline;
+    4. the input check answered garbage and its structured retry answered;
+    5. the deadline passed before the output check, so no call was made to fail."""
+    deadline = [DEADLINE]
+    return [
+        mm.TurnCalls(on_design(), MINORS_DESIGN),
+        mm.TurnCalls([*on_design(), entry("generation", "timeout")], MINORS_DESIGN, deadline),
+        mm.TurnCalls(
+            [*on_design(), entry("generation"), entry("guardrail_check", "timeout")],
+            MINORS_DESIGN,
+            deadline,
+        ),
+        mm.TurnCalls(
+            [
+                entry("guardrail_check", "invalid_output"),
+                entry("guardrail_check", attempt=2),
+                entry("generation"),
+                entry("guardrail_check"),
+            ],
+            MINORS_DESIGN,
+        ),
+        mm.TurnCalls([entry("guardrail_check"), entry("generation")], MINORS_DESIGN, deadline),
+    ]
 
 
 def test_nearest_rank() -> None:
@@ -76,6 +123,51 @@ def test_calls_per_turn_by_purpose() -> None:
     three.calls += [entry("guardrail_check"), entry("generation"), entry("guardrail_check")]
     assert mm.calls_per_turn([one, three]) == {"generation": 1.0, "guardrail_check": 1.0}
     assert mm.calls_per_turn([three]) == {"generation": 1.0, "guardrail_check": 2.0}
+
+
+def test_designed_calls() -> None:
+    """A Lite turn is designed to make one ``generation`` call and the guardrail calls G its
+    budget reserves (#69). The guarded reply's G is one check per model-assisted policy for
+    each of the input and the reply it applies to: the minors row's in-memory policy applies to
+    both, so 2, and policies off make none."""
+    assert mm.designed_calls(0) == {"generation": 1}
+    assert mm.designed_calls(2) == {"generation": 1, "guardrail_check": 2}
+    assert mm.guarded_checks(mm.policy_set("minors")) == 2
+    assert mm.guarded_checks(mm.policy_set("off")) == 0
+
+
+def test_call_breakdown_separates_the_design_from_extra_calls() -> None:
+    """#303: the mean calls per turn (``3.6`` here) folds extra calls and failed attempts into
+    one number; the breakdown separates them. Per purpose it reports the designed calls per
+    turn and the calls beyond them; it reports the failed calls by outcome; it lists the turns
+    that hit a model-call deadline or error, which includes a turn whose deadline released the
+    safe fallback before any call could fail; and it counts the safe fallbacks by cause."""
+    turns = scripted_turns()
+    assert mm.calls_per_turn(turns) == {"generation": 1.4, "guardrail_check": 2.2}
+    breakdown = mm.call_breakdown(turns)
+    assert breakdown.designed_calls_per_turn == {"generation": 1.0, "guardrail_check": 2.0}
+    assert breakdown.extra_calls == {"generation": 2, "guardrail_check": 2}
+    assert breakdown.failed_calls == {
+        "generation": {"timeout": 1},
+        "guardrail_check": {"invalid_output": 1, "timeout": 1},
+    }
+    assert breakdown.faulted_turns == [2, 3, 4, 5]
+    assert breakdown.fallbacks == {"deadline": 3}
+
+
+def test_call_breakdown_of_turns_on_design() -> None:
+    """Complement of the test above: turns that made exactly their designed calls report no
+    extra or failed calls, no faulted turn and no fallback, and a whole-number calls per turn
+    equal to the design."""
+    turns = [mm.TurnCalls(on_design(), MINORS_DESIGN) for _ in range(3)]
+    breakdown = mm.call_breakdown(turns)
+    assert breakdown.extra_calls == {}
+    assert breakdown.failed_calls == {}
+    assert breakdown.faulted_turns == []
+    assert breakdown.fallbacks == {}
+    per_turn = mm.calls_per_turn(turns)
+    assert per_turn == breakdown.designed_calls_per_turn == {"generation": 1, "guardrail_check": 2}
+    assert all(float(count).is_integer() for count in per_turn.values())
 
 
 def test_merge_replaces_same_key_and_keeps_others() -> None:
@@ -108,10 +200,137 @@ def test_render_two_rows(tmp_path: Path) -> None:
     assert mm.load_rows(tmp_path / "absent.json") == []
 
 
+def test_e06_lengths_in_cap_order() -> None:
+    """The E-06 cell lists its lengths by cap, whatever the row's key order. The json stores
+    them sorted as strings ("128" before "32"), so re-rendering from the committed file
+    reordered the cell. This was found while re-rendering the matrix for #303.
+
+    Complement asserted: the order the tool holds in memory renders the same."""
+    for lengths in ({"128": 120, "32": 30}, {"32": 30, "128": 120}):
+        e06 = {"passed": True, "lengths": lengths, "identical": 10, "samples": 10}
+        text = mm.render(mm.merge([], [row(e06=e06)]))
+        assert "(tokens 30/32, 120/128; temp 0: 10/10 identical)" in text
+
+
 def test_render_empty() -> None:
     text = mm.render([])
     assert "No tier has been measured yet." in text
     assert "model-matrix.json" in text
+
+
+def breakdown_rows() -> list[dict[str, Any]]:
+    """#303's live run in miniature: the minors row's turns 2 and 4 hit the deadline (one
+    regeneration cut short, one re-check cut short) and are its two slow turns; the policies-off
+    row stayed on design."""
+    minors = row(
+        policies="minors",
+        turns=5,
+        latencies_ms=[1000, 2050, 1200, 2010, 1100],
+        p50_ms=1200,
+        p95_ms=2050,
+        calls_per_turn={"generation": 1.4, "guardrail_check": 2.2},
+        designed_calls_per_turn={"generation": 1.0, "guardrail_check": 2.0},
+        extra_calls={"generation": 2, "guardrail_check": 1},
+        failed_calls={"generation": {"timeout": 1}, "guardrail_check": {"timeout": 1}},
+        faulted_turns=[2, 4],
+        fallbacks={"deadline": 2},
+    )
+    off = row(
+        designed_calls_per_turn={"generation": 1.0},
+        extra_calls={},
+        failed_calls={},
+        faulted_turns=[],
+        fallbacks={},
+    )
+    return mm.merge([], [off, minors])
+
+
+def test_render_the_call_breakdown(tmp_path: Path) -> None:
+    """#303: the md separates the designed calls from the extra ones per purpose, gives the
+    failed calls by outcome, the turns that hit a deadline or error, the p50/p95 of the other
+    turns (so the 2 s outliers can be traced to the deadline from the md alone) and the safe
+    fallbacks. The header explains each of these columns, and the json carries the same
+    breakdown.
+
+    Complement asserted: the row that stayed on design reports zeros and its p50/p95 unchanged,
+    and with every row recorded there is no "not recorded" note."""
+    rows = breakdown_rows()
+    markdown, raw = tmp_path / "m.md", tmp_path / "m.json"
+    mm.write_matrix(rows, markdown, raw)
+    text = markdown.read_text("utf-8")
+    assert (
+        "| local: m | minors policy on | 3 (generation 1, guardrail_check 2) "
+        "| 3 (generation 2, guardrail_check 1) "
+        "| 2 (generation timeout 1, guardrail_check timeout 1) | 2 of 5 (turns 2, 4) "
+        "| 1.10 s / 1.20 s | 2 (deadline 2) |"
+    ) in text
+    on_design_row = "| 1 (generation 1) | 0 | 0 | 0 of 3 | 1.20 s / 2.50 s | 0 |"
+    assert f"| local: m | policies off {on_design_row}" in text
+    for column in (
+        "Designed per turn",
+        "Extra calls",
+        "Failed calls",
+        "Turns with a deadline or error",
+        "p50 / p95 without them",
+        "Safe fallbacks",
+    ):
+        assert f"**{column}**" in text
+    assert "not recorded" not in text.lower()
+    minors = next(
+        r for r in json.loads(raw.read_text("utf-8"))["rows"] if r["policies"] == "minors"
+    )
+    assert minors["designed_calls_per_turn"] == {"generation": 1.0, "guardrail_check": 2.0}
+    assert minors["extra_calls"] == {"generation": 2, "guardrail_check": 1}
+    assert minors["failed_calls"] == {
+        "generation": {"timeout": 1},
+        "guardrail_check": {"timeout": 1},
+    }
+    assert minors["faulted_turns"] == [2, 4]
+    assert minors["fallbacks"] == {"deadline": 2}
+
+
+def test_rows_without_the_breakdown_are_not_recorded(tmp_path: Path) -> None:
+    """A row measured before #303 kept only the mean calls per turn: loading it marks every
+    breakdown field ``None`` (written back as ``null``), and the md shows *not recorded* in
+    each breakdown cell under a header note that the next live run fills them. Nothing is
+    derived from the mean.
+
+    Complement asserted: the note goes once every row has the breakdown."""
+    legacy = {k: v for k, v in asdict(row(policies="minors")).items() if k not in mm.BREAKDOWN}
+    raw = tmp_path / "m.json"
+    raw.write_text(json.dumps({"rows": [legacy]}), "utf-8")
+    loaded = mm.load_rows(raw)
+    assert all(loaded[0][name] is None for name in mm.BREAKDOWN)
+    assert {k: v for k, v in loaded[0].items() if k not in mm.BREAKDOWN} == legacy
+    markdown = tmp_path / "m.md"
+    mm.write_matrix(loaded, markdown, raw)
+    assert all(r[name] is None for r in mm.load_rows(raw) for name in mm.BREAKDOWN)
+    assert '"faulted_turns": null' in raw.read_text("utf-8")
+    text = markdown.read_text("utf-8")
+    assert "**Not recorded.**" in text
+    assert "next live run" in text
+    not_recorded = " | ".join(["not recorded"] * 6)
+    assert f"| local: m | minors policy on | {not_recorded} |" in text
+    assert "**Not recorded.**" not in mm.render(breakdown_rows())
+
+
+def test_turn_path_note_only_while_a_guarded_reply_row_exists() -> None:
+    """#303 (owner's comment): the **Turn path** note says a re-run through ``respond`` is
+    pending, so it appears only while some row was measured on the guarded reply (#53).
+
+    Complement asserted: a guarded-reply row brings it back."""
+    respond_only = mm.render(mm.merge([], [row(), row(policies="minors")]))
+    assert "**Turn path.**" not in respond_only
+    assert "pending" not in respond_only
+    mixed = mm.render(mm.merge([], [row(), row(tier="hosted", turn_path=mm.GUARDED_REPLY_PATH)]))
+    assert "**Turn path.**" in mixed
+
+
+def test_committed_matrix_is_its_json_rendered() -> None:
+    """``docs/model-matrix.md`` is generated, never hand-edited: it is ``render`` of the
+    committed ``docs/model-matrix.json``. A header change therefore reaches the committed file,
+    and so does a note that has stopped applying (#303)."""
+    assert mm.MATRIX_PATH.read_text("utf-8") == mm.render(mm.load_rows(mm.RAW_PATH))
 
 
 def test_parser_purpose_model() -> None:

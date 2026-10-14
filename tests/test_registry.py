@@ -59,9 +59,11 @@ def bad_template_env(source: str) -> Environment:
 
 
 def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
-    assert set(DELIVERED) == {"generation", "guardrail_check", "lite_summary"}
+    # M3 delivers rating_suggestion (#121), which defaults to guardrail_check's row (FR-MODEL-2).
+    assert set(DELIVERED) == {"generation", "guardrail_check", "lite_summary", "rating_suggestion"}
     for purpose in DELIVERED.values():
-        assert purpose.default_model_key == "default"
+        expected = "guardrail_check" if purpose.name == "rating_suggestion" else "default"
+        assert purpose.default_model_key == expected
         assert purpose.capability_floor.min_context_tokens == 8_192
         registry.validate_purpose(purpose)
         categories = registry.field_categories(purpose.input_schema)

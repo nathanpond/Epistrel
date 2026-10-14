@@ -1,8 +1,9 @@
 """C-08's planted canaries (#74): one story driven over REST with a distinct canary phrase in every
-content path the planner named — character definitions and the story name, pinned memories,
-custom instructions, player input (``say`` and ``do``), ingested narration, the stub's replies
-(first draft and regeneration) and a fork's name — plus requests that are refused while carrying
-a canary (a validation error and an unknown story).
+content path the planner named — character definitions, a character's name (#123's subject
+index scans every text for it) and the story name, pinned memories, custom instructions, player
+input (``say`` and ``do``), ingested narration, the stub's replies (first draft and
+regeneration) and a fork's name — plus requests that are refused while carrying a canary (a
+validation error and an unknown story).
 
 Not collected by the normal run (no ``test_`` prefix): ``test_c_08`` passes this file explicitly
 to the subprocess it scans, beside ``tests/scenario`` and C-03."""
@@ -30,6 +31,7 @@ CANARIES = {
     "fork_name": "canary-hazel-orbit-fork",
     "refused": "canary-onyx-kettle-refused",
     "unknown_story": "canary-jade-compass-unknown",
+    "character_name": "canary-ochre-wren-name",
 }
 """Every phrase is under 64 characters, so a truncating filter alone would not hide it."""
 
@@ -44,7 +46,16 @@ async def test_canary_story(settings: Settings, engine: AsyncEngine) -> None:
         stub = lib.models.stub
         cast = [
             character(PLAYER, 30, is_player=True),
-            character("Ada", 31, definition=f"Ada, {CANARIES['definition']}."),
+            character(
+                "Ada",
+                31,
+                definition=(
+                    f"Ada, {CANARIES['definition']}, sister of {CANARIES['character_name']}."
+                ),
+            ),
+            # A planted name the subject-reference index finds in the definition and the reply
+            # (#123): the index logs counts, never the name.
+            character(CANARIES["character_name"], 33),
         ]
         story_id, ids = await new_story(client, name=CANARIES["story_name"], characters=cast)
         pinned = await client.put(
@@ -60,7 +71,10 @@ async def test_canary_story(settings: Settings, engine: AsyncEngine) -> None:
         )
         assert instructions.status_code in (200, 204), instructions.text
 
-        stub.script("generation", [f"Ada answers: {CANARIES['reply']}."])
+        stub.script(
+            "generation",
+            [f"Ada answers: {CANARIES['reply']}, says {CANARIES['character_name']}."],
+        )
         turn = await played(client, story_id, body(ids[PLAYER], CANARIES["say"], do=CANARIES["do"]))
         assert CANARIES["reply"] in turn["message"]["text"]
 

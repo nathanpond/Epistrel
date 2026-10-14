@@ -11,13 +11,24 @@ port. Options the child applies to itself before serving:
   restarted worker's recovery pass fails what the crash left ``in_flight``);
 - ``pause_before_commit``: every ``turn`` operation prints ``EPISTREL-FAULT before-commit
   <operation id>`` and then waits forever instead of committing, so a test can kill the engine
-  *between generation and commit* (S-DOUBLE-SUBMIT (c));
+  *between generation and commit* (S-DOUBLE-SUBMIT (c)). It may be changed between restarts;
+- ``turn_start_delay_s`` (#305): every ``turn`` operation waits this long before it begins (before
+  its ``in_flight`` row is written), as on a slow runner where a request takes that long to get
+  its turn in flight;
 - ``crash`` (#75): a ``crash_at(point, nth, kind)`` plan. The child is started with
   ``EPISTREL_TEST_FAULTS=1`` and ``EPISTREL_TEST_CRASH_AT``, and its ``nth`` hit of the named
   crash point (``epistrel.testing.crash``) ends it with ``os._exit(137)`` after printing
   ``EPISTREL-FAULT crash <point> <kind>``. ``crash`` may be changed between restarts;
 - ``mode``: ``EPISTREL_MODE`` (``all`` by default; ``api`` runs no job worker, so a harness
   drains jobs itself).
+
+The child's media root (``EPISTREL_MEDIA_ROOT``, #105) and erasure ledger directory
+(``EPISTREL_ERASURE_LEDGER_DIR``, #125) are temporary directories of its own, kept across restarts
+and removed when the harness's context ends (or the harness is collected), so a child never
+writes under the working directory. Without its own ledger directory the child would use the
+default ``var/erasure-ledger`` under the repository, which outlives the test session: its start-up
+reconcile would load an earlier session's erasures into the test database as pending entries
+(``/health`` ``degraded``) and copy this database's erasures into that file for the next one.
 
 Nothing in ``create_app`` or the Engine imports this module.
 """
@@ -28,9 +39,12 @@ import argparse
 import asyncio
 import contextlib
 import os
+import shutil
 import signal
 import socket
 import sys
+import tempfile
+import weakref
 from typing import Any
 
 from epistrel.testing.crash import POINTS, CrashPlan, crash_at, hit
@@ -61,6 +75,7 @@ class EngineProcess:
         lease_s: float = 1.0,
         pause_before_commit: bool = False,
         stub_latency_s: float = 0.0,
+        turn_start_delay_s: float = 0.0,
         crash: CrashPlan | None = None,
         mode: str = "all",
     ) -> None:
@@ -70,8 +85,13 @@ class EngineProcess:
         self.lease_s = lease_s
         self.pause_before_commit = pause_before_commit
         self.stub_latency_s = stub_latency_s
+        self.turn_start_delay_s = turn_start_delay_s
         self.crash = crash
         self.mode = mode
+        self.media_root = tempfile.mkdtemp(prefix="epistrel-faults-media-")
+        weakref.finalize(self, shutil.rmtree, self.media_root, ignore_errors=True)
+        self.erasure_ledger_dir = tempfile.mkdtemp(prefix="epistrel-faults-ledger-")
+        weakref.finalize(self, shutil.rmtree, self.erasure_ledger_dir, ignore_errors=True)
         self.process: asyncio.subprocess.Process | None = None
         self.markers: asyncio.Queue[str] = asyncio.Queue()
         self.starts = 0
@@ -81,11 +101,10 @@ class EngineProcess:
     def base_url(self) -> str:
         return f"http://{HOST}:{self.port}"
 
-    async def start(self) -> None:
-        """Start the child and wait until ``/health`` answers."""
-        if self.process is not None and self.process.returncode is None:
-            raise RuntimeError("the engine process is already running")
-        env = {
+    def child_env(self) -> dict[str, str]:
+        """The child's environment: this process's, without any ``EPISTREL_*`` variable, plus
+        the child's own settings (its media root and erasure ledger are its own directories)."""
+        return {
             **{k: v for k, v in os.environ.items() if not k.upper().startswith("EPISTREL_")},
             "EPISTREL_DATABASE_URL": self.database_url,
             "EPISTREL_SERVICE_CREDENTIALS": self.credential,
@@ -93,8 +112,16 @@ class EngineProcess:
             "EPISTREL_STUB_LATENCY_S": str(self.stub_latency_s),
             "EPISTREL_LOG_LEVEL": "WARNING",
             "EPISTREL_MODE": self.mode,
+            "EPISTREL_MEDIA_ROOT": self.media_root,
+            "EPISTREL_ERASURE_LEDGER_DIR": self.erasure_ledger_dir,
             **(self.crash.env() if self.crash is not None else {}),
         }
+
+    async def start(self) -> None:
+        """Start the child and wait until ``/health`` answers."""
+        if self.process is not None and self.process.returncode is None:
+            raise RuntimeError("the engine process is already running")
+        env = self.child_env()
         args = [
             sys.executable,
             "-m",
@@ -107,6 +134,8 @@ class EngineProcess:
         ]
         if self.pause_before_commit:
             args.append("--pause-before-commit")
+        if self.turn_start_delay_s > 0:
+            args += ["--turn-start-delay-s", str(self.turn_start_delay_s)]
         self.process = await asyncio.create_subprocess_exec(
             *args,
             env=env,
@@ -184,6 +213,8 @@ class EngineProcess:
 
     async def __aexit__(self, *exc: Any) -> None:
         await self.kill()
+        shutil.rmtree(self.media_root, ignore_errors=True)
+        shutil.rmtree(self.erasure_ledger_dir, ignore_errors=True)
 
 
 # -- the child ---------------------------------------------------------------------------------
@@ -205,11 +236,27 @@ def _pause_turn_commits() -> None:
     Operation.commit = paused  # type: ignore[method-assign]
 
 
+def _delay_turn_starts(delay_s: float) -> None:
+    """Make every ``turn`` operation wait ``delay_s`` before it begins (a slow runner)."""
+    from epistrel.core.enums import OperationKind
+    from epistrel.core.events.operation import Operation
+
+    original = Operation.begin
+
+    async def delayed(self: Operation, *args: Any, **kwargs: Any) -> Any:
+        if self.kind is OperationKind.TURN:
+            await asyncio.sleep(delay_s)
+        return await original(self, *args, **kwargs)
+
+    Operation.begin = delayed  # type: ignore[method-assign]
+
+
 def serve(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="epistrel.testing.faults serve")
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--lease-s", type=float, default=1.0)
     parser.add_argument("--pause-before-commit", action="store_true")
+    parser.add_argument("--turn-start-delay-s", type=float, default=0.0)
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -222,6 +269,8 @@ def serve(argv: list[str] | None = None) -> int:
     orphans.GRACE_S = args.lease_s
     if args.pause_before_commit:
         _pause_turn_commits()
+    if args.turn_start_delay_s > 0:
+        _delay_turn_starts(args.turn_start_delay_s)
     uvicorn.run(create_app(), host=HOST, port=args.port, log_level="warning")
     return 0
 

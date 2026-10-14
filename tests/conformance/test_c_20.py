@@ -1,10 +1,16 @@
-"""C-20: input guardrails (FR-GUARD-8,10,11) [M2].
+"""C-20: input guardrails (FR-GUARD-8,10,11) [M2, M3].
 
 Text a consumer sends into a story is checked against every policy that applies to input
 before anything is recorded. The truth-changing paths are #56's fixture caller
 (``POST /_test/stories/{id}/gated-input``) for respond, ingest, pinned memories and custom
 instructions, and the real ``POST /stories`` for character definitions; #57/#58/#60 add
 ``__`` slices through the real respond, ingest and pins/instructions routes.
+
+Every C-20 (M3) part lives in this file. #111's, ``test_c_20__catalog_input_policy``: a catalog
+scenario's content that breaks an input policy publishes with a warning and writes no audit row.
+#119's story-creation half joins it: creating a story from that scenario is refused, and so is
+one whose persona description, ad-hoc definition or cast catalog character's definition breaks
+the policy.
 """
 
 from __future__ import annotations
@@ -16,16 +22,22 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.config import Settings
 from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import RatingFields, RatingReplacement, create_rating, update_rating
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
+from tests import genesis_support as g
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.gate_support import ENTRY_POINTS, audit_rows, gated, input_policies
 from tests.minors_support import MINOR_AGE, MINOR_NAME, explicit_story, guarded_client, recognise
 from tests.policy_support import library, unique
-from tests.story_support import WRITE, count, create, story_body
+from tests.scenario_support import publish as publish_scenario
+from tests.scenario_support import scenario as catalog_scenario
+from tests.scenario_support import seed
+from tests.story_support import WRITE, count, create, rest, story_body
 from tests.structured_support import story_state
+from tests.validation_support import link_rating_policy, validate
 
 CREATE_ROWS = "SELECT count(*) FROM audit_log WHERE details->>'entry_point' = 'story_create'"
 OPERATOR = {**WRITE, "X-Epistrel-Principal": "p-operator"}
@@ -258,3 +270,115 @@ async def test_audit_log_no_text(
     for record in caplog.records:
         message = record.getMessage()
         assert not any(piece in message for piece in pieces), message
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-GUARD-10")
+async def test_c_20__catalog_input_policy(settings: Settings, engine: AsyncEngine) -> None:
+    """A catalog scenario whose seed breaks a global policy publishes (201) with an
+    ``input_policy`` warning: outcome ``kept``, the policy's id as the rule, the seed's field and
+    id, and the words it matched quoted as the text. Catalog content enters no story until it
+    is created from it, so the publish refuses nothing and writes no audit row. A rating policy
+    set to apply to input warns the same way for a scenario at that rating; one left at its
+    default (output only) does not.
+
+    Creating a story from that scenario is refused (422 ``guardrail_violation``, an audit row
+    for the ``story_create`` entry point, nothing else written), and so is creating one from a
+    clean scenario whose player's persona description, ad-hoc character definition or cast
+    catalog character's definition holds the word.
+
+    Complements asserted: the same scenario with the word taken out validates without the
+    warning; a story from the clean scenario with a clean cast is created."""
+    word = f"zarquon{new_ulid().lower()}"
+    async with rest(settings, engine) as client:
+        made = await _global_wordlist(client, word)
+        try:
+            body = catalog_scenario(
+                "Policed",
+                starting_state={
+                    "seeded_memories": [seed(f"The cellar hides a {word.upper()} under the hay.")],
+                    "opening": {"narration": "Night falls on the farm."},
+                },
+            )
+            created = (await client.post("/catalog/scenarios", json=body, headers=WRITE)).json()
+            seed_id = created["starting_state"]["seeded_memories"][0]["id"]
+            audit_before = await count(engine, "SELECT count(*) FROM audit_log")
+            published = await publish_scenario(client, created["id"], created["draft_revision"])
+            assert published.status_code == 201, published.text
+            (warning,) = published.json()["report"]["warnings"]
+            assert (warning["code"], warning["outcome"], warning["rule"]) == (
+                "input_policy",
+                "kept",
+                made["id"],
+            )
+            assert warning["location"]["field"] == "starting_state.seeded_memories[0].text"
+            assert (warning["location"]["seed_id"], warning["text"]) == (seed_id, word.upper())
+            assert await count(engine, "SELECT count(*) FROM audit_log") == audit_before
+
+            # Story creation (#119): the seed, a persona's description, an ad-hoc definition
+            # and a cast catalog character's definition are each refused, nothing written.
+            fine = await g.catalog_character_id(client, f"Mara {new_ulid()}")
+            tainted = await g.catalog_character_id(
+                client,
+                f"Ilse {new_ulid()}",
+                definition={"personality": f"Hums about the {word} all day."},
+            )
+            clean_body = catalog_scenario(
+                "Clean", starting_state={"opening": {"narration": "Dusk."}}
+            )
+            clean_id, _ = await g.published_scenario(client, clean_body)
+            requests = [
+                g.from_scenario(created["id"], slots={"mother": g.catalog_slot(fine)}),
+                g.from_scenario(
+                    clean_id,
+                    slots={"mother": g.catalog_slot(fine)},
+                    players={"player": g.player(description=f"Fond of the {word}.")},
+                ),
+                g.from_scenario(
+                    clean_id, slots={"mother": g.ad_hoc_slot("Dale", 40, f"Sells {word}.")}
+                ),
+                g.from_scenario(clean_id, slots={"mother": g.catalog_slot(tainted)}),
+            ]
+            for request in requests:
+                counted = await g.counts(engine)
+                audited = await count(engine, CREATE_ROWS)
+                status, code, details = await g.refused(client, request)
+                assert (status, code) == (422, "guardrail_violation"), details
+                assert await g.counts(engine) == counted
+                assert await count(engine, CREATE_ROWS) == audited + 1
+            made_story = await g.create_from(
+                client, g.from_scenario(clean_id, slots={"mother": g.catalog_slot(fine)})
+            )
+            assert made_story["applied"] is True
+
+            clean = await client.post(
+                "/catalog/scenarios", json=catalog_scenario("Clean"), headers=WRITE
+            )
+            checked = await validate(client, clean.json()["id"])
+            assert checked.json()["report"]["warnings"] == [], checked.text
+
+            for applies_to, warned in (("text_input", True), (None, False)):
+                rating = (
+                    await create_rating(
+                        engine, RatingFields(name=unique("c20-catalog")), principal="p-operator"
+                    )
+                ).rating
+                guard = await link_rating_policy(client, engine, rating.id, applies_to=applies_to)
+                policy = (await client.get(f"{POLICIES}/{guard}", headers=OPERATOR)).json()
+                (rated_word,) = policy["rule"]["words"]
+                rated = catalog_scenario(
+                    "Rated",
+                    metadata={"labels": [], "content_rating_id": rating.id},
+                    world={
+                        "description": f"A farm where the {rated_word} grows.",
+                        "locations": [{"id": "kitchen", "name": "The kitchen"}],
+                    },
+                )
+                drafted = (
+                    await client.post("/catalog/scenarios", json=rated, headers=WRITE)
+                ).json()
+                found = (await validate(client, drafted["id"])).json()["report"]["warnings"]
+                rules = [(w["code"], w["location"]["field"], w["rule"]) for w in found]
+                assert rules == ([("input_policy", "world.description", guard)] if warned else [])
+        finally:
+            await _retire(client, made["id"])

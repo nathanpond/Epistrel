@@ -20,7 +20,10 @@ FR-CONC-8; #70). Postgres only — no broker (invariant 5).
   claim's token (else the commit is **refused**: ``REFUSED``), then rechecks every declared input
   (``core.input_versions``): one that is gone, inactive or changed drops the output (nothing is
   written, the operation ends ``abandoned``) and puts the same row back to ``queued`` due now
-  (``DROPPED``; not a failure). Otherwise the output is written and the job is ``done``.
+  (``DROPPED``; not a failure). Otherwise the output is written and the job is ``done``. A
+  handler that records no operation may instead continue later (``JobOutput.requeue_in``): its
+  row goes back to ``queued`` under the same fence, and ``hold`` fences each of the handler's
+  own transactions (#117).
 - ``fail_job`` records a failed attempt: retried with backoff ``min(5·2^n, 300)`` s ± 20 %
   until ``job_max_attempts`` failures, then ``failed`` with the exception class (never its
   message) as ``result``.
@@ -38,16 +41,17 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import Row, and_, func, select, text, update
+from sqlalchemy import Row, and_, exists, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock
 from epistrel.core.context import SYSTEM_PRINCIPAL
+from epistrel.core.enums import StoryStatus
 from epistrel.core.events.operation import LOCK_TIMEOUT, Operation, Withdrawn
 from epistrel.core.ids import new_ulid
 from epistrel.core.input_versions import stale_inputs
-from epistrel.core.tables import jobs
+from epistrel.core.tables import jobs, stories
 from epistrel.orchestrator.jobs import handlers
 from epistrel.orchestrator.jobs.types import ClaimedJob, JobHandler, JobOutput
 
@@ -156,11 +160,21 @@ def _claimed(row: Row[Any]) -> ClaimedJob:
 
 
 async def claim(db: AsyncEngine, worker_id: str, *, lease_s: float) -> ClaimedJob | None:
-    """Claim the earliest due ``queued`` job (``SKIP LOCKED``), or ``None`` when none is due."""
+    """Claim the earliest due ``queued`` job (``SKIP LOCKED``), or ``None`` when none is due.
+    A job of a story the erasure reconciler blocked stays queued, unclaimed, until the story is
+    unblocked (#125)."""
     now = clock.now()
+    blocked = exists().where(
+        stories.c.id == jobs.c.story_id,
+        stories.c.status == StoryStatus.BLOCKED_BY_ERASURE.value,
+    )
     due = (
         select(jobs.c.id)
-        .where(jobs.c.status == QUEUED, jobs.c.due_at <= now)
+        .where(
+            jobs.c.status == QUEUED,
+            jobs.c.due_at <= now,
+            or_(jobs.c.story_id.is_(None), ~blocked),
+        )
         .order_by(jobs.c.due_at, jobs.c.id)
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -187,6 +201,15 @@ async def claim(db: AsyncEngine, worker_id: str, *, lease_s: float) -> ClaimedJo
 def _held(job: ClaimedJob) -> Any:
     """The rows this claim still holds: same id, same token, still running."""
     return and_(jobs.c.id == job.id, jobs.c.attempt == job.attempt, jobs.c.status == RUNNING)
+
+
+async def hold(conn: AsyncConnection, job: ClaimedJob) -> None:
+    """In ``conn``'s transaction, lock the job's row and check that this claim still holds it
+    (``Fenced`` otherwise): the fence a handler that commits its own work in several
+    transactions puts first in each (#117's offboarding)."""
+    token = await conn.scalar(select(jobs.c.attempt).where(_held(job)).with_for_update())
+    if token is None:
+        raise Fenced(f"job {job.id} attempt {job.attempt} was fenced")
 
 
 async def heartbeat(db: AsyncEngine, job: ClaimedJob, *, lease_s: float) -> bool:
@@ -437,6 +460,8 @@ async def _finish_plain(
     result = dict(output.result or {})
     if output.result_of is not None:
         result.update(output.result_of())
+    if output.requeue_in is not None:
+        return await _requeue(db, job, result, declared, output.requeue_in)
     async with db.begin() as conn:
         done = await conn.scalar(
             update(jobs)
@@ -453,6 +478,36 @@ async def _finish_plain(
     if done is None:
         logger.info("job %s (%s): commit refused, the claim was fenced", job.id, job.kind)
         return CommitOutcome.REFUSED
+    return CommitOutcome.COMMITTED
+
+
+async def _requeue(
+    db: AsyncEngine,
+    job: ClaimedJob,
+    result: Mapping[str, Any],
+    declared: Mapping[str, Any],
+    delay_s: float,
+) -> CommitOutcome:
+    """Put a held job back to ``queued``, due in ``delay_s`` (``JobOutput.requeue_in``):
+    ``COMMITTED`` (the handler's work so far is its own), or ``REFUSED`` when the claim was
+    fenced."""
+    async with db.begin() as conn:
+        key = (
+            await conn.execute(select(jobs.c.coalesce_key).where(_held(job)).with_for_update())
+        ).one_or_none()
+        if key is None:
+            logger.info("job %s (%s): requeue refused, the claim was fenced", job.id, job.kind)
+            return CommitOutcome.REFUSED
+        await _back_to_queue(
+            conn,
+            job.id,
+            key.coalesce_key,
+            {
+                "due_at": clock.now() + timedelta(seconds=max(0.0, delay_s)),
+                "result": dict(result),
+                "input_versions": dict(declared),
+            },
+        )
     return CommitOutcome.COMMITTED
 
 
@@ -484,6 +539,7 @@ __all__ = [
     "enqueue",
     "fail_job",
     "heartbeat",
+    "hold",
     "next_due",
     "reap",
 ]

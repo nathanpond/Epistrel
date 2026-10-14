@@ -1,0 +1,52 @@
+# An S3-compatible blob store for local development (#107): MinIO beside docker-compose.yml's
+# services, and the engine's media in its bucket instead of the `media` volume. A separate file,
+# not a profile: the default stack stays exactly `engine` and `db` (NFR-OPS-2, X-07, C-10).
+# MinIO is AGPL: a development service only, never a dependency. The image is the one the S3
+# tests run (tests/conftest.py MINIO_IMAGE). `minio-bucket` creates the bucket and exits; the
+# engine starts once it has, since a missing bucket refuses the start (exit 78).
+#   docker compose -f docker-compose.yml -f docker/compose.minio.yml up
+# The store kind is recorded at the first start: a database whose media are in the local store
+# refuses to start on S3 (start this stack with a fresh database: `docker compose down -v`).
+services:
+  minio:
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+    entrypoint: ["/opt/bitnami/minio/bin/minio"]
+    command: ["server", "/bitnami/minio/data", "--address", ":9000"]
+    environment:
+      MINIO_ROOT_USER: epistrel-dev  # dev-only default — override for anything but local use
+      MINIO_ROOT_PASSWORD: epistrel-dev-minio-secret  # dev-only default — override for anything but local use
+    ports:
+      - "127.0.0.1:9000:9000"  # presigned URLs name this address (EPISTREL_MEDIA_S3_PUBLIC_ENDPOINT)
+    volumes:
+      - minio:/bitnami/minio/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  minio-bucket:
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5@sha256:6dabb4a2088c9a79908de3bc05f4586c23ad2182c8908e7e3acbf61c1467fb20
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - mc alias set local http://minio:9000 epistrel-dev epistrel-dev-minio-secret && mc mb --ignore-existing local/epistrel-media
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  engine:
+    depends_on:
+      minio-bucket:
+        condition: service_completed_successfully
+    environment:
+      EPISTREL_MEDIA_STORE: s3
+      EPISTREL_MEDIA_S3_ENDPOINT: http://minio:9000
+      EPISTREL_MEDIA_S3_PUBLIC_ENDPOINT: http://127.0.0.1:9000
+      EPISTREL_MEDIA_S3_BUCKET: epistrel-media
+      EPISTREL_MEDIA_S3_ACCESS_KEY: epistrel-dev
+      EPISTREL_MEDIA_S3_SECRET_KEY: epistrel-dev-minio-secret  # dev-only default — override for anything but local use
+      EPISTREL_MEDIA_S3_PATH_STYLE: "true"
+
+volumes:
+  minio:

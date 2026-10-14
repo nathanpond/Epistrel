@@ -13,6 +13,11 @@ SYSTEM_PRINCIPAL = "system"
 
 MAX_PRINCIPAL_LENGTH = 256
 
+PRINCIPAL_PATTERN = r"^[\t ]*[^\x00-\x1f\x7f]{1,256}[\t ]*$"
+"""A principal as sent: 1 to 256 characters without control characters, between optional
+spaces and tabs (which are trimmed). ``principal_problem`` is the full rule (it also refuses a
+blank one); ``system`` is reserved besides."""
+
 
 @dataclass(frozen=True, slots=True)
 class RequestContext:

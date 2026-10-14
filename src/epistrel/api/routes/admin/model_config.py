@@ -2,8 +2,10 @@
 (FR-MODEL-1..4; NFR-SEC-3).
 
 - ``GET`` lists ``default`` and every **delivered** purpose (reserved ones are not listed,
-  FR-MODEL-2) with its effective configuration, the ``source`` (``own``/``default``) of each
-  field, and the deployment's ``config_revision``; ``GET /{purpose}`` returns one.
+  FR-MODEL-2) with its effective configuration, the ``source`` of each field (``own``,
+  ``inherited`` from the purpose it defaults to — ``rating_suggestion`` inherits
+  ``guardrail_check``'s, #121 — or ``default``), and the deployment's ``config_revision``;
+  ``GET /{purpose}`` returns one.
 - ``PUT /{purpose}`` replaces the purpose's own ``base_url``, ``model`` and ``params`` (omitted or
   ``null`` inherits from ``default``); 200 with the effective entry and ``config_revision``.
 - ``DELETE /{purpose}`` drops the purpose's override (200); ``default`` cannot be removed (409);
@@ -38,11 +40,13 @@ router = APIRouter(prefix="/model-config")
 
 MASK = "***"
 
-Source = Literal["own", "default"]
+Source = Literal["own", "inherited", "default"]
 
 
 class Sources(BaseModel):
-    """Where each effective value came from; ``params`` per key."""
+    """Where each effective value came from, per field (``params`` per key): ``own``, ``inherited``
+    (the row of the purpose this one defaults to: ``rating_suggestion`` → ``guardrail_check``)
+    or ``default``."""
 
     base_url: Source
     model: Source

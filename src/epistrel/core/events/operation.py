@@ -59,6 +59,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.orm import aliased
 
 from epistrel.core import (
+    clock,
     config_dependencies,
     idempotency,
     pause,
@@ -523,10 +524,10 @@ class Operation:
 
     def stage(self, name: str, status: str = "done") -> None:
         """Record one stage of the operation's work (``stage_log``, #124: an erasure's
-        ``redacted``, ``ledger_written``, …), written with the commit. Identifiers and outcomes
-        only."""
+        ``redacted``, ``ledger_written``, …), written with the commit. Identifiers, outcomes
+        and the time (``at``, ``clock.now()``; #128's stage view) only."""
         self._require_in_flight("record a stage of")
-        self._stages.append({"stage": name, "status": status})
+        self._stages.append({"stage": name, "status": status, "at": clock.now().isoformat()})
 
     def add_commit_step(self, step: CommitStep) -> None:
         """Run ``step(conn)`` inside the commit transaction, after the events and projections

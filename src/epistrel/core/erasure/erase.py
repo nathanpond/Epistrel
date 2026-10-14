@@ -1685,13 +1685,17 @@ async def _write_ledger(
 async def append_stage(
     db: AsyncEngine | AsyncConnection, operation_id: str, stage: str, status: str
 ) -> None:
-    """Add one stage to a committed operation's ``stage_log`` (``Operation.stage``'s shape)."""
+    """Add one stage to a committed operation's ``stage_log`` (``Operation.stage``'s shape:
+    ``{stage, status, at}``)."""
+    at = clock.now().isoformat()
     statement = (
         update(operations)
         .where(operations.c.operation_id == operation_id)
         .values(
             stage_log=func.coalesce(operations.c.stage_log, text("'[]'::jsonb"))
-            + func.jsonb_build_array(func.jsonb_build_object("stage", stage, "status", status))
+            + func.jsonb_build_array(
+                func.jsonb_build_object("stage", stage, "status", status, "at", at)
+            )
         )
     )
     if isinstance(db, AsyncConnection):

@@ -5713,3 +5713,92 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** The M3 section continues here, after #127's `## Ad-hoc` entry. Later stories append below.
   **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
   **Issue:** #127
+
+- **Decision (drift):** The stage view extends `src/epistrel/core/operation_view.py` (the drift note: `operations_view.py` does not exist). `OperationView` and `OperationBody` gain `label` (`OperationLabel`: `genesis`, `rating_check`, `reactivation_check`, `offboarding`, `erasure`) and `stages [{name, status, at}]` (`StageStatus`: `pending`, `running`, `done`, `failed`, `skipped`, `partial`). Any other operation has `label: null` and `stages: []`. The operation's own `status` is not changed: a check's or an offboarding's request operation stays `committed`, and its stages carry the progress.
+  **Why:** AC4 and the pass-1 line. The plan's link, `jobs.operation_id`, was never built (#117's and #118's Ad-hoc entries), so a rating or reactivation check is found by `rating_check_jobs.operation_id` and an offboarding by `offboarding_jobs.operation_id`. Cost if wrong: one more join in the view if the link moves.
+  **Issue:** #128, #117, #118, #120
+- **Decision (deviation):** The `label` comes from the operation's links, not from "the marker event type" as the pass-1 line says. The view checks, in order: kind `genesis`; a `rating_check_jobs` row (its `kind` separates `rating_check` from `reactivation_check`); an `offboarding_jobs` row; and a `stage_log` that holds `redacted` (an erasure).
+  **Why:** A catalog erasure is a deployment operation with no events. A tightening and a reactivation both record `story_paused`. An offboarding's request operation records no event of its own. So no marker event type identifies all four. Cost if wrong: the view reads two small indexed tables per `control` operation.
+  **Issue:** #128
+- **Decision:** Every stage-log entry now records its time. `Operation.stage` and `core.erasure.erase.append_stage` write `{stage, status, at}` (`at` = `clock.now()`). An entry from before this change falls back to the operation's `committed_at`.
+  - **Erasure:** the stages come in a fixed order (`redacted`, `ledger_written`, `regenerated`, `rebuilt`). A catalog erasure's `regenerated` and `rebuilt` are `skipped`. A reapply without a ledger write (#125) has `ledger_written` `skipped`. A story erasure's later stages are `pending` until the work after its commit records them. Its recorded regeneration status can be `partial` (#124's `RegenerationOutcome`), so `partial` was added to the planner's five statuses, and an unknown value reads `failed`.
+  - **Genesis:** `validated`, `snapshotted` and `materialized` are all at the one commit. `snapshotted` is `skipped` for a blank story (no `creation_report`).
+  - **Checks:** `checking` (from `started_at`), then `applied`/`reactivated` or `refused` (`pending` while checking, `skipped` after a failure).
+  - **Offboarding:** one stage per entity type of the snapshot, in processing order. It is `done` once `progress.index` passes that type's last entry, `running` while the job is on it, and `failed`/`skipped` after a failure. Its `at` is the row's `updated_at`, because the row keeps no time per type.
+  **Why:** The pass-1 line says "`at` from `epistrel.core.clock.now()`", and #124's entries had no time. Cost if wrong: one key per stage-log entry; no reader compares the whole entry (`test_erasure` reads stage names only).
+  **Issue:** #128, #124
+- **Decision:** The route table is `tests/fixtures/api/fr_api_6_routes.json`. It has three lists:
+  - `routes`: FR-API-6 item by item, as `{item, method, path, status, milestone}`, with the M2-delivered rows marked M2. The `not_yet` rows are backfill and conflict resolution (M7) and images (M8), at docs/02 §9's paths. §9 names no path for cancelling an image job, so that row is a placeholder (`DELETE /image-jobs/{job_id}`, with a `note`). The erasure rows are there because #128's AC names them, although FR-API-6 does not.
+  - `extras`: served routes beside the items, such as the unarchives, `GET /media`, the relation listings, the reconcile and the export log.
+  - `outside`: every other served route, each with the requirement it serves.
+
+  The check (`tests/api_surface_support.surface_problems`) runs both ways, so a new route must be placed in one of the lists. It also asserts that every FR-API-6 group and every owned type's three ownership routes have a row.
+  **Why:** The pass-1 line names two directions and an allow-list. The drift note says that FR-API-6 omits most M2 routes, and suggests deriving the allow-list or keeping the check one-way. Deriving it from `docs/openapi.json` would make the reverse check empty, so it was rejected. Listing each route with its requirement keeps the check two-way and explicit. Cost if wrong: later milestones add one line per route they add (M4+ stories touching routes should expect it).
+  **Issue:** #128
+- **Decision (drift):** `test_c_15__api_surface`, `test_c_15__replay` and `test_c_15__operation_stages` each carry `part("M3", "FR-API-6")` and sit in `tests/conformance/test_c_15.py`. The helpers are in `tests/api_surface_support.py` and `tests/replay_support.py`. The Must-haves artifact `tests/test_api_surface_m3.py` was not created. `test_c_02__admin_prefix` carries `part("M3", "FR-API-1; FR-AUTH-1")` in `test_c_02.py`. `test_s_trust_boundary__m3` carries `part("M3", "FR-AUTH-1")` in `tests/test_trust_boundary.py` and runs an `/admin` erasure under two principals and once with no principal.
+  **Why:** The drift notes: traceability allows one file per (test id, milestone) and checks each part's requirements against §15. FR-API-6's §15 row lists C-15, C-16 and C-19. C-02's and S-TRUST-BOUNDARY's M3 slices name FR-API-1/FR-AUTH-1 and FR-AUTH-1. Offline tests use `create_app(auth_settings(dummy_dsn, mode="all"))`, not `create_app(settings=None)`. Cost if wrong: none; the tests and their markers are where the gates look.
+  **Issue:** #128
+- **Decision:** The complement is a permanent test, `test_c_15__api_surface_bites`. It builds the app with `media.router.routes` minus `get_media_url` (monkeypatched, because routers are included lazily) and asserts that the check reports exactly that row. It then serves one route the table does not list and asserts that the check reports it.
+  **Why:** The pass-1 line asks for "a permanent test over an app whose router is built minus one route". Cost if wrong: none.
+  **Issue:** #128
+- **Decision:** The replay test reruns C-03's scripted sequence (`tests/conformance/test_c_03._steps`) on two fresh databases instead of a fixture builder per route. Each step whose route is mutating (method, minus `mutating=False`) is sent under its own key and, once it succeeds, sent again at once.
+  - **Over REST:** the replay must answer the same status and body with `Idempotent-Replay: true`.
+  - **In-process:** C-03's module-level `CTX` is swapped for a keyed context during the step, and the replay must return the same rendered result.
+  - **Rows, on both surfaces:** no base table may gain or lose a row, counted over every table in one statement, which covers `operations` and the entity's own table.
+  - **Coverage:** every mutating route must have a replayed step, or the test fails.
+  - **Added steps:** C-03 reaches some routes only through a sibling route of the same Engine operation, or only as a dry run, so the sequence is extended with: a real story erasure; a relation added to and removed from a new character, scenario, persona, media asset and engine profile; and a scenario's listing status.
+  - **Complement:** the same draft under a second key adds a row, and under the first key adds none.
+  **Why:** The pass-1 line ("a mutating route without a fixture builder fails the test; replay asserted over both surfaces"). C-03's sequence already makes every operation succeed in order, so reusing it keeps one scripted world. Cost if wrong: the replay test depends on C-03's step list; a C-03 step that stops succeeding shows up here as a coverage failure.
+  **Issue:** #128, #73
+- **Decision:** Two kinds of call are re-executed rather than replayed, by design.
+  - `put_upload_part` (#107: "sending a part again replaces it ... the key is echoed, not kept") must answer the same and write no row, but carries no `Idempotent-Replay` (`replay_support.REPLACED_NOT_STORED`, with its reason).
+  - A `dry_run: true` request (#117's offboarding, #124's erasure: "no operation, no key") is checked the same way and does not count toward coverage. That is why a real erasure step was added.
+
+  `REPLAY_EXCLUDED` is empty, and no `PARITY_EXCLUDED` set was made (#107's hand-off). The binary content routes are reads. No separate two-stage `ignore_warnings: true` replay was written: C-03's steps choose their bodies, and those that need it send it.
+  **Why:** The pass-1 lines exclude binary routes "with reason"; here the binary upload route is kept and checked for everything it promises. Cost if wrong: a later story that starts storing part results must move `put_upload_part` out of `REPLACED_NOT_STORED`.
+  **Issue:** #128, #107, #117, #124
+- **Decision:** The stage test (`test_c_15__operation_stages`) asserts the stored result by its status and identifying field (`story_id`, `job_id`, `operation_id`), not by equality with the REST body.
+  **Why:** The view's `result` is what the idempotency key stored: the Engine's result through its codec (`engine.CODECS`), whose fields REST renders differently (the REST body adds `timeline_revision`, the echoed key and so on). AC4's "the result within the window" is that stored result. Cost if wrong: none; the view is unchanged.
+  **Issue:** #128, #61
+- **Decision:** `info.version` is now `m3` (`api.openapi.SCHEMA_VERSION`). C-01's schema check asserts the literal `"m3"`, not the constant. `docs/openapi.json` was regenerated. No tag was added: `principals` and `feedback` were already in `TAGS` (the drift note). `OPERATOR_PATH_PATTERNS` is unchanged: it already matches `offboarding` (#117). C-02's M3 slice adds the ten M3 operator paths under `/admin` (offboarding, erasure with status, boundary and reconcile, and the feedback export with its log).
+  **Why:** The pass-1 lines, corrected by the drift notes and #117's entry. Cost if wrong: none.
+  **Issue:** #128
+- **Decision:** No missing route was found, so no Rule 2 fix to a sibling story was made. C-03's parity list (generated from `Engine`'s public operations) and C-01's schema check already passed at HEAD over every M3 operation. `test_c_15__api_surface` also calls both over the same app.
+  **Why:** The route table matched the served app in both directions on the first run, once Starlette's `{principal:path}` converter was normalised to OpenAPI's `{principal}`. Cost if wrong: none.
+  **Issue:** #128
+- **Decision (deviation):** docs/02 §4.4 (the stage view) and §9 (the erasure and export-log routes, and the route table) are amended. No ADR line was added.
+  **Why:** The view implements FR-EXT-16's status surface as docs/03 states it, and no ADR covers the operations endpoint. ADR-log changes regenerate both indexes. An implementation detail does not warrant a new ADR, and amending an unrelated one would be wrong. Cost if wrong: a one-line ADR later.
+  **Issue:** #128
+- **Decision:** `current_milestone` stays `M2` (tools/gates config). It is not bumped.
+  **Why:** The pass-1 line: verification's closing PR bumps it. Cost if wrong: none.
+  **Issue:** #128
+- **Decision:** Group B's and C's hand-offs to #128 were applied. The routes they added (#114 personas and story characters, #116 companion, #117 principals and offboarding, #118 rating change and check, #121 suggestions, #124 and #125 erasure, #126 feedback reports and exports) are rows of the route table. Their shape changes (#115, #119, #120, #122, #127) are in the regenerated `docs/openapi.json`, which C-01 checks. The two suggestion routes and `delete_feedback_export` are `mutating=False`, so the replay leaves them out. `set_content_rating` stays excluded from Schemathesis generation (#118).
+  **Why:** The relayed Ad-hoc entries' `Affects: #128` items. None contradicts an AC. Cost if wrong: none.
+  **Issue:** #128, #114, #115, #116, #117, #118, #119, #120, #121, #122, #124, #125, #126, #127
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #128 froze M3's API surface. Some of the shapes it settled are ones later stories build on.
+  - **`GET /operations/{id}`** gains `label` and `stages`.
+    - `label` is `genesis`, `rating_check`, `reactivation_check`, `offboarding`, `erasure` or `null`.
+    - Each stage is `{name, status, at}`, and `status` is one of `pending`, `running`, `done`, `failed`, `skipped` or `partial`.
+    - `core.operation_view._stages` derives them per kind. Job-backed kinds are found through their job row's `operation_id` (`rating_check_jobs`, `offboarding_jobs`).
+    - docs/02 §4.4 is amended.
+  - **`operations.stage_log`** entries are now `{stage, status, at}`. `Operation.stage` and `erase.append_stage` stamp `at` with `clock.now()`.
+  - **The route table** is `tests/fixtures/api/fr_api_6_routes.json`. It holds FR-API-6's items, with `not_yet` rows for the M7 backfill and conflict routes and the M8 image routes, plus `extras` and `outside`. `test_c_15__api_surface` checks it against the app in both directions, so every route a later story adds needs a row, and a `not_yet` row flips to `present` when its route ships. docs/02 §9 is amended.
+  - **The replay test** (`test_c_15__replay`) reruns C-03's sequence under keys. A later story's new mutating route therefore needs a C-03 step (or a step in `tests/replay_support.steps`) that reaches that route successfully, besides the step per Engine operation C-03 already requires.
+  - **`info.version`** is `m3`.
+  **Why:** #128's AC and its pass-1 lines, corrected by the drift notes and #117's and #118's entries. The decision entries above give the details.
+  **Affects:**
+  - **M6 #212 (staged turns).** Its plan adds `operations.stage_log` and returns `stages: [{name, status, at, revision}]` from `GET /operations/{id}` "(#128)". The column exists (#124), its entries are `{stage, status, at}`, and the view already answers `{name, status, at}` with a `label`. #212 should add `revision` and `staged`, and a `turn` branch in `core.operation_view._stages`, rather than create the column.
+  - **M6 #214.** It asserts on `stage_log`, and the entries have the shape above.
+  - **M7 #228 and #230 (backfill, conflict resolution)** and **the M8 image-route stories (#256 and the candidate, prompt and story-image routes).** Each flips its `not_yet` rows to `present` and keeps docs/02 §9's paths, or amends both. The image-job cancel row is a placeholder path, because §9 names none.
+  - **Every later story that adds a route.** It adds a row to the route table, and for a mutating route it adds a replayable step.
+  - **The Console (nathanpond/Epistrel-Console).** An operation progress view can show `label` and `stages` for genesis, rating and reactivation checks, offboarding and erasure.
+  - **Next step:** `/n8-replan` for M6 (#212, #214), M7 (#228, #230) and M8 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #128's `## Ad-hoc` entry.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #128

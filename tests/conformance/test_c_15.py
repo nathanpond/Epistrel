@@ -32,6 +32,13 @@ Every C-15 (M3) part lives in this file (traceability counts a test ID per miles
   ``full`` (every entry, deferred item and inactive setting), and public descriptions and labels
   seeded nowhere (FR-SCN-10). The materialisation itself is I-27's
   (``tests/integration/test_i_27.py``).
+- #128's parts (FR-API-6 as a whole): ``test_c_15__api_surface``, the route table
+  (``tests/fixtures/api/fr_api_6_routes.json``, ``tests/api_surface_support.py``) against the
+  full app in both directions, with C-03's parity list and C-01's schema check over the same
+  app; ``test_c_15__replay``, every mutating route's replay under its ``Idempotency-Key`` on
+  both surfaces; and ``test_c_15__operation_stages``, ``GET /operations/{id}`` for the four
+  long-running kinds. The replay and stage helpers are in ``tests/api_surface_support.py``
+  and ``tests/replay_support.py``.
 """
 
 from __future__ import annotations
@@ -42,11 +49,15 @@ from typing import Annotated, Any
 
 import httpx2 as httpx
 import pytest
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.api import create_app
+from epistrel.api.routes import media
 from epistrel.config import Settings
+from epistrel.core.catalog.characters import CharacterCreate
 from epistrel.core.catalog.scenario_models import (
     FieldClass,
     ScenarioDraft,
@@ -54,10 +65,17 @@ from epistrel.core.catalog.scenario_models import (
     classification_problems,
     scenario_schema_classes,
 )
+from epistrel.core.context import RequestContext
+from epistrel.core.db import make_engine
 from epistrel.core.ids import new_ulid
+from epistrel.core.operation_view import ERASURE_STAGES, GENESIS_STAGES
+from epistrel.core.seeds.ratings import EXPLICIT_ID, TEEN_ID
+from epistrel.engine import Engine
 from tests import genesis_support as g
 from tests import lite_genesis_support as lg
 from tests import scenario_support as scenarios
+from tests.api_surface_support import load_table, served_routes, surface_problems
+from tests.auth_support import auth_settings
 from tests.catalog_support import (
     BASE,
     CARD_KEYS,
@@ -86,6 +104,11 @@ from tests.character_support import (
     visual_identity,
 )
 from tests.character_support import PLANTED as PRIVATE_PHRASES
+from tests.conformance import test_c_03 as c03
+from tests.conformance.conftest import migrated_database
+from tests.conformance.test_c_01 import schema_problems
+from tests.erasure_support import linda
+from tests.erasure_support import request as erasure_request
 from tests.event_support import execute_in_tx, rows, sqlstate
 from tests.media_support import (
     READ as MEDIA_READ,
@@ -100,7 +123,17 @@ from tests.media_support import (
     upload,
     uploaded,
 )
-from tests.story_support import rest
+from tests.model_support import config_key
+from tests.rating_change_support import change_rating, guard_rating, rating_db, run_jobs
+from tests.replay_support import (
+    grown,
+    mutating_routes,
+    replay_library,
+    replay_rest,
+    table_counts,
+)
+from tests.respond_support import FIRST, PLAYER, new_story
+from tests.story_support import rest, story_body
 from tests.validation_support import counts, validate
 
 PLANTED = "counts the silver twice before the harbour wakes"
@@ -1077,3 +1110,302 @@ async def test_c_15__story_creation(settings: Settings, engine: AsyncEngine) -> 
         for phrase in (lg.PUBLIC_PHRASE, lg.LABEL_PHRASE, CARD_PHRASE):
             assert phrase not in seeded, phrase
         assert scenarios.ROLE_SECRET in seeded
+
+
+# -- #128: FR-API-6 as a whole -------------------------------------------------------------------
+
+
+@pytest.mark.part("M3", "FR-API-6")
+def test_c_15__api_surface(dummy_dsn: str) -> None:
+    """Every endpoint FR-API-6 names for M3 is served with its method; the ones it names for
+    later milestones are not, and say which; every served route has a place in the table; and
+    C-03's parity list and C-01's schema check hold over the same app.
+
+    Complements asserted in ``test_c_15__api_surface_bites``: removing one route, or serving
+    one the table does not list, is reported."""
+
+    app = create_app(auth_settings(dummy_dsn, mode="all"))
+    table = load_table()
+    assert surface_problems(app, table) == []
+    later = {
+        (row["item"], row["milestone"]) for row in table["routes"] if row["status"] != "present"
+    }
+    assert {milestone for _, milestone in later} == {"M7", "M8"}
+    assert c03.parity_gaps(Engine, app, c03._steps()) == []
+    assert schema_problems(app.openapi(), app) == []
+
+
+def test_c_15__api_surface_bites(dummy_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The route-table check reports an app built minus one route, and a route the table does
+    not list."""
+
+    kept = [
+        r
+        for r in media.router.routes
+        if not (isinstance(r, APIRoute) and r.operation_id == "get_media_url")
+    ]
+    assert len(kept) == len(media.router.routes) - 1
+    monkeypatch.setattr(media.router, "routes", kept)
+    app = create_app(auth_settings(dummy_dsn, mode="all"))
+    assert ("GET", "/media/{media_id}/url") not in served_routes(app)
+    assert surface_problems(app, load_table()) == [
+        "not served: GET /media/{media_id}/url (media delivery — signed URLs)"
+    ]
+    monkeypatch.undo()
+
+    app = create_app(auth_settings(dummy_dsn, mode="all"))
+
+    @app.get("/catalog/characters/{character_id}/unlisted", operation_id="get_character_x")
+    async def unlisted(character_id: str) -> dict[str, str]:
+        return {}
+
+    assert surface_problems(app, load_table()) == [
+        "served, but in no list: GET /catalog/characters/{character_id}/unlisted"
+    ]
+
+
+@pytest.fixture(scope="module")
+def replay_surfaces(pg_url: str, tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """C-03's two surfaces again, on databases of their own (each with its own ledger file)."""
+
+    with (
+        migrated_database(pg_url, "epistrel_c15_replay_rest") as rest_url,
+        migrated_database(pg_url, "epistrel_c15_replay_lib") as lib_url,
+    ):
+        yield tuple(
+            auth_settings(
+                url,
+                model_adapter="stub",
+                config_key=config_key(),
+                erasure_ledger_dir=tmp_path_factory.mktemp(f"c15-replay-{name}"),
+            )
+            for name, url in (("rest", rest_url), ("lib", lib_url))
+        )
+
+
+REPLAY_EXCLUDED: dict[str, str] = {}
+"""Mutating routes the replay does not reach, each with the reason (none: every mutating route
+is replayed; ``replay_support.REPLACED_NOT_STORED`` names the one replayed without a stored
+result)."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-API-6")
+async def test_c_15__replay(replay_surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None:
+    """Every mutating route accepts an ``Idempotency-Key``: its replay answers the stored result
+    (``Idempotent-Replay: true`` over REST) and writes no row, over REST and in-process.
+
+    Complement asserted: a mutating route that no keyed step reached fails the coverage check
+    (``mutating_routes`` minus the replayed set is empty only because each was replayed), and
+    the replays were real (the run replayed every one, and the flagged ``mutating=False`` routes
+    are not among them)."""
+
+    app = create_app(auth_settings(dummy_dsn, mode="all"))
+    mutating = set(mutating_routes(app))
+    assert {"suggest_ratings_character", "validate_scenario", "impact_preview"}.isdisjoint(mutating)
+    rest_settings, lib_settings = replay_surfaces
+    for settings, run in ((rest_settings, replay_rest), (lib_settings, replay_library)):
+        db = make_engine(settings)
+        try:
+            seen = await run(c03, settings, db)
+        finally:
+            await db.dispose()
+        assert seen.problems == [], f"{run.__name__}:\n" + "\n".join(seen.problems)
+        missing = sorted(mutating - seen.replayed - set(REPLAY_EXCLUDED))
+        assert missing == [], f"{run.__name__}: no replayed step for {missing} {seen.answers}"
+    assert len(seen.answers) > len(mutating), "the sequence ran to its end"
+
+    # Complement: the row check sees a write. The same draft under a new key is a second row;
+    # under the first key again, nothing.
+
+    db = make_engine(lib_settings)
+    draft = CharacterCreate.model_validate({"public_card": {"name": "Complement"}})
+    try:
+        async with c03.surface_engine(lib_settings) as (engine, _):
+            first = RequestContext(principal="p-replay", idempotency_key="complement-1")
+            await engine.create_character_draft(first, draft)
+            before = await table_counts(db)
+            await engine.create_character_draft(first, draft)
+            assert grown(before, await table_counts(db)) == {}
+            second = RequestContext(principal="p-replay", idempotency_key="complement-2")
+            await engine.create_character_draft(second, draft)
+            assert "catalog.character_catalog" in grown(before, await table_counts(db))
+    finally:
+        await db.dispose()
+
+
+def _stages(view: dict[str, Any]) -> list[tuple[str, str]]:
+    return [(stage["name"], stage["status"]) for stage in view["stages"]]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-API-6")
+async def test_c_15__operation_stages(pg_url: str) -> None:
+    """``GET /operations/{id}`` reports a genesis, a rating check, an offboarding and an
+    erasure as ``{kind, label, status, stages [{name, status, at}]}``, with the request's
+    stored result within the window; the job-backed ones follow their job.
+
+    Complements asserted: a check's and an offboarding's stages move once their job runs (they
+    are read, not fixed), a blank story's genesis skips ``snapshotted`` where a scenario's does
+    not, a catalog erasure skips the story stages a story erasure runs, and an operation that
+    is none of these has no label and no stages."""
+
+    async def view(client: httpx.AsyncClient, operation_id: str) -> dict[str, Any]:
+        response = await client.get(f"/operations/{operation_id}", headers=READ)
+        assert response.status_code == 200, response.text
+        found: dict[str, Any] = response.json()
+        return found
+
+    async def one(db: AsyncEngine, sql: str, **params: Any) -> str:
+        (row,) = await rows(db, sql, **params)
+        return str(row[0])
+
+    async with rating_db(pg_url) as s:
+        client = s.client
+
+        # A blank story's genesis, and one from a scenario.
+        blank = await client.post(
+            "/stories",
+            json=story_body(PLAYER, FIRST),
+            headers={**WRITE, "Idempotency-Key": "stages-blank"},
+        )
+        assert blank.status_code == 201, blank.text
+        genesis = await one(
+            s.db,
+            "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'genesis'",
+            s=blank.json()["story_id"],
+        )
+        found = await view(client, genesis)
+        assert (found["kind"], found["label"], found["status"]) == (
+            "genesis",
+            "genesis",
+            "committed",
+        )
+        assert _stages(found) == [
+            ("validated", "done"),
+            ("snapshotted", "skipped"),
+            ("materialized", "done"),
+        ]
+        assert {stage["at"] for stage in found["stages"]} == {found["committed_at"]}
+        # The stored result is the Engine's (``CODECS``), whose fields REST renders.
+        assert found["result"]["status"] == 201
+        assert found["result"]["body"]["story_id"] == blank.json()["story_id"]
+
+        scenario_id, _ = await g.published_scenario(client, g.scenario_body())
+        made = await g.create_from(
+            client,
+            g.from_scenario(
+                scenario_id, slots={"mother": g.ad_hoc_slot("Linda", 50)}, ignore_warnings=True
+            ),
+            key="stages-scenario",
+        )
+        genesis = await one(
+            s.db,
+            "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'genesis'",
+            s=made["story_id"],
+        )
+        found = await view(client, genesis)
+        assert _stages(found) == [(name, "done") for name in GENESIS_STAGES]
+        assert found["result"]["status"] == 201
+        assert found["result"]["body"]["story_id"] == made["story_id"]
+
+        # A rating change's check: running while the job waits, done once it ran.
+        await guard_rating(s)
+        story_id, _ = await new_story(client, PLAYER, FIRST, content_rating_id=EXPLICIT_ID)
+        started = await change_rating(client, story_id, TEEN_ID, **{"Idempotency-Key": "stages-r"})
+        assert started.status_code == 202, started.text
+        check = await one(
+            s.db,
+            "SELECT operation_id FROM rating_check_jobs WHERE id = :j",
+            j=started.json()["job_id"],
+        )
+        found = await view(client, check)
+        assert (found["kind"], found["label"]) == ("control", "rating_check")
+        assert _stages(found) == [("checking", "running"), ("applied", "pending")]
+        assert found["stages"][1]["at"] is None
+        assert found["result"]["status"] == 202
+        assert found["result"]["body"]["job_id"] == started.json()["job_id"]
+        assert await run_jobs(s.db) >= 1
+        found = await view(client, check)
+        assert _stages(found) == [("checking", "done"), ("applied", "done")]
+        assert all(stage["at"] for stage in found["stages"])
+
+        # An offboarding: one stage per entity type, pending until its job runs.
+        leaving = {**WRITE, "X-Epistrel-Principal": "p-stages-leaving"}
+        owned = await client.post("/stories", json=story_body(PLAYER, FIRST), headers=leaving)
+        assert owned.status_code == 201, owned.text
+        offboarded = await client.post(
+            "/admin/offboarding",
+            json={
+                "principal": "p-stages-leaving",
+                "actions": {"stories": "delete"},
+                "ignore_warnings": True,
+            },
+            headers={**WRITE, "Idempotency-Key": "stages-offboarding"},
+        )
+        assert offboarded.status_code == 202, offboarded.text
+        operation = await one(
+            s.db,
+            "SELECT operation_id FROM offboarding_jobs WHERE id = :j",
+            j=offboarded.json()["job_id"],
+        )
+        found = await view(client, operation)
+        assert (found["kind"], found["label"]) == ("control", "offboarding")
+        names = [name for name, _ in _stages(found)]
+        assert names
+        assert _stages(found) == [(name, "pending") for name in names]
+        assert found["result"]["status"] == 202
+        assert found["result"]["body"]["job_id"] == offboarded.json()["job_id"]
+        assert await run_jobs(s.db) >= 1
+        found = await view(client, operation)
+        assert _stages(found) == [(name, "done") for name in names]
+
+        # A story erasure, and a catalog one (which runs no story stage).
+        erased_story, ids = await new_story(client)
+        erased = await client.post(
+            "/admin/erasure",
+            json=erasure_request("character", ids[FIRST], erased_story),
+            headers={**WRITE, "Idempotency-Key": "stages-erasure"},
+        )
+        assert erased.status_code == 200, erased.text
+        found = await view(client, erased.json()["operation_id"])
+        assert (found["kind"], found["label"]) == ("control", "erasure")
+        # A new story has no summary segment, so the regeneration recorded it had nothing to do.
+        assert _stages(found) == [
+            ("redacted", "done"),
+            ("ledger_written", "done"),
+            ("regenerated", "skipped"),
+            ("rebuilt", "done"),
+        ]
+        assert [stage["name"] for stage in found["stages"]] == list(ERASURE_STAGES)
+        assert all(stage["at"] for stage in found["stages"])
+        assert found["result"]["status"] == 200
+        assert found["result"]["body"]["operation_id"] == erased.json()["operation_id"]
+
+        catalog_id = await linda(client)
+        erased = await client.post(
+            "/admin/erasure",
+            json=erasure_request("catalog_character", catalog_id),
+            headers={**WRITE, "Idempotency-Key": "stages-catalog-erasure"},
+        )
+        assert erased.status_code == 200, erased.text
+        found = await view(client, erased.json()["operation_id"])
+        assert (found["label"], found["story_id"]) == ("erasure", None)
+        assert _stages(found) == [
+            ("redacted", "done"),
+            ("ledger_written", "done"),
+            ("regenerated", "skipped"),
+            ("rebuilt", "skipped"),
+        ]
+
+        # Any other operation: no label, no stages.
+        other = await one(
+            s.db,
+            "SELECT operation_id FROM operations o WHERE kind = 'control' AND stage_log IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM rating_check_jobs j "
+            "WHERE j.operation_id = o.operation_id) "
+            "AND NOT EXISTS (SELECT 1 FROM offboarding_jobs j "
+            "WHERE j.operation_id = o.operation_id) LIMIT 1",
+        )
+        found = await view(client, other)
+        assert (found["label"], found["stages"]) == (None, [])

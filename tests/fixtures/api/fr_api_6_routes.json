@@ -1,0 +1,1061 @@
+{
+  "description": "FR-API-6 (docs/03), item by item, as routes (#128): each row is (method, path template, present|not_yet, the milestone that delivers it). Rows FR-API-6 names for later milestones are not_yet at docs/02 §9's paths. `extras` are served routes beside FR-API-6's items (a read or undo of one of them); `outside` are served routes FR-API-6 does not name, each with the requirement it serves. test_c_15__api_surface checks the table against the app in both directions.",
+  "routes": [
+    {
+      "item": "characters — create draft",
+      "method": "POST",
+      "path": "/catalog/characters",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "characters — list and search",
+      "method": "GET",
+      "path": "/catalog/characters",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "characters — get (latest or a version; card or full)",
+      "method": "GET",
+      "path": "/catalog/characters/{character_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "characters — update draft",
+      "method": "PATCH",
+      "path": "/catalog/characters/{character_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "characters — publish",
+      "method": "POST",
+      "path": "/catalog/characters/{character_id}/publish",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "characters — archive",
+      "method": "POST",
+      "path": "/catalog/characters/{character_id}/archive",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "characters — delete",
+      "method": "DELETE",
+      "path": "/catalog/characters/{character_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "characters — list versions",
+      "method": "GET",
+      "path": "/catalog/characters/{character_id}/versions",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "characters — set listing status",
+      "method": "PUT",
+      "path": "/catalog/characters/{character_id}/listing-status",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "characters — promote from a story",
+      "method": "POST",
+      "path": "/stories/{story_id}/characters/{character_id}/promote",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "scenarios — create draft",
+      "method": "POST",
+      "path": "/catalog/scenarios",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "scenarios — list and search",
+      "method": "GET",
+      "path": "/catalog/scenarios",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "scenarios — get (latest or a version; card or full)",
+      "method": "GET",
+      "path": "/catalog/scenarios/{scenario_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "scenarios — update draft",
+      "method": "PATCH",
+      "path": "/catalog/scenarios/{scenario_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "scenarios — publish",
+      "method": "POST",
+      "path": "/catalog/scenarios/{scenario_id}/publish",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "scenarios — archive",
+      "method": "POST",
+      "path": "/catalog/scenarios/{scenario_id}/archive",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "scenarios — delete",
+      "method": "DELETE",
+      "path": "/catalog/scenarios/{scenario_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "scenarios — list versions",
+      "method": "GET",
+      "path": "/catalog/scenarios/{scenario_id}/versions",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "scenarios — set listing status",
+      "method": "PUT",
+      "path": "/catalog/scenarios/{scenario_id}/listing-status",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "scenarios — validate (dry run)",
+      "method": "POST",
+      "path": "/catalog/scenarios/{scenario_id}/validate",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "scenarios — get-companion for a character",
+      "method": "GET",
+      "path": "/catalog/characters/{character_id}/companion",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "media — upload",
+      "method": "POST",
+      "path": "/media",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "media — upload (resumable session)",
+      "method": "POST",
+      "path": "/media/uploads",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "media — get metadata",
+      "method": "GET",
+      "path": "/media/{media_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "media — get content",
+      "method": "GET",
+      "path": "/media/{media_id}/content",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "media — delete",
+      "method": "DELETE",
+      "path": "/media/{media_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "personas — create",
+      "method": "POST",
+      "path": "/personas",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "personas — list (by owner)",
+      "method": "GET",
+      "path": "/personas",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "personas — get",
+      "method": "GET",
+      "path": "/personas/{persona_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "personas — update",
+      "method": "PATCH",
+      "path": "/personas/{persona_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "personas — delete",
+      "method": "DELETE",
+      "path": "/personas/{persona_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "stories — create from scenario",
+      "method": "POST",
+      "path": "/stories",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "stories — create blank",
+      "method": "POST",
+      "path": "/stories",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "stories — existing lifecycle: list",
+      "method": "GET",
+      "path": "/stories",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "stories — existing lifecycle: get",
+      "method": "GET",
+      "path": "/stories/{story_id}",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "stories — existing lifecycle: archive",
+      "method": "POST",
+      "path": "/stories/{story_id}/archive",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "stories — existing lifecycle: unarchive",
+      "method": "POST",
+      "path": "/stories/{story_id}/unarchive",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "stories — existing lifecycle: delete",
+      "method": "DELETE",
+      "path": "/stories/{story_id}",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "engine profiles — create",
+      "method": "POST",
+      "path": "/engine-profiles",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "engine profiles — list",
+      "method": "GET",
+      "path": "/engine-profiles",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "engine profiles — get (latest or a version)",
+      "method": "GET",
+      "path": "/engine-profiles/{profile_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "engine profiles — update (new version)",
+      "method": "PUT",
+      "path": "/engine-profiles/{profile_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "engine profiles — copy",
+      "method": "POST",
+      "path": "/engine-profiles/{profile_id}/copy",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "engine profiles — validate",
+      "method": "POST",
+      "path": "/engine-profiles/{profile_id}/validate",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "engine profiles — delete",
+      "method": "DELETE",
+      "path": "/engine-profiles/{profile_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "per story — assign profile",
+      "method": "PUT",
+      "path": "/stories/{story_id}/engine-profile",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "per story — set overrides",
+      "method": "PATCH",
+      "path": "/stories/{story_id}/profile-overrides",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "per story — get effective configuration",
+      "method": "GET",
+      "path": "/stories/{story_id}/effective-config",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "per story — impact preview",
+      "method": "POST",
+      "path": "/stories/{story_id}/impact-preview",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "per story — backfill start",
+      "method": "POST",
+      "path": "/stories/{id}/backfill",
+      "status": "not_yet",
+      "milestone": "M7"
+    },
+    {
+      "item": "per story — backfill progress",
+      "method": "GET",
+      "path": "/stories/{id}/backfill",
+      "status": "not_yet",
+      "milestone": "M7"
+    },
+    {
+      "item": "per story — backfill cancel",
+      "method": "DELETE",
+      "path": "/stories/{id}/backfill",
+      "status": "not_yet",
+      "milestone": "M7"
+    },
+    {
+      "item": "per story — conflict resolution",
+      "method": "POST",
+      "path": "/stories/{id}/backfill/conflicts/{cid}",
+      "status": "not_yet",
+      "milestone": "M7"
+    },
+    {
+      "item": "ownership (stories) — transfer the owner",
+      "method": "PUT",
+      "path": "/stories/{story_id}/owner",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (stories) — add a relation",
+      "method": "POST",
+      "path": "/stories/{story_id}/relations",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (stories) — remove a relation",
+      "method": "DELETE",
+      "path": "/stories/{story_id}/relations/{relation}/{principal}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (catalog characters) — transfer the owner",
+      "method": "PUT",
+      "path": "/catalog/characters/{character_id}/owner",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (catalog characters) — add a relation",
+      "method": "POST",
+      "path": "/catalog/characters/{character_id}/relations",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (catalog characters) — remove a relation",
+      "method": "DELETE",
+      "path": "/catalog/characters/{character_id}/relations/{relation}/{principal}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (catalog scenarios) — transfer the owner",
+      "method": "PUT",
+      "path": "/catalog/scenarios/{scenario_id}/owner",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (catalog scenarios) — add a relation",
+      "method": "POST",
+      "path": "/catalog/scenarios/{scenario_id}/relations",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (catalog scenarios) — remove a relation",
+      "method": "DELETE",
+      "path": "/catalog/scenarios/{scenario_id}/relations/{relation}/{principal}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (personas) — transfer the owner",
+      "method": "PUT",
+      "path": "/personas/{persona_id}/owner",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (personas) — add a relation",
+      "method": "POST",
+      "path": "/personas/{persona_id}/relations",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (personas) — remove a relation",
+      "method": "DELETE",
+      "path": "/personas/{persona_id}/relations/{relation}/{principal}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (media) — transfer the owner",
+      "method": "PUT",
+      "path": "/media/{media_id}/owner",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (media) — add a relation",
+      "method": "POST",
+      "path": "/media/{media_id}/relations",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (media) — remove a relation",
+      "method": "DELETE",
+      "path": "/media/{media_id}/relations/{relation}/{principal}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (engine profiles) — transfer the owner",
+      "method": "PUT",
+      "path": "/engine-profiles/{profile_id}/owner",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (engine profiles) — add a relation",
+      "method": "POST",
+      "path": "/engine-profiles/{profile_id}/relations",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "ownership (engine profiles) — remove a relation",
+      "method": "DELETE",
+      "path": "/engine-profiles/{profile_id}/relations/{relation}/{principal}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "principals — lookup",
+      "method": "GET",
+      "path": "/principals/{principal_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "principals — offboarding dry run (dry_run: true)",
+      "method": "POST",
+      "path": "/admin/offboarding",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "principals — offboarding start",
+      "method": "POST",
+      "path": "/admin/offboarding",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "principals — offboarding progress",
+      "method": "GET",
+      "path": "/admin/offboarding/{job_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "principals — offboarding report",
+      "method": "GET",
+      "path": "/admin/offboarding/{job_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "content ratings — create",
+      "method": "POST",
+      "path": "/admin/content-ratings",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "content ratings — list",
+      "method": "GET",
+      "path": "/admin/content-ratings",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "content ratings — get (with effective guardrails and their sources)",
+      "method": "GET",
+      "path": "/admin/content-ratings/{rating_id}",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "content ratings — update (new version)",
+      "method": "PUT",
+      "path": "/admin/content-ratings/{rating_id}",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "content ratings — retire",
+      "method": "DELETE",
+      "path": "/admin/content-ratings/{rating_id}",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "per story — change the rating",
+      "method": "PUT",
+      "path": "/stories/{story_id}/content-rating",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "per story — tightening check progress and result",
+      "method": "GET",
+      "path": "/stories/{story_id}/content-rating/checks/{job_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "per catalog entry — rating suggestion (character)",
+      "method": "POST",
+      "path": "/catalog/characters/{character_id}/rating-suggestion",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "per catalog entry — rating suggestion (scenario)",
+      "method": "POST",
+      "path": "/catalog/scenarios/{scenario_id}/rating-suggestion",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "images — generate candidates for a catalog entry",
+      "method": "POST",
+      "path": "/catalog/{type}/{id}/images/generate",
+      "status": "not_yet",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — attach a candidate to the draft",
+      "method": "POST",
+      "path": "/catalog/{type}/{id}/images/candidates/{cid}/attach",
+      "status": "not_yet",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — build an image prompt without generating",
+      "method": "POST",
+      "path": "/image-prompts",
+      "status": "not_yet",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — request or upload a story image",
+      "method": "POST",
+      "path": "/stories/{id}/images",
+      "status": "not_yet",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — delete a story image",
+      "method": "DELETE",
+      "path": "/stories/{id}/images/{image_id}",
+      "status": "not_yet",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — read an image job",
+      "method": "GET",
+      "path": "/image-jobs/{job_id}",
+      "status": "not_yet",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — list a catalog job's candidates",
+      "method": "GET",
+      "path": "/catalog/{type}/{id}/images/candidates",
+      "status": "not_yet",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — preview a candidate (content)",
+      "method": "GET",
+      "path": "/catalog/{type}/{id}/images/candidates/{cid}/content",
+      "status": "not_yet",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — preview a candidate (signed URL)",
+      "method": "GET",
+      "path": "/catalog/{type}/{id}/images/candidates/{cid}/url",
+      "status": "not_yet",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — cancel an image job",
+      "method": "DELETE",
+      "path": "/image-jobs/{job_id}",
+      "status": "not_yet",
+      "milestone": "M8",
+      "note": "docs/02 §9 names no path for the cancel; this one is a placeholder for M8's plan"
+    },
+    {
+      "item": "operations — read status and stages by id",
+      "method": "GET",
+      "path": "/operations/{operation_id}",
+      "status": "present",
+      "milestone": "M2"
+    },
+    {
+      "item": "media delivery — byte-range reads",
+      "method": "GET",
+      "path": "/media/{media_id}/content",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "media delivery — signed URLs",
+      "method": "GET",
+      "path": "/media/{media_id}/url",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "media delivery — resumable uploads: open",
+      "method": "POST",
+      "path": "/media/uploads",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "media delivery — resumable uploads: status",
+      "method": "GET",
+      "path": "/media/uploads/{upload_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "media delivery — resumable uploads: part",
+      "method": "PUT",
+      "path": "/media/uploads/{upload_id}/parts/{n}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "media delivery — resumable uploads: complete",
+      "method": "POST",
+      "path": "/media/uploads/{upload_id}/complete",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "media delivery — resumable uploads: abort",
+      "method": "DELETE",
+      "path": "/media/uploads/{upload_id}",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "message feedback — rate",
+      "method": "PUT",
+      "path": "/stories/{story_id}/messages/{message_id}/feedback",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "message feedback — re-rate",
+      "method": "PUT",
+      "path": "/stories/{story_id}/messages/{message_id}/feedback",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "message feedback — retract",
+      "method": "DELETE",
+      "path": "/stories/{story_id}/messages/{message_id}/feedback",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "message feedback — read aggregates",
+      "method": "GET",
+      "path": "/feedback/aggregates",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "message feedback — review list (guardrail)",
+      "method": "GET",
+      "path": "/feedback/review/guardrail",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "message feedback — review list (memory)",
+      "method": "GET",
+      "path": "/feedback/review/memory",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "message feedback — export (under /admin)",
+      "method": "POST",
+      "path": "/admin/feedback/export",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "erasure — erase a subject (named by #128's AC; FR-ADMIN-6)",
+      "method": "POST",
+      "path": "/admin/erasure",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "erasure — status (named by #128's AC; FR-ADMIN-6)",
+      "method": "GET",
+      "path": "/admin/erasure/status",
+      "status": "present",
+      "milestone": "M3"
+    },
+    {
+      "item": "erasure — boundary (named by #128's AC; FR-ADMIN-6)",
+      "method": "GET",
+      "path": "/admin/erasure/boundary",
+      "status": "present",
+      "milestone": "M3"
+    }
+  ],
+  "extras": [
+    {
+      "method": "POST",
+      "path": "/catalog/characters/{character_id}/unarchive",
+      "why": "FR-CAT-3: archiving's undo"
+    },
+    {
+      "method": "POST",
+      "path": "/catalog/scenarios/{scenario_id}/unarchive",
+      "why": "FR-SCN-1: archiving's undo"
+    },
+    {
+      "method": "GET",
+      "path": "/media",
+      "why": "FR-MEDIA-1: the media list"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/characters",
+      "why": "FR-CAT-7: an ad-hoc character added to a running story (docs/02 §9)"
+    },
+    {
+      "method": "GET",
+      "path": "/engine-profiles/schema",
+      "why": "FR-PROF-1: the profile settings schema"
+    },
+    {
+      "method": "GET",
+      "path": "/engine-profiles/{profile_id}/versions",
+      "why": "FR-PROF-1: a profile's versions"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/relations",
+      "why": "FR-AUTH-6: a story's relations"
+    },
+    {
+      "method": "GET",
+      "path": "/catalog/characters/{character_id}/relations",
+      "why": "FR-AUTH-6: a character's relations"
+    },
+    {
+      "method": "GET",
+      "path": "/catalog/scenarios/{scenario_id}/relations",
+      "why": "FR-AUTH-6: a scenario's relations"
+    },
+    {
+      "method": "GET",
+      "path": "/personas/{persona_id}/relations",
+      "why": "FR-AUTH-6: a persona's relations"
+    },
+    {
+      "method": "GET",
+      "path": "/media/{media_id}/relations",
+      "why": "FR-AUTH-6: a media asset's relations"
+    },
+    {
+      "method": "GET",
+      "path": "/engine-profiles/{profile_id}/relations",
+      "why": "FR-AUTH-6: a profile's relations"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/messages/{message_id}/feedback",
+      "why": "FR-FB-1: the principal's own rating"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/erasure/reconcile",
+      "why": "FR-ADMIN-6: reconcile a restored backup (#125)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/feedback/exports",
+      "why": "FR-FB-4: the export log (#126)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/feedback/exports/{export_id}",
+      "why": "FR-FB-4: one export (#126)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/feedback/exports/{export_id}/content",
+      "why": "FR-FB-4: an export's file (#126)"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/feedback/exports/{export_id}",
+      "why": "FR-FB-4: delete an export's file (#126)"
+    }
+  ],
+  "outside": [
+    {
+      "method": "GET",
+      "path": "/health",
+      "requirement": "NFR-OPS-1"
+    },
+    {
+      "method": "GET",
+      "path": "/metrics",
+      "requirement": "FR-OBS-1"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/respond",
+      "requirement": "FR-RESP-1"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/ingest",
+      "requirement": "FR-API-1"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/history",
+      "requirement": "FR-STORE-25"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/truncate",
+      "requirement": "FR-STORE-14"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/untruncate",
+      "requirement": "FR-STORE-14"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/regenerate",
+      "requirement": "FR-RESP-9"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/variants",
+      "requirement": "FR-RESP-9"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/swap",
+      "requirement": "FR-RESP-9"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/fork",
+      "requirement": "FR-STORE-16"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/pinned-memories",
+      "requirement": "FR-LITE-3"
+    },
+    {
+      "method": "PUT",
+      "path": "/stories/{story_id}/pinned-memories",
+      "requirement": "FR-LITE-3"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/custom-instructions",
+      "requirement": "FR-LITE-3"
+    },
+    {
+      "method": "PUT",
+      "path": "/stories/{story_id}/custom-instructions",
+      "requirement": "FR-LITE-3"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/settings",
+      "requirement": "FR-ADMIN-1"
+    },
+    {
+      "method": "PATCH",
+      "path": "/stories/{story_id}/settings",
+      "requirement": "FR-ADMIN-1"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/config-changes",
+      "requirement": "FR-CONC-14"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/config-changes",
+      "requirement": "FR-CONC-14"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/settings",
+      "requirement": "FR-ADMIN-3"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/settings",
+      "requirement": "FR-ADMIN-3"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/rebuild",
+      "requirement": "FR-STORE-2"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/model-config",
+      "requirement": "FR-MODEL-1"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/model-config/{purpose}",
+      "requirement": "FR-MODEL-1"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/model-config/{purpose}",
+      "requirement": "FR-MODEL-1"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/model-config/{purpose}",
+      "requirement": "FR-MODEL-1"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/model-config/{purpose}/api-key",
+      "requirement": "FR-MODEL-1"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/model-config/{purpose}/api-key",
+      "requirement": "FR-MODEL-1"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/policies",
+      "requirement": "FR-GUARD-1"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/policies",
+      "requirement": "FR-GUARD-1"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/policies/{policy_id}",
+      "requirement": "FR-GUARD-1"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/policies/{policy_id}",
+      "requirement": "FR-GUARD-1"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/policies/{policy_id}",
+      "requirement": "FR-GUARD-1"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/content-ratings/{rating_id}/versions",
+      "requirement": "FR-RATE-1"
+    }
+  ]
+}

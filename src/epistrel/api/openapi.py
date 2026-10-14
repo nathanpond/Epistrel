@@ -7,7 +7,7 @@ at ``/openapi.json``. ``epistrel.tools.openapi`` writes the same document to
 
 What ``build`` adds or changes:
 
-- OpenAPI 3.1, ``info.version`` fixed at the milestone (``"m2"``, not the package version, so a
+- OpenAPI 3.1, ``info.version`` fixed at the milestone (``"m3"``, not the package version, so a
   release does not churn the file), no ``servers``.
 - FastAPI's default validation components (``HTTPValidationError``, ``ValidationError``) are
   removed: every error answers the one envelope (``Error``), and each operation declares the
@@ -64,7 +64,7 @@ from epistrel.core.media.assets import POSTER_FILE_FIELD, MediaUpload
 from epistrel.core.ownership import REGISTRY
 from epistrel.core.stories import StorySpec
 
-SCHEMA_VERSION = "m2"
+SCHEMA_VERSION = "m3"
 """``info.version``: the milestone whose contract the document describes."""
 OPENAPI_VERSION = "3.1.0"
 TITLE = "Epistrel Engine"

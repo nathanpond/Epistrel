@@ -1,6 +1,8 @@
 """C-02: the interface surface (docs/04), M2 part: every operation is reachable over REST and the
 in-process library; the operator endpoints delivered so far are served under ``/admin``; no MCP
-server is exposed (#73, re-running #44's assertions against the full app)."""
+server is exposed (#73, re-running #44's assertions against the full app). M3 part
+(``test_c_02__admin_prefix``, #128): M3's operator endpoints (offboarding, erasure, feedback
+export) are under ``/admin`` and matched by #44's operator patterns."""
 
 from __future__ import annotations
 
@@ -38,6 +40,22 @@ DELIVERED_OPERATOR_PATHS = (
 content-rating definitions, deployment settings (with their change log) and the projection
 rebuild. Retention is a deployment setting (`audit_retention_days`, `job_retention_days`) and has
 no endpoint of its own in M2."""
+
+
+M3_OPERATOR_PATHS = (
+    "/admin/offboarding",
+    "/admin/offboarding/{job_id}",
+    "/admin/erasure",
+    "/admin/erasure/status",
+    "/admin/erasure/boundary",
+    "/admin/erasure/reconcile",
+    "/admin/feedback/export",
+    "/admin/feedback/exports",
+    "/admin/feedback/exports/{export_id}",
+    "/admin/feedback/exports/{export_id}/content",
+)
+"""docs/04 C-02 [M3]'s operator endpoints: principal offboarding (#117), erasure (#124, #125) and
+the feedback export (#126)."""
 
 
 def full_app(dsn: str) -> FastAPI:
@@ -154,4 +172,23 @@ def test_c_02_worker_mode_serves_only_public_routes(dummy_dsn: str) -> None:
     app = create_app(auth_settings(dummy_dsn, mode="worker"))
     served_paths = {(m, p) for m, p, _ in served(app) if m != "HEAD"}
     assert served_paths <= EXEMPT_ROUTES
+    assert unguarded_routes(app) == []
+
+
+@pytest.mark.part("M3", "FR-API-1; FR-AUTH-1")
+def test_c_02__admin_prefix(dummy_dsn: str) -> None:
+    """M3's operator endpoints are served under ``/admin``, each matched by the operator
+    patterns, and nothing operator-shaped is served outside ``/admin`` (C-02's assertion re-run
+    over the M3 app).
+
+    Complement asserted: the same paths outside ``/admin`` would be reported as misplaced."""
+    app = full_app(dummy_dsn)
+    paths = {path for _, path, _ in served(app)}
+    assert set(M3_OPERATOR_PATHS) <= paths
+    assert all(path.startswith(f"{ADMIN_PREFIX}/") for path in M3_OPERATOR_PATHS)
+    assert [path for path in M3_OPERATOR_PATHS if not is_operator_path(path)] == []
+    misplaced = [p for p in paths if is_operator_path(p) and not p.startswith(ADMIN_PREFIX)]
+    assert misplaced == []
+    outside = [path.removeprefix(ADMIN_PREFIX) for path in M3_OPERATOR_PATHS]
+    assert [path for path in outside if not is_operator_path(path)] == []
     assert unguarded_routes(app) == []

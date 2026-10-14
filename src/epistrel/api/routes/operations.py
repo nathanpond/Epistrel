@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep, OperationId
 from epistrel.core.genesis.models import CreationReport
-from epistrel.core.operation_view import OperationView
+from epistrel.core.operation_view import OperationLabel, OperationView, Stage, StageStatus
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 
@@ -28,6 +28,15 @@ OPERATION_DESCRIPTION = (
     "call). A story's `genesis` operation from a scenario carries its full `creation_report` "
     "(every entry, deferred item and inactive setting) to a read with `?viewpoint=omniscient` "
     "only; otherwise it is null."
+    "\n\nA long-running operation names what it was for in `label` and lists its `stages`, "
+    "each `{name, status, at}` with `status` one of `pending`, `running`, `done`, `failed`, "
+    "`skipped` (or `partial`, for an erasure's summary regeneration that rewrote only some "
+    "windows) and `at` null while pending: a story's `genesis` (`validated`, `snapshotted`, "
+    "`skipped` for a blank story, `materialized`); a rating change's `rating_check` or an edit's "
+    "`reactivation_check` (`checking`, then `applied`/`reactivated` or `refused`); an "
+    "`offboarding` (one stage per entity type, in processing order); and an `erasure` "
+    "(`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last "
+    "two). Every other operation has a null `label` and no stages."
     "\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored "
     "response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an "
     "output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another "
@@ -43,11 +52,24 @@ class StoredResultBody(BaseModel):
     body: Any
 
 
+class StageBody(BaseModel):
+    """One stage of a long-running operation: its name, where it is, and when it got there
+    (null while pending)."""
+
+    name: str
+    status: StageStatus
+    at: datetime | None
+
+    @classmethod
+    def of(cls, stage: Stage) -> StageBody:
+        return cls(name=stage.name, status=stage.status, at=stage.at)
+
+
 class OperationBody(BaseModel):
     """One operation: kind, status, position, revision, attribution, timestamps, attempts,
     configuration revisions, origin, a turn's queue wait and first-call delay, a genesis
-    operation's creation report (omniscient reads only) and, within the result window, its
-    stored result."""
+    operation's creation report (omniscient reads only), a long-running operation's label and
+    stages and, within the result window, its stored result."""
 
     id: str
     story_id: str | None
@@ -69,6 +91,8 @@ class OperationBody(BaseModel):
     queued_ms: int | None = None
     first_call_offset_ms: int | None = None
     creation_report: CreationReport | None = None
+    label: OperationLabel | None = None
+    stages: list[StageBody] = []
 
     @classmethod
     def of(cls, view: OperationView) -> OperationBody:
@@ -94,6 +118,8 @@ class OperationBody(BaseModel):
             creation_report=None
             if view.creation_report is None
             else CreationReport.model_validate(view.creation_report),
+            label=view.label,
+            stages=[StageBody.of(stage) for stage in view.stages],
             result=(
                 StoredResultBody(status=view.result.status, body=view.result.body)
                 if view.result is not None

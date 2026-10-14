@@ -9899,7 +9899,7 @@
         "type": "object"
       },
       "OperationBody": {
-        "description": "One operation: kind, status, position, revision, attribution, timestamps, attempts,\nconfiguration revisions, origin, a turn's queue wait and first-call delay, a genesis\noperation's creation report (omniscient reads only) and, within the result window, its\nstored result.",
+        "description": "One operation: kind, status, position, revision, attribution, timestamps, attempts,\nconfiguration revisions, origin, a turn's queue wait and first-call delay, a genesis\noperation's creation report (omniscient reads only), a long-running operation's label and\nstages and, within the result window, its stored result.",
         "properties": {
           "attempts": {
             "items": {
@@ -9987,6 +9987,16 @@
             "title": "Kind",
             "type": "string"
           },
+          "label": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OperationLabel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "narrative_turn": {
             "anyOf": [
               {
@@ -10026,6 +10036,14 @@
                 "type": "null"
               }
             ]
+          },
+          "stages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/StageBody"
+            },
+            "title": "Stages",
+            "type": "array"
           },
           "started_at": {
             "format": "date-time",
@@ -10101,6 +10119,18 @@
         ],
         "title": "OperationBody",
         "type": "object"
+      },
+      "OperationLabel": {
+        "description": "What a long-running operation was for (its ``kind`` alone does not say).",
+        "enum": [
+          "genesis",
+          "rating_check",
+          "reactivation_check",
+          "offboarding",
+          "erasure"
+        ],
+        "title": "OperationLabel",
+        "type": "string"
       },
       "Outcome": {
         "description": "What happened to the item an entry names (FR-SCN-5): ``ignored`` (kept only as guidance\nthat yields), ``dropped``, ``kept``, ``deferred`` (kept until the story has the capability it\nneeds, FR-SCN-11), ``inactive`` (a stored setting for a capability the story lacks), or\n``rejected`` (an error: the entry cannot be published or used as it stands).",
@@ -19951,6 +19981,50 @@
         "title": "Sources",
         "type": "object"
       },
+      "StageBody": {
+        "description": "One stage of a long-running operation: its name, where it is, and when it got there\n(null while pending).",
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StageStatus"
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "at"
+        ],
+        "title": "StageBody",
+        "type": "object"
+      },
+      "StageStatus": {
+        "description": "Where one stage of a long-running operation is.",
+        "enum": [
+          "pending",
+          "running",
+          "done",
+          "failed",
+          "skipped",
+          "partial"
+        ],
+        "title": "StageStatus",
+        "type": "string"
+      },
       "StatusBody": {
         "description": "The story's status after an archive or unarchive, with its revision.",
         "properties": {
@@ -22830,7 +22904,7 @@
   "info": {
     "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
     "title": "Epistrel Engine",
-    "version": "m2"
+    "version": "m3"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -36974,7 +37048,7 @@
     },
     "/operations/{operation_id}": {
       "get": {
-        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when it was not queued) and `first_call_offset_ms` (from reaching the front to its first model call). A story's `genesis` operation from a scenario carries its full `creation_report` (every entry, deferred item and inactive setting) to a read with `?viewpoint=omniscient` only; otherwise it is null.\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
+        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when it was not queued) and `first_call_offset_ms` (from reaching the front to its first model call). A story's `genesis` operation from a scenario carries its full `creation_report` (every entry, deferred item and inactive setting) to a read with `?viewpoint=omniscient` only; otherwise it is null.\n\nA long-running operation names what it was for in `label` and lists its `stages`, each `{name, status, at}` with `status` one of `pending`, `running`, `done`, `failed`, `skipped` (or `partial`, for an erasure's summary regeneration that rewrote only some windows) and `at` null while pending: a story's `genesis` (`validated`, `snapshotted`, `skipped` for a blank story, `materialized`); a rating change's `rating_check` or an edit's `reactivation_check` (`checking`, then `applied`/`reactivated` or `refused`); an `offboarding` (one stage per entity type, in processing order); and an `erasure` (`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last two). Every other operation has a null `label` and no stages.\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
         "operationId": "get_operation",
         "parameters": [
           {

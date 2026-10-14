@@ -449,8 +449,8 @@ def schema_problems(schema: dict[str, Any], app: FastAPI) -> list[str]:
     problems: list[str] = []
     if schema.get("openapi") != "3.1.0":
         problems.append(f"openapi {schema.get('openapi')}")
-    if schema["info"].get("version") != "m2" or "servers" in schema:
-        problems.append("info.version must be m2 and there must be no servers")
+    if schema["info"].get("version") != "m3" or "servers" in schema:
+        problems.append("info.version must be m3 and there must be no servers")
     components = _components(schema)
     for name in ("HTTPValidationError", "ValidationError"):
         if name in components:

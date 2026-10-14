@@ -14,6 +14,7 @@ from epistrel.core.config_changes import ConfigChangePage
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.profiles.store import PROFILE_FAMILY
 from epistrel.core.profiles.story import ASSIGNMENT_SETTING, OVERRIDES_SETTING
+from epistrel.core.ratings.change import RATING_SETTING
 from epistrel.core.settings_schema import (
     PROFILE_DEFAULTS,
     SUPERSEDED_DEPLOYMENT_SETTINGS,
@@ -109,14 +110,15 @@ StorySettingFilter = _setting_filter(
     ("policy",),
     (
         ASSIGNMENT_SETTING,
+        RATING_SETTING,
         *_setting_names(ProfileSettings, f"{OVERRIDES_SETTING}."),
         *_superseded_names(SUPERSEDED_STORY_SETTINGS, "generation_settings"),
     ),
 )
 """A story-scope ``setting`` filter: a story setting, its engine profile's assignment
-(``engine_profile_id``) or one of its overrides (``profile_overrides.<path>``; #113), or the
-story's policy rows. M2's names of the dials #113 moved stay filterable: rows written before
-the move keep them."""
+(``engine_profile_id``) or one of its overrides (``profile_overrides.<path>``; #113), its
+rating (``content_rating_id``; #118), or the story's policy rows. M2's names of the dials
+#113 moved stay filterable: rows written before the move keep them."""
 
 
 class ConfigChangeItem(BaseModel):

@@ -245,6 +245,24 @@ class StoryArchived(EpistrelError):
     http_status = 409
 
 
+class StoryPaused(EpistrelError):
+    """The story is paused while a check runs (FR-CONC-5, FR-RATE-7; #118): truth-changing
+    calls are refused with no side effects, and reads are served. The pause ends when the check
+    ends, whatever its outcome. ``details``: ``story_id``, ``job_id`` (the check), ``cause``
+    (``rating_check``; #120 adds ``reactivation_check``) and ``progress {done, total}``."""
+
+    code = "story_paused"
+    http_status = 409
+
+
+class RatingCheckNotFound(EpistrelError):
+    """The rating check a call names is not one of the story's (or its record was purged).
+    ``details``: ``story_id`` and ``job_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
 class StoryBusy(EpistrelError):
     """The story has work in flight that the call would race (#50: archive, unarchive and
     delete wait for a running turn; #63: a second turn under ``turn_concurrency = reject``, or

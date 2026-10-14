@@ -13,7 +13,9 @@ FR-CONC-6, NFR-REL-5; #71).
   until the story is deleted.
 - finished (``done``/``failed``) ``jobs`` rows not updated for ``job_retention_days`` (7).
 - finished principal offboardings (``offboarding_jobs``, #117) that ended more than
-  ``offboarding_report_retention_days`` (90) ago: their status and report.
+  ``offboarding_report_retention_days`` (90) ago: their status and report;
+- finished rating checks (``rating_check_jobs``, #118) that ended more than
+  ``rating_check_retention_days`` (30) ago: their status and violations.
 - deleted engine profiles that no story uses any more (FR-PROF-1; #106): each is purged with
   its versions and its relations, its ownership ``deleted`` event recorded by ``system``
   (``core.profiles.store.purge_deleted``). A deleted profile a story still uses is kept, and
@@ -70,6 +72,7 @@ from epistrel.core.config_changes import read_section
 from epistrel.core.enums import EventCategory, OperationStatus
 from epistrel.core.idempotency import KeyStatus, purge_expired, read_idempotency_settings
 from epistrel.core.profiles import store as profiles
+from epistrel.core.ratings import change as rating_change
 from epistrel.core.settings_schema import STORY_LIFETIME, FeedbackSettings, RetentionSettings
 from epistrel.core.tables import audit_log, events, idempotency_keys, jobs, operations, stories
 from epistrel.core.tables.events import ALLOW_AUDIT_EXPIRY_GUC
@@ -187,6 +190,18 @@ async def _chunked(db: AsyncEngine, table: Any, ids_query: Any, *, audit: bool) 
     return deleted
 
 
+async def _purge_rating_checks(db: AsyncEngine, before: datetime) -> int:
+    """Finished rating checks (#118) older than ``rating_check_retention_days``."""
+    deleted = 0
+    for _ in range(MAX_CHUNKS):
+        async with db.begin() as conn:
+            found = await rating_change.purge_finished(conn, before, CHUNK)
+        deleted += found
+        if found < CHUNK:
+            break
+    return deleted
+
+
 async def _purge_offboarding(db: AsyncEngine, before: datetime) -> int:
     """Finished offboardings (#117) older than ``offboarding_report_retention_days``."""
     deleted = 0
@@ -218,6 +233,9 @@ async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[
         "engine_profiles": await profiles.purge_deleted(db),
         "offboarding_jobs": await _purge_offboarding(
             db, moment - timedelta(days=settings.offboarding_report_retention_days)
+        ),
+        "rating_check_jobs": await _purge_rating_checks(
+            db, moment - timedelta(days=settings.rating_check_retention_days)
         ),
         **await _expire_feedback(db, moment),
     }

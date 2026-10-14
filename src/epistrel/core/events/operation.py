@@ -58,6 +58,7 @@ from sqlalchemy.orm import aliased
 from epistrel.core import (
     config_dependencies,
     idempotency,
+    pause,
     projections,
     summary_port,
     turn_gate,
@@ -92,6 +93,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
+from epistrel.core.ratings.stamp import guardrail_stamp
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import events, operations, stories, turn_queue
 from epistrel.observability import context as telemetry
@@ -384,6 +386,10 @@ class Operation:
         ).one_or_none()
         if found is not None:
             self._refuse_archived(found.status)
+            if self.bumps_revision:
+                # A paused story (#118) refuses new truth-changing work; work that began before
+                # the pause still commits (no check at commit).
+                await pause.refuse(conn, self.story_id, found.status)
             self.base_revision = int(found.timeline_revision)
             self.story_settings = StorySettings.from_row(found.settings)
             self.config_revisions = await config_dependencies.capture(
@@ -624,6 +630,13 @@ class Operation:
         for step in self._commit_steps:
             await step(conn)
         await self._finalise(conn, advance, current_revision)
+        if self.story_id is not None and self.kind is OperationKind.TURN:
+            # The guardrail set the turn variant passed (FR-RATE-7, #118), in force now.
+            await conn.execute(
+                update(operations)
+                .where(operations.c.operation_id == self.operation_id)
+                .values(checked_guardrails=await guardrail_stamp(conn, self.story_id))
+            )
         if self.story_id is not None and (
             self.kind is OperationKind.TURN or self.control_action or self._commit_steps
         ):

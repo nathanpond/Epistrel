@@ -37,9 +37,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core.ids import CROCKFORD, ULID_LENGTH
 
 OPERATIONAL_TABLES = frozenset(
-    {"jobs", "timers", "recurring_tasks", "worker_heartbeats", "turn_queue", "idempotency_keys"}
+    {
+        "jobs",
+        "timers",
+        "recurring_tasks",
+        "worker_heartbeats",
+        "turn_queue",
+        "idempotency_keys",
+        "rating_check_jobs",
+        "guardrail_check_results",
+    }
 )
-"""Excluded: background work, timers, heartbeats, the turn queue and idempotency bookkeeping."""
+"""Excluded: background work, timers, heartbeats, the turn queue and idempotency bookkeeping,
+and a rating change's check and its verdict cache (#118)."""
 
 VOLATILE_KEYS = frozenset(
     {"elapsed_ms", "latency_ms", "queued_ms", "first_call_offset_ms", "worker_id", "attempt"}

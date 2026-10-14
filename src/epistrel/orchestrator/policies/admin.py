@@ -31,6 +31,7 @@ from typing import Any
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import pause
 from epistrel.core.config_changes import (
     RETIRED,
     ConfigScope,
@@ -452,6 +453,7 @@ async def set_story_policies(
             raise StoryArchived(
                 f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
             )
+        await pause.refuse(conn, story_id, story.status)
         revision = int(story.config_revision) + 1
         written: list[Policy] = []
         changes: list[tuple[str, Any, Any]] = []

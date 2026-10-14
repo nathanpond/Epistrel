@@ -76,7 +76,11 @@ async def read_settings(ctx: ContextDep, engine: EngineDep) -> SettingsBody:
         "`feedback_tag_in_use` (`details.in_use`: each tag with its `current` and `history` "
         "counts). `feedback_text_max_chars` (1 to 20000, default 2000) caps a rating's free "
         "text, and `feedback_retention` keeps ratings for the story's life (`story_lifetime`, "
-        "the default) or a number of days (1 to 3650)."
+        "the default) or a number of days (1 to 3650). `rating_check_model_calls_per_record` "
+        "(0 to 100, default 2) is how many model calls a rating tightening's history check may "
+        "spend on one record's model-assisted policies (one it cannot afford follows its "
+        "`on_uncertain`), and `rating_check_retention_days` (1 to 3650, default 30) how long a "
+        "finished check is kept."
     ),
 )
 async def update_settings(

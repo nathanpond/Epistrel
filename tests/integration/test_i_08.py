@@ -142,11 +142,18 @@ async def _seed(url: str) -> tuple[str, Snapshot, list[tuple[Any, ...]]]:
         await engine.dispose()
 
 
+DROPPED_BELOW_0019 = ("checked_guardrails",)
+"""``operations`` columns a later revision adds, which the downgrade below ``0019`` drops with
+it: #118's guardrail stamp (``0035``), a record of the checks a turn passed, not of the log."""
+
+
 async def _log(engine: AsyncEngine, story: str) -> list[tuple[Any, ...]]:
+    dropped = " - ".join(f"'{c}'" for c in DROPPED_BELOW_0019)
     async with engine.connect() as conn:
         found = await conn.execute(
             text(
-                "SELECT 'o', o::text FROM operations o WHERE story_id = :s "
+                f"SELECT 'o', (to_jsonb(o) - {dropped})::text FROM operations o "  # noqa: S608
+                "WHERE story_id = :s "
                 "UNION ALL SELECT 'e', e::text FROM events e WHERE story_id = :s ORDER BY 1, 2"
             ),
             {"s": story},

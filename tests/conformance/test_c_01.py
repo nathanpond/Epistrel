@@ -45,7 +45,10 @@ operation; each makes a new catalog draft, and generated characters added to the
 fill its cast up to its cap, after which an addition answers a documented 422. The fixture
 offboarding (#117) offboards a principal that owns nothing, so its job's progress and report
 read; a generated offboarding of a principal with one queued answers a documented 409, and the
-principal lookup is generated against the fixture author.
+principal lookup is generated against the fixture author. ``set_content_rating`` (#118) is
+excluded: a generated tightening would pause the fixture story for every later example (no
+worker runs its check); C-03 and its own tests cover it. A generated rating check read names
+the fixture offboarding's job, which is no check of the story: a documented 404.
 """
 
 from __future__ import annotations
@@ -129,6 +132,7 @@ EXCLUDED = (
     "delete_character",
     "delete_scenario",
     "delete_persona",
+    "set_content_rating",
     "set_model_api_key",
     "remove_model_api_key",
     "upload_media",

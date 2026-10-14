@@ -41,6 +41,7 @@ MUTABLE_OPERATION_COLUMNS: tuple[str, ...] = (
     "error_code",
     "error",
     "parent_variant",
+    "checked_guardrails",
 )
 """The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list)."""
 
@@ -99,6 +100,11 @@ operations = Table(
     # ``{status, message, details}`` so the waiter answers with the same error.
     Column("error_code", Text, nullable=True),
     Column("error", JSONB, nullable=True),
+    # The effective guardrail set a turn variant last passed (FR-RATE-7; #118): ``{rating_id,
+    # rating_version_id, global, rating, story, character}``, each ``{policy id: version}``.
+    # Stamped when the turn commits and restamped when a tightening of the story's rating
+    # applies; #120's reactivation check reads it.
+    Column("checked_guardrails", JSONB, nullable=True),
     CheckConstraint(ORIGIN_CHECK, name="origin"),
     CheckConstraint(
         "kind <> 'turn' OR status <> 'committed' OR narrative_turn IS NOT NULL",

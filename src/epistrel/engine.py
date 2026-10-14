@@ -84,6 +84,7 @@ from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
+from epistrel.core.ratings import change as rating_change
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
@@ -103,6 +104,7 @@ from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
+from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
 from epistrel.orchestrator.jobs.handlers.rebuild import (
     REBUILD_KIND,
@@ -166,6 +168,12 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "set_custom_instructions": ResultCodec.of(story_texts.CustomInstructions),
     "update_story_settings": ResultCodec.of(
         settings_store.StorySettingsWrite, revision_field=_CONFIG
+    ),
+    # A story's rating (#118): relaxing applies (200); tightening starts its check (202).
+    "set_content_rating": ResultCodec.of(
+        rating_change.RatingChange,
+        status=lambda result: 202 if isinstance(result, rating_change.RatingCheckStarted) else 200,
+        revision_field=_CONFIG,
     ),
     "truncate": ResultCodec.of(timeline.Truncation),
     "untruncate": ResultCodec.of(timeline.Untruncation),
@@ -485,6 +493,7 @@ class Engine:
         mode = mode or self.settings.mode
         turn_queue_job.bind(self.drainer.recover)
         lite_summary_job.bind(self.models)
+        rating_check_job.bind(self.models)
         media_sweep_job.bind(self.media)
         if mode == "api":
             self._recovery = asyncio.create_task(self._recover())
@@ -523,6 +532,8 @@ class Engine:
             turn_queue_job.bind(None)
         if lite_summary_job.bound() is self.models:
             lite_summary_job.bind(None)
+        if rating_check_job.bound() is self.models:
+            rating_check_job.bind(None)
         if media_sweep_job.bound() is self.media:
             media_sweep_job.bind(None)
         await self.drainer.stop()
@@ -1266,6 +1277,49 @@ class Engine:
         return await self._keyed(
             ctx, "update_story_settings", run, story_id=story_id, material=material
         )
+
+    # -- a story's rating (FR-RATE-6,7; #118) ---------------------------------------------------
+
+    async def set_content_rating(
+        self, ctx: RequestContext, story_id: str, request: rating_change.RatingChangeRequest
+    ) -> rating_change.RatingChange:
+        """Change the story's content rating. A target whose effective guardrails are a subset
+        of the current rating's (relaxing, FR-RATE-6) applies at once as an interpretive
+        configuration change (``RatingApplied``; naming the current rating changes nothing).
+        Any other target (tightening, FR-RATE-7) pauses the story and starts a background
+        check of its whole active history against the target's effective policies
+        (``RatingCheckStarted``, REST 202): read it with ``get_rating_check``; the story
+        resumes when it ends, with the target rating only if every record passed. 404, 409
+        ``story_archived`` / ``story_paused`` / ``revision_conflict``, 422 ``rating_retired``."""
+        principal = self.require_principal(ctx)
+
+        async def start_job(conn: Any) -> str:
+            return await job_queue.enqueue(
+                conn, rating_check_job.RATING_CHECK_KIND, rating_check_job.RatingCheckPayload()
+            )
+
+        async def run(ctx: RequestContext) -> rating_change.RatingChange:
+            await self.check_expected_revision(ctx, story_id)
+            return await rating_change.change_rating(
+                self.db, story_id, request, principal=principal, start_job=start_job
+            )
+
+        return await self._keyed(
+            ctx,
+            "set_content_rating",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def get_rating_check(
+        self, ctx: RequestContext, story_id: str, job_id: str
+    ) -> rating_change.RatingCheckView:
+        """A tightening's check (FR-RATE-7): its status (``checking``, ``applied``,
+        ``refused``, ``failed``), progress, who started it and the target; once refused, every
+        violation by position and policy (never the text). 404 for an unknown story or a job
+        that is not one of its checks."""
+        return await rating_change.get_check(self.db, story_id, job_id)
 
     async def get_story(
         self, ctx: RequestContext, story_id: str, *, viewpoint: str | None = None

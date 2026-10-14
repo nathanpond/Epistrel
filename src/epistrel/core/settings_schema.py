@@ -363,16 +363,29 @@ DEFAULT_SAFE_FALLBACK = "{name} changes the subject."
 SAFE_FALLBACK_MAX_CHARS = 500
 
 
+DEFAULT_RATING_CHECK_MODEL_CALLS = 2
+"""Model calls a rating tightening's history check may spend per record (#118)."""
+RATING_CHECK_MODEL_CALLS_MAX = 100
+
+
 class GuardrailSettings(BaseModel):
     """The deployment's safe fallback line, stored under ``deployment_state.settings`` (#68):
     what a character says when every regenerated reply broke an output policy and it has no
     ``safe_fallback_text`` of its own. ``{name}`` becomes the first render character's name.
-    Prospective: a turn uses the line in force when it started."""
+    Prospective: a turn uses the line in force when it started.
+
+    ``rating_check_model_calls_per_record`` (#118): how many ``guardrail_check`` calls a
+    tightening's history check may spend on one record's model-assisted policies, outside any
+    turn budget (FR-RATE-7); a policy it cannot afford follows its ``on_uncertain``.
+    Prospective: a check reads the value when it runs."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     default_safe_fallback: Annotated[str, PROSPECTIVE] = Field(
         default=DEFAULT_SAFE_FALLBACK, min_length=1, max_length=SAFE_FALLBACK_MAX_CHARS
+    )
+    rating_check_model_calls_per_record: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_RATING_CHECK_MODEL_CALLS, ge=0, le=RATING_CHECK_MODEL_CALLS_MAX
     )
 
 
@@ -385,6 +398,8 @@ DEFAULT_TIMER_LAG_ALERT_S = 300.0
 
 DEFAULT_OFFBOARDING_REPORT_RETENTION_DAYS = 90
 """How long a finished offboarding's report is kept (#117)."""
+DEFAULT_RATING_CHECK_RETENTION_DAYS = 30
+"""How long a finished rating check's status and violations are kept (#118)."""
 
 
 class RetentionSettings(BaseModel):
@@ -393,8 +408,9 @@ class RetentionSettings(BaseModel):
     ``audit_retention_days`` (a story's own value overrides it for that story's records), and
     finished (``done``/``failed``) job rows for ``job_retention_days``, and a finished principal
     offboarding's status and report (``offboarding_jobs``, #117) for
-    ``offboarding_report_retention_days``. Prospective: each sweep applies the values in force
-    when it runs; story history never expires."""
+    ``offboarding_report_retention_days``, and a finished rating check's status and violations
+    (``rating_check_jobs``, #118) for ``rating_check_retention_days``. Prospective: each sweep
+    applies the values in force when it runs; story history never expires."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -408,6 +424,9 @@ class RetentionSettings(BaseModel):
     )
     offboarding_report_retention_days: Annotated[int, PROSPECTIVE] = Field(
         default=DEFAULT_OFFBOARDING_REPORT_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
+    )
+    rating_check_retention_days: Annotated[int, PROSPECTIVE] = Field(
+        default=DEFAULT_RATING_CHECK_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
 
 

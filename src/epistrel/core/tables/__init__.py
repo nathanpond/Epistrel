@@ -39,6 +39,7 @@ from epistrel.core.tables.projections import (
     story_texts,
     transcript_messages,
 )
+from epistrel.core.tables.rating_checks import guardrail_check_results, rating_check_jobs
 from epistrel.core.tables.ratings import content_rating_versions, content_ratings
 from epistrel.core.tables.stories import stories
 from epistrel.core.tables.timers import recurring_tasks, timers, worker_heartbeats
@@ -59,6 +60,7 @@ __all__ = [
     "engine_profiles",
     "entity_relations",
     "events",
+    "guardrail_check_results",
     "idempotency_keys",
     "jobs",
     "lite_summary_segments",
@@ -70,6 +72,7 @@ __all__ = [
     "ownership_events",
     "personas",
     "policies",
+    "rating_check_jobs",
     "recurring_tasks",
     "scenario_catalog",
     "scenario_versions",

@@ -60,6 +60,27 @@ class StoryUnarchivedEvent(EventPayload):
     """The story is writable again (#50)."""
 
 
+@register("story_paused", category=EventCategory.CONTROL)
+class StoryPausedEvent(EventPayload):
+    """The story is paused while a check runs (FR-RATE-7; #118): ``job_id`` names the check,
+    ``cause`` why (``rating_check``), and ``target_rating_id`` the rating a tightening asks
+    for. A control event with no revision bump; truth-changing calls answer ``story_paused``
+    until the matching ``story_resumed``."""
+
+    job_id: str
+    cause: str
+    target_rating_id: str | None = None
+
+
+@register("story_resumed", category=EventCategory.CONTROL)
+class StoryResumedEvent(EventPayload):
+    """The check that paused the story ended (#118): ``outcome`` is ``applied``, ``refused``
+    or ``failed``. Never names a violating text."""
+
+    job_id: str
+    outcome: str
+
+
 @register("story_deleted", category=EventCategory.AUDIT)
 class StoryDeletedEvent(EventPayload):
     """A story was deleted (#50): written by a story-less operation, so it outlives the story;

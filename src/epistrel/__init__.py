@@ -139,6 +139,7 @@ if TYPE_CHECKING:
         ProfileNotFound,
         PublishInvalid,
         RangeNotSatisfiable,
+        RatingCheckNotFound,
         RatingNotFound,
         RatingRetired,
         RelationNotFound,
@@ -150,6 +151,7 @@ if TYPE_CHECKING:
         StoryBusy,
         StoryCharacterNotFound,
         StoryNotFound,
+        StoryPaused,
         SubjectsRequired,
         TimelineChanged,
         UnknownChain,
@@ -229,6 +231,12 @@ if TYPE_CHECKING:
     from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
     from epistrel.core.profiles.validate import ProfileValidation
     from epistrel.core.ratings import RatingFields, RatingReplacement
+    from epistrel.core.ratings.change import (
+        RatingApplied,
+        RatingChangeRequest,
+        RatingCheckStarted,
+        RatingCheckView,
+    )
     from epistrel.core.stories import (
         AdHocCharacter,
         CharacterSpec,
@@ -462,6 +470,12 @@ _EXPORTS: dict[str, str] = {
     "ScenarioNotFound": "epistrel.core.errors",
     "SigningKeyMissing": "epistrel.core.errors",
     "StoryArchived": "epistrel.core.errors",
+    "StoryPaused": "epistrel.core.errors",
+    "RatingCheckNotFound": "epistrel.core.errors",
+    "RatingChangeRequest": "epistrel.core.ratings.change",
+    "RatingApplied": "epistrel.core.ratings.change",
+    "RatingCheckStarted": "epistrel.core.ratings.change",
+    "RatingCheckView": "epistrel.core.ratings.change",
     "StoryBusy": "epistrel.core.errors",
     "StoryNotFound": "epistrel.core.errors",
     "SubjectsRequired": "epistrel.core.errors",
@@ -659,6 +673,11 @@ __all__ = [
     "Published",
     "QualityStatus",
     "RangeNotSatisfiable",
+    "RatingApplied",
+    "RatingChangeRequest",
+    "RatingCheckNotFound",
+    "RatingCheckStarted",
+    "RatingCheckView",
     "RatingFields",
     "RatingNotFound",
     "RatingReplacement",
@@ -695,6 +714,7 @@ __all__ = [
     "StoryCharacterAdded",
     "StoryCharacterNotFound",
     "StoryNotFound",
+    "StoryPaused",
     "StoryPolicyItem",
     "StorySpec",
     "StoryView",

@@ -25,6 +25,7 @@ from epistrel.api.routes import (
     respond,
     stories,
     story_profile,
+    story_rating,
     story_texts,
     timeline,
 )
@@ -48,6 +49,7 @@ router.include_router(engine_profiles.router)
 router.include_router(personas.router)
 router.include_router(principals.router)
 router.include_router(story_profile.router)
+router.include_router(story_rating.router)
 router.include_router(feedback.router)
 router.include_router(admin.router)
 

@@ -96,6 +96,11 @@ from epistrel.api.routes.stories import (
     StorySettingsWriteBody,
 )
 from epistrel.api.routes.story_profile import StoryProfileWriteBody
+from epistrel.api.routes.story_rating import (
+    RatingAppliedBody,
+    RatingCheckBody,
+    RatingCheckStartedBody,
+)
 from epistrel.api.routes.story_texts import (
     CustomInstructionsBody,
     CustomInstructionsWritten,
@@ -140,8 +145,9 @@ from epistrel.core.profiles.impact import ImpactPreviewRequest
 from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpdate, ProfileValidate
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.ratings import RatingFields, RatingReplacement
+from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
-from epistrel.core.seeds.ratings import EVERYONE_ID
+from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
 from epistrel.core.stories import AdHocCharacter, StorySpec
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
 from epistrel.core.tables.ownership import EntityType
@@ -517,6 +523,8 @@ PLAYER_ANSWERS = [
 """What the persona steps (#114) answer on both surfaces: a player's persona saved, read,
 listed by owner, edited, refused a second time under its name (409 ``persona_name_taken``),
 transferred, related, its relations listed, and deleted."""
+UNKNOWN_JOB = "01J9Z8Q4N5V6W7X8Y9Z0A1B2D1"
+"""A job id that names no rating check of the story (#118): 404 on both surfaces."""
 PLAYER_GROUP = "player"
 """The ``Step.group`` of the persona steps (#114)."""
 LEAVING = {
@@ -589,6 +597,19 @@ def _steps() -> list[Step]:
             "config_changes",
             lambda ids: Rest("GET", f"{s}/config-changes"),
             lambda e, ids: _changes(e, ConfigScope.STORY, ids["story"]),
+        ),
+        # -- the story's rating (#118): the seeded ratings' guardrails are equal, so the move
+        # relaxes and applies at once; no tightening (no worker runs here), and a check id that
+        # is not the story's is 404 on both surfaces.
+        Step(
+            "set_content_rating",
+            lambda ids: Rest("PUT", f"{s}/content-rating", {"content_rating_id": EXPLICIT_ID}),
+            lambda e, ids: _rating_change(e, ids["story"], EXPLICIT_ID),
+        ),
+        Step(
+            "get_rating_check",
+            lambda ids: Rest("GET", f"{s}/content-rating/checks/{UNKNOWN_JOB}"),
+            lambda e, ids: _rating_check(e, ids["story"], UNKNOWN_JOB),
         ),
         Step(
             "set_pinned_memories",
@@ -1713,6 +1734,19 @@ async def _deleted(engine: Engine, story_id: str) -> dict[str, Any]:
     return {}
 
 
+async def _rating_change(engine: Engine, story_id: str, rating_id: str) -> dict[str, Any]:
+    result = await engine.set_content_rating(
+        CTX, story_id, RatingChangeRequest(content_rating_id=rating_id)
+    )
+    if isinstance(result, RatingCheckStarted):
+        return dump(RatingCheckStartedBody.of(result))
+    return dump(RatingAppliedBody.of(result))
+
+
+async def _rating_check(engine: Engine, story_id: str, job_id: str) -> dict[str, Any]:
+    return dump(RatingCheckBody.of(await engine.get_rating_check(CTX, story_id, job_id)))
+
+
 async def _no_content(call: Awaitable[Any]) -> dict[str, Any]:
     await call
     return {}
@@ -2167,7 +2201,14 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
     replies = [b["message"]["text"] for _, b in rest if isinstance(b.get("message"), dict)]
     assert replies
     assert all(text == REPLY for text in replies)
-    assert sorted({status for status, _ in rest if status >= 400}) == [403, 409, 422]
+    # 404: the rating check read of a job that is no check of the story (#118).
+    assert sorted({status for status, _ in rest if status >= 400}) == [403, 404, 409, 422]
+    rating = [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.operation in ("set_content_rating", "get_rating_check")
+    ]
+    assert rating == [("set_content_rating", 200), ("get_rating_check", 404)]
     # The character steps (#103) answered what they were written to answer, on both surfaces.
     answered = [
         (step.operation, status)

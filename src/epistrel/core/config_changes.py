@@ -103,6 +103,14 @@ async def _write_operation(
     return operation_id, True
 
 
+async def write_operation(conn: AsyncConnection, *, story_id: str | None, actor: str) -> str:
+    """The id of the configuration write's ``control`` operation in ``conn``'s transaction,
+    recorded now if the write has none yet: a caller that records more of the write's events
+    under it (a rating change's ``story_resumed``, #118) asks for it before its first change."""
+    operation_id, _ = await _write_operation(conn, story_id=story_id, actor=actor)
+    return operation_id
+
+
 async def _story_event(
     conn: AsyncConnection,
     *,

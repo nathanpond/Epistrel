@@ -223,6 +223,23 @@ class DormantChainBody(BaseModel):
     truncate_operation_id: str | None
 
 
+class StoryPauseProgressBody(BaseModel):
+    """The progress of the check that paused the story: records checked, of how many."""
+
+    done: int
+    total: int
+
+
+class StoryPauseBody(BaseModel):
+    """What pauses the story (#118): the check's job (``GET
+    /stories/{id}/content-rating/checks/{job_id}``), its ``cause`` (``rating_check``) and its
+    progress."""
+
+    job_id: str | None
+    cause: str
+    progress: StoryPauseProgressBody
+
+
 class StoryBody(StorySummaryBody):
     """One story: the summary, its cast (true ages only for an omniscient read), its settings,
     its engine profile and the version it runs on (#113; ``GET /stories/{id}/effective-config``
@@ -238,6 +255,8 @@ class StoryBody(StorySummaryBody):
     dormant_chains: list[DormantChainBody]
     variant_chains: list[VariantChainBody]
     """Every chain of the story, as ``GET /stories/{id}/variants`` lists them (#66)."""
+    pause: StoryPauseBody | None = None
+    """While ``status`` is ``paused`` (#118): the check that paused it; ``null`` otherwise."""
 
     @classmethod
     def of(cls, story: StoryView, undo: UndoState, chains: list[Chain]) -> StoryBody:
@@ -259,6 +278,7 @@ class StoryBody(StorySummaryBody):
                 for c in undo.dormant_chains
             ],
             variant_chains=[VariantChainBody.of(c) for c in chains],
+            pause=StoryPauseBody.model_validate(story.pause) if story.pause else None,
         )
 
 
@@ -624,7 +644,9 @@ async def list_stories(
     description=(
         "The story, its cast and settings, its `engine_profile` (the profile and the version it "
         "runs on; `GET /stories/{id}/effective-config` has the whole configuration), "
-        "`undo_available`, its `dormant_chains` and its `variant_chains`. A character's "
+        "`undo_available`, its `dormant_chains` and its `variant_chains`. While a check of a "
+        "rating change pauses it (`status: paused`), `pause` names the check `{job_id, cause, "
+        "progress}`. A character's "
         "`true_age` is returned only under "
         "`?viewpoint=omniscient` (FR-CAT-12); a viewpoint that is neither `omniscient` nor "
         "`character:<id>` of the cast is 422 `viewpoint_unresolved`."

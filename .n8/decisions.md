@@ -4661,3 +4661,125 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** The M3 section continues here, after #117's `## Ad-hoc` entry. Later stories append below.
   **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111, #113, #114, #115 and #116 did. Cost if wrong: one heading.
   **Issue:** #117
+- **Decision:** I posted #118's plan comment late. Implementation was under way before the comment went up, and the comment says so. The plan it describes is the one built.
+  **Why:** The task asks for the plan comment before any code. That order was missed, and the log should say so. Cost if wrong: none to the product.
+  **Issue:** #118
+- **Decision (drift):** A turn in flight during a relax commits under the new rating because `content_rating_id` (which rating the story has) joins the compared Lite dependencies (`core.config_dependencies.LITE_DEPENDENCIES`). The turn is re-checked (`ConfigRecheck`) and re-captured, so it records the new `rating_version`. I did not compare `rating_version` itself, because that would re-check, with guardrail model calls, every turn in flight during any edit of the story's rating, a description-only edit included. Guardrail and policy changes are already compared.
+  **Why:** The drift note covers this. FR-RATE-6 counts an equal set as a subset, and every seeded set is empty, so a relax between seeded ratings moved no compared value: the turn committed with the old version. Mutation-checked: without the member, `test_equal_guardrails_relax_and_a_retired_target_is_refused` fails on the recorded version, and `test_i_22__relax_tighten` fails on `config_changed`. Cost if wrong: one more re-check per rating change mid-turn.
+  **Issue:** #118, #64
+- **Decision (drift, deviation from the pass-1 line):** The tightening request records a committed `control` operation (#117's pattern, `control.record_control_operation`). It does not record the `in_flight` operation the job would finalise. The committed operation binds the `Idempotency-Key` and carries the `story_paused` event. The same transaction inserts the `rating_check_jobs` row, enqueues the job and sets the story `paused`. The operation's id is kept on `rating_check_jobs.operation_id`, so `jobs.operation_id` is not added. When the change applies, it is recorded by its own committed `control` operation, the configuration write's, with the principal who asked (`started_by`), and `story_resumed` is recorded under it. A refusal or a failure records `story_resumed` under a committed `control` operation of its own.
+  **Why:** The drift note and #117's Ad-hoc entry: #75's orphan pass fails an `in_flight` operation that a queued job does not claim, and `record_config_change` always records its own committed operation. Cost if wrong: #128's stage view reads the `rating_check_jobs` row, not an operation's stages.
+  **Issue:** #118, #117, #128
+- **Decision (deviation from the pass-1 line):** The PUT pauses the story at once, and the job waits for a turn in flight to commit (`in_flight_turn` clear, up to twice the default turn deadline from the request) before it reads the history. The plan instead had the job wait before pausing.
+  - `Operation.begin` refuses revision-bumping work on a paused story.
+  - A commit is not refused, so work that began before the pause finishes.
+  - A write that commits after the history was read moves `timeline_revision`, and the job reads again.
+  **Why:** With the pause in the request, the 202 and the first `story_paused` are deterministic. The turn in flight still commits and is checked, as `test_the_check_waits_for_a_turn_in_flight` shows. docs/03 FR-CONC-5 ("a pause begins only after any in-flight ordinary turn has committed") is met in effect: under `reject` a new turn would get `story_busy` meanwhile anyway, and here it gets `story_paused`. Cost if wrong: during that window a new call is answered `story_paused` instead of `story_busy`.
+  **Issue:** #118
+- **Decision:** What a pause refuses and what it serves (`core/pause.py`, 409 `story_paused`, details `{story_id, job_id, cause, progress {done, total}}`).
+  - **Refused:** respond, regenerate, a queued turn when it would start (the drainer records `story_paused` on it), ingest, pinned memories, custom instructions, truncate, untruncate, swap, an added character, fork, archive and unarchive, story policies (`PATCH /settings` with `policies`, `policies_set_story`) and a second rating change. Each is checked right after `story_archived`, and `Operation.begin` refuses every revision-bumping operation as a backstop.
+  - **Served:** reads; `PATCH /settings` without `policies`; the story's engine profile and overrides (prospective, a reading the pass-1 list does not mention); owner and relation changes; feedback; and delete.
+  - **Delete:** "delete cancels the job" is met by enqueueing the job with no `story_id`. So `delete_story`'s `_refuse_running_job` never sees it, the `rating_check_jobs` row goes with the story, and the job ends when it finds no row (`test_delete_during_the_check_ends_it`).
+  **Why:** The pass-1 line and the drift note's "make delete cancel or drop it". Cost if wrong: a deletion during a run's model call leaves that one run to finish its call before it ends.
+  **Issue:** #118
+- **Decision (drift):** `operations.checked_guardrails` (migration 0035, added to the trigger's allow-list) is encoded `{rating_id, rating_version_id, global, rating, story, character}`, each `{policy_id: version}` with integer policy versions. I added `rating_id` and the `rating` map to the pass-1 encoding, because rating policies are edited in place too.
+  - Every `turn` operation, generated or ingested, is stamped at commit under the story lock with the set in force then (`core/ratings/stamp.py`). That set is what a turn re-checked mid-flight passed.
+  - An applied tightening restamps every active turn variant with the target's set.
+  - Turns committed before 0035 keep `NULL`. No backfill: which set they passed is unknown, and #120 should read `NULL` as "passed no recorded set".
+  **Why:** The drift note: policies have integer versions and no version table. Cost if wrong: #120 compares a different shape.
+  **Issue:** #118, #120
+- **Decision:** The verdict cache (`guardrail_check_results`, a story table, never copied by a fork) is keyed by `(story, record_key, policy_id, policy_version)`. An event's key is its id. A pinned memory's key is `pin:<id>:<sha256[:16] of its text>`, and the custom instructions' is `instruction:<sha256[:16]>`, because the projection holds no event id and the key must change when the text does. Deterministic verdicts are stored. A model-assisted verdict is stored only when the model was conclusive: an uncertain or unaffordable one follows `on_uncertain` and is asked again next time.
+  **Why:** The pass-1 line says "keyed by event id (images by asset id)", and pins and instructions have no event id of their own. Cost if wrong: a pin edit re-checks only that pin.
+  **Issue:** #118
+- **Decision:** The shape of `evaluate_history`, for #119 to reuse.
+  - The signature is `evaluate_history(target_guardrails, records, *, model_check=None, calls_per_record=0, cache=None, progress=None, image_check=None) -> HistoryResult(violations, checked, cached, verdicts, model_calls)`.
+  - The caller decides age conditions: it passes the policies that apply (`GuardContext.active`).
+  - A character-scoped policy checks only that character's records.
+  - Every violation is listed, in position order: turns, then `{kind: seed|pin|instruction|image, id}`.
+  - The model check is a `ModelCheck` protocol in `core/ratings/change.py`, not a new member of #103's `Ports`. The job, which is Orchestrator code, passes `ModelPolicyCheck`: one `guardrail_check` call through `check_text`, under its own one-call, 60 s budget, never a turn's.
+  - `read_history` reads every committed, active `player_input` and `message_rendered` event (genesis included: an event with no turn is a `seed`), plus the pinned memories and the custom instructions.
+  **Why:** The pass-1 line ("an injected checker port") and core's layering. A `Ports` member would need the Engine to wire it, and the only caller is a job. Cost if wrong: #119 wraps the protocol once.
+  **Issue:** #118, #119, #103
+- **Decision:** Story images. `story_image_records` answers `[]` in M3. An image record is checked by its prompt (`image_prompt`). With no image checker it is a violation with `code: image_unchecked`, attributed to the target's first `image_output` policy (`null` when it has none). This is tested in the unmarked `tests/test_rating_history.py`, and no M3 part body uses the M8 terms.
+  **Why:** The pass-1 line and the drift note's lexicon correction. Cost if wrong: #272 changes how the violation is attributed.
+  **Issue:** #118, #272
+- **Decision (drift):** The settings.
+  - `rating_check_model_calls_per_record` (prospective, 0 to 100, default 2) is a field of `GuardrailSettings`, which is in `config_changes.SECTIONS`, so `GET /admin/settings` reads it.
+  - `rating_check_retention_days` (prospective, 1 to 3650, default 30) is a field of `RetentionSettings`, and `sweep_retention` purges finished `rating_check_jobs` rows by it (new result key `rating_check_jobs`).
+  - Both are in `SettingsPatch`, pinned in U-18, and named in `PUT /admin/settings`'s description and the README.
+  **Why:** The drift note: deployment settings live in sections of the settings document, not in `deployment_state` columns. The check's status must outlive the 7-day `jobs` purge, so it lives on its own row, with no foreign key. Cost if wrong: the retention value is not read back until #315 is fixed, the same as `offboarding_report_retention_days`.
+  **Issue:** #118, #71, #315
+- **Decision (drift):** A rating change's story-scope `config_changes` row uses the setting `content_rating_id`, with old and new rating ids and class `interpretive`. The name joins `StorySettingFilter`'s extra names (beside `engine_profile_id`), so `GET /stories/{id}/config-changes?setting=content_rating_id` filters on it.
+  **Why:** The drift note: #279's closed vocabulary would answer 422 for an unknown name. A single setting name, like `engine_profile_id`, reads better than a `rating:<id>` family for the one rating a story has. Cost if wrong: a rename.
+  **Issue:** #118, #279
+- **Decision:** The bodies.
+  - **200** (`RatingAppliedBody`, a `MutationResponse`): `{applied: true, changed, content_rating_id, rating_version, config_revision, timeline_revision}`. Naming the current rating is `changed: false` and writes nothing.
+  - **202** (`RatingCheckStartedBody`): `{job_id, operation_id, status: "checking", config_revision, timeline_revision}` with `Location: /stories/{id}/content-rating/checks/{job_id}`. It is stored under the key, so a retry answers the same job.
+  - **The check read:** one shape for every status: `{job_id, story_id, status, progress, started_at, started_by, finished_at, target {rating_id, version}, from_rating_id, operation_id, rating_version, config_revision, violations, error}`, with `null` or an empty list where a field does not apply. The plan had per-status shapes.
+  - **The route path:** `checks`, as docs/02 §9 already names it, so no docs/02 rename was needed.
+  - **Tags and errors:** the new route module `api/routes/story_rating.py` is tagged `settings`. `story_paused` is in `ERROR_STATUS` and in the documented errors of every operation that answers it.
+  - **Exports:** `epistrel` exports `RatingChangeRequest`, `RatingApplied`, `RatingCheckStarted`, `RatingCheckView`, `StoryPaused` and `RatingCheckNotFound`.
+  **Why:** The drift note (`MutationResponse` for a story path; a 202 declared under `responses`). One read shape keeps the schema simple for the Console. Cost if wrong: a response shape changes before #128 freezes the surface.
+  **Issue:** #118, #128
+- **Decision:** How the job runs (`orchestrator/jobs/handlers/rating_check.py`, kind `rating_check`, `records_operation=False`, `max_attempts` 8).
+  - It checkpoints progress and new verdicts every 25 records, and yields (`requeue_in=0`) after 240 s, well under the 600 s runtime cap.
+  - A model that cannot answer fails the attempt, which #70's backoff retries while the story stays paused. The last attempt calls `change.fail`: the story resumes on its old rating, the check is `failed`, and `error {class, message}` names the class only.
+  - When no Model Access Layer is bound, the job raises `NoModels` only if a model-assisted policy applies. The Engine binds the layer in `start_workers`, as it does for `lite_summary`.
+  - A target retired mid-check ends the check `failed` (`RatingRetired`), with the story resumed.
+  - A target rating edited mid-check (its version moved) runs the check again, and the cache answers what is unchanged.
+  - A refusal writes an `audit_log` row: the new kind `rating_change_refused`, with the policy ids and `{job_id, target_rating_id, violations: count}`, never text.
+  **Why:** The drift notes (`fail_job` runs no hook; the 600 s cap) and the pass-1 lines. Cost if wrong: retry tuning only.
+  **Issue:** #118, #70
+- **Decision (drift):** The parts follow docs/04 §15 and the one-file rule.
+  - `test_i_22__relax_tighten`, `part("M3", "FR-RATE-6,7")`, sits in `tests/integration/test_rating_change.py`, the must-have's file. FR-CONC-15 is dropped from the marker: §15 maps it to I-22 (M2) only. #119's and #120's I-22 (M3) slices must join this file, not `test_story_from_scenario.py` or `test_rating_reactivation.py`.
+  - `test_u_29__classification`, `part("M3", "FR-RATE-6,7")`, joins `tests/test_u_29.py`. Its sideways move uses two custom ratings that inherit Explicit, and its complements are equal sets (relax both ways) and reversed display orders.
+  - The integration tests each run on a scratch database (`tests/rating_change_support.rating_db`), which links a rating policy into Teen: the seeded sets are empty.
+  - 11 detailed integration tests and 9 database-free tests (`tests/test_rating_history.py`) cover the rest.
+  - check-parts counts 204 parts.
+  **Why:** The drift note. Cost if wrong: renames only.
+  **Issue:** #118, #119, #120
+- **Decision:** Existing tests changed because new behaviour needs them.
+  - **I-08 (narrowed).** `test_i_08__rebuild` compares the operations log without `checked_guardrails` (`DROPPED_BELOW_0019`). Its downgrade to 0018 passes through 0035, which drops that column. The column records the checks a turn passed, not the log, and every other column is still compared. This narrows an existing assertion because the story adds the column, so I record it here.
+  - **S-DELETE.** It plants a finished `rating_check_jobs` row and a cached verdict in the victim, so the every-story-table check covers both new tables.
+  - **C-03.** It gains `set_content_rating` (a relax between seeded ratings: 200 on both surfaces) and `get_rating_check` (a check the story does not have: 404 on both).
+  - **C-01.** `set_content_rating` joins `EXCLUDED`: a generated tightening would pause the fixture story, and no worker runs.
+  - **U-18.** It pins both new settings as prospective.
+  **Why:** The parity rule, the delete-coverage rule and the migration round trip. Cost if wrong: none.
+  **Issue:** #118
+- **Decision:** I mutation-checked the pause and the in-flight relax. Removing both the `Operation.begin` and the `run_queued` refusal makes `test_queued_turns_fail_when_they_would_start` fail (`error_code` `None`). Removing only one passes, because each backs the other up. Removing `content_rating_id` from the compared dependencies fails both relax tests, as above. All mutations were reverted.
+  **Why:** Under the batched gate, a story's correctness rests on its own tests until the group's full run. Cost if wrong: none.
+  **Issue:** #118
+- **Decision:** #118's gate, run under M3's per-story rule (the orchestrator runs the full suite at the end of group B).
+  - **Routes, Engine methods and OpenAPI:** `tests/conformance/` (C-01's generated run included), the route guard, the response bases, the route flags and `test_openapi_calls_the_message_finished_never_verified`: 176 passed in 603 s. The first run failed on three things, all now fixed. C-03 saw a new 404, and its expected error statuses now include 404, the check read's, with a check of the two rating steps' statuses. Three new response components lacked descriptions, and they now have them. `docs/openapi.json` was rewritten while the run was going, which made C-01's schema test fail; the rerun passed.
+  - **The story's areas:** the rating-change, migration, drift, I-08, schema, event-registry, I-22 (M2), config revalidation and rebase, config changes, ratings API, S-DELETE, I-10, ingest, story texts, respond, turn concurrency, operation, jobs, offboarding, I-21, policies API, story characters, feedback, history, revisions, truncate mid-generation, input ingest, time, U-18, U-29, rating-history, route guard, responses, trust boundary, ownership rules, docs Python version and concurrency tests: 358 passed. I-08's rebuild failed on the dropped column, as recorded above; after the fix, I-08 passed 2. Determinism plus the story's own tests after the final edits: 42 passed.
+  - **Static checks:** ruff check and format, mypy (528 files), lint-imports (3 kept), check-assignment, check-parts (204 parts), check-lexicon (0 violations), check-traceability, check-deps, `openapi --check` (regenerated) and `model_guide --check` all pass. No dependency changed, so check-licenses was not run.
+  **Why:** M3's per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #118
+
+## Ad-hoc — 2026-10-13
+
+- **Change:** #118 built rating changes with shapes that differ from what its plan and later plans name.
+  - **The request's operation.** It is a committed `control` operation that records `story_paused` and binds the key. The plan's `in_flight` operation, finalised by the job, is not built, and `jobs.operation_id` is not added: the link is `rating_check_jobs.operation_id`. The applied change is recorded by its own committed configuration-write operation, with the requester as principal.
+  - **The pause.** The PUT pauses the story at once (`stories.status = paused`, `paused_by` = the `rating_check_jobs` id). The job then waits for a turn in flight to commit. `core/pause.py` is the one refusal (409 `story_paused`, `{story_id, job_id, cause, progress}`), and only `cause: rating_check` exists. `Operation.begin` refuses every revision-bumping operation of a paused story; a commit is not refused.
+  - **`checked_guardrails`.** It is an `operations` column encoded `{rating_id, rating_version_id, global, rating, story, character}`, each `{policy_id: version}` (integer versions). Every `turn` operation is stamped at commit; turns from before migration 0035 are `NULL`.
+  - **The evaluator.** `core.ratings.change.evaluate_history(target_guardrails, records, *, model_check, calls_per_record, cache, progress, image_check)`, with `read_history` and a `ModelCheck` protocol, not a `Ports` member. Verdicts are cached in `guardrail_check_results`.
+  - **The in-flight relax.** `content_rating_id` joins the compared Lite dependencies.
+  - **The rest.** A new route reads a check: `GET /stories/{id}/content-rating/checks/{job_id}`. A new error code is `story_paused`. Two new settings, `rating_check_model_calls_per_record` and `rating_check_retention_days`, are added. The story setting `content_rating_id` joins the config-change filter, and `rating_change_refused` is a new audit kind.
+  - **Tests.** I-22's M3 parts live in `tests/integration/test_rating_change.py`.
+  **Why:** #118's AC and pass-1 lines, corrected by its drift notes and #117's Ad-hoc entry. The decision entries above give the details.
+  **Affects:**
+  - **M3 #119 (story from a scenario).** Its creation check calls `evaluate_history` as above, with the policies that apply and a `ModelCheck`, synchronously. Its I-22 (M3) slice must join `tests/integration/test_rating_change.py`, not `test_story_from_scenario.py`. Only `turn` operations are stamped automatically, so its opening narration must be a `turn` operation or stamp itself with `stamp.guardrail_stamp`.
+  - **M3 #120 (reactivation re-checks).**
+    - Its pause adds `cause: reactivation_check` to `core.pause`, which today reads its progress from `rating_check_jobs`. It either reuses that table or adds a pause source there.
+    - It reads `checked_guardrails` in the shape above, and `NULL` means "passed no recorded set".
+    - It can reuse `read_history`, `evaluate_history` and `load_cache`/`save_progress`.
+    - Its I-22 (M3) slice joins `tests/integration/test_rating_change.py`, not `test_rating_reactivation.py`.
+  - **M3 #128 (API surface).** The route table gains `set_content_rating` (200/202) and `get_rating_check`, with C-03 steps. `story_paused` joins the error list. `set_content_rating` is excluded from C-01.
+  - **M8 #272 (story images).** `core.ratings.change.story_image_records` is the hook that returns `[]` today. An image no checker can check is a violation with `code: image_unchecked`.
+  - **The Console (nathanpond/Epistrel-Console).** New surfaces: a rating change, a progress view of a check while the story is paused, and the refused check's violation list.
+
+## /n8-exec M3 — 2026-10-13 (continued)
+
+- **Decision:** The M3 section continues here, after #118's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111, #113 to #117 did. Cost if wrong: one heading.
+  **Issue:** #118

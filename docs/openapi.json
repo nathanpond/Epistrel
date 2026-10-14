@@ -2131,6 +2131,94 @@
         "title": "CharacterVersionsBody",
         "type": "object"
       },
+      "CheckProgressBody": {
+        "description": "How many of the history's records the check has checked, of how many.",
+        "properties": {
+          "done": {
+            "title": "Done",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "done",
+          "total"
+        ],
+        "title": "CheckProgressBody",
+        "type": "object"
+      },
+      "CheckTargetBody": {
+        "description": "The rating the check evaluates and the version id it evaluates.",
+        "properties": {
+          "rating_id": {
+            "title": "Rating Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rating_id",
+          "version"
+        ],
+        "title": "CheckTargetBody",
+        "type": "object"
+      },
+      "CheckViolationBody": {
+        "description": "One record breaking one policy: its ``position`` (``{turn, variant, beat}``, or ``{kind,\nid}`` for a seed, pinned memory, the custom instructions or an image), the policy's id and\nname, and a ``code`` for a record that could not be checked. Never the text.",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "policy_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Id"
+          },
+          "policy_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Name"
+          },
+          "position": {
+            "additionalProperties": true,
+            "title": "Position",
+            "type": "object"
+          }
+        },
+        "required": [
+          "position",
+          "policy_id",
+          "policy_name"
+        ],
+        "title": "CheckViolationBody",
+        "type": "object"
+      },
       "CompanionPublishedBody": {
         "description": "The companion version a character's publish made (FR-CAT-10; #116): the companion\nscenario's id, its new version (pinned to the character's new version), its draft's new\n``draft_revision`` (the draft's pin moved with it; with ``with_companion`` it is what was\npublished) and that version's validation ``report`` (a rating difference with the character\nis a ``rating_looser`` warning there).",
         "properties": {
@@ -12210,6 +12298,56 @@
         "title": "QueuedTurn",
         "type": "object"
       },
+      "RatingAppliedBody": {
+        "description": "The change applied (a relaxing one, or the rating the story already has: then\n``changed`` is false and nothing was written): the story's rating and its version, its\n``config_revision`` and its unchanged ``timeline_revision``.",
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "content_rating_id": {
+            "title": "Content Rating Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "rating_version": {
+            "title": "Rating Version",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "applied",
+          "changed",
+          "content_rating_id",
+          "rating_version",
+          "config_revision"
+        ],
+        "title": "RatingAppliedBody",
+        "type": "object"
+      },
       "RatingBody": {
         "description": "A rating at one version.",
         "properties": {
@@ -12297,6 +12435,191 @@
           "retired_at"
         ],
         "title": "RatingBody",
+        "type": "object"
+      },
+      "RatingChangeRequest": {
+        "additionalProperties": false,
+        "description": "``PUT /stories/{id}/content-rating``: the rating the story should have.",
+        "examples": [
+          {
+            "content_rating_id": "00000000000000000000RAT002"
+          }
+        ],
+        "properties": {
+          "content_rating_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Content Rating Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content_rating_id"
+        ],
+        "title": "RatingChangeRequest",
+        "type": "object"
+      },
+      "RatingCheckBody": {
+        "description": "A rating check: see ``GET /stories/{id}/content-rating/checks/{job_id}``.",
+        "properties": {
+          "config_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Revision"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "from_rating_id": {
+            "title": "From Rating Id",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/CheckProgressBody"
+          },
+          "rating_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating Version"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "started_by": {
+            "title": "Started By",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/CheckTargetBody"
+          },
+          "violations": {
+            "items": {
+              "$ref": "#/components/schemas/CheckViolationBody"
+            },
+            "title": "Violations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "job_id",
+          "story_id",
+          "status",
+          "progress",
+          "started_at",
+          "started_by",
+          "finished_at",
+          "target",
+          "from_rating_id",
+          "operation_id",
+          "rating_version",
+          "config_revision",
+          "violations",
+          "error"
+        ],
+        "title": "RatingCheckBody",
+        "type": "object"
+      },
+      "RatingCheckStartedBody": {
+        "description": "A tightening's check started (202): the story is paused until it ends. ``job_id``\nnames the check (read it at the ``Location``), ``operation_id`` the ``control`` operation\nthat paused the story.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "job_id",
+          "operation_id",
+          "status",
+          "config_revision"
+        ],
+        "title": "RatingCheckStartedBody",
         "type": "object"
       },
       "RatingDetailBody": {
@@ -16433,6 +16756,20 @@
             ],
             "title": "Public Base Url"
           },
+          "rating_check_model_calls_per_record": {
+            "default": 2,
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Rating Check Model Calls Per Record",
+            "type": "integer"
+          },
+          "rating_check_retention_days": {
+            "default": 30,
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Rating Check Retention Days",
+            "type": "integer"
+          },
           "require_primary_image": {
             "default": false,
             "title": "Require Primary Image",
@@ -17099,6 +17436,28 @@
             ],
             "title": "Public Base Url"
           },
+          "rating_check_model_calls_per_record": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating Check Model Calls Per Record"
+          },
+          "rating_check_retention_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating Check Retention Days"
+          },
           "require_primary_image": {
             "anyOf": [
               {
@@ -17345,6 +17704,16 @@
             "title": "Owner Principal",
             "type": "string"
           },
+          "pause": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StoryPauseBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "settings": {
             "additionalProperties": true,
             "title": "Settings",
@@ -17530,6 +17899,55 @@
           "previous_owner"
         ],
         "title": "StoryOwnerBody",
+        "type": "object"
+      },
+      "StoryPauseBody": {
+        "description": "What pauses the story (#118): the check's job (``GET\n/stories/{id}/content-rating/checks/{job_id}``), its ``cause`` (``rating_check``) and its\nprogress.",
+        "properties": {
+          "cause": {
+            "title": "Cause",
+            "type": "string"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/StoryPauseProgressBody"
+          }
+        },
+        "required": [
+          "job_id",
+          "cause",
+          "progress"
+        ],
+        "title": "StoryPauseBody",
+        "type": "object"
+      },
+      "StoryPauseProgressBody": {
+        "description": "The progress of the check that paused the story: records checked, of how many.",
+        "properties": {
+          "done": {
+            "title": "Done",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "done",
+          "total"
+        ],
+        "title": "StoryPauseProgressBody",
         "type": "object"
       },
       "StoryPolicyItem": {
@@ -19751,6 +20169,8 @@
                           "profile_defaults.verification.extraction_mode",
                           "profile_defaults.verification.level",
                           "public_base_url",
+                          "rating_check_model_calls_per_record",
+                          "rating_check_retention_days",
                           "require_primary_image",
                           "structured_retry_budget",
                           "timer_lag_alert",
@@ -22506,7 +22926,7 @@
         ]
       },
       "put": {
-        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` accept `null` (unset: no hook, no base URL, no ceiling); no other key does. A list replaces the stored one. `profile_defaults` holds the engine profiles' defaults (FR-PROF-5): the bottom layer of every story's configuration, under its profile's version and its own overrides, seeded from the Lite preset. A write is laid over them (an object merges into an object; any other value replaces, `null` included, so `budgets.model_calls: null` is the formula `9 + G`), and must leave a document every profile in use and every story can run under (422 `validation_error` at the setting, or `invalid_profile` naming `details.profiles` or `details.stories`); each changed setting is recorded as `profile_defaults.<path>`. The engine dials that moved there (`lite_generation_defaults`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`) are 422 with `details.reason: superseded` and their replacement in `details.replacement`. `listing_status_values` lists the catalog's listing status values in order (a new entry takes the first; distinct, case-sensitive, 1 to 40 printable characters each); removing a value a catalog entry still holds is 409 `listing_status_in_use` (`details.value`, `details.count`). `validation_model_calls` (0 to 1000, default 0) is how many model calls one catalog validation (a publish, or a dry run) may spend on model-assisted input policies; those it does not reach are listed `unavailable` in the report. `require_primary_image` (default `false`) makes a primary image required to publish a catalog character (422 `publish_invalid`, `primary_image_required`); off, a character publishes with no image. `feedback_tags` lists the reason tags a message rating may carry (FR-FB-1's nine to start; distinct, 1 to 40 of `a-z 0-9 _` each, up to 50; may be empty); removing a tag a rating or its history still carries is 409 `feedback_tag_in_use` (`details.in_use`: each tag with its `current` and `history` counts). `feedback_text_max_chars` (1 to 20000, default 2000) caps a rating's free text, and `feedback_retention` keeps ratings for the story's life (`story_lifetime`, the default) or a number of days (1 to 3650).",
+        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` accept `null` (unset: no hook, no base URL, no ceiling); no other key does. A list replaces the stored one. `profile_defaults` holds the engine profiles' defaults (FR-PROF-5): the bottom layer of every story's configuration, under its profile's version and its own overrides, seeded from the Lite preset. A write is laid over them (an object merges into an object; any other value replaces, `null` included, so `budgets.model_calls: null` is the formula `9 + G`), and must leave a document every profile in use and every story can run under (422 `validation_error` at the setting, or `invalid_profile` naming `details.profiles` or `details.stories`); each changed setting is recorded as `profile_defaults.<path>`. The engine dials that moved there (`lite_generation_defaults`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`) are 422 with `details.reason: superseded` and their replacement in `details.replacement`. `listing_status_values` lists the catalog's listing status values in order (a new entry takes the first; distinct, case-sensitive, 1 to 40 printable characters each); removing a value a catalog entry still holds is 409 `listing_status_in_use` (`details.value`, `details.count`). `validation_model_calls` (0 to 1000, default 0) is how many model calls one catalog validation (a publish, or a dry run) may spend on model-assisted input policies; those it does not reach are listed `unavailable` in the report. `require_primary_image` (default `false`) makes a primary image required to publish a catalog character (422 `publish_invalid`, `primary_image_required`); off, a character publishes with no image. `feedback_tags` lists the reason tags a message rating may carry (FR-FB-1's nine to start; distinct, 1 to 40 of `a-z 0-9 _` each, up to 50; may be empty); removing a tag a rating or its history still carries is 409 `feedback_tag_in_use` (`details.in_use`: each tag with its `current` and `history` counts). `feedback_text_max_chars` (1 to 20000, default 2000) caps a rating's free text, and `feedback_retention` keeps ratings for the story's life (`story_lifetime`, the default) or a number of days (1 to 3650). `rating_check_model_calls_per_record` (0 to 100, default 2) is how many model calls a rating tightening's history check may spend on one record's model-assisted policies (one it cannot afford follows its `on_uncertain`), and `rating_check_retention_days` (1 to 3650, default 30) how long a finished check is kept.",
         "operationId": "update_deployment_settings",
         "parameters": [
           {
@@ -34187,7 +34607,7 @@
         ]
       },
       "get": {
-        "description": "The story, its cast and settings, its `engine_profile` (the profile and the version it runs on; `GET /stories/{id}/effective-config` has the whole configuration), `undo_available`, its `dormant_chains` and its `variant_chains`. A character's `true_age` is returned only under `?viewpoint=omniscient` (FR-CAT-12); a viewpoint that is neither `omniscient` nor `character:<id>` of the cast is 422 `viewpoint_unresolved`.",
+        "description": "The story, its cast and settings, its `engine_profile` (the profile and the version it runs on; `GET /stories/{id}/effective-config` has the whole configuration), `undo_available`, its `dormant_chains` and its `variant_chains`. While a check of a rating change pauses it (`status: paused`), `pause` names the check `{job_id, cause, progress}`. A character's `true_age` is returned only under `?viewpoint=omniscient` (FR-CAT-12); a viewpoint that is neither `omniscient` nor `character:<id>` of the cast is 422 `viewpoint_unresolved`.",
         "operationId": "get_story",
         "parameters": [
           {
@@ -34421,7 +34841,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_paused`."
           },
           "422": {
             "content": {
@@ -34615,7 +35035,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
           },
           "422": {
             "content": {
@@ -34911,6 +35331,7 @@
                       {
                         "enum": [
                           "audit_retention_days",
+                          "content_rating_id",
                           "default_output_viewpoint",
                           "engine_profile_id",
                           "generation_settings",
@@ -35140,6 +35561,323 @@
           }
         ],
         "summary": "List the story's configuration changes",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/stories/{story_id}/content-rating": {
+      "put": {
+        "description": "Change the story's content rating to `content_rating_id` (FR-RATE-6,7). The two ratings are compared by their effective guardrails (live policies, inheritance included), never by their order. **Relaxing**, a target whose guardrails are a subset of the current rating's (an equal set included), applies at once with no content check: 200 `{applied: true, changed, content_rating_id, rating_version}`, recorded as the interpretive configuration change `content_rating_id` with the acting principal (`GET /stories/{id}/config-changes`). It moves the story's `config_revision`, and every operation that commits after it runs under the new rating: a turn still generating is re-checked under it before it commits. Naming the story's current rating changes nothing (`changed: false`). **Tightening**, a target that adds any policy (a sideways move included), pauses the story and checks its whole active history against the target's effective policies in the background: the player inputs and rendered beats of every active turn, generated or ingested, the pinned memories and the custom instructions. Deterministic policies run first, then model-assisted ones, outside any turn budget, within the deployment's `rating_check_model_calls_per_record`. It answers 202 `{job_id, operation_id, status: checking}` with `Location` (the check). While it runs, every call that would change the story's truth answers 409 `story_paused` with the check's progress, and reads are served. A turn already in flight commits first. If every record passes, the rating changes in one transaction and every active turn records the new guardrail set; otherwise nothing changes and the check lists each violation by position and policy. The story resumes either way. 409 `story_archived`, `story_paused` (a check already runs) or `revision_conflict`; 422 `rating_retired` for a rating that cannot be assigned.",
+        "operationId": "set_content_rating",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RatingChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatingAppliedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatingCheckStartedBody"
+                }
+              }
+            },
+            "description": "Tightening: the story is paused while its history is checked (read the check at the `Location`).",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `rating_retired`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Change a story's content rating",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/stories/{story_id}/content-rating/checks/{job_id}": {
+      "get": {
+        "description": "A tightening's check (FR-RATE-7): `status` (`checking` while the story is paused, then `applied`, `refused` or `failed`), `progress` (`{done, total}` records), when and by whom it was started, and the `target` (`{rating_id, version}`). Applied: the `rating_version` and the story's `config_revision` it left. Refused: `violations`, each `{position, policy_id, policy_name}` in position order (turns by `{turn, variant, beat}` first, then `{kind, id}` for seeds, pinned memories, the custom instructions and images), never the text; the rating did not change. Failed: `error {class, message}` (a model that could not answer on the last attempt); the rating did not change. A check is kept `rating_check_retention_days` (30) after it ends. A job that is not one of the story's checks is 404.",
+        "operationId": "get_rating_check",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The background job's id (a ULID), as its 202 answered it.",
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "description": "The background job's id (a ULID), as its 202 answered it.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2D1"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatingCheckBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a rating check",
         "tags": [
           "settings"
         ]
@@ -35376,7 +36114,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -35841,7 +36579,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `unknown_chain`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_paused`, `unknown_chain`."
           },
           "422": {
             "content": {
@@ -36418,7 +37156,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `client_event_conflict`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `client_event_conflict`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -37301,7 +38039,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -37672,7 +38410,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -38411,7 +39149,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -38703,7 +39441,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
           },
           "422": {
             "content": {
@@ -38879,7 +39617,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `unknown_chain`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `unknown_chain`."
           },
           "422": {
             "content": {
@@ -39073,7 +39811,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
           },
           "422": {
             "content": {
@@ -39257,7 +39995,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_paused`."
           },
           "422": {
             "content": {
@@ -39458,7 +40196,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `nothing_to_undo`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `nothing_to_undo`, `revision_conflict`, `story_archived`, `story_paused`."
           },
           "422": {
             "content": {

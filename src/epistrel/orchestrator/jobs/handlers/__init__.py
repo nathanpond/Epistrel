@@ -4,9 +4,10 @@ M2's kinds: ``rebuild_projections`` (#46, here), ``lite_summary`` (#72, with its
 recurring safety net), and the recurring
 sweeps ``retention_sweep`` / ``idempotency_purge`` (``retention``) and ``turn_queue_drain``
 (``turn_queue``), registered with their recurring tasks (``recurring``; #71). M3 adds the
-recurring ``media_sweep`` (#105) and ``offboarding`` (#117). A kind no handler
-is registered for is refused at enqueue and ends ``failed`` if a worker claims one (a row a
-newer version wrote). Tests register their own handlers through ``register`` / ``unregister``.
+recurring ``media_sweep`` (#105), ``offboarding`` (#117) and ``rating_check`` (#118). A kind
+no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
+(a row a newer version wrote). Tests register their own handlers through ``register`` /
+``unregister``.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from epistrel.orchestrator.jobs.handlers.media_sweep import (
     MEDIA_SWEEP_TASK_DEFINITION,
 )
 from epistrel.orchestrator.jobs.handlers.offboarding import OFFBOARDING_HANDLER
+from epistrel.orchestrator.jobs.handlers.rating_check import RATING_CHECK_HANDLER
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_HANDLER
 from epistrel.orchestrator.jobs.handlers.retention import (
     IDEMPOTENCY_HANDLER,
@@ -60,6 +62,7 @@ for _handler in (
     LITE_SUMMARY_HANDLER,
     MEDIA_SWEEP_HANDLER,
     OFFBOARDING_HANDLER,
+    RATING_CHECK_HANDLER,
 ):
     register(_handler)
 for _task in (

@@ -87,7 +87,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency, turn_gate
+from epistrel.core import idempotency, pause, turn_gate
 from epistrel.core.concurrency import LiteReadSet, check_expected_revision, run_with_revalidation
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
@@ -220,6 +220,7 @@ async def respond(
         raise StoryArchived(
             f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
         )
+    await pause.refuse(db, story_id, story.status)
     resolution = partial(
         resolve_viewpoint,
         ctx.viewpoint,
@@ -336,6 +337,8 @@ async def run_queued(
     was planned with when it was queued (its clock starts now, when it is played)."""
     story = await read_story_cast(db, story_id)
     cast = resolve_cast(story, request)
+    # A pause (#118) fails a queued turn when it would start: the drainer records the error.
+    await pause.refuse(db, story_id, story.status)
     viewpoint = ctx.viewpoint
     if viewpoint is None:  # pragma: no cover - always resolved at enqueue
         raise RuntimeError(f"queued turn {operation_id} has no viewpoint")
@@ -397,6 +400,7 @@ async def regenerate(
         raise StoryArchived(
             f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
         )
+    await pause.refuse(db, story_id, story.status)
     recorded = await read_regenerable(db, story_id, request.turn)
     replay = _replayed_request(recorded, request)
     cast = resolve_cast(story, replay)

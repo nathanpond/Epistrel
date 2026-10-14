@@ -36,8 +36,10 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
     ingested narration (a ``client_events`` row, #58), a rejected input (an ``audit_log``
     row naming the story), a relation (``entity_relations``, #104), a story-scoped subject
     reference (``subject_references``: #105 creates the index, #123 writes its story rows, so
-    the row is planted), a reply rated and rated again (a rating and its history, #112) and an
-    override of its profile's dials (``story_profile_overrides``, #113). The victim also gets a
+    the row is planted), a reply rated and rated again (a rating and its history, #112), an
+    override of its profile's dials (``story_profile_overrides``, #113), and a finished rating
+    check with a cached verdict (``rating_check_jobs``, ``guardrail_check_results``, #118,
+    planted). The victim also gets a
     queued turn (``turn_queue``, #63)."""
     for n in range(1, 3):
         await play_turn(engine, story_id, f"turn {n} of {story_id}")
@@ -96,6 +98,26 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
                 "'story', :s, 'events', :r, 'payload.text', 'mentioned')"
             ),
             {"id": new_ulid(), "c": character_id, "s": story_id, "r": new_ulid()},
+        )
+        # A finished rating check and a cached verdict (#118), planted: a check needs a worker.
+        await conn.execute(
+            text(
+                "INSERT INTO rating_check_jobs (id, story_id, from_rating_id, target_rating_id, "
+                "target_rating_version, status, progress, violations, started_by, started_at, "
+                "finished_at) SELECT :id, :s, content_rating_id, content_rating_id, "
+                "(SELECT current_version_id FROM content_ratings r "
+                "WHERE r.id = stories.content_rating_id), 'refused', "
+                "'{\"done\": 1, \"total\": 1}', '[]', 'p-author', now(), now() "
+                "FROM stories WHERE id = :s"
+            ),
+            {"id": new_ulid(), "s": story_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO guardrail_check_results (story_id, record_key, policy_id, "
+                "policy_version, verdict) VALUES (:s, :r, 'p-any', 1, 'pass')"
+            ),
+            {"s": story_id, "r": new_ulid()},
         )
 
 

@@ -81,6 +81,9 @@ stories = Table(
     Column("turn_queue_max", SmallInteger, nullable=True),
     Column("in_flight_turn", ulid_type(), nullable=True),
     Column("in_flight_lease_until", TIMESTAMP(timezone=True), nullable=True),
+    # FR-RATE-7 (#118): the ``rating_check_jobs`` row that paused the story (``status =
+    # 'paused'``); ``NULL`` otherwise.
+    Column("paused_by", ulid_type(), nullable=True),
     # FR-RATE-1: every story has exactly one rating (#48). The server default is the seeded
     # default; story creation resolves the deployment's current default explicitly.
     Column(

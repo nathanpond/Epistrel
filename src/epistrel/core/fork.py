@@ -74,7 +74,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency, projections, timeline
+from epistrel.core import idempotency, pause, projections, timeline
 from epistrel.core.enums import (
     Authority,
     EventCategory,
@@ -331,6 +331,7 @@ async def _copy(
     row = (await conn.execute(select(stories).where(stories.c.id == source))).one_or_none()
     if row is None:
         raise StoryNotFound(f"story {source} does not exist", {"story_id": source})
+    await pause.refuse(conn, source, row.status)
     revision = int(row.timeline_revision)
     if expected_revision is not None and expected_revision != revision:
         raise RevisionConflict(
@@ -598,6 +599,7 @@ async def _copy_story_row(
         "last_control_operation_id": "NULL",
         "in_flight_turn": "NULL",
         "in_flight_lease_until": "NULL",
+        "paused_by": "NULL",
         "created_at": "transaction_timestamp()",
     }
     await conn.execute(

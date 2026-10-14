@@ -72,7 +72,7 @@ from pydantic import (
 from sqlalchemy import Table, and_, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import audit, clock, ownership
+from epistrel.core import audit, clock, ownership, pause
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
 from epistrel.core.errors import (
@@ -114,12 +114,14 @@ from epistrel.core.tables import (
     deployment_state,
     engine_profiles,
     events,
+    guardrail_check_results,
     idempotency_keys,
     jobs,
     lite_summary_segments,
     media_assets,
     operations,
     policies,
+    rating_check_jobs,
     stories,
     story_heads,
     story_profile_overrides,
@@ -160,6 +162,8 @@ STORY_TABLES: tuple[Table, ...] = (
     characters,
     turn_queue,
     jobs,
+    rating_check_jobs,
+    guardrail_check_results,
     timers,
     operations,
 )
@@ -181,6 +185,8 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         subject_references.name,
         message_feedback.name,
         feedback_history.name,
+        rating_check_jobs.name,
+        guardrail_check_results.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
@@ -188,7 +194,9 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
 records, idempotency keys (a fork answers its own requests), the subject-reference index
 (#105: a story's rows name its records, so #123 re-indexes the fork), and message feedback
 (#112: a rating belongs to the message it rated, FR-FB-2; the fork's copy of a message is a
-new message that starts unrated, and copying would count one rating twice). Every other table
+new message that starts unrated, and copying would count one rating twice), and a rating
+change's check and verdict cache (#118: a check is the source's work, and the cache's record
+keys name the source's events). Every other table
 in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
 is named here."""
 
@@ -412,6 +420,9 @@ class StoryView:
     engine_profile: ProfileVersionRef | None = None
     """The engine profile the story runs under and the version it runs on (#113): its pin, else
     the profile's latest. Read by ``get_story`` only (a list leaves it ``None``)."""
+    pause: dict[str, Any] | None = None
+    """While the story is paused (#118): ``{job_id, cause, progress {done, total}}``, the check
+    that paused it. Read by ``get_story`` only."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -645,16 +656,19 @@ def validate_spec(spec: StorySpec) -> None:
 
 
 async def require_writable(db: AsyncEngine, story_id: str) -> None:
-    """404 when the story does not exist, 409 ``story_archived`` when it is archived: the
-    read-only precheck of every truth-changing call, before its gate or operation (#56)."""
+    """404 when the story does not exist, 409 ``story_archived`` when it is archived, 409
+    ``story_paused`` while a check pauses it (#118): the read-only precheck of every
+    truth-changing call, before its gate or operation (#56)."""
     async with db.connect() as conn:
         status = await conn.scalar(select(stories.c.status).where(stories.c.id == story_id))
-    if status is None:
-        raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
-    if status == StoryStatus.ARCHIVED.value:
-        raise StoryArchived(
-            f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
-        )
+        if status is None:
+            raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+        if status == StoryStatus.ARCHIVED.value:
+            raise StoryArchived(
+                f"story {story_id} is archived; unarchive it to change it",
+                {"story_id": story_id},
+            )
+        await pause.refuse(conn, story_id, status)
 
 
 # -- ad-hoc characters (FR-CAT-7; #114) -----------------------------------------------------
@@ -829,6 +843,7 @@ async def _set_archived(
         if row is None:
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
         status = StoryStatus(row.status)
+        await pause.refuse(conn, story_id, status)
         is_archived = status is StoryStatus.ARCHIVED
         if is_archived == archived:  # idempotent: nothing to do, nothing written
             return StatusChange(status, int(row.timeline_revision), changed=False)
@@ -1053,6 +1068,10 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
         ).one_or_none()
         if row is None:
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+        paused = None
+        if pause.is_paused(row.status):
+            found = await pause.details(conn, story_id)
+            paused = {k: found[k] for k in ("job_id", "cause", "progress")}
         cast = (
             await conn.execute(
                 select(
@@ -1080,7 +1099,7 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
         ),
     )
     profile = ProfileVersionRef(id=str(row.engine_profile_id), version=int(row.profile_version))
-    return dataclasses.replace(view, engine_profile=profile)
+    return dataclasses.replace(view, engine_profile=profile, pause=paused)
 
 
 async def list_stories(

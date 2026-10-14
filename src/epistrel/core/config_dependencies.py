@@ -5,10 +5,12 @@ phase), ``operations.config_revisions``: the story's and the deployment's config
 revisions, the story rating's version, and the values of the interpretive settings its kind
 depends on. The dependency set is static per operation kind in M2:
 
-- a generated ``turn`` (a Lite turn) depends on ``rating_guardrail_set`` (the story rating's
-  effective guardrails, #48's closure), ``policy_set`` (the output-applicable effective
-  policies: global, the rating closure's, the story's and its characters', each with its
-  version), ``minor_age_threshold`` and the story's ``default_output_viewpoint``;
+- a generated ``turn`` (a Lite turn) depends on ``content_rating_id`` (which rating the story
+  has: a change of it, even to a rating with the same guardrails, re-checks the turn under the
+  new rating and records its version, FR-RATE-6; #118), ``rating_guardrail_set`` (the story
+  rating's effective guardrails, #48's closure), ``policy_set`` (the output-applicable
+  effective policies: global, the rating closure's, the story's and its characters', each with
+  its version), ``minor_age_threshold`` and the story's ``default_output_viewpoint``;
 - an ingested operation records ``policy_set`` only (its input was gated before it opened;
   nothing is re-checked at its commit in M2);
 - every other kind records the revisions and nothing more.
@@ -42,6 +44,7 @@ REVISIONS = ("story", "deployment", "rating_version")
 """Recorded by every story operation."""
 
 LITE_DEPENDENCIES = (
+    "content_rating_id",
     "rating_guardrail_set",
     "policy_set",
     "minor_age_threshold",
@@ -121,6 +124,8 @@ async def capture(
         "deployment": int(deployment.config_revision),
         "rating_version": story.current_version_id,
     }
+    if "content_rating_id" in members:
+        captured["content_rating_id"] = story.content_rating_id
     if "rating_guardrail_set" in members or "policy_set" in members:
         graph = await load_graph(conn)
         guardrails = [g.policy_id for g in effective_guardrails(story.content_rating_id, graph)]

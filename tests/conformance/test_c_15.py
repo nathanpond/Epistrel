@@ -36,9 +36,10 @@ Every C-15 (M3) part lives in this file (traceability counts a test ID per miles
   (``tests/fixtures/api/fr_api_6_routes.json``, ``tests/api_surface_support.py``) against the
   full app in both directions, with C-03's parity list and C-01's schema check over the same
   app; ``test_c_15__replay``, every mutating route's replay under its ``Idempotency-Key`` on
-  both surfaces; and ``test_c_15__operation_stages``, ``GET /operations/{id}`` for the four
-  long-running kinds. The replay and stage helpers are in ``tests/api_surface_support.py``
-  and ``tests/replay_support.py``.
+  both surfaces, and every write that takes no key by design repeated without one; and
+  ``test_c_15__operation_stages``, ``GET /operations/{id}`` for the four long-running kinds.
+  The replay and stage helpers are in ``tests/api_surface_support.py`` and
+  ``tests/replay_support.py``.
 """
 
 from __future__ import annotations
@@ -126,11 +127,15 @@ from tests.media_support import (
 from tests.model_support import config_key
 from tests.rating_change_support import change_rating, guard_rating, rating_db, run_jobs
 from tests.replay_support import (
+    UNKEYED,
+    UNKEYED_READS,
+    UNKEYED_WRITES,
     grown,
     mutating_routes,
     replay_library,
     replay_rest,
     table_counts,
+    unkeyed_routes,
 )
 from tests.respond_support import FIRST, PLAYER, new_story
 from tests.story_support import rest, story_body
@@ -1193,16 +1198,27 @@ result)."""
 @pytest.mark.part("M3", "FR-API-6")
 async def test_c_15__replay(replay_surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None:
     """Every mutating route accepts an ``Idempotency-Key``: its replay answers the stored result
-    (``Idempotent-Replay: true`` over REST) and writes no row, over REST and in-process.
+    (``Idempotent-Replay: true`` over REST) and writes no row, over REST and in-process. A route
+    with a mutating method flagged ``mutating=False`` takes no key: each is named in
+    ``replay_support.UNKEYED`` with its reason (a write idempotent by design, docs/02 §9, or a
+    dry run), and is sent twice without a key, the repeat answering the same (a re-rate is 200)
+    and adding no row.
 
     Complement asserted: a mutating route that no keyed step reached fails the coverage check
     (``mutating_routes`` minus the replayed set is empty only because each was replayed), and
     the replays were real (the run replayed every one, and the flagged ``mutating=False`` routes
-    are not among them)."""
+    are not among them); a newly flagged route not named in ``UNKEYED``, or one no step
+    repeated, fails the unkeyed checks."""
 
     app = create_app(auth_settings(dummy_dsn, mode="all"))
     mutating = set(mutating_routes(app))
     assert {"suggest_ratings_character", "validate_scenario", "impact_preview"}.isdisjoint(mutating)
+    flagged = set(unkeyed_routes(app))
+    assert flagged == set(UNKEYED), (
+        f"unnamed: {sorted(flagged - set(UNKEYED))}, stale: {sorted(set(UNKEYED) - flagged)}"
+    )
+    assert set(UNKEYED_WRITES).isdisjoint(UNKEYED_READS)
+    assert flagged.isdisjoint(mutating)
     rest_settings, lib_settings = replay_surfaces
     for settings, run in ((rest_settings, replay_rest), (lib_settings, replay_library)):
         db = make_engine(settings)
@@ -1213,6 +1229,8 @@ async def test_c_15__replay(replay_surfaces: tuple[Settings, Settings], dummy_ds
         assert seen.problems == [], f"{run.__name__}:\n" + "\n".join(seen.problems)
         missing = sorted(mutating - seen.replayed - set(REPLAY_EXCLUDED))
         assert missing == [], f"{run.__name__}: no replayed step for {missing} {seen.answers}"
+        unrepeated = sorted(flagged - seen.repeated)
+        assert unrepeated == [], f"{run.__name__}: no repeated step for {unrepeated}"
     assert len(seen.answers) > len(mutating), "the sequence ran to its end"
 
     # Complement: the row check sees a write. The same draft under a new key is a second row;

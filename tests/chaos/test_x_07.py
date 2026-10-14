@@ -992,3 +992,106 @@ def _run_entrypoint(tmp_path: Path, args: list[str], env_mode: str | None) -> st
         env["EPISTREL_MODE"] = env_mode
     subprocess.run(["/bin/sh", str(entry), *args], env=env, cwd=tmp_path, check=True, timeout=20)
     return log.read_text()
+
+
+# -- the media sweep (M3) ---------------------------------------------------------------------
+
+
+async def _retired_assets(space: Any, count: int) -> dict[str, str]:
+    """``count`` retired assets nothing references (unique bytes each): id -> checksum."""
+    from tests.integration.test_media_assets import SWEEPER, put
+    from tests.media_support import png
+
+    found: dict[str, str] = {}
+    for n in range(count):
+        media_id = await put(space, png(nonce=f"x07-media-{n}"))
+        found[media_id] = (await space.lib.get_media(SWEEPER, media_id)).checksum
+        await space.lib.delete_media(SWEEPER, media_id)
+    return found
+
+
+async def _media_ids(db: AsyncEngine) -> set[str]:
+    async with db.connect() as conn:
+        return {str(i) for i in await conn.scalars(text("SELECT id FROM media_assets"))}
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M3", "NFR-REL-5")
+async def test_x_07__media_sweep(
+    pg_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The media sweep recovers the same way (#343): killed while purging its second asset, the
+    first purge (row and bytes) stands and the rest stay; run again it purges the rest, each
+    once, leaving what one uninterrupted run leaves, and a third run changes nothing. Missed
+    for three intervals while no worker ran, workers racing for it fire it once, and one
+    worker runs it once.
+
+    Complements asserted: the killed run purged exactly one asset; the rerun deletes each
+    remaining blob once; after the race exactly one ``media_sweep`` job exists."""
+    from epistrel.core.media import sweep as media_sweep
+    from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
+    from tests.media_support import blob_path, scratch
+
+    async with scratch(pg_url, tmp_path / "media") as space:
+        assets = await _retired_assets(space, 3)
+        calls = 0
+        blocked = asyncio.Event()
+        original = media_sweep._purge
+
+        async def killed(db: AsyncEngine, asset_id: str, now: datetime) -> str | None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                blocked.set()
+                await asyncio.Event().wait()  # killed here, before the second purge
+            return await original(db, asset_id, now)
+
+        monkeypatch.setattr(media_sweep, "_purge", killed)
+        run = asyncio.create_task(media_sweep.sweep(space.db, space.lib.media))
+        await asyncio.wait_for(blocked.wait(), 10)
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run
+        left = await _media_ids(space.db)
+        assert len(left) == 2
+        (gone,) = set(assets) - left
+        assert not blob_path(space.root, assets[gone]).exists()
+        assert all(blob_path(space.root, assets[m]).exists() for m in left)
+        monkeypatch.setattr(media_sweep, "_purge", original)
+
+        again = await media_sweep.sweep(space.db, space.lib.media)
+        assert (again["assets_purged"], again["blobs_deleted"]) == (2, 2)
+        assert await _media_ids(space.db) == set()
+        assert not any(blob_path(space.root, c).exists() for c in assets.values())
+        third = await media_sweep.sweep(space.db, space.lib.media)
+        assert (third["assets_purged"], third["blobs_deleted"]) == (0, 0)
+
+        # Missed for three intervals while no worker ran: racing workers fire it once.
+        late = await _retired_assets(space, 1)
+        interval = timedelta(seconds=3600)
+        await timer_api.reconcile(space.db)  # the registered tasks' rows, as a worker's start
+        async with space.db.begin() as conn:
+            await conn.execute(
+                update(recurring_tasks).values(next_run_at=_now() + timedelta(days=30))
+            )
+            await conn.execute(
+                update(recurring_tasks)
+                .where(recurring_tasks.c.name == media_sweep_job.MEDIA_SWEEP)
+                .values(next_run_at=_now() - 3 * interval - timedelta(seconds=5))
+            )
+        results = await asyncio.gather(*(timer_api.fire_due(space.db) for _ in range(4)))
+        fired = [name for r in results for name in r.recurring]
+        assert fired == [media_sweep_job.MEDIA_SWEEP]
+        assert len(await _jobs_of(space.db, media_sweep_job.MEDIA_SWEEP)) == 1
+        media_sweep_job.bind(space.lib.media)
+        try:
+            worker = Worker(space.db, _config(timers=False))
+            assert await _drain(space.db, worker) == 1
+        finally:
+            media_sweep_job.bind(None)
+        assert await _media_ids(space.db) == set()
+        assert not blob_path(space.root, next(iter(late.values()))).exists()
+        task = await _task(space.db, media_sweep_job.MEDIA_SWEEP)
+        assert task.last_status == "ok"
+        assert task.next_run_at > _now()

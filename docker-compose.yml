@@ -39,9 +39,13 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - media:/var/lib/epistrel/media  # the local blob store (EPISTREL_MEDIA_ROOT, #105)
+      # The erasure ledger (EPISTREL_ERASURE_LEDGER_DIR, #125): its own volume, never inside a
+      # database backup, so a restored backup still finds every erasure (docs/OPERATIONS.md).
+      - erasure-ledger:/var/lib/epistrel/erasure-ledger
     extra_hosts:
       - "host.docker.internal:host-gateway"  # a host-run model server (LM Studio) is reachable from the container
 
 volumes:
   pgdata:
   media:
+  erasure-ledger:

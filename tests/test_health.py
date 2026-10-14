@@ -24,6 +24,7 @@ def test_health_reports_ok(client: TestClient) -> None:
             "oldest_overdue_job_s": None,
             "ffmpeg": "ok",
             "ffprobe": "ok",
+            "erasure_pending": None,
         },
         "content_logging": False,
     }

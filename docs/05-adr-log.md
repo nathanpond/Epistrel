@@ -35,7 +35,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144 |
@@ -214,6 +214,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 150 | The model transport is the `openai` SDK against OpenAI-compatible endpoints | Current | — |
 | 151 | Video posters are taken with ffmpeg, a GPL program run as a separate process | Current | — |
 | 152 | A short-lived signed URL is enough to read media content | Current | — |
+| 153 | The erasure ledger's file is the authority, and a restore is reconciled before it is served | Current | — |
 
 ---
 
@@ -1449,6 +1450,14 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 **Context:** FR-MEDIA-3 serves large media to players and browsers, which fetch a URL and cannot send the service credential. On an S3-compatible store a presigned URL is served by the store itself, outside Epistrel's routes. The local store has no such server, so Epistrel must serve the bytes from a URL that carries its own authorization. Project invariant 4 required the credential on every route but five (ADR-149). The owner decided this when M3 was planned (#107, round two).
 **Decision:** `GET /media/{id}/url` (which needs the credential) returns a URL valid for `media_signed_url_ttl` seconds (default 300). On S3 it is the store's presigned `GET`. On the local store it is `/media/{id}/content?exp=&sig=` under `public_base_url`, with `sig` an HMAC-SHA256 of the method, path and expiry under an HKDF subkey of `EPISTREL_CONFIG_KEY`. A request to `GET /media/{id}/content` (and its `HEAD`) is served when it carries the credential *or* a valid, unexpired signature for that asset's path; an expired one is 403 `url_expired`, a forged one 403 `signature_invalid`, neither 401. With the credential, a bad signature is ignored. That route is the only one with this guard: it is listed in `SIGNED_ROUTES`, served from its own router (never in `worker` mode), and the route-table guard accepts the signed guard on that route and on no other. Invariant 4 is reworded to name it (FR-MEDIA-3, FR-AUTH-1, NFR-SEC-5).
 **Consequences:** Media play in a browser or a video element without exposing the credential, and only for as long as the URL lives; anyone holding such a URL can read that one asset's bytes until it expires, so the consumer hands it only to whoever may see the asset. Every other route still needs the credential. Tests C-23 and the route-table guard (#44).
+
+---
+
+### ADR-153 — The erasure ledger's file is the authority, and a restore is reconciled before it is served
+**Status:** Accepted. Builds on ADR-046.
+**Context:** FR-ADMIN-7 keeps the erasure ledger outside the backups it governs and copied into each of them, and serves no restored story until the ledger has been reapplied. ADR-046 decided that, but not where the outside copy lives, which copy wins, or how a restore is caught when the backup predates an erasure. The owner decided, when M3 was planned (#125, round one), that Epistrel reapplies the ledger by itself at start-up and blocks the affected stories until it has.
+**Decision:** The authority is an append-only file, `EPISTREL_ERASURE_LEDGER_DIR/ledger.jsonl`, on its own volume (`erasure-ledger` in compose, separate from `pgdata` and `media`). It holds one JSON line per erasure, with identifiers, counts and keyed hashes and never a name. The lines are hash-chained: each `ledger_hash` is the SHA-256 of the line's canonical JSON, and each `ledger_hash_prev` is the previous line's hash. An erasure appends its line and fsyncs it before it commits, under an advisory lock held to the commit, so the chain's order is the commit order. The same row, with the same hashes, goes into the `erasure_ledger` table, which every `pg_dump` carries. A file that cannot be written refuses the erasure (503 `ledger_unavailable`). Before traffic, start-up compares the file with the table. A line the table lacks becomes pending and blocks its story (`blocked_by_erasure`: every read and write is 503 `erasure_pending`, except deleting the story and listing it). A row the file lacks is appended to the file. Differing copies, a broken chain or an unwritable directory refuse the start (exit 78). The reconciler reapplies each pending erasure with #124's own operation: the original id, principal `system`, and no new ledger line. It runs in the background under an advisory lock that every process shares, catalog erasures first, then every 5 minutes until none is pending. `epistrel backup verify` lists erasure markers as expected gaps and checks a dump's ledger rows against the file. `GET /admin/erasure/boundary`, `docs/OPERATIONS.md` and the API description state the erasure boundary from one constant (FR-ADMIN-7, FR-ADMIN-8, FR-ADMIN-4).
+**Consequences:** Restoring an old backup cannot serve an erased person again. The restored stories wait, refused, until the reapply finishes. A deployment that loses the ledger volume rebuilds it from the database's copy, chained anew. One that restores the file from a backup loses the erasures made after that backup, so the documentation says never to restore it. A reapply that cannot run, for example without `EPISTREL_CONFIG_KEY`, keeps its story blocked and is reported, never dropped. Tests S-ERASURE-BOUNDARY (M3) and `tests/integration/test_erasure_ledger.py`.
 
 ---
 

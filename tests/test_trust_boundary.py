@@ -130,9 +130,10 @@ def test_s_trust_boundary__auth(client: TestClient, app: FastAPI, spy: AsyncMock
     for path in MCP_PATHS:
         assert client.get(path, headers=bearer()).status_code == 404
 
-    # The API documentation states that Epistrel sits behind the consumer.
+    # The API documentation starts by stating that Epistrel sits behind the consumer (#125
+    # appends more after it).
     schema = client.get("/openapi.json").json()
-    assert schema["info"]["description"] == TRUST_BOUNDARY_STATEMENT
+    assert schema["info"]["description"].startswith(TRUST_BOUNDARY_STATEMENT)
     assert "behind the consumer" in TRUST_BOUNDARY_STATEMENT
     assert schema["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"
 

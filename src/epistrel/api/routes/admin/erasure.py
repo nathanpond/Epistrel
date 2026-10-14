@@ -1,5 +1,7 @@
 """``POST /admin/erasure``: erase a subject within a story or from the catalog (FR-ADMIN-2,6,
-NFR-PRIV-2; #124).
+NFR-PRIV-2; #124). The erasure ledger's reconciliation and the erasure boundary (FR-ADMIN-7,8;
+#125): ``GET /admin/erasure/status``, ``POST /admin/erasure/reconcile`` and
+``GET /admin/erasure/boundary``.
 
 One handler, one ``Engine.erase`` call. The answer is the same model for a dry run and a real
 run: the counts (``records``, ``prose_segments``, ``media``, ``idempotency_results``), the
@@ -14,13 +16,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.deps import ContextDep, EngineDep, route_flags
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import DeploymentMutationResponse
+from epistrel.core.erasure.boundary import ErasureBoundary, render_boundary
 from epistrel.core.erasure.erase import ErasureRequest, ErasureResult
+from epistrel.core.erasure.ledger import ReconcileRun, ReconcileStatus
 
 router = APIRouter(prefix="/erasure")
 
@@ -149,8 +153,9 @@ class ErasureBody(DeploymentMutationResponse):
         "`dry_run: true` answers the counts and changes nothing (zero counts for an unknown "
         "subject). The ledger records identifiers, scope, story and counts, never content. "
         "404 for an unknown story, or on a real run an unknown subject; 503 "
-        "`config_key_missing` without `EPISTREL_CONFIG_KEY`. Out of scope: delivered exports, "
-        "data a model provider holds, and backups taken before the erasure."
+        "`config_key_missing` without `EPISTREL_CONFIG_KEY`; 503 `ledger_unavailable` when the "
+        "erasure ledger's file cannot be written (nothing is erased). The erasure boundary, "
+        "what erasure does not reach, is `GET /admin/erasure/boundary`."
     ),
 )
 async def erase(
@@ -160,4 +165,155 @@ async def erase(
     return answered(ErasureBody.of(result), ctx, response, replayed=result.replayed)
 
 
-__all__ = ["ErasureBody", "LedgerEntryBody", "ReferencingStoryBody", "router"]
+class PendingErasureBody(BaseModel):
+    """An erasure the ledger holds and this database has not applied yet, and its story (null
+    for the catalog scope)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    erasure_id: str
+    story_id: str | None
+
+
+class ErasureStatusBody(BaseModel):
+    """The erasure ledger's reconciliation: what is pending and applied, and the last run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pending: list[PendingErasureBody] = Field(
+        description="Entries not applied yet, the catalog scope first, then oldest first. Each "
+        "story among them is `blocked_by_erasure`: 503 `erasure_pending` until it is applied."
+    )
+    pending_count: int
+    applied_count: int = Field(description="Entries applied to this database.")
+    in_progress: bool = Field(description="Whether a reapply is running now.")
+    last_run_at: datetime | None = Field(description="When the last reapply run ended.")
+    last_error: str | None = Field(
+        description="The last run's error, as an exception class (never a message), or null."
+    )
+    attempts: dict[str, int] = Field(
+        description="Failed reapply attempts per pending entry; retried every 5 minutes."
+    )
+
+    @classmethod
+    def of(cls, found: ReconcileStatus) -> ErasureStatusBody:
+        return cls(
+            pending=[
+                PendingErasureBody(erasure_id=p.erasure_id, story_id=p.story_id)
+                for p in found.pending
+            ],
+            pending_count=found.pending_count,
+            applied_count=found.applied_count,
+            in_progress=found.in_progress,
+            last_run_at=found.last_run_at,
+            last_error=found.last_error,
+            attempts=dict(found.attempts),
+        )
+
+
+class ReconcileRunBody(BaseModel):
+    """A reconcile run: its id, whether it ran (``false``: another process was running it),
+    what it settled and failed, and what is still pending."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    ran: bool
+    settled: int
+    failed: int
+    pending_count: int
+
+    @classmethod
+    def of(cls, run: ReconcileRun) -> ReconcileRunBody:
+        return cls(
+            run_id=run.run_id,
+            ran=run.ran,
+            settled=run.settled,
+            failed=run.failed,
+            pending_count=run.pending_count,
+        )
+
+
+class ErasureBoundaryBody(BaseModel):
+    """What an erasure covers, what it cannot reach, and what the logs hold (FR-ADMIN-8)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    in_scope: list[str]
+    out_of_scope: list[str]
+    logs: str
+
+    @classmethod
+    def of(cls, boundary: ErasureBoundary) -> ErasureBoundaryBody:
+        return cls(
+            in_scope=list(boundary.in_scope),
+            out_of_scope=list(boundary.out_of_scope),
+            logs=boundary.logs,
+        )
+
+
+@router.get(
+    "/status",
+    response_model=ErasureStatusBody,
+    operation_id="erasure_status",
+    summary="Read the erasure ledger's reconciliation",
+    description=(
+        "The erasure ledger (FR-ADMIN-7) is kept outside the database, in "
+        "`EPISTREL_ERASURE_LEDGER_DIR`, and copied into the `erasure_ledger` table that every "
+        "backup carries. At start-up, Epistrel compares the two: an erasure the database lacks "
+        "(a restored backup that predates it) becomes pending, and its story is "
+        "`blocked_by_erasure` (every read and write of it is 503 `erasure_pending`) until "
+        "Epistrel has reapplied the erasure itself. This reports what is pending (with each "
+        "story), how many entries are applied, whether a reapply is running, and the last "
+        "run's time, error class and attempts."
+    ),
+)
+async def erasure_status(ctx: ContextDep, engine: EngineDep) -> ErasureStatusBody:
+    return ErasureStatusBody.of(await engine.erasure_status(ctx))
+
+
+@router.post(
+    "/reconcile",
+    response_model=ReconcileRunBody,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="reconcile_erasure",
+    summary="Reconcile the erasure ledger now",
+    description=(
+        "Compare the erasure ledger's file with the database and reapply every pending "
+        "erasure now (FR-ADMIN-7), as start-up and the 5-minute retry do. It answers when the "
+        "run has ended; `ran` is `false` when another process was already running it, and "
+        "`GET /admin/erasure/status` shows the outcome. It changes no story content of its "
+        "own (each reapply is the erasure the ledger already records), takes no "
+        "`Idempotency-Key` and records no operation: running it again is harmless."
+    ),
+    **route_flags(mutating=False),
+)
+async def reconcile_erasure(ctx: ContextDep, engine: EngineDep) -> ReconcileRunBody:
+    return ReconcileRunBody.of(await engine.reconcile_erasure(ctx))
+
+
+@router.get(
+    "/boundary",
+    response_model=ErasureBoundaryBody,
+    operation_id="erasure_boundary",
+    summary="Read the erasure boundary",
+    description=(
+        "What an erasure covers and what it cannot reach (FR-ADMIN-8), as data. The same text "
+        "is in `docs/OPERATIONS.md` and at the end of this API's description:\n\n"
+        + render_boundary()
+    ),
+)
+async def erasure_boundary(ctx: ContextDep, engine: EngineDep) -> ErasureBoundaryBody:
+    return ErasureBoundaryBody.of(await engine.erasure_boundary(ctx))
+
+
+__all__ = [
+    "ErasureBody",
+    "ErasureBoundaryBody",
+    "ErasureStatusBody",
+    "LedgerEntryBody",
+    "PendingErasureBody",
+    "ReconcileRunBody",
+    "ReferencingStoryBody",
+    "router",
+]

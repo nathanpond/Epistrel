@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.db import make_engine, make_sync_engine, normalize_url
-from tests.auth_support import auth_settings
+from tests.auth_support import ERASURE_LEDGER_DIR, auth_settings
 from tests.perf.census import CENSUS, installed
 
 pytest_plugins = ("pytester",)
@@ -107,10 +107,14 @@ def _turn_census() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _clean_epistrel_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip every EPISTREL_* variable so tests see only what they set (EPISTREL_TEST_* kept)."""
+    """Strip every EPISTREL_* variable so tests see only what they set (EPISTREL_TEST_* kept),
+    except ``EPISTREL_ERASURE_LEDGER_DIR``: it points at this process's ledger directory, so an
+    app built from bare ``Settings`` never writes an erasure ledger under the repository and
+    always reads the one that matches the session database (#125)."""
     for name in list(os.environ):
         if name.upper().startswith("EPISTREL_") and not name.upper().startswith("EPISTREL_TEST_"):
             monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("EPISTREL_ERASURE_LEDGER_DIR", str(ERASURE_LEDGER_DIR))
 
 
 @pytest.fixture

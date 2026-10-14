@@ -41,16 +41,17 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
-from sqlalchemy import Row, and_, func, select, text, update
+from sqlalchemy import Row, and_, exists, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock
 from epistrel.core.context import SYSTEM_PRINCIPAL
+from epistrel.core.enums import StoryStatus
 from epistrel.core.events.operation import LOCK_TIMEOUT, Operation, Withdrawn
 from epistrel.core.ids import new_ulid
 from epistrel.core.input_versions import stale_inputs
-from epistrel.core.tables import jobs
+from epistrel.core.tables import jobs, stories
 from epistrel.orchestrator.jobs import handlers
 from epistrel.orchestrator.jobs.types import ClaimedJob, JobHandler, JobOutput
 
@@ -159,11 +160,21 @@ def _claimed(row: Row[Any]) -> ClaimedJob:
 
 
 async def claim(db: AsyncEngine, worker_id: str, *, lease_s: float) -> ClaimedJob | None:
-    """Claim the earliest due ``queued`` job (``SKIP LOCKED``), or ``None`` when none is due."""
+    """Claim the earliest due ``queued`` job (``SKIP LOCKED``), or ``None`` when none is due.
+    A job of a story the erasure reconciler blocked stays queued, unclaimed, until the story is
+    unblocked (#125)."""
     now = clock.now()
+    blocked = exists().where(
+        stories.c.id == jobs.c.story_id,
+        stories.c.status == StoryStatus.BLOCKED_BY_ERASURE.value,
+    )
     due = (
         select(jobs.c.id)
-        .where(jobs.c.status == QUEUED, jobs.c.due_at <= now)
+        .where(
+            jobs.c.status == QUEUED,
+            jobs.c.due_at <= now,
+            or_(jobs.c.story_id.is_(None), ~blocked),
+        )
         .order_by(jobs.c.due_at, jobs.c.id)
         .limit(1)
         .with_for_update(skip_locked=True)

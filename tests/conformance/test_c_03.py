@@ -1316,6 +1316,22 @@ def _steps() -> list[Step]:
             lambda ids: Rest("POST", "/admin/erasure", _erasure_request(ids)),
             lambda e, ids: _erase(e, _erasure_request(ids)),
         ),
+        # -- the erasure ledger's reconciliation and the boundary (#125)
+        Step(
+            "reconcile_erasure",
+            lambda ids: Rest("POST", "/admin/erasure/reconcile"),
+            lambda e, ids: _reconcile_erasure(e),
+        ),
+        Step(
+            "erasure_status",
+            lambda ids: Rest("GET", "/admin/erasure/status"),
+            lambda e, ids: _erasure_status(e),
+        ),
+        Step(
+            "erasure_boundary",
+            lambda ids: Rest("GET", "/admin/erasure/boundary"),
+            lambda e, ids: _erasure_boundary(e),
+        ),
         # -- media assets (#105)
         Step(
             "upload_media",
@@ -1964,6 +1980,24 @@ async def _erase(engine: Engine, body: dict[str, Any]) -> dict[str, Any]:
     return dump(ErasureBody.of(await engine.erase(CTX, ErasureRequest.model_validate(body))))
 
 
+async def _reconcile_erasure(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.erasure import ReconcileRunBody
+
+    return dump(ReconcileRunBody.of(await engine.reconcile_erasure(CTX)))
+
+
+async def _erasure_status(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.erasure import ErasureStatusBody
+
+    return dump(ErasureStatusBody.of(await engine.erasure_status(CTX)))
+
+
+async def _erasure_boundary(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.erasure import ErasureBoundaryBody
+
+    return dump(ErasureBoundaryBody.of(await engine.erasure_boundary(CTX)))
+
+
 async def _offboarding(engine: Engine, job_id: str) -> dict[str, Any]:
     return dump(await engine.get_offboarding(CTX, job_id))
 
@@ -2233,14 +2267,25 @@ def parity_gaps(engine_class: type[Engine], app: FastAPI, steps: list[Step]) -> 
 
 
 @pytest.fixture(scope="module")
-def surfaces(pg_url: str) -> Any:
+def surfaces(pg_url: str, tmp_path_factory: pytest.TempPathFactory) -> Any:
+    # Each surface's database has its own erasure ledger file (#125), as a deployment has.
     with (
         migrated_database(pg_url, "epistrel_c03_rest") as rest_url,
         migrated_database(pg_url, "epistrel_c03_lib") as lib_url,
     ):
         yield (
-            auth_settings(rest_url, model_adapter="stub", config_key=config_key()),
-            auth_settings(lib_url, model_adapter="stub", config_key=config_key()),
+            auth_settings(
+                rest_url,
+                model_adapter="stub",
+                config_key=config_key(),
+                erasure_ledger_dir=tmp_path_factory.mktemp("c03-rest-ledger"),
+            ),
+            auth_settings(
+                lib_url,
+                model_adapter="stub",
+                config_key=config_key(),
+                erasure_ledger_dir=tmp_path_factory.mktemp("c03-lib-ledger"),
+            ),
         )
 
 

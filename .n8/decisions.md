@@ -5435,3 +5435,91 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** Verification fix, round 1 (test coverage): `test_a_persona_player_is_named_as_the_persona` covers a player character made from a saved persona. A message that names the persona has both `character` and `persona` rows, and so does the character's own declared row. To cover the `persona_snapshot.name` scan term, the test sets the character's name directly (no route renames a character) and checks that `story_subjects` still holds the persona's name.
   **Why:** Removing the persona link or the snapshot-name term left every test green. The direct UPDATE is the only way to give the character a name that differs from its persona's (`personas.player_character` copies the name). Cost if wrong: the last assertion tests a state production cannot reach today. It still guards the term in case a rename lands later.
   **Issue:** #123
+- **Decision (drift):** The ledger file is `<EPISTREL_ERASURE_LEDGER_DIR>/ledger.jsonl`. The default is `var/erasure-ledger`; the image and compose use `/var/lib/epistrel/erasure-ledger`, on the `erasure-ledger` volume. The line keeps the AC's `subject: {kind, id}` object and adds pass 2's fields: `{erasure_id, subject, scope, story_id, at, principal, operation_id, counts, scan_term_hashes, ledger_hash_prev, ledger_hash}`. Pass 2 had flattened `subject_kind`/`subject_id`. The table is #124's `erasure_ledger`, with the same hashes.
+  **Why:** The AC names the subject object, and "every clause" outranks the later planner line. The table maps the subject to its own columns. Cost if wrong: a reader of the raw file reads two keys instead of one object.
+  **Issue:** #125
+- **Decision (deviation):** Chain order is serialised by a Postgres advisory transaction lock (`LEDGER_LOCK_KEY`), held from the file append to the commit. `fcntl.flock` covers only the write itself. Pass 2 said the flock is held through the commit. The append (fsynced) comes before the row insert, in the same transaction. A file that cannot be written gives 503 `ledger_unavailable`, and nothing is erased.
+  **Why:** Holding a blocking flock across awaits in one event loop can deadlock two coroutines of the same process. The advisory lock gives commit order across processes without that risk. Cost if wrong: if the transaction fails after the append, a line is left that the next reconcile reapplies. That only repeats an erasure the operator asked for.
+  **Issue:** #125
+- **Decision (drift):** The block is a Core/Engine check, not a route dependency. `engine.gate_story_methods` wraps every public Engine coroutine method that has a `story_id` parameter; `test_every_story_method_is_gated` keeps it so. The exception is `delete_story` (`ERASURE_GATE_EXEMPT`), which now calls the core `check_expected_revision`, so the gated method does not refuse it. `Operation` refuses non-erasure work on a blocked story at begin and at commit (`_refuse_blocked`). The reapply's own consolidation and rebuild operations pass through a contextvar (`ledger.reapplying`). The job claim leaves a blocked story's jobs queued. `stories.delete_story` settles pending entries `story_deleted`. OpenAPI documents 503 `erasure_pending` and `ledger_unavailable` on every `{story_id}` route except `DELETE /stories/{id}`.
+  **Why:** The drift note (#47: preconditions live in the Engine so the library enforces them too). Wrapping by signature also covers story methods added later. Cost if wrong: one indexed status read per story call.
+  **Issue:** #125, #44, #47
+- **Decision:** An Engine that has not compared the ledger runs one `mark` pass on its first story call. The app's lifespan runs it before traffic: `start_erasure_reconcile`, after `bind`, in every mode. With the database down, start-up logs a warning and goes on (`test_health_db` still holds), and the first story call compares instead. File-only problems are checked in `cli._preflight` and again in the lifespan: an unwritable directory, a malformed line or a broken chain exits 78 or raises `ConfigError`. So is a mismatch between file and table.
+  **Why:** The drift note on keeping start-up alive with the database down. The lazy pass also protects library embedders that never run the lifespan. Cost if wrong: one extra pass per Engine.
+  **Issue:** #125, #32, #63
+- **Decision:** `mark` writes nothing when the file and the table agree, and `reapply` writes no run state when nothing is pending. Each reconcile run logs one INFO summary (`erasure ledger reconciled`), with counts and ids only. The start-up run and a requested run log one each. Pending means `applied_at IS NULL` and `copied_from IS NULL`. A pending entry whose story is gone is settled `story_missing`; one whose subject is gone, `subject_missing`. Rows are inserted and appended under the ledger lock, both copies read after taking it.
+  **Why:** The AC's complement ("no-op ... zero log entries beyond the summary"). Tests elsewhere compare whole-table dumps around an Engine's first story call. Cost if wrong: none.
+  **Issue:** #125
+- **Decision (deviation):** `POST /admin/erasure/reconcile` (`mutating=False`, 202) runs the mark and reapply passes inline and answers when they end: `{run_id, ran, settled, failed, pending_count}`. `ran` is false when another process holds `RECONCILE_LOCK_KEY`. The plan said 202 `{run_id}` for a run started in the background.
+  **Why:** An inline run has no task left over in tests or in C-03, and gives the caller its outcome. The 202 and `run_id` follow the plan; `in_progress` in the status reads the advisory lock in `pg_locks`, so a crashed run never shows as running. Cost if wrong: a large reapply holds the request open; status polling still works.
+  **Issue:** #125
+- **Decision (deviation):** `epistrel backup verify` reads the dump with `pg_restore --file=- --data-only --table=erasure_ledger --table=events`, the archive fed on standard input, and parses the `COPY` text. It does not restore into a scratch database `epistrel_verify_<ulid>` as pass 2 said. `--ledger` or `EPISTREL_ERASURE_LEDGER_DIR` names the ledger; full Settings are not loaded, so `--keep` does not exist. The exit codes follow the plan: 0, 2, 3, 4, 5. `backup dump` puts the password in `PGPASSWORD`, never on the command line, and exits 4 without `pg_dump`.
+  **Why:** No `CREATE DATABASE` right, server or credentials are needed, so an operator can check a dump offline. In the tests, the container's own `pg_restore` runs through a `docker exec -i` wrapper (`--pg-restore`). Cost if wrong: a `pg_restore` version older than the dump's cannot read it, which is exit 3, the same as with the planned approach.
+  **Issue:** #125
+- **Decision (drift):** Settled deviations and drift corrections:
+  - The 503 window is held by the new pause point `erasure.reconcile.before_reapply` in `epistrel.testing.pauses`. The planned point in `testing.faults` would make Core import the API.
+  - The restore test uses a module-scoped container of its own (`tests/ledger_support.py`), with a fresh migrated database per test, and fails rather than skips with `EPISTREL_TEST_DATABASE_URL` set.
+  - `stories.status` keeps checked text: the check is recreated with frozen labels in migration 0040. That migration adds `blocked_by_erasure`, `status_before_block` (with a check pairing it with the status), `applied_note`, `copied_from`, the append-only trigger (UPDATE only of `applied_at`, `applied_note`, `ledger_hash_prev`, `ledger_hash`; no DELETE or TRUNCATE) and `deployment_state.erasure_reconcile_state`.
+  - The docs test is `test_s_erasure_boundary__docs`.
+  - #44's `info.description` equality is now `startswith(TRUST_BOUNDARY_STATEMENT)`. The description is the statement, a blank line, then `render_boundary()`.
+  - A reapply calls #124's `erase(..., erasure_id=, principal="system", write_ledger=False)`.
+  **Why:** The drift notes. Cost if wrong: file moves and renames only.
+  **Issue:** #125, #44, #124
+- **Decision:** The boundary text lives in `core/erasure/boundary.py` (`ERASURE_BOUNDARY`):
+  - `out_of_scope`: the AC's three literal strings, plus pass 2's older-backups and logs items;
+  - `logs`: the AC's literal;
+  - `in_scope`: pass 1's list, with the `erasure_shared_media` sentence stating both `purge` and `retire`.
+  #124's `erase` route description dropped its own out-of-scope sentence; it points to `GET /admin/erasure/boundary` and adds 503 `ledger_unavailable`. #123's `SUBJECT_WRITERS` tables are named by kind in the in-scope list, not generated from the registry.
+  **Why:** One source the API, `docs/OPERATIONS.md` and the OpenAPI description render; the test compares them with whitespace normalised. A list generated from the registry would change the docs whenever a table is added. Cost if wrong: one list to keep in step by hand.
+  **Issue:** #125, #124, #123
+- **Decision:** Test-support changes that touch every test:
+  - `tests/auth_support.ERASURE_LEDGER_DIR` is a per-process temp directory, like `MEDIA_ROOT`. `auth_settings` uses it.
+  - `conftest._clean_epistrel_env` sets `EPISTREL_ERASURE_LEDGER_DIR` to it, so bare `Settings` never write a ledger under the repository.
+  - C-03's two surfaces each get their own ledger directory.
+  - The exact `/health` bodies in `test_health.py` and `test_health_db.py` add `erasure_pending: null`.
+  **Why:** The ledger file must match the database it governs. A shared file across fresh databases would insert foreign entries as `story_missing` rows. Cost if wrong: none.
+  **Issue:** #125
+- **Decision:** Known limits, not built:
+  - Queued turns (`turn_queue`) of a blocked story are not held. Their drain fails with `erasure_pending` and they end failed. A queued turn of a restored story would have generated from pre-erasure context, so this is the safe direction.
+  - `GET /operations/{id}` of a blocked story's operation still answers, as pass 2 allows. A stored result there was purged by the reapply only once it ran.
+  - The 10-minute budget applies to the start-up run only.
+  **Why:** The plan names the job claim, not the turn queue. Cost if wrong: an operator re-sends a turn queued before a restore.
+  **Issue:** #125, #63
+- **Decision:** ADR-153 is appended (a new ADR, not an amendment), with its index rows. `docs/OPERATIONS.md` is new (Backups, Restore, Erasure ledger, Verify, and the marked boundary block). The README and docs/02 §12 and §4.10 link to it. `.env.example`, the Dockerfile (env and pre-created directory) and compose (the `erasure-ledger` volume) gain the ledger directory.
+  **Why:** Pass 1/pass 2. Cost if wrong: none.
+  **Issue:** #125
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #125 made the erasure ledger's file the authority and added a block for unreconciled stories. Shapes later stories build on:
+  - **Ledger.** `core.erasure.ledger`: `LedgerFile` (`EPISTREL_ERASURE_LEDGER_DIR/ledger.jsonl`, hash-chained) and `Entry`. `write(conn, ledger, entry)` sits inside #124's transaction; `erase(..., ledger=)` takes the Engine's `self.ledger`. A file that cannot be written gives 503 `ledger_unavailable`.
+  - **Table.** Migration 0040 adds `erasure_ledger.applied_note` and `copied_from` (excluded from reconciliation) and makes the table append-only.
+  - **Block.** `stories.status` gains `blocked_by_erasure` (with `status_before_block`). Every gated Engine story method answers 503 `erasure_pending` (`Retry-After: 30`, details `{story_id, erasure_id, pending_count}`), except `delete_story`; so do `Operation` and the job claim. `ledger.reapplying(story_id)` lets the reapply's own operations through.
+  - **Routes.** `GET /admin/erasure/status` (`erasure_status`), `POST /admin/erasure/reconcile` (`reconcile_erasure`, `mutating=False`, 202), `GET /admin/erasure/boundary` (`erasure_boundary`). `/health` gains `checks.erasure_pending`.
+  - **Job and CLI.** The recurring job `erasure_reconcile_retry` (5 min); `epistrel backup dump|verify`.
+  - **Docs.** `info.description` = the trust statement + the rendered boundary; `docs/OPERATIONS.md`; ADR-153.
+  **Why:** #125's AC and pass-1/pass-2 lines, corrected by its drift notes. The decision entries above give the details.
+  **Affects:**
+  - **M3 #127 (resurrection guard).** A fork copies ledger rows with `copied_from` set; the reconciler ignores those. A fork of a blocked story is refused (gated). Its slices join `tests/erasure/test_s_erasure_boundary.py`.
+  - **M3 #126 (feedback export).** The boundary's out-of-scope "exports already delivered" is the documentation clause C-27 checks (`core.erasure.boundary.DELIVERED_EXPORTS`).
+  - **M3 #128 (API surface).**
+    - Three new routes.
+    - `erasure_pending` and `ledger_unavailable` are documented on every `{story_id}` route.
+    - `StoryStatus` gains a value.
+    - `/health` gains a field.
+    - `docs/openapi.json` is regenerated.
+    - A new story route's Engine method needs a `story_id` parameter to be gated, or an entry in `ERASURE_GATE_EXEMPT`.
+  - **M7 #249, #250, #251 (export and import).** An import applies this deployment's ledger from `LedgerFile.read()`/`erasure_ledger` rows. A bundle's ledger rows would carry `copied_from`.
+  - **M5 #178, M6 #211.** New write paths that build their own `Operation` inherit the block. Jobs are held by the claim.
+  - **The Console (nathanpond/Epistrel-Console).**
+    - An operator view of `GET /admin/erasure/status` with a "reconcile now" button (`POST /admin/erasure/reconcile`).
+    - The boundary text from `GET /admin/erasure/boundary`.
+    - Story lists showing `blocked_by_erasure`.
+    - Handling of 503 `erasure_pending` with `Retry-After`.
+  - **Next step:** #126, #127 and #128 are later group C stories in this run: their drift check should apply this. `/n8-replan` for M5, M6 and M7 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #125's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #125

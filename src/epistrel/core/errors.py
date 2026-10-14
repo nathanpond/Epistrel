@@ -985,3 +985,29 @@ class ErasureKeyMissing(EpistrelError):
 
     code = "config_key_missing"
     http_status = 503
+
+
+class ErasurePending(EpistrelError):
+    """The story is blocked by the erasure reconciler (FR-ADMIN-7; #125): the erasure ledger
+    holds an erasure of a subject in it that this database has not applied (a restored backup
+    that predates it), so the story is not served until the erasure is reapplied. Every read
+    and write of the story is refused, except deleting it; retry after ``Retry-After`` seconds.
+    ``details``: ``story_id``, ``erasure_id`` (the first pending erasure) and ``pending_count``
+    (the story's pending erasures)."""
+
+    code = "erasure_pending"
+    http_status = 503
+    RETRY_AFTER_S = 30
+
+    def response_headers(self) -> dict[str, str]:
+        return {"Retry-After": str(self.RETRY_AFTER_S)}
+
+
+class LedgerUnavailable(EpistrelError):
+    """The erasure ledger's file (``EPISTREL_ERASURE_LEDGER_DIR``) could not be written or read,
+    or its hash chain is broken (FR-ADMIN-7; #125): an erasure is refused and nothing is
+    written, since an erasure the file does not hold would not survive a restore. ``details``:
+    ``reason`` (``unwritable``, ``unreadable``, ``chain_broken``, ``mismatch``)."""
+
+    code = "ledger_unavailable"
+    http_status = 503

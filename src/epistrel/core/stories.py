@@ -75,6 +75,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import audit, clock, ownership, pause
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
+from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.erasure.index import drop_many, reindex_story
 from epistrel.core.erasure.records import character_record, idempotency_id, index_rows, story_record
 from epistrel.core.errors import (
@@ -975,7 +976,7 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
 
     One transaction under the story row lock: 404 when the story does not exist, 423
     ``story_busy`` while any of its operations is in flight or one of its jobs runs (#70).
-    Archived stories can be deleted.
+    Archived stories can be deleted, and so can a story the erasure reconciler blocked (#125).
     The deletion is recorded by a story-less ``control`` operation whose ``story_deleted``
     audit event names the story and the acting principal, and by a ``story_deleted``
     ``audit_log`` row (null ``story_id``; the story's earlier audit rows are detached). The
@@ -998,6 +999,9 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
         # The story's relations go too, and the deletion is recorded with its owner (#104).
         await ownership.drop_entity(conn, EntityType.STORY, story_id, principal=principal)
         removed.update(await _delete_story_rows(conn, story_id))
+        # A story blocked by the erasure reconciler may be deleted: its pending erasures are
+        # settled ``story_deleted`` (#125), since nothing of it is left to erase.
+        await erasure_ledger.settle_deleted(conn, story_id)
         await audit.record(
             conn,
             audit.AuditKind.STORY_DELETED,

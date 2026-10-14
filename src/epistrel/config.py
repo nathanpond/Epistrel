@@ -124,6 +124,13 @@ class Settings(BaseSettings):
     # a separate GPL program run as a process, never linked (invariant 2's exception); without it,
     # a video uploaded without a poster is refused (422 ``poster_required``).
     ffmpeg_path: str = Field(default="ffmpeg", min_length=1, max_length=1024)
+    # The erasure ledger's authoritative copy (FR-ADMIN-7; #125): ``<dir>/ledger.jsonl``, one
+    # hash-chained JSON line per erasure, kept outside the database and its backups (the
+    # ``erasure_ledger`` table is the copy every ``pg_dump`` carries). Created at start-up; a
+    # directory that cannot be written, or a file whose chain is broken, refuses the start
+    # (exit 78). The image sets /var/lib/epistrel/erasure-ledger (compose: the
+    # ``erasure-ledger`` volume, separate from ``pgdata`` and ``media``).
+    erasure_ledger_dir: Path = Path("var/erasure-ledger")
 
     @field_validator("database_url")
     @classmethod

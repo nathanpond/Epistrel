@@ -18,7 +18,10 @@ references ``engine_profile_versions``, so a pinned version always exists. #119 
 ``scenario_id``, ``scenario_version`` and ``scenario_snapshot`` (FR-SCN-9): the scenario version a
 story was created from, by identifiers only (the catalog never participates in a running story),
 and that version's whole document as genesis copied it; all three or none
-(``ck_stories_scenario_snapshot``).
+(``ck_stories_scenario_snapshot``). #125 adds the ``blocked_by_erasure`` status and
+``status_before_block``: the status a story had when the erasure reconciler blocked it (a restored
+backup that predates an erasure the ledger holds), restored when its reapply completes; set
+exactly while the story is blocked (``ck_stories_status_before_block``).
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -55,6 +58,15 @@ PIN_FOREIGN_KEY = "fk_stories_engine_profile_version_pin"
 STATUS_CHECK = "status IN ({})".format(", ".join(f"'{s.value}'" for s in StoryStatus))
 TURN_CONCURRENCY_CHECK = "turn_concurrency IN ('reject', 'queue')"
 TURN_QUEUE_MAX_CHECK = "turn_queue_max IS NULL OR turn_queue_max BETWEEN 1 AND 50"
+STATUS_BEFORE_BLOCK_CHECK = (
+    "(status = '{blocked}') = (status_before_block IS NOT NULL) AND "
+    "(status_before_block IS NULL OR status_before_block IN ({before}))"
+).format(
+    blocked=StoryStatus.BLOCKED_BY_ERASURE.value,
+    before=", ".join(
+        f"'{s.value}'" for s in StoryStatus if s is not StoryStatus.BLOCKED_BY_ERASURE
+    ),
+)
 SCENARIO_SNAPSHOT_CHECK = (
     "(scenario_id IS NULL AND scenario_version IS NULL AND scenario_snapshot IS NULL) "
     "OR (scenario_id IS NOT NULL AND scenario_version IS NOT NULL "
@@ -93,6 +105,8 @@ stories = Table(
     # FR-RATE-7 (#118): the ``rating_check_jobs`` row that paused the story (``status =
     # 'paused'``); ``NULL`` otherwise.
     Column("paused_by", ulid_type(), nullable=True),
+    # FR-ADMIN-7 (#125): the status to restore once the story's pending erasures are reapplied.
+    Column("status_before_block", Text, nullable=True),
     # FR-RATE-1: every story has exactly one rating (#48). The server default is the seeded
     # default; story creation resolves the deployment's current default explicitly.
     Column(
@@ -122,6 +136,7 @@ stories = Table(
     Column("scenario_version", Integer, nullable=True),
     Column("scenario_snapshot", JSONB, nullable=True),
     CheckConstraint(STATUS_CHECK, name="status"),
+    CheckConstraint(STATUS_BEFORE_BLOCK_CHECK, name="status_before_block"),
     CheckConstraint(SCENARIO_SNAPSHOT_CHECK, name="scenario_snapshot"),
     CheckConstraint(TURN_CONCURRENCY_CHECK, name="turn_concurrency"),
     CheckConstraint(TURN_QUEUE_MAX_CHECK, name="turn_queue_max"),

@@ -4924,6 +4924,37 @@
         "title": "ErasureBody",
         "type": "object"
       },
+      "ErasureBoundaryBody": {
+        "additionalProperties": false,
+        "description": "What an erasure covers, what it cannot reach, and what the logs hold (FR-ADMIN-8).",
+        "properties": {
+          "in_scope": {
+            "items": {
+              "type": "string"
+            },
+            "title": "In Scope",
+            "type": "array"
+          },
+          "logs": {
+            "title": "Logs",
+            "type": "string"
+          },
+          "out_of_scope": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Out Of Scope",
+            "type": "array"
+          }
+        },
+        "required": [
+          "in_scope",
+          "out_of_scope",
+          "logs"
+        ],
+        "title": "ErasureBoundaryBody",
+        "type": "object"
+      },
       "ErasureRequest": {
         "additionalProperties": false,
         "description": "``POST /admin/erasure``'s body (see the module docstring).",
@@ -4966,6 +4997,78 @@
           "scope"
         ],
         "title": "ErasureRequest",
+        "type": "object"
+      },
+      "ErasureStatusBody": {
+        "additionalProperties": false,
+        "description": "The erasure ledger's reconciliation: what is pending and applied, and the last run.",
+        "properties": {
+          "applied_count": {
+            "description": "Entries applied to this database.",
+            "title": "Applied Count",
+            "type": "integer"
+          },
+          "attempts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Failed reapply attempts per pending entry; retried every 5 minutes.",
+            "title": "Attempts",
+            "type": "object"
+          },
+          "in_progress": {
+            "description": "Whether a reapply is running now.",
+            "title": "In Progress",
+            "type": "boolean"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last run's error, as an exception class (never a message), or null.",
+            "title": "Last Error"
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the last reapply run ended.",
+            "title": "Last Run At"
+          },
+          "pending": {
+            "description": "Entries not applied yet, the catalog scope first, then oldest first. Each story among them is `blocked_by_erasure`: 503 `erasure_pending` until it is applied.",
+            "items": {
+              "$ref": "#/components/schemas/PendingErasureBody"
+            },
+            "title": "Pending",
+            "type": "array"
+          },
+          "pending_count": {
+            "title": "Pending Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending",
+          "pending_count",
+          "applied_count",
+          "in_progress",
+          "last_run_at",
+          "last_error",
+          "attempts"
+        ],
+        "title": "ErasureStatusBody",
         "type": "object"
       },
       "Error": {
@@ -5779,7 +5882,7 @@
         "type": "object"
       },
       "HealthChecks": {
-        "description": "Each check: the database, the workers, the oldest overdue timer and job (seconds;\n`null`: nothing overdue), and whether ffmpeg and ffprobe (video posters and probes) are\nthere (`missing` never changes the status).",
+        "description": "Each check: the database, the workers, the oldest overdue timer and job (seconds;\n`null`: nothing overdue), whether ffmpeg and ffprobe (video posters and probes) are\nthere (`missing` never changes the status), and the erasure ledger's entries not applied\nto this database yet (`erasure_pending`; above zero: `degraded`).",
         "properties": {
           "database": {
             "enum": [
@@ -5789,6 +5892,17 @@
             ],
             "title": "Database",
             "type": "string"
+          },
+          "erasure_pending": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Erasure Pending"
           },
           "ffmpeg": {
             "default": "missing",
@@ -9824,6 +9938,33 @@
           "received_parts"
         ],
         "title": "PartStoredBody",
+        "type": "object"
+      },
+      "PendingErasureBody": {
+        "additionalProperties": false,
+        "description": "An erasure the ledger holds and this database has not applied yet, and its story (null\nfor the catalog scope).",
+        "properties": {
+          "erasure_id": {
+            "title": "Erasure Id",
+            "type": "string"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
+          }
+        },
+        "required": [
+          "erasure_id",
+          "story_id"
+        ],
+        "title": "PendingErasureBody",
         "type": "object"
       },
       "Persona": {
@@ -14322,6 +14463,41 @@
           "text"
         ],
         "title": "RecentMessage",
+        "type": "object"
+      },
+      "ReconcileRunBody": {
+        "additionalProperties": false,
+        "description": "A reconcile run: its id, whether it ran (``false``: another process was running it),\nwhat it settled and failed, and what is still pending.",
+        "properties": {
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "pending_count": {
+            "title": "Pending Count",
+            "type": "integer"
+          },
+          "ran": {
+            "title": "Ran",
+            "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "settled": {
+            "title": "Settled",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_id",
+          "ran",
+          "settled",
+          "failed",
+          "pending_count"
+        ],
+        "title": "ReconcileRunBody",
         "type": "object"
       },
       "ReferenceImage": {
@@ -20267,11 +20443,12 @@
         "type": "object"
       },
       "StoryStatus": {
-        "description": "Where a story is in its lifecycle (#50). Stored as checked text, not a Postgres enum.\n\n``archived`` is read-only: truth-changing work is refused with ``story_archived``.\n``paused`` is reserved for M3's rating and reactivation checks.",
+        "description": "Where a story is in its lifecycle (#50). Stored as checked text, not a Postgres enum.\n\n``archived`` is read-only: truth-changing work is refused with ``story_archived``.\n``paused`` is reserved for M3's rating and reactivation checks.\n``blocked_by_erasure``: the erasure ledger holds an erasure this database has not applied\n(a restored backup that predates it; FR-ADMIN-7, #125). Every read and write of the story is\nrefused with 503 ``erasure_pending`` until the reconciler has reapplied it; the status it\nhad is kept in ``stories.status_before_block`` and restored then.",
         "enum": [
           "active",
           "archived",
-          "paused"
+          "paused",
+          "blocked_by_erasure"
         ],
         "title": "StoryStatus",
         "type": "string"
@@ -21854,7 +22031,7 @@
     }
   },
   "info": {
-    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.",
+    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
     "title": "Epistrel Engine",
     "version": "m2"
   },
@@ -22886,7 +23063,7 @@
     },
     "/admin/erasure": {
       "post": {
-        "description": "Right-to-be-forgotten erasure (FR-ADMIN-2, FR-ADMIN-6). `subject` is `{kind, id}` (`character`, `catalog_character` or `persona`) and `scope` `{story: <id>}` or `{catalog: true}`; a story `character` scoped to the catalog is 422 `invalid_erasure_scope`. **Story scope**: the subject's character rows, snapshots and deferred items are deleted (each leaves an erasure marker in the audit view, `include_audit=1`), every text in the story that names the subject reads `[erased]` where it did (a beat the subject said becomes `[erased]` whole, keeping its place), stored results that name it are purged, the rolling-summary segments that named it are summarised again from the redacted window (or stay redacted without a model), and the projections are rebuilt. It bumps the story's revision, so a turn in flight starts over, and runs on archived and paused stories too. **Catalog scope**: the catalog character (every version, its draft and companion) or the persona is deleted, the scenarios and other catalog records that name it are redacted, media depicting or naming only the subject are purged (or kept retired when another record still references them and `erasure_shared_media` is `retire`), and stories are never touched: `referencing_stories` lists those to erase separately. `dry_run: true` answers the counts and changes nothing (zero counts for an unknown subject). The ledger records identifiers, scope, story and counts, never content. 404 for an unknown story, or on a real run an unknown subject; 503 `config_key_missing` without `EPISTREL_CONFIG_KEY`. Out of scope: delivered exports, data a model provider holds, and backups taken before the erasure.",
+        "description": "Right-to-be-forgotten erasure (FR-ADMIN-2, FR-ADMIN-6). `subject` is `{kind, id}` (`character`, `catalog_character` or `persona`) and `scope` `{story: <id>}` or `{catalog: true}`; a story `character` scoped to the catalog is 422 `invalid_erasure_scope`. **Story scope**: the subject's character rows, snapshots and deferred items are deleted (each leaves an erasure marker in the audit view, `include_audit=1`), every text in the story that names the subject reads `[erased]` where it did (a beat the subject said becomes `[erased]` whole, keeping its place), stored results that name it are purged, the rolling-summary segments that named it are summarised again from the redacted window (or stay redacted without a model), and the projections are rebuilt. It bumps the story's revision, so a turn in flight starts over, and runs on archived and paused stories too. **Catalog scope**: the catalog character (every version, its draft and companion) or the persona is deleted, the scenarios and other catalog records that name it are redacted, media depicting or naming only the subject are purged (or kept retired when another record still references them and `erasure_shared_media` is `retire`), and stories are never touched: `referencing_stories` lists those to erase separately. `dry_run: true` answers the counts and changes nothing (zero counts for an unknown subject). The ledger records identifiers, scope, story and counts, never content. 404 for an unknown story, or on a real run an unknown subject; 503 `config_key_missing` without `EPISTREL_CONFIG_KEY`; 503 `ledger_unavailable` when the erasure ledger's file cannot be written (nothing is erased). The erasure boundary, what erasure does not reach, is `GET /admin/erasure/boundary`.",
         "operationId": "erase",
         "parameters": [
           {
@@ -23013,7 +23190,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -23030,6 +23207,248 @@
           }
         ],
         "summary": "Erase a subject from a story or from the catalog",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/erasure/boundary": {
+      "get": {
+        "description": "What an erasure covers and what it cannot reach (FR-ADMIN-8), as data. The same text is in `docs/OPERATIONS.md` and at the end of this API's description:\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
+        "operationId": "erasure_boundary",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureBoundaryBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read the erasure boundary",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/erasure/reconcile": {
+      "post": {
+        "description": "Compare the erasure ledger's file with the database and reapply every pending erasure now (FR-ADMIN-7), as start-up and the 5-minute retry do. It answers when the run has ended; `ran` is `false` when another process was already running it, and `GET /admin/erasure/status` shows the outcome. It changes no story content of its own (each reapply is the erasure the ledger already records), takes no `Idempotency-Key` and records no operation: running it again is harmless.",
+        "operationId": "reconcile_erasure",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconcileRunBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reconcile the erasure ledger now",
+        "tags": [
+          "admin"
+        ],
+        "x-epistrel-mutating": false
+      }
+    },
+    "/admin/erasure/status": {
+      "get": {
+        "description": "The erasure ledger (FR-ADMIN-7) is kept outside the database, in `EPISTREL_ERASURE_LEDGER_DIR`, and copied into the `erasure_ledger` table that every backup carries. At start-up, Epistrel compares the two: an erasure the database lacks (a restored backup that predates it) becomes pending, and its story is `blocked_by_erasure` (every read and write of it is 503 `erasure_pending`) until Epistrel has reapplied the erasure itself. This reports what is pending (with each story), how many entries are applied, whether a reapply is running, and the last run's time, error class and attempts.",
+        "operationId": "erasure_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureStatusBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read the erasure ledger's reconciliation",
         "tags": [
           "admin"
         ]
@@ -25205,7 +25624,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -36973,7 +37392,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -37157,7 +37576,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -37351,7 +37770,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -37555,7 +37974,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -37822,7 +38241,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38024,7 +38443,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38139,7 +38558,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38238,7 +38657,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38412,7 +38831,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38512,7 +38931,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38688,7 +39107,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38903,7 +39322,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -39129,7 +39548,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -39259,7 +39678,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -39498,7 +39917,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -39626,7 +40045,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -39760,7 +40179,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -39913,7 +40332,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -40090,7 +40509,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -40189,7 +40608,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -40363,7 +40782,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -40539,7 +40958,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -40752,7 +41171,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `budget_exhausted`, `database_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `turn_interrupted`.",
+            "description": "Unavailable; nothing was written: `budget_exhausted`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `turn_interrupted`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -40852,7 +41271,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -41052,7 +41471,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -41241,7 +41660,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -41491,7 +41910,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `budget_exhausted`, `database_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `turn_interrupted`.",
+            "description": "Unavailable; nothing was written: `budget_exhausted`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `turn_interrupted`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -41591,7 +42010,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -41765,7 +42184,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -41985,7 +42404,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -42179,7 +42598,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -42363,7 +42782,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -42590,7 +43009,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -42690,7 +43109,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",

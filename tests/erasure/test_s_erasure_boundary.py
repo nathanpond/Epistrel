@@ -1,8 +1,8 @@
 """S-ERASURE-BOUNDARY: erasure reaches derived prose (docs/04 §7; #124, and later #125, #127).
 
 One file for every slice of the scenario (the traceability gate allows one file per test and
-milestone): ``__catalog`` here (#124); #125's ``__restore`` and #127's resurrection slices join
-it.
+milestone): ``__catalog`` here (#124), #125's ``__restore`` and ``__docs``; #127's resurrection
+slices join it.
 
 ``test_s_erasure_boundary__catalog``: a catalog-scope erasure of a catalog character who appears
 in every version of herself, a scenario's seed and role, media of her own and shared with
@@ -15,20 +15,32 @@ separately.
 
 from __future__ import annotations
 
+import asyncio
+import json
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.api import create_app
 from epistrel.config import Settings
+from epistrel.core.erasure import boundary
+from epistrel.core.erasure.ledger import LedgerFile
 from epistrel.core.media.sweep import collect_blob
+from epistrel.testing import pauses
+from epistrel.tools import backup
 from tests import character_support as characters
 from tests import erasure_support as e
 from tests import genesis_support as g
+from tests import ledger_support as ledger
 from tests import media_support as media
 from tests import scenario_support as scenarios
-from tests.auth_support import MEDIA_ROOT
+from tests.auth_support import MEDIA_ROOT, auth_settings
+from tests.conftest import DUMMY_DSN, REPO_ROOT
 from tests.event_support import rows, scalar
 from tests.respond_support import respond_client
 
@@ -287,3 +299,180 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
         assert media.blob_path(MEDIA_ROOT, second_portrait["checksum"]).exists()
         assert await catalog_residue(engine, SECOND_TERMS) == {}
         assert [s["story_id"] for s in second["referencing_stories"]] == [story]
+
+
+@pytest.fixture(scope="module")
+def ledger_server() -> Iterator[ledger.Server]:
+    with ledger.dedicated_server() as server:
+        yield server
+
+
+async def _until_applied(client: Any, timeout_s: float = 60.0) -> dict[str, Any]:
+    """Poll ``GET /admin/erasure/status`` until nothing is pending."""
+    async with asyncio.timeout(timeout_s):
+        while True:
+            found = await client.get("/admin/erasure/status", headers=e.WRITE)
+            assert found.status_code == 200, found.text
+            body: dict[str, Any] = found.json()
+            if body["pending_count"] == 0 and not body["in_progress"]:
+                return body
+            await asyncio.sleep(0.1)
+
+
+@pytest.mark.part("M3", "FR-ADMIN-7")
+async def test_s_erasure_boundary__restore(ledger_server: ledger.Server, tmp_path: Path) -> None:
+    """Dump the database, erase Marisol from her story, restore the dump (the container's own
+    ``pg_restore``), start the app: the restored story names her again and is refused with 503
+    ``erasure_pending`` (``Retry-After``, the erasure's id) while the reapply is held, and listed
+    as ``blocked_by_erasure``; the story that never named her is served meanwhile (complement).
+    Once the reapply ends: the ledger table holds the file's entry again (same id and hashes,
+    settled ``reapplied``), her story is served with her name ``[erased]`` and an erasure
+    marker in the audit view, and its status is back. The ledger file, untouched by the
+    restore, drove it. ``backup verify`` lists the post-erasure dump's markers as expected gaps
+    and exits 0; on the pre-erasure dump it lists the erasure as newer than the dump."""
+    url = ledger_server.fresh()
+    ledger_dir = tmp_path / "ledger"
+    config = ledger.settings(url, ledger_dir)
+    before = tmp_path / "before.dump"
+
+    async with ledger.started(config) as (client, _):
+        stories = await ledger.two_stories(client)
+        ledger_server.dump(url, before)
+        done = await e.erase(client, "character", stories.subject, stories.named)
+    erasure_id = done["erasure_id"]
+    (line,) = LedgerFile(ledger_dir).read()
+    assert (line.erasure_id, line.story_id, line.subject_id) == (
+        erasure_id,
+        stories.named,
+        stories.subject,
+    )
+    file_bytes = (ledger_dir / "ledger.jsonl").read_bytes()
+
+    ledger_server.restore(url, before)
+    assert await ledger.ledger_rows(url) == []  # the dump predates the erasure
+    assert ledger.SUBJECT in " ".join(await ledger.pins(url, stories.named))
+
+    with pauses.held(pauses.ERASURE_RECONCILE_BEFORE_REAPPLY) as hold:
+        async with ledger.started(config) as (client, _):
+            await hold.arrived()
+            refused = await client.get(f"/stories/{stories.named}", headers=e.WRITE)
+            assert refused.status_code == 503, refused.text
+            assert refused.headers["Retry-After"] == "30"
+            error = refused.json()["error"]
+            assert error["code"] == "erasure_pending"
+            assert error["details"] == {
+                "story_id": stories.named,
+                "erasure_id": erasure_id,
+                "pending_count": 1,
+            }
+            for path in ("history", "pinned-memories"):
+                blocked = await client.get(f"/stories/{stories.named}/{path}", headers=e.WRITE)
+                assert blocked.status_code == 503, (path, blocked.text)
+                assert ledger.SUBJECT not in blocked.text
+            write = await client.put(
+                f"/stories/{stories.named}/pinned-memories",
+                json={"items": [{"text": "Nothing."}]},
+                headers=e.WRITE,
+            )
+            assert write.status_code == 503, write.text
+            served = await client.get(f"/stories/{stories.other}", headers=e.WRITE)
+            assert served.status_code == 200, served.text
+            listed = await client.get("/stories", headers=e.WRITE)
+            statuses = {s["id"]: s["status"] for s in listed.json()["items"]}
+            assert statuses[stories.named] == "blocked_by_erasure"
+            assert statuses[stories.other] == "active"
+            pending = await client.get("/admin/erasure/status", headers=e.WRITE)
+            assert pending.json()["pending"] == [
+                {"erasure_id": erasure_id, "story_id": stories.named}
+            ]
+            health = (await client.get("/health")).json()
+            assert (health["status"], health["checks"]["erasure_pending"]) == ("degraded", 1)
+
+            hold.release()
+            status = await _until_applied(client)
+            assert status["applied_count"] == 1
+
+            shown = await client.get(
+                f"/stories/{stories.named}/history",
+                params={"viewpoint": "omniscient", "include_audit": 1, "limit": 1000},
+                headers=e.WRITE,
+            )
+            assert shown.status_code == 200, shown.text
+            assert ledger.SUBJECT not in shown.text
+            markers = [i for i in shown.json()["audit"] if i["kind"] == "erasure_marker"]
+            assert markers, "the reapplied erasure left no marker"
+            assert {m["text"] for m in markers} == {f"[erasure marker: {stories.subject}, story]"}
+            story = await client.get(f"/stories/{stories.named}", headers=e.WRITE)
+            assert story.status_code == 200, story.text
+            assert story.json()["status"] == "active"
+            assert stories.subject not in {c["id"] for c in story.json()["characters"]}
+
+    assert await ledger.pins(url, stories.named) == [
+        f"[erased] keeps the lighthouse key; {ledger.BYSTANDER} keeps the boat."
+    ]
+    (row,) = await ledger.ledger_rows(url)
+    assert (row.id, row.ledger_hash_prev, row.ledger_hash) == (
+        line.erasure_id,
+        line.ledger_hash_prev,
+        line.ledger_hash,
+    )
+    assert (row.applied_note, row.story_ref) == ("reapplied", stories.named)
+    assert row.applied_at is not None
+    assert (ledger_dir / "ledger.jsonl").read_bytes() == file_bytes  # one line, as written
+
+    after = ledger_server.dump(url, tmp_path / "after.dump")
+    wrapper = ledger_server.pg_restore_wrapper(tmp_path)
+    report = backup.verify(after, ledger_dir=ledger_dir, pg_restore=str(wrapper))
+    assert (report.exit_code, report.problems) == (backup.EXIT_OK, [])
+    assert report.markers
+    assert {m["erasure_id"] for m in report.markers} == {erasure_id}
+    assert {m["story_id"] for m in report.markers} == {stories.named}
+    assert report.redacted_events >= 0
+    assert (report.ledger_rows, report.newer_than_dump) == (1, [])
+    assert ledger.SUBJECT not in json.dumps(report.as_json())
+    old = backup.verify(before, ledger_dir=ledger_dir, pg_restore=str(wrapper))
+    assert (old.exit_code, old.ledger_rows, old.newer_than_dump) == (
+        backup.EXIT_OK,
+        0,
+        [erasure_id],
+    )
+
+
+@pytest.mark.part("M3", "FR-ADMIN-8")
+def test_s_erasure_boundary__docs() -> None:
+    """The erasure boundary reads the same from the API (``GET /admin/erasure/boundary``), the
+    API description (the route's and ``info.description``, served and in ``docs/openapi.json``)
+    and ``docs/OPERATIONS.md`` (its marked block), whitespace aside; every out-of-scope item is
+    there: delivered exports, provider retention, subjects shown only visually, older backups
+    and the logs."""
+    rendered = boundary.render_boundary()
+    client = TestClient(create_app(auth_settings(DUMMY_DSN)))  # reads no database
+    served = client.get("/admin/erasure/boundary", headers=e.WRITE)
+    schema = client.get("/openapi.json").json()
+    assert served.status_code == 200, served.text
+    assert served.json() == {
+        "in_scope": list(boundary.IN_SCOPE),
+        "out_of_scope": list(boundary.OUT_OF_SCOPE),
+        "logs": boundary.LOGS,
+    }
+    for item in (
+        boundary.DELIVERED_EXPORTS,
+        boundary.PROVIDER_RETENTION,
+        boundary.VISUAL_ONLY,
+        boundary.OLD_BACKUPS,
+        boundary.LOGS_ITEM,
+    ):
+        assert item in served.json()["out_of_scope"]
+    assert boundary.LOGS == "operational logs contain no story content by default (NFR-SEC-4)"
+
+    operations = (REPO_ROOT / "docs" / "OPERATIONS.md").read_text()
+    block = operations.split("<!-- erasure-boundary:start -->", 1)[1].split(
+        "<!-- erasure-boundary:end -->", 1
+    )[0]
+    assert boundary.normalised(block) == boundary.normalised(rendered)
+    committed = json.loads((REPO_ROOT / "docs" / "openapi.json").read_text())
+    for document in (schema, committed):
+        description = document["info"]["description"]
+        assert boundary.normalised(description).endswith(boundary.normalised(rendered))
+        route = document["paths"]["/admin/erasure/boundary"]["get"]["description"]
+        assert boundary.normalised(rendered) in boundary.normalised(route)

@@ -84,6 +84,7 @@ from epistrel.core.enums import (
     Provenance,
     StoryStatus,
 )
+from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import event_record
 from epistrel.core.errors import (
@@ -348,6 +349,7 @@ class Operation:
             ).one_or_none()
             if found is None:
                 raise StoryNotFound(f"story {self.story_id} does not exist")
+            await self._refuse_blocked(conn, found.status)
             self._refuse_archived(found.status)
             self.base_revision = int(found.timeline_revision)
             self.story_settings = StorySettings.from_row(found.settings)
@@ -439,6 +441,7 @@ class Operation:
             )
         ).one_or_none()
         if found is not None:
+            await self._refuse_blocked(conn, found.status)
             self._refuse_archived(found.status)
             if self.bumps_revision and not self.erasure:
                 # A paused story (#118) refuses new truth-changing work; work that began before
@@ -634,6 +637,7 @@ class Operation:
             ).one_or_none()
             if locked is None:
                 raise StoryNotFound(f"story {self.story_id} does not exist")
+            await self._refuse_blocked(conn, locked.status)
             self._refuse_archived(locked.status)
             current_revision = int(locked.timeline_revision)
             if decide is not None:
@@ -991,6 +995,14 @@ class Operation:
             )
 
     # -- helpers -----------------------------------------------------------------------------
+
+    async def _refuse_blocked(self, conn: AsyncConnection, status: str) -> None:
+        """A story the erasure reconciler blocked (#125) takes no work at all, background jobs
+        included (503 ``erasure_pending``), until its pending erasures are reapplied; an erasure
+        runs, and so do the reapply's own operations. Checked at ``begin()`` and again under the
+        story lock at commit."""
+        if not self.erasure and self.story_id is not None:
+            await erasure_ledger.refuse_blocked(conn, self.story_id, status)
 
     def _refuse_archived(self, status: str) -> None:
         """An archived story is read-only: work that changes story truth (bumps the revision)

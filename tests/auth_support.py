@@ -20,6 +20,11 @@ MEDIA_ROOT = Path(tempfile.mkdtemp(prefix="epistrel-test-media-"))
 """The blob store every test app uses unless it names its own (#105): one per test process,
 removed when the process exits, so a test never writes media under the repository."""
 atexit.register(shutil.rmtree, MEDIA_ROOT, ignore_errors=True)
+ERASURE_LEDGER_DIR = Path(tempfile.mkdtemp(prefix="epistrel-test-ledger-"))
+"""The erasure ledger's file every test app uses unless it names its own (#125): one per test
+process, like ``MEDIA_ROOT``, so it matches the session database and never lands in the
+repository (``conftest`` also sets ``EPISTREL_ERASURE_LEDGER_DIR`` to it)."""
+atexit.register(shutil.rmtree, ERASURE_LEDGER_DIR, ignore_errors=True)
 
 
 def auth_settings(dsn: str, **overrides: object) -> Settings:
@@ -30,6 +35,7 @@ def auth_settings(dsn: str, **overrides: object) -> Settings:
         "service_credentials": [CREDENTIAL_A, CREDENTIAL_B],
         "mode": "api",
         "media_root": MEDIA_ROOT,
+        "erasure_ledger_dir": ERASURE_LEDGER_DIR,
         # Tests change configuration behind the revisions (test-only rules, raw SQL): resolve it
         # every time (#113; ``test_the_cache_follows_every_layer`` turns it on).
         "effective_config_cache": False,

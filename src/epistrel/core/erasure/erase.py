@@ -68,7 +68,8 @@ deployment-scoped stored results naming the subject are purged. Stories are neve
 characters), for the operator to erase separately. Blob bytes are deleted after the commit; a
 failed delete is left to the media sweep.
 
-**The ledger** (``erasure_ledger``) holds identifiers, the scope, the story, the counts, the
+**The ledger** (``erasure_ledger``, and first its file outside the database: #125,
+``core.erasure.ledger``) holds identifiers, the scope, the story, the counts, the
 residue and keyed hashes of the scanned terms (HMAC-SHA256 under ``EPISTREL_CONFIG_KEY``,
 which must be set: 503 ``config_key_missing`` otherwise), never a name. ``ERASURE_TARGETS``
 lets later stores (#126's feedback exports) take part in an erasure.
@@ -103,6 +104,7 @@ from epistrel.core.enums import (
     Provenance,
 )
 from epistrel.core.erasure import index
+from epistrel.core.erasure import ledger as ledger_store
 from epistrel.core.erasure.index import (
     ALIASES_PATH,
     NAME_PATH,
@@ -112,6 +114,7 @@ from epistrel.core.erasure.index import (
     reindex_story,
     story_subjects,
 )
+from epistrel.core.erasure.ledger import LedgerFile
 from epistrel.core.erasure.records import (
     character_draft_record,
     character_version_record,
@@ -1609,22 +1612,26 @@ async def _write_ledger(
     operation_id: str | None,
     counts: dict[str, Any],
     hashes: list[str],
+    ledger: LedgerFile | None,
 ) -> datetime:
+    """The ledger's line in its file (``ledger``; #125) and its row, then the audit row."""
     at = clock.now()
-    await conn.execute(
-        insert(erasure_ledger).values(
-            id=erasure_id,
+    await ledger_store.write(
+        conn,
+        ledger,
+        ledger_store.Entry(
+            erasure_id=erasure_id,
+            at=at,
             subject_kind=subject.kind.value,
             subject_id=subject.id,
             scope=scope,
-            story_ref=subject.story_id,
+            story_id=subject.story_id,
             principal=principal,
             operation_id=operation_id,
             counts=counts,
-            scan_term_hashes=hashes,
-            applied_at=at,
-            at=at,
-        )
+            scan_term_hashes=tuple(hashes),
+        ),
+        applied_at=at,
     )
     await audit.record(
         conn,
@@ -1676,9 +1683,12 @@ async def erase(
     collect: Collect | None = None,
     erasure_id: str | None = None,
     write_ledger: bool = True,
+    ledger: LedgerFile | None = None,
 ) -> ErasureResult:
     """Erase ``request.subject`` in its scope (see the module docstring). ``erasure_id`` and
-    ``write_ledger`` let #125's reapply run an erasure the ledger already records."""
+    ``write_ledger`` let #125's reapply run an erasure the ledger already records; ``ledger``
+    is the ledger file the entry is appended to first (the Engine's; ``None`` writes the table
+    only)."""
     async with db.connect() as conn:
         subject = await _subject(conn, request)
     if not subject.known:
@@ -1704,6 +1714,7 @@ async def erase(
             compressor,
             hashes,
             write_ledger=write_ledger,
+            ledger=ledger,
         )
     else:
         result = await _erase_catalog(
@@ -1716,6 +1727,7 @@ async def erase(
             hashes,
             collect,
             write_ledger=write_ledger,
+            ledger=ledger,
         )
     _log("erasure applied", result)
     return result
@@ -1732,6 +1744,7 @@ async def _erase_story(
     hashes: list[str],
     *,
     write_ledger: bool,
+    ledger: LedgerFile | None,
 ) -> ErasureResult:
     from epistrel.core.events.operation import Operation
 
@@ -1769,6 +1782,7 @@ async def _erase_story(
                     operation_id=op.operation_id,
                     counts=counts,
                     hashes=hashes,
+                    ledger=ledger,
                 )
 
         op.stage("redacted")
@@ -1833,6 +1847,7 @@ async def _erase_catalog(
     collect: Collect | None,
     *,
     write_ledger: bool,
+    ledger: LedgerFile | None,
 ) -> ErasureResult:
     async with db.begin() as conn:
         settings = await _settings(conn)
@@ -1856,6 +1871,7 @@ async def _erase_catalog(
                 operation_id=operation_id,
                 counts=counts,
                 hashes=hashes,
+                ledger=ledger,
             )
         await append_stage(conn, operation_id, "redacted", "done")
         if write_ledger:

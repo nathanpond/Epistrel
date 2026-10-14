@@ -77,11 +77,16 @@ class StoryStatus(StrEnum):
 
     ``archived`` is read-only: truth-changing work is refused with ``story_archived``.
     ``paused`` is reserved for M3's rating and reactivation checks.
+    ``blocked_by_erasure``: the erasure ledger holds an erasure this database has not applied
+    (a restored backup that predates it; FR-ADMIN-7, #125). Every read and write of the story is
+    refused with 503 ``erasure_pending`` until the reconciler has reapplied it; the status it
+    had is kept in ``stories.status_before_block`` and restored then.
     """
 
     ACTIVE = "active"
     ARCHIVED = "archived"
     PAUSED = "paused"
+    BLOCKED_BY_ERASURE = "blocked_by_erasure"
 
 
 class EntryStatus(StrEnum):

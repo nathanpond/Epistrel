@@ -77,6 +77,10 @@ deployment_state = Table(
     Column("profile_defaults", JSONB, nullable=False),
     Column("settings", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     Column("media_store", Text, nullable=True),
+    # The erasure reconciler's last run (FR-ADMIN-7; #125): ``in_progress``, ``last_run_at``,
+    # ``last_error`` (an exception class, never a message) and ``attempts`` per pending erasure.
+    # Written by reconcile runs only, so ``serve`` and ``worker`` processes report one state.
+    Column("erasure_reconcile_state", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     CheckConstraint(f"id = {DEPLOYMENT_ROW_ID}", name="single_row"),
     CheckConstraint(MEDIA_STORE_CHECK, name="media_store"),
 )

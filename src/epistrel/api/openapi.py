@@ -272,6 +272,8 @@ ERROR_STATUS: dict[str, int] = {
     "config_key_missing": 503,
     "config_missing": 503,
     "database_unavailable": 503,
+    "erasure_pending": 503,
+    "ledger_unavailable": 503,
     "media_store_unavailable": 503,
     "model_unavailable": 503,
     "moderation_unavailable": 503,
@@ -502,7 +504,15 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # that cannot run, or a principal already being offboarded.
     "lookup_principal": ("cursor_invalid",),
     # Erasure (#124): a story character scoped to the catalog; no config key for the ledger.
-    "erase": ("invalid_erasure_scope", "not_found", "revision_conflict", "config_key_missing"),
+    "erase": (
+        "invalid_erasure_scope",
+        "not_found",
+        "revision_conflict",
+        "config_key_missing",
+        "ledger_unavailable",
+    ),
+    # The reconciler (#125): a ledger file that cannot be read or disagrees with the database.
+    "reconcile_erasure": ("ledger_unavailable",),
     "offboard_principal": (
         "principal_reserved",
         "transfer_target_required",
@@ -594,10 +604,18 @@ def _multipart_body(component: str) -> dict[str, Any]:
     }
 
 
+ERASURE_UNGATED_ROUTES = frozenset({("DELETE", "/stories/{story_id}")})
+"""Story routes a story blocked by the erasure reconciler still answers (#125)."""
+
+
 def _rule_errors(method: str, path: str, *, mutating: bool) -> list[str]:
     codes = ["unauthenticated", "validation_error", "database_unavailable"]
     if "{" in path:
         codes.append("not_found")
+    if STORY_PATH_PARAMETER in path and (method, path) not in ERASURE_UNGATED_ROUTES:
+        # A story the erasure reconciler blocked is refused until its erasures are reapplied
+        # (#125); ``ledger_unavailable`` when the ledger cannot be compared on the first call.
+        codes += ["erasure_pending", "ledger_unavailable"]
     if method in MUTATING_METHODS:
         codes.append("principal_required")
     if mutating:

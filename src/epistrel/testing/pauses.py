@@ -30,6 +30,9 @@ The points:
   its tags and text, and found no rating of the principal's yet; it has not inserted one (#112).
 - ``feedback.retract.locked``: a rating's retraction holds the principal's rating ``FOR UPDATE``;
   it has not recorded the rating's final value or deleted it yet (#112).
+- ``erasure.reconcile.before_reapply``: the erasure reconciler holds the reapply lock and is about
+  to apply one pending ledger entry again; its story is blocked and the entry is not applied yet
+  (#125).
 
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 """
@@ -50,6 +53,7 @@ PROFILE_PURGE_BEFORE_LOCK = "profiles.purge.before_lock"
 CATALOG_LISTING_STATUS_LOCKED = "catalog.listing_status.locked"
 FEEDBACK_RATE_UNRATED = "feedback.rate.unrated"
 FEEDBACK_RETRACT_LOCKED = "feedback.retract.locked"
+ERASURE_RECONCILE_BEFORE_REAPPLY = "erasure.reconcile.before_reapply"
 POINTS = (
     CATALOG_SAVE_BEFORE_CAS,
     CATALOG_PUBLISH_LOCKED,
@@ -61,6 +65,7 @@ POINTS = (
     CATALOG_LISTING_STATUS_LOCKED,
     FEEDBACK_RATE_UNRATED,
     FEEDBACK_RETRACT_LOCKED,
+    ERASURE_RECONCILE_BEFORE_REAPPLY,
 )
 
 ARRIVAL_TIMEOUT_S = 10.0
@@ -123,6 +128,7 @@ def held(point: str) -> Iterator[Hold]:
 __all__ = [
     "CATALOG_PUBLISH_LOCKED",
     "CATALOG_SAVE_BEFORE_CAS",
+    "ERASURE_RECONCILE_BEFORE_REAPPLY",
     "FEEDBACK_RATE_UNRATED",
     "FEEDBACK_RETRACT_LOCKED",
     "MEDIA_COMPLETE_LOCKED",

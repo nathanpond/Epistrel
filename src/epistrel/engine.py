@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
 import hashlib
 import inspect
 import logging
@@ -55,10 +56,19 @@ from epistrel.core.catalog import scenarios as catalog_scenarios
 from epistrel.core.catalog import search as catalog_search
 from epistrel.core.catalog.report import ValidationResult
 from epistrel.core.concurrency import check_expected_revision
-from epistrel.core.context import RequestContext
+from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext
 from epistrel.core.enums import EntryStatus, StoryStatus
+from epistrel.core.erasure import boundary as erasure_boundary
 from epistrel.core.erasure import erase as erasure
-from epistrel.core.errors import InvalidRequest, PrincipalRequired, refuse_nul
+from epistrel.core.erasure import ledger as erasure_ledger
+from epistrel.core.errors import (
+    InvalidRequest,
+    LedgerUnavailable,
+    PrincipalRequired,
+    StoryNotFound,
+    SubjectNotFound,
+    refuse_nul,
+)
 from epistrel.core.genesis import create as genesis
 from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.history import DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT
@@ -107,6 +117,7 @@ from epistrel.orchestrator.budget import (
     effective_max_calls,
 )
 from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.orchestrator.jobs.handlers import erasure_reconcile as erasure_reconcile_job
 from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
@@ -506,6 +517,13 @@ class Engine:
         self.posters: PosterExtractor = FfmpegTools(settings.ffmpeg_path)
         # Each story's resolved engine configuration, kept while it holds (#113).
         effective.configure_cache(settings.effective_config_cache)
+        # The erasure ledger's file outside the database (FR-ADMIN-7; #125). Until a ``mark``
+        # pass has compared it with the database, the first call naming a story runs one, so
+        # an Engine used without the app's start-up still refuses a story a restore unerased.
+        self.ledger = erasure_ledger.LedgerFile(settings.erasure_ledger_dir)
+        self._erasure_marked = False
+        self._mark_lock = asyncio.Lock()
+        self._reconcile_task: asyncio.Task[None] | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Engine:
@@ -531,6 +549,7 @@ class Engine:
         lite_summary_job.bind(self.models)
         rating_check_job.bind(self.models)
         media_sweep_job.bind(self.media)
+        erasure_reconcile_job.bind(self._reconcile_run)
         if mode == "api":
             self._recovery = asyncio.create_task(self._recover())
             return
@@ -574,6 +593,13 @@ class Engine:
             rating_check_job.bind(None)
         if media_sweep_job.bound() is self.media:
             media_sweep_job.bind(None)
+        if erasure_reconcile_job.bound() == self._reconcile_run:
+            erasure_reconcile_job.bind(None)
+        reconcile, self._reconcile_task = self._reconcile_task, None
+        if reconcile is not None and not reconcile.done():
+            reconcile.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reconcile
         await self.drainer.stop()
 
     @property
@@ -1734,7 +1760,9 @@ class Engine:
         principal = self.require_principal(ctx)
 
         async def run(ctx: RequestContext) -> stories.DeletedStory:
-            await self.check_expected_revision(ctx, story_id)
+            # The core check, not the gated method: a story blocked by the erasure reconciler
+            # may still be deleted (#125).
+            await check_expected_revision(self.db, story_id, ctx.expected_revision)
             removed = await stories.delete_story(self.db, story_id, principal=principal)
             return stories.DeletedStory(removed)
 
@@ -2815,9 +2843,141 @@ class Engine:
                 config_key=key,
                 compressor=compressor,
                 collect=collect,
+                ledger=self.ledger,
             )
 
         return await self._keyed(ctx, "erase", run, material={"body": _body(request)})
+
+    # -- the erasure ledger (FR-ADMIN-7,8; #125) --------------------------------------------------
+
+    @library_only("lifecycle: the REST app runs it at start-up, before it serves")
+    async def start_erasure_reconcile(self) -> None:
+        """Compare the erasure ledger's file with the database before traffic (``mark``:
+        stories a restore unerased become ``blocked_by_erasure``), then reapply what is pending
+        in the background within ``REAPPLY_BUDGET_S`` (entries still pending are retried by
+        ``erasure_reconcile_retry``). A broken or tampered ledger raises (``LedgerCorrupt``,
+        ``LedgerMismatch``): the process must not serve. An unreachable database does not stop
+        the start: the first call naming a story compares again."""
+        try:
+            await self._mark_erasures(strict=True)
+        except erasure_ledger.LedgerCorrupt, erasure_ledger.LedgerMismatch:
+            raise
+        except Exception as exc:  # the database is down: compared on the first story call
+            logger.warning(
+                "the erasure ledger was not compared at start-up: %s", type(exc).__name__
+            )
+            return
+        self._reconcile_task = asyncio.create_task(
+            self._reapply_within_budget(), name="epistrel-erasure-reconcile"
+        )
+
+    async def _reapply_within_budget(self) -> None:
+        try:
+            async with asyncio.timeout(erasure_ledger.REAPPLY_BUDGET_S):
+                await self._reconcile_run(mark=False)
+        except TimeoutError:
+            logger.warning("the erasure reapply ran out of its start-up budget; retried later")
+        except Exception as exc:
+            logger.warning("the erasure reapply failed at start-up: %s", type(exc).__name__)
+
+    async def _mark_erasures(self, *, strict: bool = False) -> erasure_ledger.MarkReport:
+        """One ``mark`` pass. ``strict`` raises the ledger's own errors (start-up refuses to
+        serve); otherwise they are 503 ``ledger_unavailable``."""
+        async with self._mark_lock:
+            try:
+                report = await erasure_ledger.mark(self.db, self.ledger)
+            except erasure_ledger.LedgerCorrupt as exc:
+                if strict:
+                    raise
+                raise LedgerUnavailable(str(exc), {"reason": exc.reason}) from None
+            except erasure_ledger.LedgerMismatch as exc:
+                if strict:
+                    raise
+                raise LedgerUnavailable(str(exc), {"reason": "mismatch"}) from None
+            except OSError as exc:
+                raise LedgerUnavailable(
+                    f"the erasure ledger file could not be read: {type(exc).__name__}",
+                    {"reason": "unreadable"},
+                ) from None
+            self._erasure_marked = True
+            return report
+
+    async def _erasure_gate(self, story_id: str) -> None:
+        """Every call naming a story: 503 ``erasure_pending`` while it is blocked."""
+        if not self._erasure_marked:
+            await self._mark_erasures()
+        await erasure_ledger.check_story(self.db, story_id)
+
+    async def _reapply_one(self, pending: erasure_ledger.Pending) -> str:
+        """#124's erasure again, with the entry's own id, principal ``system`` and no new
+        ledger line."""
+        scope: dict[str, Any] = (
+            {"story": pending.story_id} if pending.story_id is not None else {"catalog": True}
+        )
+        request = erasure.ErasureRequest.model_validate(
+            {"subject": {"kind": pending.subject_kind, "id": pending.subject_id}, "scope": scope}
+        )
+        key = erasure.require_key(
+            None
+            if self.settings.config_key is None
+            else self.settings.config_key.get_secret_value()
+        )
+
+        async def collect(checksum: str) -> bool:
+            return await media_sweep.collect_blob(self.db, self.media, checksum)
+
+        try:
+            await erasure.erase(
+                self.db,
+                request,
+                principal=SYSTEM_PRINCIPAL,
+                config_key=key,
+                compressor=self.ports.summary_compressor,
+                collect=collect,
+                erasure_id=pending.erasure_id,
+                write_ledger=False,
+            )
+        except SubjectNotFound:
+            return erasure_ledger.SUBJECT_MISSING
+        except StoryNotFound:
+            return erasure_ledger.STORY_MISSING
+        return erasure_ledger.REAPPLIED
+
+    async def _reconcile_run(self, *, mark: bool = True) -> erasure_ledger.ReapplyReport:
+        """``mark`` (unless start-up just ran it), then ``reapply``; one summary line."""
+        marked = await self._mark_erasures() if mark else erasure_ledger.MarkReport()
+        report = await erasure_ledger.reapply(self.db, self._reapply_one)
+        erasure_ledger.log_summary(marked, report)
+        return report
+
+    async def erasure_status(self, ctx: RequestContext) -> erasure_ledger.ReconcileStatus:
+        """The erasure ledger's reconciliation (FR-ADMIN-7): the entries this database has not
+        applied yet (``pending``, each with its story) and their count, how many are applied,
+        whether a reapply is running, and the last run's time, error (an exception class) and
+        attempts per pending entry."""
+        return await erasure_ledger.status(self.db)
+
+    async def reconcile_erasure(self, ctx: RequestContext) -> erasure_ledger.ReconcileRun:
+        """Run the erasure reconciler now (FR-ADMIN-7): compare the ledger's file with the
+        database (blocking the stories a restore unerased), then reapply every pending entry.
+        ``ran`` is false when another process was already running it. It records no operation
+        and takes no ``Idempotency-Key``: running it again is harmless."""
+        self.require_principal(ctx)
+        report = await self._reconcile_run()
+        async with self.db.connect() as conn:
+            pending = await erasure_ledger.pending_count(conn)
+        return erasure_ledger.ReconcileRun(
+            run_id=new_ulid(),
+            ran=report.ran,
+            settled=len(report.settled),
+            failed=len(report.failed),
+            pending_count=pending,
+        )
+
+    async def erasure_boundary(self, ctx: RequestContext) -> erasure_boundary.ErasureBoundary:
+        """What an erasure covers and what it cannot reach (FR-ADMIN-8), as data: the same
+        text as ``docs/OPERATIONS.md`` and the API description."""
+        return erasure_boundary.ERASURE_BOUNDARY
 
     # -- media assets (FR-MEDIA-1,2; FR-API-6; #105) --------------------------------------------
     # Deployment-scoped: an upload or a delete records a story-less ``control`` operation, keyed
@@ -3410,5 +3570,42 @@ class Engine:
         return await feedback.read(self.db, story_id, message_id, principal=ctx.principal)
 
 
+ERASURE_GATE_EXEMPT = frozenset({"delete_story"})
+"""Methods naming a story that a blocked story still answers (#125): deleting it settles its
+pending erasures. Every other public coroutine method with a ``story_id`` parameter refuses a
+story the erasure reconciler blocked (503 ``erasure_pending``)."""
+ERASURE_GATED_ATTRIBUTE = "__epistrel_erasure_gated__"
+
+
+def _erasure_gated[F: Callable[..., Awaitable[Any]]](method: F) -> F:
+    signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    async def gated(self: Engine, *args: Any, **kwargs: Any) -> Any:
+        story_id = signature.bind_partial(self, *args, **kwargs).arguments.get("story_id")
+        if isinstance(story_id, str):
+            await self._erasure_gate(story_id)
+        return await method(self, *args, **kwargs)
+
+    setattr(gated, ERASURE_GATED_ATTRIBUTE, True)
+    return gated  # type: ignore[return-value]
+
+
+def gate_story_methods(engine_class: type) -> None:
+    """Put the erasure block (#125) in front of every public coroutine method of
+    ``engine_class`` that takes a ``story_id``, except ``ERASURE_GATE_EXEMPT``: one check in the
+    Engine, so the REST API and the in-process library refuse alike."""
+    for name, member in list(vars(engine_class).items()):
+        if name.startswith("_") or name in ERASURE_GATE_EXEMPT:
+            continue
+        if not inspect.iscoroutinefunction(member) or getattr(
+            member, ERASURE_GATED_ATTRIBUTE, False
+        ):
+            continue
+        if "story_id" in inspect.signature(member).parameters:
+            setattr(engine_class, name, _erasure_gated(member))
+
+
+gate_story_methods(Engine)
 # One span, summary line and count per outermost call of every public coroutine method (#74).
 instrument.instrument_engine(Engine)

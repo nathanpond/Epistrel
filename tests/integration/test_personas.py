@@ -42,7 +42,7 @@ from epistrel.core.genesis.models import (
 from epistrel.core.ids import new_ulid
 from tests import scenario_support as scenarios
 from tests.auth_support import auth_settings, bearer
-from tests.catalog_support import ids
+from tests.catalog_support import every, ids
 from tests.event_support import execute_in_tx, rows, scalar
 from tests.media_support import png, uploaded
 from tests.persona_support import copy_into
@@ -272,7 +272,8 @@ async def test_s_promote(stub_settings: Settings, engine: AsyncEngine) -> None:
 
     Complements asserted: promoting him again makes a second draft (no deduplication); his row
     is byte-identical through both promotions except ``promoted_to``, which names both entries,
-    oldest first; the drafts a promotion makes are listed among the catalog's drafts."""
+    oldest first, and an omniscient ``GET /stories/{id}`` shows the same link (a plain read shows
+    no ``promoted_to``); the drafts a promotion makes are listed among the catalog's drafts."""
     async with respond_client(stub_settings, engine) as (client, _):
         story = await create(client, story_body("Wren", "Ada"))
         story_id = story["story_id"]
@@ -291,6 +292,7 @@ async def test_s_promote(stub_settings: Settings, engine: AsyncEngine) -> None:
             )
             assert planted.status_code in (200, 201), planted.text
 
+        entries = await scalar(engine, "SELECT count(*) FROM catalog.character_catalog")
         added = await client.post(
             f"/stories/{story_id}/characters",
             json={
@@ -313,11 +315,17 @@ async def test_s_promote(stub_settings: Settings, engine: AsyncEngine) -> None:
             s=story_id,
         )
         assert tuple(row) == (None, None, 52, False, [portrait["id"]])
+        # Adding him writes no catalog entry: no new row, none named for him (the name lives
+        # under the draft's public_card since 0032), and no listing shows him by id or by name.
+        assert await scalar(engine, "SELECT count(*) FROM catalog.character_catalog") == entries
         for status in ("published", "draft", "archived"):
             assert dale not in await ids(client, "/catalog/characters", status=status), status
+            listed = await every(client, "/catalog/characters", status=status)
+            assert "Dale Pruitt" not in {item["name"] for item in listed}, status
         named = await scalar(
             engine,
-            "SELECT count(*) FROM catalog.character_catalog WHERE draft->>'name' = :n",
+            "SELECT count(*) FROM catalog.character_catalog "
+            "WHERE draft->'public_card'->>'name' = :n",
             n="Dale Pruitt",
         )
         assert named == 0
@@ -399,6 +407,18 @@ async def test_s_promote(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert before["promoted_to"] == []
         drafts = await ids(client, "/catalog/characters", status="draft")
         assert {first, second} <= set(drafts)
+        # The link is read back where a consumer sees it: an omniscient GET /stories/{id} shows
+        # both entries, oldest first; a plain read shows no promoted_to at all.
+        omniscient = await client.get(
+            f"/stories/{story_id}", params={"viewpoint": "omniscient"}, headers=READ
+        )
+        assert omniscient.status_code == 200, omniscient.text
+        (shown_dale,) = [c for c in omniscient.json()["characters"] if c["id"] == dale]
+        assert shown_dale["promoted_to"] == [first, second]
+        plain = await client.get(f"/stories/{story_id}", headers=READ)
+        assert plain.status_code == 200, plain.text
+        (plain_dale,) = [c for c in plain.json()["characters"] if c["id"] == dale]
+        assert "promoted_to" not in plain_dale
 
 
 # -- persona details -------------------------------------------------------------------------------

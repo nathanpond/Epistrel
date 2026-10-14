@@ -772,11 +772,15 @@ def _malformed(live: Live) -> list[str]:
                 problems.append(f"{name}: {response.status_code} {response.text[:200]}")
             if live.counts() != before:
                 problems.append(f"{name}: wrote rows")
-        # The complement: a well-formed request of the same shape is accepted and writes.
+        # The complement: a well-formed request of the same shape is accepted and writes. It
+        # must change the value: a write that changes nothing writes nothing, and the generated
+        # ``PATCH /stories/{id}/settings`` cases may have left the budget at any value.
+        current = client.get(f"/stories/{live.story_id}/settings", headers=headers)
+        budget = 5 if current.json()["settings"]["regenerate_retry_budget"] == 4 else 4
         before = live.counts()
         ok = client.patch(
             f"/stories/{live.story_id}/settings",
-            json={"regenerate_retry_budget": 4},
+            json={"regenerate_retry_budget": budget},
             headers=headers,
         )
         if ok.status_code != 200 or live.counts()["config_changes"] <= before["config_changes"]:

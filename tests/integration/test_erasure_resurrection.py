@@ -6,7 +6,8 @@ and a summary job is summarising a window that names her, then checks the three 
 clauses, each with its complement:
 
 - the in-flight turn is abandoned (409 ``timeline_changed`` naming the erasure, no events,
-  status ``abandoned``), and the summary job's output is dropped and the job requeued; a turn
+  status ``abandoned``), a turn queued behind it fails ``timeline_changed`` naming the erasure
+  (409, status ``failed``, no events), and the summary job's output is dropped and the job requeued; a turn
   started after the erasure that does not name her commits normally, and so does one whose
   player text names her (a consumer typing the name afterwards is not refused);
 - a worker result built after the erasure that names her is refused (409
@@ -21,8 +22,9 @@ FR-ADMIN-9. These are its detailed clauses.
 
 The other tests: the write-path registry covers every content writer
 (``guard.CONTENT_WRITE_PATHS``), the n-gram matcher finds a name exactly where the prose matcher
-would, a catalog-scope erasure refuses a new structured reference to the erased id, and a fork
-carries the story's ledger rows.
+would, a catalog-scope erasure refuses a new structured reference to the erased id (a scenario
+role, a medium's ``depicted_subjects``), a fork carries the story's ledger rows, and a fork whose
+copy predates an erasure that commits before its fence retries.
 """
 
 from __future__ import annotations
@@ -36,13 +38,16 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import fork as fork_module
 from epistrel.core.enums import OperationKind
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.erase import term_hashes
 from epistrel.core.erasure.index import SUBJECT_WRITERS, mentions
+from epistrel.core.media.assets import DECLARED_FIELD
 from epistrel.orchestrator.jobs.queue import CommitOutcome
 from tests import erasure_support as e
 from tests import genesis_support as g
+from tests import media_support as media
 from tests import scenario_support as scenarios
 from tests.event_support import rows, scalar
 from tests.model_support import config_key
@@ -73,6 +78,16 @@ async def _in_flight_turn(engine: AsyncEngine, story_id: str) -> str:
     return str(found)
 
 
+async def _queued_turn(engine: AsyncEngine, story_id: str) -> str | None:
+    found = await scalar(
+        engine,
+        "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'turn' "
+        "AND status = 'queued'",
+        s=story_id,
+    )
+    return None if found is None else str(found)
+
+
 async def _operation(engine: AsyncEngine, operation_id: str) -> tuple[str, int]:
     status = await scalar(
         engine, "SELECT status::text FROM operations WHERE operation_id = :o", o=operation_id
@@ -98,6 +113,11 @@ async def test_erasure_resurrection(erasure_settings: Settings, engine: AsyncEng
         story = await e.played_story(client, lib, engine)
         sid, stub = story.story_id, lib.models.stub
         assert stub is not None
+        # A turn arriving while one generates waits in the queue (#63) instead of 423.
+        queueing = await client.patch(
+            f"/stories/{sid}/settings", json={"turn_concurrency": "queue"}, headers=e.WRITE
+        )
+        assert queueing.status_code == 200, queueing.text
         # Two more turns naming her leave a summary window due.
         stub.script("generation", [f"{e.NAME} sets the table.", f"{e.ALIAS} pours the tea."])
         for n in range(2):
@@ -120,6 +140,11 @@ async def test_erasure_resurrection(erasure_settings: Settings, engine: AsyncEng
         turn = asyncio.ensure_future(respond(client, sid, body(story.player, "The deed?")))
         await asyncio.wait_for(generating.entered.wait(), 10)
         held = await _in_flight_turn(engine, sid)
+        # A second turn waits in the queue behind the held one (#63).
+        waiting = asyncio.ensure_future(respond(client, sid, body(story.player, "And the will?")))
+        await _until(lambda: _queued_turn(engine, sid))
+        queued = await _queued_turn(engine, sid)
+        assert queued is not None
 
         erasing = asyncio.ensure_future(e.erase(client, "character", story.mother, sid))
 
@@ -130,9 +155,11 @@ async def test_erasure_resurrection(erasure_settings: Settings, engine: AsyncEng
             return bool(n)
 
         await _until(erased)
-        # The erasure cleared the turn slot's lease itself (#63); the held turn still runs.
+        # The erasure cleared the held turn's lease itself (#63); the held turn still runs. (The
+        # drainer, which read the queued turn as its head before the erasure, may briefly take
+        # the freed slot for it, find it failed, and give the slot back.)
         lease = await scalar(engine, "SELECT in_flight_turn FROM stories WHERE id = :s", s=sid)
-        assert lease is None
+        assert lease in (None, queued)
         summarising.release()  # its output names her; its source turns moved under it
         done = await erasing
         generating.release()
@@ -142,6 +169,29 @@ async def test_erasure_resurrection(erasure_settings: Settings, engine: AsyncEng
         assert error["code"] == "timeline_changed"
         assert error["details"]["control_operation_id"] == done["operation_id"]
         assert await _operation(engine, held) == ("abandoned", 0)
+        # The queued turn failed in the erasure's own transaction, naming it.
+        failed = await waiting
+        assert failed.status_code == 409, failed.text
+        queued_error = failed.json()["error"]
+        assert queued_error["code"] == "timeline_changed"
+        assert queued_error["details"]["control_operation_id"] == done["operation_id"]
+        (record,) = await rows(
+            engine,
+            "SELECT status::text AS status, error_code, error FROM operations "
+            "WHERE operation_id = :o",
+            o=queued,
+        )
+        assert (record.status, record.error_code) == ("failed", "timeline_changed")
+        assert record.error["details"]["control_operation_id"] == done["operation_id"]
+        assert await _operation(engine, queued) == ("failed", 0)
+
+        async def slot_free() -> bool:
+            held_by = await scalar(
+                engine, "SELECT in_flight_turn FROM stories WHERE id = :s", s=sid
+            )
+            return held_by is None
+
+        await _until(slot_free)
 
         outcomes = await job_run
         assert outcomes[0] == CommitOutcome.DROPPED  # dropped and requeued (#70)
@@ -308,8 +358,9 @@ async def test_a_catalog_erasure_refuses_a_new_reference(
     erasure_settings: Settings, engine: AsyncEngine
 ) -> None:
     """After a catalog-scope erasure of a catalog character, filling a scenario role with her id
-    is 409 ``erased_subject_referenced`` at the role's field; filling it with another catalog
-    character is accepted (complement)."""
+    is 409 ``erased_subject_referenced`` at the role's field, and so is uploading a medium whose
+    ``depicted_subjects`` names her; filling the role with another catalog character, or
+    depicting that character, is accepted (complement)."""
     async with respond_client(erasure_settings, engine) as (client, _):
         erased = await e.linda(client, "Ottoline Brack", "Otty")
         other = await e.linda(client, "Perpetua Vane", "Pet")
@@ -334,6 +385,34 @@ async def test_a_catalog_erasure_refuses_a_new_reference(
             headers=scenarios.WRITE,
         )
         assert accepted.status_code == 201, accepted.text
+
+        # A new medium depicting her is refused at the declared field; one depicting the
+        # other character is accepted (complement).
+        with guard.recording() as calls:
+            depicting = await media.upload(
+                client,
+                media.png(),
+                media.metadata(depicted_subjects=[{"kind": "catalog_character", "id": erased}]),
+            )
+        assert depicting.status_code == 409, depicting.text
+        error = depicting.json()["error"]
+        assert error["code"] == "erased_subject_referenced"
+        assert error["details"]["erasure_id"] == done["erasure_id"]
+        assert error["details"]["field"] == f"body.metadata.{DECLARED_FIELD}"
+        assert "epistrel.core.media.assets" in calls
+        assert (
+            await scalar(
+                engine,
+                "SELECT count(*) FROM media_assets WHERE depicted_subjects @> "
+                "jsonb_build_array(jsonb_build_object('id', CAST(:i AS text)))",
+                i=erased,
+            )
+            == 0
+        )
+        depicted = await media.uploaded(
+            client, depicted_subjects=[{"kind": "catalog_character", "id": other}]
+        )
+        assert depicted["depicted_subjects"] == [{"kind": "catalog_character", "id": other}]
 
 
 async def test_a_fork_carries_the_story_ledger(
@@ -373,3 +452,48 @@ async def test_a_fork_carries_the_story_ledger(
             "SELECT count(*) FROM erasure_ledger WHERE applied_at IS NULL AND copied_from IS NULL",
         )
         assert pending == 0
+
+
+async def test_a_fork_retries_when_an_erasure_commits_under_it(
+    erasure_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fork whose snapshot predates an erasure of its source (the erasure committed after
+    the copy, before the fence) retries (``ErasedMeanwhile``): the fork it returns holds none
+    of her text and carries the new ledger row (``copied_from`` set). The pause sits just
+    before the real fence, so the fence's own race check is what catches it."""
+    real = fork_module._erasure_fence
+    calls: list[str] = []
+    paused, resume = asyncio.Event(), asyncio.Event()
+
+    async def fence(db: AsyncEngine, conn: Any, source: str, fork_id: str) -> None:
+        calls.append(fork_id)
+        if len(calls) == 1:
+            paused.set()
+            await resume.wait()
+        await real(db, conn, source, fork_id)
+
+    monkeypatch.setattr(fork_module, "_erasure_fence", fence)
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story = await e.played_story(client, lib, engine)
+        sid = story.story_id
+        assert sum((await e.residue(engine, sid, e.TERMS)).values()) > 0
+        forking = asyncio.ensure_future(
+            client.post(f"/stories/{sid}/fork", json={}, headers=e.WRITE)
+        )
+        await asyncio.wait_for(paused.wait(), 10)
+        # The first attempt's copy is taken and still names her; the erasure commits now.
+        done = await asyncio.wait_for(e.erase(client, "character", story.mother, sid), 30)
+        resume.set()
+        forked = await asyncio.wait_for(forking, 30)
+        assert forked.status_code == 201, forked.text
+        fork_id = forked.json()["story_id"]
+        assert len(calls) == 2, calls  # the first attempt was refused and retried
+        assert fork_id == calls[1] != calls[0]
+        assert await scalar(engine, "SELECT count(*) FROM stories WHERE id = :s", s=calls[0]) == 0
+        assert sum((await e.residue(engine, fork_id, e.TERMS)).values()) == 0
+        (copy,) = await rows(
+            engine,
+            "SELECT copied_from FROM erasure_ledger WHERE story_ref = :s",
+            s=fork_id,
+        )
+        assert copy.copied_from == done["erasure_id"]

@@ -368,6 +368,58 @@ async def _instructed(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> 
     return {}
 
 
+RATINGS = "/admin/content-ratings"
+REPLACED = (
+    "name",
+    "description",
+    "display_order",
+    "prompt_guidance",
+    "image_guidance",
+    "policy_ids",
+    "inherits_from",
+)
+
+
+async def _fresh_rating(client: httpx.AsyncClient, *, guarded: bool) -> str:
+    """A new uniquely named rating inheriting from nothing (#118): with no policy, so moving any
+    story to it relaxes whatever the shared database's ratings list; or ``guarded``, listing one
+    new rating policy no other rating lists, so moving a story to it tightens."""
+    made = await client.post(RATINGS, json={"name": f"I-21 {new_ulid()}"}, headers=headers(OWNER))
+    rating = await ok(made, 201)
+    if not guarded:
+        return str(rating["id"])
+    policy = {
+        "scope": "rating",
+        "scope_id": rating["id"],
+        "name": f"i21-guard-{new_ulid().lower()}",
+        "rule": {"type": "wordlist", "words": [f"zq{new_ulid().lower()}"]},
+        "message": "Not at this rating.",
+    }
+    guard = await ok(await client.post("/admin/policies", json=policy, headers=headers(OWNER)), 201)
+    listed = {**{k: rating[k] for k in REPLACED}, "policy_ids": [guard["id"]]}
+    path = f"{RATINGS}/{rating['id']}"
+    await ok(await client.put(path, json=listed, headers=headers(OWNER)), 200)
+    return str(rating["id"])
+
+
+async def _relaxable(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A rating with no policies for the story to relax to (#118): applied at once (200)."""
+    entity.ids["rating"] = await _fresh_rating(client, guarded=False)
+    return {}
+
+
+def rating_body(entity: Entity) -> dict[str, Any]:
+    return {"content_rating_id": entity.ids["rating"]}
+
+
+async def _checking(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The owner tightened the story's rating (#118): its check started (202) and, with no job
+    worker in the matrix's app, stays ``checking``."""
+    target = {"content_rating_id": await _fresh_rating(client, guarded=True)}
+    started = await _send(client, kind, entity, "PUT", "/content-rating", target, 202)
+    return {"job_id": started["job_id"]}
+
+
 @dataclass(frozen=True)
 class Call:
     """A request that succeeds (``expected``) when the entity's owner sends it. ``json`` is the
@@ -459,6 +511,11 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{S}{FEEDBACK}"): Call(201, RATING, prepare=_reply),
     ("DELETE", f"{S}{FEEDBACK}"): Call(204, prepare=_rated),
     ("GET", f"{S}{FEEDBACK}"): Call(200, prepare=_rated_by_all, own=("principal",)),
+    # -- stories: the content rating (#118). Each requester relaxes a fresh story's rating to a
+    # new rating with no policies (applied at once), and reads the check the owner's tightening
+    # started (still checking: no worker runs here).
+    ("PUT", f"{S}/content-rating"): Call(200, rating_body, prepare=_relaxable),
+    ("GET", f"{S}/content-rating/checks/{{job_id}}"): Call(200, prepare=_checking),
     # -- catalog characters: writes
     ("PATCH", C): Call(
         200, {"draft_revision": 1, "public_card": {"public_description": "Keeps the logbook."}}

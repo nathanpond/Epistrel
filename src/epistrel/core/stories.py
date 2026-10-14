@@ -57,7 +57,6 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from types import SimpleNamespace
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -76,7 +75,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import audit, clock, ownership, pause
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
-from epistrel.core.erasure.index import drop_many, index_records, reindex_story
+from epistrel.core.erasure.index import drop_many, reindex_story
 from epistrel.core.erasure.records import character_record, idempotency_id, index_rows, story_record
 from epistrel.core.errors import (
     InvalidRequest,
@@ -537,10 +536,6 @@ async def create_story_from(
                 **columns,
             )
         )
-        await index_records(
-            conn,
-            [story_record(SimpleNamespace(id=story_id, name=spec.name, scenario_snapshot=None))],
-        )
 
     async def insert_cast(conn: AsyncConnection) -> None:
         # One multi-row VALUES (not executemany) so ``age_recorded_at`` can be the commit's
@@ -565,6 +560,9 @@ async def create_story_from(
             )
         )
         await index_rows(conn, characters, characters.c.story_id == story_id, character_record)
+        # The story row after its cast (#123): a name that mentions a character needs the
+        # character to exist when the row is scanned.
+        await index_rows(conn, stories, stories.c.id == story_id, story_record)
 
     op = Operation(
         db,

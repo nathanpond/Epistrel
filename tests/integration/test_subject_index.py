@@ -56,7 +56,7 @@ from tests.auth_support import auth_settings
 from tests.event_support import execute_in_tx, rows
 from tests.feedback_support import RATER, rate
 from tests.respond_support import body, played, respond_client
-from tests.story_support import WRITE, override
+from tests.story_support import WRITE, override, story_body
 from tests.summary_support import run_due_jobs, segment_rows
 
 pytestmark = pytest.mark.integration
@@ -413,6 +413,95 @@ async def tool(*argv: str) -> tuple[int, set[str]]:
     report = json.loads(out.getvalue())
     missing = {row["record_id"] for scope in report["scopes"] for row in scope["missing"]}
     return code, missing
+
+
+# -- the story row and the persona link (verification round 1) --------------------------------
+
+
+async def test_a_story_named_after_its_cast_mentions_them(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """A story created from a cast (no scenario) whose name mentions one of its characters has
+    the ``stories`` row's ``name`` mention for that character, and nothing for the one it does
+    not name; the rebuild equals the incremental index. Regression: the story row was indexed
+    before its cast existed."""
+    async with respond_client(stub_settings, engine) as (client, _lib):
+        made = await client.post(
+            "/stories",
+            json=story_body("Ada", "Bram", name="Bram and the lighthouse"),
+            headers=WRITE,
+        )
+        assert made.status_code == 201, made.text
+    story = made.json()["story_id"]
+    cast = {c["name"]: c["id"] for c in made.json()["characters"]}
+    assert ("stories", story, "name", "mentioned") in await refs(engine, "character", cast["Bram"])
+    assert story not in records(await refs(engine, "character", cast["Ada"]), "stories")
+    assert (await rebuild_scope(engine, story)).clean
+
+
+PERSONA = "Wren"
+PERSONA_REPLY = "Wren shrugs off the rain and steps inside."
+
+
+async def test_a_persona_player_is_named_as_the_persona(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """A player character made from a saved persona: a message that names the persona has a
+    ``character`` row for the player character and a ``persona`` row for the persona (the
+    subject link), and a reply that names neither has no ``persona`` mention. The persona
+    snapshot's name stays one of the character's terms when its own name differs (set
+    directly: no route renames a character)."""
+    owner = f"p-persona-{new_ulid()}"
+    async with respond_client(stub_settings, engine) as (client, lib):
+        saved = await client.post(
+            "/personas",
+            json={"name": PERSONA, "age": 29, "description": "Wry, and soaked through."},
+            headers=g.headers(principal=owner),
+        )
+        assert saved.status_code == 201, saved.text
+        persona = saved.json()["id"]
+        scenario = g.scenario_body(
+            g.role("mother", starting_location="kitchen"),
+            g.role("player", kind="player", label="The eldest"),
+        )
+        scenario_id, _version = await g.published_scenario(client, scenario)
+        made = await g.create_from(
+            client,
+            g.from_scenario(
+                scenario_id,
+                slots={"mother": g.ad_hoc_slot("Maud", 58)},
+                players={"player": g.player(persona_id=persona)},
+                ignore_warnings=True,
+            ),
+        )
+        story = made["story_id"]
+        player = next(c["id"] for c in made["characters"] if c["role_id"] == "player")
+        lib.models.stub.script("generation", [PERSONA_REPLY, "The kettle sings."])
+        for key in ("persona-turn-1", "persona-turn-2"):
+            await played(client, story, body(player, "Hello."), headers={"Idempotency-Key": key})
+
+    events = await rows(
+        engine,
+        "SELECT id, payload FROM events WHERE story_id = :s AND type = 'message_rendered'",
+        s=story,
+    )
+    replies = {e.payload["text"]: str(e.id) for e in events}
+    named = ("events", replies[PERSONA_REPLY], "payload.text", "mentioned")
+    assert named in await refs(engine, "character", player)
+    by_persona = await refs(engine, "persona", persona)
+    assert named in by_persona
+    assert ("characters", player, None, "declared") in by_persona
+    quiet = replies["The kettle sings."]
+    assert not {k for t, r, _, k in by_persona if t == "events" and r == quiet} - {"declared"}
+    assert (await rebuild_scope(engine, story)).clean
+
+    await execute_in_tx(
+        engine,
+        ("UPDATE characters SET name = 'The eldest' WHERE id = :c", {"c": player}),
+    )
+    async with engine.connect() as conn:
+        subjects = {s.id: s for s in await index.story_subjects(conn, story)}
+    assert PERSONA in subjects[player].terms
 
 
 # -- invariant 3 -------------------------------------------------------------------------------

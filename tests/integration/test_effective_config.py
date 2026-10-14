@@ -10,8 +10,11 @@ traceability wants every part of a test ID and milestone) and the I-18 (M3) slic
   changes no setting writes nothing, and the impact preview answers what the write would.
 - A profile edit reaches each follower through its own overrides, behavioral or data-producing,
   and is refused when a follower could not run under it.
-- ``profile_defaults`` (``/admin/settings``) is laid over, stays complete and valid, and is the
-  bottom layer of every configuration.
+- M3's interim rule on a story's own writes: a confirmed assignment or patch that adds
+  data-producing capability to a story with history keeps its configuration and writes nothing.
+- ``profile_defaults`` (``/admin/settings``) is laid over, stays complete and valid, keeps every
+  profile and every story's overrides able to run, and is the bottom layer of every
+  configuration.
 - The configuration's switches and dials shape the turn: the rolling summary, the pinned
   memories and their cap, the call cap and its source.
 - The resolution cache follows every layer, and keeps nothing a rolled-back write read.
@@ -22,7 +25,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Any
@@ -62,6 +65,7 @@ from tests.profile_support import (
     POLISH,
     PROFILES,
     REDERIVATION,
+    UNAVAILABLE_WARNINGS,
     configuration_rows,
     merged,
     naming,
@@ -820,7 +824,8 @@ async def test_a_data_producing_edit_keeps_only_the_followers_it_raises(scratch:
     overrides the polish pass on. The edit that turns it on reports the plain story
     ``upgrade_unavailable`` (it gains the polish pass) and the other not (it gains nothing).
     Confirmed, the plain story is pinned to version 1 without the polish pass, and the other
-    moves to version 2, unpinned."""
+    moves to version 2, unpinned. ``GET /stories/{id}`` names the version each runs on: the
+    plain story's pin (1), not the profile's latest, and the other's latest (2)."""
     async with respond_client(scratch.settings, scratch.db) as (client, _):
         profile = await _profile(client, nest(POLISH, False), "Unpolished")
         plain, plain_actor = await _story(client)
@@ -864,6 +869,163 @@ async def test_a_data_producing_edit_keeps_only_the_followers_it_raises(scratch:
             b=polished,
         )
         assert {r[0]: r[1] for r in pins} == {plain: 1, polished: None}
+        for story, version in ((plain, 1), (polished, 2)):
+            shown = await ok(await client.get(f"/stories/{story}", headers=READ))
+            assert shown["engine_profile"] == {"id": profile, "version": version}, story
+
+
+# -- M3's interim rule on a story's own writes ---------------------------------------------------
+
+EVENTS_BY_TYPE = "SELECT type, count(*) FROM events WHERE story_id = :s GROUP BY type ORDER BY type"
+KEYS = "SELECT count(*) FROM idempotency_keys"
+
+
+async def _trace(db: AsyncEngine, story: str) -> dict[str, Any]:
+    """Everything a write to ``story``'s configuration could leave: ``configuration_rows``
+    without the ``Idempotency-Key`` records (every story's profile, pin and revisions, the
+    operations, the configuration log, the deployment's revision), then the story's overrides
+    and their revision, its ``config_changes`` rows and its events by type."""
+    found = await _configuration(db)
+    found["overrides"] = [
+        tuple(r)
+        for r in await rows(
+            db,
+            "SELECT settings, revision FROM story_profile_overrides WHERE story_id = :s",
+            s=story,
+        )
+    ]
+    found["story_changes"] = await _story_changes(db, story)
+    found["events"] = [tuple(r) for r in await rows(db, EVENTS_BY_TYPE, s=story)]
+    return found
+
+
+Send = Callable[..., Awaitable[httpx.Response]]
+"""``send(story, key=None, **fields)``: one of a story's two configuration writes."""
+
+
+async def _kept_as_it_was(
+    client: httpx.AsyncClient, db: AsyncEngine, story: str, send: Send
+) -> dict[str, Any]:
+    """``send`` makes a write that adds the polish pass to ``story``, which has history.
+    Without ``ignore_warnings`` it is held, and writes nothing. Confirmed under the same key it
+    is applied: its entry is ``upgrade_unavailable``, its ``result`` is the story's
+    configuration as it was, the revisions it answers are the story's, and nothing is written
+    but the call's own ``Idempotency-Key`` record (#61). Returns the confirmed answer."""
+    shown = await _effective(client, story)
+    start = await _story_row(db, story)
+    revisions = (start.config_revision, start.timeline_revision)
+    before = await _trace(db, story)
+    keys = await scalar(db, KEYS)
+    key = f"unavailable-{secrets.token_hex(6)}"
+    held = await ok(await send(story, key))
+    assert (held["applied"], held["result"]) == (False, None)
+    assert held["impact"]["warnings"] == UNAVAILABLE_WARNINGS
+    assert (held["config_revision"], held["timeline_revision"]) == revisions
+    assert await _trace(db, story) == before
+    assert await scalar(db, KEYS) == keys  # a held call keeps no key
+    confirmed = await ok(await send(story, key, ignore_warnings=True))
+    assert confirmed["applied"] is True
+    assert confirmed["impact"] == held["impact"]
+    (entry,) = confirmed["impact"]["affected_stories"]
+    assert (entry["story_id"], entry["upgrade_unavailable"]) == (story, True)
+    assert (entry["capabilities_gained"], entry[REDERIVATION]["needed"]) == (["polish"], True)
+    assert entry["fingerprint_after"] == entry["fingerprint_before"] == shown["fingerprint"]
+    assert confirmed["result"] == shown
+    assert (confirmed["config_revision"], confirmed["timeline_revision"]) == revisions
+    assert await _trace(db, story) == before
+    assert await scalar(db, KEYS) == keys + 1
+    assert await _effective(client, story) == shown
+    return confirmed
+
+
+async def test_a_story_write_whose_upgrade_is_unavailable_writes_nothing(scratch: Space) -> None:
+    """M3's interim rule on a story's own two writes (FR-PROF-5,7): a confirmed assignment or
+    overrides patch that adds data-producing capability to a story with history keeps the
+    story's configuration. The polish pass is marked data-producing for the test
+    (``data_producing``; none is in M3). A story follows a profile with the pass off and has
+    played a turn; the edit that turns the pass on keeps it on version 1, pinned. Patching its
+    overrides to turn the pass on, and assigning it a profile with the pass on, are each held
+    (``upgrade_unavailable``). Confirmed, each answers 200 ``applied`` with that entry and
+    ``result`` the story's configuration as it was: its profile, version and pin, no overrides,
+    no polish pass, its fingerprint. Nothing is written: the story's ``config_revision``, its
+    overrides and their revision, the operations, the ``config_changes`` rows and its events
+    (no ``config_changed``) are as they were; only the call's own ``Idempotency-Key`` record is
+    kept (#61). ``GET /stories/{id}`` still names version 1.
+
+    Complement asserted: the same patch, and the same assignment, reach a story without history
+    (on a profile with the pass off): each is held for the capability it gains alone, and once
+    confirmed moves the story's ``config_revision`` by one, records its row and runs the story
+    with the polish pass."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        shared = await _profile(client, nest(POLISH, False), "Shared")
+        unpolished = await _profile(client, nest(POLISH, False), "Unpolished")
+        polished = await _profile(client, nest(POLISH, True), "Polished")
+
+        async def patch(story: str, key: str | None = None, **fields: Any) -> httpx.Response:
+            return await _override(client, story, nest(POLISH, True), key, **fields)
+
+        async def assign(story: str, key: str | None = None, **fields: Any) -> httpx.Response:
+            return await _assign(client, story, polished, key, **fields)
+
+        lived, actor = await _story(client)
+        await ok(await _assign(client, lived, shared, ignore_warnings=True))
+        await ok(await _play(client, lived, actor))
+        patched, _ = await _story(client)
+        moved, _ = await _story(client)
+        for story in (patched, moved):
+            await ok(await _assign(client, story, unpolished, ignore_warnings=True))
+        with data_producing("polish"):
+            edit = {"name": "Shared", "settings": nest(POLISH, True), "ignore_warnings": True}
+            await ok(await client.put(f"{PROFILES}/{shared}", json=edit, headers=headers()))
+            start = await _story_row(scratch.db, lived)
+            assert (start.engine_profile_id, start.engine_profile_version_pin) == (shared, 1)
+            pinned = {"id": shared, "version": 1, "pinned": True, "deleted": False}
+            for send in (patch, assign):
+                result = (await _kept_as_it_was(client, scratch.db, lived, send))["result"]
+                assert (result["profile"], result["overrides"]) == (
+                    pinned,
+                    {"settings": {}, "revision": 0},
+                ), send.__name__
+                assert result["effective"]["repair"]["polish"]["enabled"] is False
+                assert "polish" not in result["capabilities"]
+            assert tuple(await _story_row(scratch.db, lived)) == tuple(start)
+            shown = await ok(await client.get(f"/stories/{lived}", headers=READ))
+            assert shown["engine_profile"] == {"id": shared, "version": 1}
+
+            # -- complement: the same writes reach a story without history
+            for story, send in ((patched, patch), (moved, assign)):
+                before = await _story_row(scratch.db, story)
+                held = await ok(await send(story))
+                assert (held["applied"], held["impact"]["warnings"]) == (
+                    False,
+                    ["capabilities_gained"],
+                ), send.__name__
+                done = await ok(await send(story, ignore_warnings=True))
+                (entry,) = done["impact"]["affected_stories"]
+                assert (entry["upgrade_unavailable"], entry["capabilities_gained"]) == (
+                    False,
+                    ["polish"],
+                )
+                assert done["config_revision"] == before.config_revision + 1
+                after = await _story_row(scratch.db, story)
+                assert after.config_revision == done["config_revision"]
+                assert done["result"]["effective"]["repair"]["polish"]["enabled"] is True
+                assert "polish" in done["result"]["capabilities"]
+            assert (await _effective(client, patched))["overrides"] == {
+                "settings": nest(POLISH, True),
+                "revision": 1,
+            }
+            assert (await _story_changes(scratch.db, patched))[-1][:3] == (
+                f"profile_overrides.{POLISH}",
+                None,
+                True,
+            )
+            assert (await _story_row(scratch.db, moved)).engine_profile_id == polished
+            assert (await _story_changes(scratch.db, moved))[-1][:3] == (
+                "engine_profile_id",
+                unpolished,
+                polished,
+            )
 
 
 # -- the deployment's profile defaults ---------------------------------------------------------
@@ -877,8 +1039,13 @@ async def test_profile_defaults_are_the_bottom_layer(scratch: Space) -> None:
     the defaults' change at once, as its stories' configuration shows, while Lite, which names
     every setting, does not move. Defaults whose shape is wrong are 422 ``validation_error`` at
     their path; defaults naming an undelivered module, or under which a profile in use could not
-    run (a test-only rule), are 422 ``invalid_profile`` (``details.profiles``); nothing is
-    written. The read of every story states the defaults."""
+    run (a test-only rule), are 422 ``invalid_profile`` (``details.profiles``); so are defaults
+    under which a story's overrides could not run over the version it runs on, while every
+    profile in use could (``details.stories``); nothing is written. The read of every story
+    states the defaults.
+
+    Complement asserted: once that story no longer holds the override, the same defaults are
+    written."""
     async with respond_client(scratch.settings, scratch.db) as (client, _):
         sparse = await _profile(client, {}, "Sparse")
         story, _ = await _story(client)
@@ -970,6 +1137,37 @@ async def test_profile_defaults_are_the_bottom_layer(scratch: Space) -> None:
             assert error["details"]["profiles"] == [f"{pinned}@1"]
             assert error["details"]["count"] == 1
         assert await configuration_rows(scratch.db) == settled
+
+        # The stories half: no profile in use turns pinned memories on (the one that did is
+        # deleted, unused), while the story on the sparse profile, which names neither switch,
+        # overrides them on. Under defaults without the summary its overrides could not run.
+        await ok(await client.delete(f"{PROFILES}/{pinned}", headers=headers()))
+        await ok(await _override(client, story, nest("pins.enabled", True)))
+        both_off = merged(SUMMARY_OFF, PINS_OFF)
+        stored = "SELECT profile_defaults FROM deployment_state"
+        settled = await configuration_rows(scratch.db)
+        defaults = await scalar(scratch.db, stored)
+        with extra_rule(PINS_NEED_SUMMARY):
+            error = refused(
+                await client.put(
+                    "/admin/settings", json={PROFILE_DEFAULTS: both_off}, headers=headers()
+                ),
+                422,
+                "invalid_profile",
+            )
+            assert (error["details"]["stories"], error["details"]["count"]) == ([story], 1)
+            assert "profiles" not in error["details"]
+            assert [m["module"] for m in error["details"]["missing_dependencies"]] == ["pins"]
+            assert await configuration_rows(scratch.db) == settled
+            assert await scalar(scratch.db, stored) == defaults
+            await ok(await _override(client, story, {"pins": None}))
+            written = await ok(
+                await client.put(
+                    "/admin/settings", json={PROFILE_DEFAULTS: both_off}, headers=headers()
+                )
+            )
+        assert written[PROFILE_DEFAULTS]["pins"]["enabled"] is False
+        assert (await _effective(client, story))["effective"]["pins"]["enabled"] is False
 
 
 # -- the switches and dials of a turn ---------------------------------------------------------

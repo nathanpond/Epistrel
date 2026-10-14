@@ -2824,8 +2824,10 @@ class Engine:
         of applies only with ``request.ignore_warnings``; otherwise the result is the report,
         nothing is written and the ``Idempotency-Key`` is released. The story's own profile
         changes nothing. A story-scoped configuration change: the story's ``config_revision``
-        moves. 404 for an unknown story, 422 ``profile_deleted`` for a profile that cannot be
-        assigned, 409 ``story_archived`` for an archived story."""
+        moves. A confirmed assignment whose upgrade is unavailable (M3's interim rule) is
+        applied with the story's configuration as it was, and writes nothing. 404 for an unknown
+        story, 422 ``profile_deleted`` for a profile that cannot be assigned, 409
+        ``story_archived`` for an archived story."""
         principal = self.require_principal(ctx)
 
         async def run(ctx: RequestContext) -> TwoStageResult[effective.EffectiveConfig]:
@@ -2857,8 +2859,9 @@ class Engine:
         ``invalid_profile``); ``request.expected_revision``, when given, must be the overrides'
         revision (409 ``revision_conflict``). Two-stage (#109), like an assignment. A
         story-scoped configuration change: the story's ``config_revision`` and the overrides'
-        revision move. 404 for an unknown story, 409 ``story_archived`` for an archived
-        story."""
+        revision move. A confirmed patch whose upgrade is unavailable (M3's interim rule) is
+        applied with the story's configuration as it was, and writes nothing. 404 for an unknown
+        story, 409 ``story_archived`` for an archived story."""
         principal = self.require_principal(ctx)
 
         async def run(ctx: RequestContext) -> TwoStageResult[effective.EffectiveConfig]:

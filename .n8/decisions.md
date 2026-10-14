@@ -4383,3 +4383,43 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - **Mutation re-checks:** 5 mutations. Each fails the test named for it, and the second gap-1 mutant passes `test_s_promote`, as predicted. A script applied each mutation, ran its tests and restored the sources; every file's SHA-1 matched afterwards.
   **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
   **Issue:** #114
+- **Decision:** #113 verification fixes, round 2, gap 1 of 3: the `upgrade_unavailable` branch of a story's own two writes now has a test. The gap was real. It was a test gap only, and the behaviour did not change. Confirmed, `PUT /stories/{id}/engine-profile` and `PATCH /stories/{id}/profile-overrides` keep a story with history as it was when the change adds data-producing capability (the two `if unavailable:` returns in `core/profiles/story.py`). But deleting either branch left every test green.
+  - **Test:** `test_a_story_write_whose_upgrade_is_unavailable_writes_nothing` (`tests/integration/test_effective_config.py`), under `data_producing("polish")`, through the helper `_kept_as_it_was`.
+    - Without `ignore_warnings`, each write is held with `UNAVAILABLE_WARNINGS`.
+    - Confirmed under the same key, it answers `applied: true` with its entry `upgrade_unavailable`. Its `result` equals the effective configuration read before the call, and the revisions it answers are the story's.
+    - Nothing is written. Every story's profile, pin and revisions, the operations, the `config_changes` count, the deployment revision, the story's overrides row, its `config_changes` rows and its events by type all compare equal.
+    - The only new row is the confirmed call's own `Idempotency-Key` record. Under #61 an applied call keeps its key and a held one keeps none, and the test asserts exactly one more record.
+  - **Complement:** the same patch and the same assignment reach two stories without history. Each is held for `capabilities_gained` alone. Once confirmed, each moves `config_revision` by one, records its row, and runs with the polish pass.
+  - **Docs:** `TWO_STAGE`, which both routes publish, gains the sentence the verifier asked for. A confirmed change whose upgrade is unavailable keeps the story's configuration: `applied: true`, `result` is the configuration as it was, nothing is written and `config_revision` does not move. The route module's docstring and the docstrings of `Engine.assign_engine_profile` and `Engine.set_profile_overrides` say the same. `docs/openapi.json` was regenerated (two descriptions changed).
+  **Why:** The verifier's fix hint. Cost if wrong: none; the test pins behaviour M3's interim rule already had.
+  **Issue:** #113
+- **Decision (deviation from the verifier's hint):** In gap 1's test, the story with history is pinned before the two writes. A real confirmed profile edit turns the polish pass on, which keeps the story on version 1 (`upgrade_unavailable`). The hint used an unpinned story on a profile with the pass off.
+  - **Why the pin:** with no pin, "the story keeps its pin" compares `None` with `None`, and an assignment that cleared the pin would pass too. #109's hand-off also let an assignment "set it for an upgrade-unavailable single story". With a real pin, the test shows the pin is neither cleared nor reset.
+  - **The complement stories** follow a second profile with the pass off that is never edited. A story without history on the edited profile already runs with the pass.
+  - **Gap 3 gets a second check:** `GET /stories/{id}` names version 1 for the pinned story while its profile is at version 2.
+  **Why:** One more profile edit buys a discriminating pin assertion. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Gap 2 of 3: the stories half of the `profile_defaults` cross-check (`effective.runnable_under`, `details.stories`) now has a test. The gap was real. It was a test gap only. I extended `test_profile_defaults_are_the_bottom_layer` rather than adding a sibling test, so it reuses that test's scratch database and runs one migration fewer.
+  - **Setup:** after the profiles-half refusals, the unused profile that turned pinned memories on is deleted, so no profile in use names them on. The story on the sparse profile, which names neither switch, overrides pinned memories on.
+  - **Refusal:** under `extra_rule(PINS_NEED_SUMMARY)`, a defaults write of `merged(SUMMARY_OFF, PINS_OFF)` is 422 `invalid_profile`. Its details hold `stories == [story]`, `count` 1, no `profiles`, and `missing_dependencies` naming `pins`. `configuration_rows` and the stored `profile_defaults` are unchanged.
+  - **Complement:** with the override removed, the same defaults write is accepted, and the story runs without pinned memories.
+  **Why:** The verifier's fix hint. #113's `## Ad-hoc` entry tells M4 #129 to rely on this check. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Gap 3 of 3: `GET /stories/{id}`'s `engine_profile.version` is now tested on a pinned story. The gap was real. It was a test gap only. `test_a_data_producing_edit_keeps_only_the_followers_it_raises` now asserts `{id: profile, version: 1}` for the pinned story and version 2 for the one that moved, as the hint asked. Gap 1's test asserts version 1 for its pinned story too.
+  **Why:** The verifier's fix hint. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** Mutation re-checks for round 2. A script applied each mutation, ran the named tests and restored the file, checking its SHA-1. `git hash-object` of the three sources also matched before and after.
+  - **Gap 1:** deleting the `if unavailable:` return in `set_overrides` fails the new test, and so does deleting the one in `assign_profile`. In both, the confirmed `result` is not the configuration as it was.
+  - **Gap 2:** with `overridden.all()[:0]` (the stories check never refuses), `test_profile_defaults_are_the_bottom_layer` fails: 200 where 422 was expected.
+  - **Gap 3:** with the coalesce swapped to `(current_version, pin)`, both `test_a_data_producing_edit_keeps_only_the_followers_it_raises` and the new test fail: version 2 where 1 was expected.
+  - **Extra, for the complement:** with `_report` passing `history=True` for every story, the new test's complement fails, because the story without history is held as `upgrade_unavailable`.
+  **Why:** The round-2 rule: show that each surviving mutant now fails. Cost if wrong: none.
+  **Issue:** #113
+- **Decision:** #113's round-2 gate, per the M3 rule (the full suite is the orchestrator's, once per group). The source changes are text only: two published route descriptions, the route module's docstring and two `Engine` docstrings.
+  - **The story's tests and every module that exercises the two routes,** under CI's marker expression: `test_effective_config`, `test_engine_profiles`, `test_two_stage`, `test_i_18`, `test_i_22__ratings`, `test_s_delete`, `test_model_matrix_run`, `test_i_21`, `test_ownership`, `test_config_changes`, the determinism script, P-09 and S-SELFPOLICE: 194 passed.
+  - **Routes and OpenAPI:** `tests/conformance` (C-01's generated run included), the route guard, the response bases and `test_openapi_calls_the_message_finished_never_verified`: 168 passed in 586 s.
+  - **Stability:** the new test and the extended defaults test passed three more runs in a row (2 passed each).
+  - **Static checks:** all pass. These are ruff check and format, mypy (504 files), lint-imports (3 kept), check-assignment (438/438), check-parts (198 parts), check-lexicon (0 violations), check-traceability, check-deps (0 denied), `openapi --check` (after regenerating) and `model_guide --check`. No dependency changed, so check-licenses was not run.
+  - **No `## Ad-hoc` entry:** nothing that a later plan assumes changed. The route text documents behaviour the routes already had.
+  **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
+  **Issue:** #113

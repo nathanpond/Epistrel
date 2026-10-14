@@ -14,7 +14,9 @@
 The two writes are two-stage (#109): the answer is ``{applied, impact, result}``, and a change
 its impact report warns of applies only with ``ignore_warnings``. Each is a story-scoped
 configuration change: it moves the story's ``config_revision`` (answered beside the unchanged
-``timeline_revision``). Every handler makes one ``Engine`` call.
+``timeline_revision``). A confirmed change whose upgrade is unavailable (M3's interim rule) is
+answered applied with the story's configuration as it was, and writes nothing. Every handler
+makes one ``Engine`` call.
 """
 
 from __future__ import annotations
@@ -70,8 +72,11 @@ TWO_STAGE = (
     "Applied, `result` is the story's effective configuration after the write. The write is a "
     "story-scoped configuration change: it moves the story's `config_revision` and is listed in "
     "`GET /stories/{id}/config-changes`; the story's next turn runs under it, and a turn "
-    "already running finishes under the configuration it started with. An archived story is "
-    "409 `story_archived`."
+    "already running finishes under the configuration it started with. A confirmed change "
+    "whose upgrade is unavailable (`upgrade_unavailable`: it adds data-producing capability to "
+    "a story with history, and M3 has no backfill) keeps the story's configuration: `applied: "
+    "true`, `result` is the configuration as it was, nothing is written and `config_revision` "
+    "does not move. An archived story is 409 `story_archived`."
 )
 ASSIGN_DESCRIPTION = (
     "Run the story under another engine profile, at the profile's latest version, from its next "

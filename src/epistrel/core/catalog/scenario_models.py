@@ -959,7 +959,10 @@ class ScenarioFull(BaseModel):
     of the document. ``draft_revision`` is present only on a draft read (``?draft=true``): the
     revision the next save or publish must send. ``published_at`` is when ``version`` was
     published. ``owner_principal`` is the entry's owner (FR-AUTH-5), recorded for listing and
-    attribution only."""
+    attribution only. A companion (``companion_of``, #116) also shows ``pinned_character_version``:
+    the version of its character the shown version or draft is pinned to (``null`` before the
+    character's first publish, and for every other scenario); its locked role's
+    ``character.version`` holds the same."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -974,6 +977,7 @@ class ScenarioFull(BaseModel):
     updated_at: datetime
     published_at: datetime | None
     companion_of: str | None
+    pinned_character_version: int | None
     schema_version: Literal[1]
     public_card: ScenarioPublicCard
     metadata: ScenarioMetadata

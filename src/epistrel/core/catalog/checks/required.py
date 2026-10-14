@@ -11,9 +11,10 @@ hold. Every finding is an error. A scenario needs:
 - ``opening_required`` at ``starting_state.opening.narration``: an opening narration, which
   genesis records as turn 1 (FR-SCN-9).
 
-The last four are #108's hand-off to #111 (its plan's "content rules"). #116 exempts a
-companion version that a character-alone publish creates from ``world_required`` and
-``opening_required``.
+The last four are #108's hand-off to #111 (its plan's "content rules"). A companion version that
+a character-alone publish copies (#116; FR-CAT-10: on the first publish, "its two slots and an
+empty world") waives ``world_required`` and ``opening_required`` (``Subject.waived``); a
+companion published with its character or alone needs both, like any scenario.
 
 What a published catalog character must hold is the character content check's
 (``checks.character_content``, #115), which shares ``rating_unusable``.
@@ -89,13 +90,16 @@ class RequiredCheck(Check):
             found.entries.append(
                 subject.entry("role_required", Outcome.rejected, field="cast.roles", rule=ROLE_RULE)
             )
-        if _blank(draft.world.description):
+        if _blank(draft.world.description) and "world_required" not in subject.waived:
             found.entries.append(
                 subject.entry(
                     "world_required", Outcome.rejected, field="world.description", rule=WORLD_RULE
                 )
             )
-        if _blank(draft.starting_state.opening.narration):
+        if (
+            _blank(draft.starting_state.opening.narration)
+            and "opening_required" not in subject.waived
+        ):
             found.entries.append(
                 subject.entry(
                     "opening_required",

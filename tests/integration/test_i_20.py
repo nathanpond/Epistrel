@@ -1,7 +1,7 @@
 """I-20: companion versioning, concurrency, and atomic publish (docs/04 §4), its M3 parts.
 
 Every I-20 (M3) part lives in this file, because traceability counts a test ID per milestone in
-one file. #116 adds its companion part here.
+one file.
 
 - #111's part, ``test_i_20__validation``: what a publish validates (FR-SCN-5) and the rating
   mismatch that only warns (FR-RATE-5). Every check has a draft that fails it (an error, or a
@@ -10,20 +10,39 @@ one file. #116 adds its companion part here.
   Everyone scenario warns and publishes, and a stricter one does not warn. It runs on its own
   scratch database, because it links a policy to the seeded Everyone rating. The details are in
   ``tests/integration/test_scenario_validation.py``.
+- #116's part, ``test_i_20__companion``: a character and its companion scenario keep separate
+  version sequences linked by a pin (FR-CAT-10): the companion published alone, the character
+  alone, both together; the atomic failure and its fix, an injected failure, the rating
+  difference that only warns (FR-RATE-5), and two editors at once (FR-CAT-3). Also on its own
+  scratch database, for the same reason. The details are in
+  ``tests/integration/test_companion.py``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
 from pathlib import Path
+from typing import Any
 
+import httpx2 as httpx
 import pytest
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.catalog import companion as companions
+from epistrel.core.catalog.characters import CharacterPublishRequest
+from epistrel.core.catalog.companion_slots import pin_of, repinned
+from epistrel.core.context import RequestContext
 from epistrel.core.ids import new_ulid
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
+from epistrel.testing import pauses
 from tests import scenario_support as scenarios
-from tests.character_support import named
+from tests.catalog_support import read_companion
+from tests.character_support import complete, named
 from tests.event_support import rows
 from tests.media_support import media_client, scratch, uploaded, video
+from tests.scenario_support import OPENING
 from tests.validation_support import (
     PROVIDER,
     PROVIDER_FIELD,
@@ -35,6 +54,7 @@ from tests.validation_support import (
     incomplete_seed,
     link_rating_policy,
     rated_character,
+    rating_version,
     validate,
     with_provider,
 )
@@ -266,3 +286,395 @@ async def test_i_20__validation(pg_url: str, tmp_path: Path) -> None:
         assert calm.json()["valid"] is True, calm.text
         assert entries(calm.json()["report"], "rating_looser") == []
         assert calm.json()["report"]["warnings"] == []
+
+
+# -- #116: the companion's versions ---------------------------------------------------------------
+
+LINDA_WORLD = {"description": "A terraced house on a wet street in Leeds."}
+NEW_OPENING = "Linda opens the door before you knock."
+HOOK = "A letter from Linda's sister lies unopened on the table."
+
+
+async def _answer(response: httpx.Response, status: int = 200) -> dict[str, Any]:
+    assert response.status_code == status, response.text
+    body: dict[str, Any] = response.json()
+    return body
+
+
+def _refusal(response: httpx.Response) -> tuple[int, str, dict[str, Any]]:
+    error = response.json()["error"]
+    return response.status_code, error["code"], error["details"]
+
+
+async def _publish_character(
+    client: httpx.AsyncClient,
+    character_id: str,
+    revision: int,
+    *,
+    companion: int | None = None,
+    key: str | None = None,
+) -> httpx.Response:
+    """``POST /catalog/characters/{id}/publish``, with ``companion``: the companion's draft at
+    that revision too (``with_companion=true``)."""
+    body: dict[str, Any] = {"draft_revision": revision}
+    params: dict[str, str] = {}
+    if companion is not None:
+        body["companion_draft_revision"] = companion
+        params["with_companion"] = "true"
+    sent = scenarios.WRITE if key is None else {**scenarios.WRITE, "Idempotency-Key": key}
+    return await client.post(
+        f"/catalog/characters/{character_id}/publish", json=body, params=params, headers=sent
+    )
+
+
+async def _companion_save(
+    client: httpx.AsyncClient, character_id: str, **groups: Any
+) -> dict[str, Any]:
+    """Save the companion's draft at its current revision: the ``full`` draft answered."""
+    draft = await read_companion(client, character_id)
+    return await _answer(
+        await scenarios.save(client, draft["id"], draft["draft_revision"], **groups)
+    )
+
+
+async def _character_save(
+    client: httpx.AsyncClient, character_id: str, revision: int, **groups: Any
+) -> dict[str, Any]:
+    return await _answer(
+        await client.patch(
+            f"/catalog/characters/{character_id}",
+            json={"draft_revision": revision, **groups},
+            headers=scenarios.WRITE,
+        )
+    )
+
+
+async def _pins(db: AsyncEngine, scenario_id: str) -> list[tuple[Any, ...]]:
+    """Each version of the companion: ``(version, pinned character id, pinned version, the pin
+    its content holds)``, oldest first."""
+    found = await rows(
+        db,
+        "SELECT version, pinned_character_id, pinned_character_version, content "
+        "FROM catalog.scenario_versions WHERE catalog_id = :s ORDER BY version",
+        s=scenario_id,
+    )
+    return [
+        (r.version, r.pinned_character_id, r.pinned_character_version, pin_of(r.content))
+        for r in found
+    ]
+
+
+async def _versions_of(db: AsyncEngine, character_id: str) -> int:
+    found = await rows(
+        db,
+        "SELECT count(*) AS n FROM catalog.character_versions WHERE catalog_id = :c",
+        c=character_id,
+    )
+    return int(found[0].n)
+
+
+async def _waiting(db: AsyncEngine, within: float = 10.0) -> None:
+    """Return once a backend of this database waits on a lock."""
+    deadline = time.monotonic() + within
+    while not await rows(
+        db,
+        "SELECT 1 FROM pg_stat_activity "
+        "WHERE datname = current_database() AND wait_event_type = 'Lock'",
+    ):
+        assert time.monotonic() < deadline, "no request waited on the lock in time"
+        await asyncio.sleep(0.02)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-CAT-3,5,10; FR-SCN-5; FR-RATE-5")
+async def test_i_20__companion(
+    pg_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Linda's companion keeps its own version sequence, linked to hers by the pin.
+
+    - **First publish.** Before Linda's first publish her companion cannot be published alone
+      (``character_not_published``). Her first publish (version 1) creates companion version 1
+      from the companion's defaults (its two slots, no world), pinned to 1, although the
+      companion's draft already holds an unpublished world: the draft stays a draft, its pin
+      moved to 1.
+    - **Companion alone.** The companion's draft with a new opening publishes as version 2,
+      pinned to Linda's latest published version, 1; Linda's versions do not change.
+    - **Character alone.** Linda's version 2, published while the companion's draft holds an
+      unpublished plot hook, creates companion version 3: the last published companion content,
+      pinned to 2. The draft keeps the plot hook, unpublished, its pin moved to 2.
+    - **Both together.** ``with_companion`` publishes Linda's version 3 and the companion's draft
+      (the plot hook) as one pair, pinned to 3.
+    - **Atomic failure.** Linda's version 4 published with a companion draft whose new seed
+      declares no audience is 422 ``publish_invalid`` naming the companion and the seed: no
+      character version 4 and no new companion version exist, and Linda's draft revision is
+      unchanged. Fixing the seed and publishing both together succeeds.
+    - **Injected failure.** A failure after the character-version insert (the companion step
+      raising) rolls back both.
+    - **Rating difference.** Once Everyone carries a policy Explicit lacks, a companion rated
+      Explicit beside Linda rated Everyone publishes with one ``rating_looser`` warning naming
+      the companion, and Linda rated Explicit beside a companion rated Everyone publishes the
+      pair with one naming Linda's version: a difference warns either way, never blocks. The
+      dry run reports it too, and a copied companion version records its rating's version now
+      current.
+    - **Concurrency.** Two saves of the companion's draft from one revision: the second is 409
+      ``draft_stale``. Two publishes of Linda's draft at once make one character version and
+      one companion version, the other 409 ``draft_stale`` naming Linda; under one
+      ``Idempotency-Key`` the second answers the first's result.
+    - **Pins.** Every companion version records the character version its locked slot uses, in
+      its columns and its content alike, and that version exists. Stories created from them
+      (each snapshotting its pinned pair) are #119's ``test_i_22__creation``.
+
+    It runs on its own scratch database, because it links a policy to the seeded Everyone rating
+    (the seeded ratings carry no policies, so no pair of them differs otherwise).
+
+    Complements asserted: each refused publish leaves both version counts as they were; the
+    warnings' publishes made their versions."""
+    async with (
+        scratch(pg_url, tmp_path / "media", model_adapter="stub") as space,
+        media_client(space.settings, space.db) as client,
+    ):
+        db = space.db
+        made = await client.post(
+            "/catalog/characters", json=complete("Linda Okafor"), headers=scenarios.WRITE
+        )
+        linda = await _answer(made, 201)
+        cid, sid = linda["id"], linda["companion_id"]
+
+        # -- the first publish
+        edited = await _companion_save(
+            client, cid, world=LINDA_WORLD, starting_state={"opening": {"narration": OPENING}}
+        )
+        early = await scenarios.publish(client, sid, edited["draft_revision"])
+        status, code, details = _refusal(early)
+        assert (status, code) == (422, "publish_invalid")
+        assert codes(details["report"]["errors"]) == [
+            ("character_not_published", "cast.roles[0].character")
+        ]
+        first = await _answer(await _publish_character(client, cid, 1), 201)
+        assert (first["version"], first["companion"]["version"]) == (1, 1)
+        v1 = await _answer(
+            await client.get(
+                f"{scenarios.BASE}/{sid}",
+                params={"version": "1", "projection": "full"},
+                headers=scenarios.READ,
+            )
+        )
+        assert v1["world"]["description"] is None
+        assert v1["starting_state"]["opening"]["narration"] is None
+        assert [(r["id"], r["fill"], r["character"]) for r in v1["cast"]["roles"]] == [
+            ("npc", "locked", {"catalog_id": cid, "version": 1}),
+            ("player", "open", None),
+        ]
+        draft = await read_companion(client, cid)
+        assert draft["world"] == {**v1["world"], **LINDA_WORLD}
+        assert (draft["pinned_character_version"], draft["draft_revision"]) == (
+            1,
+            edited["draft_revision"] + 1,
+        )
+        assert first["companion"]["draft_revision"] == draft["draft_revision"]
+
+        # -- the companion alone
+        opened = await _companion_save(
+            client, cid, starting_state={"opening": {"narration": NEW_OPENING}}
+        )
+        alone = await _answer(await scenarios.publish(client, sid, opened["draft_revision"]), 201)
+        assert alone["version"] == 2
+        assert await _pins(db, sid) == [(1, cid, 1, 1), (2, cid, 1, 1)]
+        assert await _versions_of(db, cid) == 1
+
+        # -- the character alone, while the companion's draft holds an unpublished plot hook
+        hooked = await _companion_save(client, cid, drivers={"plot_hooks": [HOOK]})
+        saved = await _character_save(
+            client, cid, first["draft_revision"], public_card={"public_description": "Retired."}
+        )
+        second = await _answer(await _publish_character(client, cid, saved["draft_revision"]), 201)
+        assert (second["version"], second["companion"]["version"]) == (2, 3)
+        contents = {
+            r.version: r.content
+            for r in await rows(
+                db,
+                "SELECT version, content FROM catalog.scenario_versions WHERE catalog_id = :s",
+                s=sid,
+            )
+        }
+        assert contents[3] == repinned(contents[2], 2)
+        assert contents[3]["starting_state"]["opening"]["narration"] == NEW_OPENING
+        assert HOOK not in json.dumps(contents[3])
+        draft = await read_companion(client, cid)
+        assert draft["drivers"]["plot_hooks"] == [HOOK]
+        assert (draft["pinned_character_version"], draft["draft_revision"]) == (
+            2,
+            hooked["draft_revision"] + 1,
+        )
+
+        # -- both together
+        third = await _answer(
+            await _publish_character(
+                client, cid, second["draft_revision"], companion=draft["draft_revision"]
+            ),
+            201,
+        )
+        assert (third["version"], third["companion"]["version"]) == (3, 4)
+        v4 = await _answer(
+            await client.get(
+                f"{scenarios.BASE}/{sid}",
+                params={"version": "4", "projection": "full"},
+                headers=scenarios.READ,
+            )
+        )
+        assert (v4["drivers"]["plot_hooks"], v4["pinned_character_version"]) == ([HOOK], 3)
+
+        # -- the atomic failure: a seed with no audience refuses the pair, and nothing is written
+        broken = await _companion_save(
+            client, cid, starting_state={"seeded_memories": [incomplete_seed("Rain gets in.")]}
+        )
+        seed_id = broken["starting_state"]["seeded_memories"][0]["id"]
+        before = (await _versions_of(db, cid), len(await _pins(db, sid)))
+        refused = await _publish_character(
+            client, cid, third["draft_revision"], companion=broken["draft_revision"]
+        )
+        status, code, details = _refusal(refused)
+        assert (status, code, details["entity"], details["scenario_id"]) == (
+            422,
+            "publish_invalid",
+            "companion",
+            sid,
+        )
+        errors = details["report"]["errors"]
+        assert codes(errors) == [
+            ("seed_missing_audience", "starting_state.seeded_memories[0].audience")
+        ]
+        assert errors[0]["location"]["seed_id"] == seed_id
+        assert (await _versions_of(db, cid), len(await _pins(db, sid))) == before
+        unchanged = await _answer(
+            await client.get(
+                f"/catalog/characters/{cid}",
+                params={"draft": "true", "projection": "full"},
+                headers=scenarios.READ,
+            )
+        )
+        assert unchanged["draft_revision"] == third["draft_revision"]
+        fixed = await _companion_save(
+            client,
+            cid,
+            starting_state={"seeded_memories": [scenarios.seed("Rain gets in.", id=seed_id)]},
+        )
+        fourth = await _answer(
+            await _publish_character(
+                client, cid, third["draft_revision"], companion=fixed["draft_revision"]
+            ),
+            201,
+        )
+        assert (fourth["version"], fourth["companion"]["version"]) == (4, 5)
+
+        # -- a failure injected after the character-version insert rolls back both
+        async def failing(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("injected after the character version")
+
+        before = (await _versions_of(db, cid), len(await _pins(db, sid)))
+        monkeypatch.setattr(companions, "copy_companion", failing)
+        with pytest.raises(RuntimeError, match="injected"):
+            await space.lib.publish_character(
+                RequestContext(principal="p-injected"),
+                cid,
+                CharacterPublishRequest(draft_revision=fourth["draft_revision"]),
+            )
+        monkeypatch.undo()
+        assert (await _versions_of(db, cid), len(await _pins(db, sid))) == before
+
+        # -- a rating difference warns, either way, and never blocks
+        await link_rating_policy(client, db, EVERYONE_ID)
+        fifth = await _answer(await _publish_character(client, cid, fourth["draft_revision"]), 201)
+        assert fifth["version"] == 5
+        # The copy records the rating's version now current (the policy made a new one).
+        stored_ratings = {
+            r.version: r.content_rating_version_id
+            for r in await rows(
+                db,
+                "SELECT version, content_rating_version_id FROM catalog.scenario_versions "
+                "WHERE catalog_id = :s",
+                s=sid,
+            )
+        }
+        copy = fifth["companion"]["version"]
+        assert stored_ratings[copy] == await rating_version(db, EVERYONE_ID)
+        assert stored_ratings[copy] != stored_ratings[copy - 1]
+        explicit = await _companion_save(client, cid, metadata={"content_rating_id": EXPLICIT_ID})
+        dry = await validate(client, sid)
+        assert [
+            (e["location"]["field"], e["source"])
+            for e in entries(dry.json()["report"], "rating_looser")
+        ] == [("metadata.content_rating_id", f"{sid}@draft")]
+        looser = await _answer(
+            await scenarios.publish(client, sid, explicit["draft_revision"]), 201
+        )
+        assert [
+            (e["code"], e["location"]["field"], e["source"]) for e in looser["report"]["warnings"]
+        ] == [("rating_looser", "metadata.content_rating_id", f"{sid}@draft")]
+        rated = await _character_save(
+            client, cid, fifth["draft_revision"], metadata={"content_rating_id": EXPLICIT_ID}
+        )
+        everyone = await _companion_save(client, cid, metadata={"content_rating_id": EVERYONE_ID})
+        pair = await _answer(
+            await _publish_character(
+                client, cid, rated["draft_revision"], companion=everyone["draft_revision"]
+            ),
+            201,
+        )
+        assert pair["report"]["warnings"] == []
+        assert [
+            (e["code"], e["location"]["field"], e["source"])
+            for e in pair["companion"]["report"]["warnings"]
+        ] == [("rating_looser", "cast.roles[0].character", f"{cid}@{pair['version']}")]
+
+        # -- concurrency: two saves from one revision; two publishes of one draft
+        draft = await read_companion(client, cid)
+        saves = [
+            await scenarios.save(client, sid, draft["draft_revision"], drivers={"objectives": [x]})
+            for x in ("Stay for tea.", "Leave before dark.")
+        ]
+        assert [s.status_code for s in saves] == [200, 409]
+        assert scenarios.error_of(saves[1])["code"] == "draft_stale"
+        before = (await _versions_of(db, cid), len(await _pins(db, sid)))
+        with pauses.held(pauses.CATALOG_PUBLISH_LOCKED) as hold:
+            winning = asyncio.ensure_future(_publish_character(client, cid, pair["draft_revision"]))
+            await hold.arrived(1)
+            losing = asyncio.ensure_future(_publish_character(client, cid, pair["draft_revision"]))
+            await _waiting(db)
+            hold.release()
+            won, lost = await asyncio.gather(winning, losing)
+        assert won.status_code == 201, won.text
+        assert _refusal(lost)[:2] == (409, "draft_stale")
+        assert _refusal(lost)[2]["entity"] == "character"
+        assert (await _versions_of(db, cid), len(await _pins(db, sid))) == (
+            before[0] + 1,
+            before[1] + 1,
+        )
+        key = f"twice-{cid}"
+        revision = won.json()["draft_revision"]
+        with pauses.held(pauses.CATALOG_PUBLISH_LOCKED) as hold:
+            original = asyncio.ensure_future(_publish_character(client, cid, revision, key=key))
+            await hold.arrived(1)
+            duplicate = asyncio.ensure_future(_publish_character(client, cid, revision, key=key))
+            await asyncio.sleep(0.2)  # the duplicate waits on the key's original
+            hold.release()
+            first_answer, second_answer = await asyncio.gather(original, duplicate)
+        assert first_answer.status_code == second_answer.status_code == 201
+        assert second_answer.json() == first_answer.json()
+        assert second_answer.headers.get("Idempotent-Replay") == "true"
+        assert (await _versions_of(db, cid), len(await _pins(db, sid))) == (
+            before[0] + 2,
+            before[1] + 2,
+        )
+
+        # -- every companion version records the character version its locked slot uses
+        pins = await _pins(db, sid)
+        assert [p[0] for p in pins] == list(range(1, len(pins) + 1))
+        for _, character, pinned, held in pins:
+            assert (character, pinned) == (cid, held)
+            assert await rows(
+                db,
+                "SELECT 1 FROM catalog.character_versions WHERE catalog_id = :c AND version = :v",
+                c=cid,
+                v=pinned,
+            )

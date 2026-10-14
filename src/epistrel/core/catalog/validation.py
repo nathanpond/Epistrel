@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core.catalog.checks import (
     cast_limit,
     character_content,
+    companion,
     document,
     eligibility,
     fact_consistency,
@@ -84,6 +85,7 @@ CHECKS: tuple[Check, ...] = (
     media.CHECK,
     providers.CHECK,
     rating_mismatch.CHECK,
+    companion.CHECK,
     input_policy.CHECK,
     personality.CHECK,
     seed_normalization.CHECK,

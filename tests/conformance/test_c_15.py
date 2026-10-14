@@ -34,7 +34,6 @@ from typing import Annotated, Any
 import httpx2 as httpx
 import pytest
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -60,6 +59,7 @@ from tests.catalog_support import (
     ids,
     publish,
     read,
+    read_companion,
     save,
     scratch_catalog,
     set_listing_status,
@@ -722,8 +722,9 @@ async def test_c_15__listing_status(pg_url: str) -> None:
     recorded); each change is recorded with the acting principal and its time. The lists filter
     by the value, and an unfiltered list holds every value and every owner. A ``private`` entry
     reads in both projections, and lists, for a principal that does not own it. A companion
-    scenario's value changes with its character's and is refused on its own; the companion
-    still reads directly, and a scenario list shows it only with ``include_companions``.
+    scenario's value (the one created with its character, #116) changes with its character's
+    and is refused on its own; the companion still reads directly, and a scenario list shows it
+    only with ``include_companions``.
     Reconfigured, the
     deployment accepts its own values: a value an entry still holds cannot be removed (409
     ``listing_status_in_use``); once no entry holds the defaults they can be removed, after
@@ -793,25 +794,21 @@ async def test_c_15__listing_status(pg_url: str) -> None:
             "private",
         )
 
-        # A companion follows its character (#116 makes companions; here SQL does), and lists
-        # only when asked for.
-        companion = await scenarios.create(client, scenarios.scenario("Gull Rock"))
-        await scenarios.publish(client, companion["id"], 1)
-        async with db.begin() as conn:
-            await conn.execute(
-                text(
-                    "UPDATE catalog.scenario_catalog SET companion_of = :c, "
-                    "listing_status = 'public' WHERE id = :s"
-                ),
-                {"c": mara["id"], "s": companion["id"]},
-            )
+        # A companion follows its character: Mara's, created with her (#116), changed with her
+        # above, and lists only when asked for.
+        companion = await read_companion(client, mara["id"])
+        assert companion["listing_status"] == "public"
+        assert await _status_events(db, companion["id"]) == [("private", "public", "p-editor")]
         moved = await set_listing_status(
             client, CHARACTERS, mara["id"], "in_review", principal="p-editor"
         )
         assert moved.status_code == 200, moved.text
         shown = await scenarios.read(client, companion["id"])
         assert shown.json()["listing_status"] == "in_review"
-        assert await _status_events(db, companion["id"]) == [("public", "in_review", "p-editor")]
+        assert await _status_events(db, companion["id"]) == [
+            ("private", "public", "p-editor"),
+            ("public", "in_review", "p-editor"),
+        ]
         alone = await set_listing_status(client, SCENARIOS, companion["id"], "public")
         assert alone.status_code == 422, alone.text
         assert alone.json()["error"]["code"] == "companion_follows_character"
@@ -824,6 +821,7 @@ async def test_c_15__listing_status(pg_url: str) -> None:
         assert await ids(client, SCENARIOS, include_companions=True) == [
             companion["id"],
             drafted["id"],
+            (await read_companion(client, ivo["id"]))["id"],
         ]
 
         # The deployment's own values: never one an entry still holds removed.
@@ -832,7 +830,7 @@ async def test_c_15__listing_status(pg_url: str) -> None:
         assert held.status_code == 409, held.text
         assert held.json()["error"]["code"] == "listing_status_in_use"
         assert held.json()["error"]["details"]["value"] == "private"
-        assert held.json()["error"]["details"]["count"] == 1
+        assert held.json()["error"]["details"]["count"] == 2  # Ivo and his companion
         assert (await _values(client, [*DEFAULT_VALUES, *custom])).status_code == 200
         for base, entry_id, value in (
             (CHARACTERS, ivo["id"], "pending"),

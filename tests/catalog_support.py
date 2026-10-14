@@ -1,5 +1,5 @@
-"""Helpers for the catalog tests (#103): request bodies, REST calls on catalog characters, and
-row snapshots."""
+"""Helpers for the catalog tests (#103): request bodies, REST calls on catalog characters, row
+snapshots, and a character's companion scenario (#116)."""
 
 from __future__ import annotations
 
@@ -200,6 +200,53 @@ async def ids(
     return [item["id"] for item in await every(client, base, principal=principal, **params)]
 
 
+COMPANION_GROUPS = ("public_card", "metadata", "world", "starting_state", "drivers")
+"""The groups ``dress_companion`` copies from a scenario body: everything but the cast (a
+companion's slots are its own, #116) and the story settings."""
+
+
+async def read_companion(client: httpx.AsyncClient, character_id: str) -> dict[str, Any]:
+    """The companion scenario of a catalog character (#116): its draft, in ``full``."""
+    found = await client.get(
+        f"{BASE}/{character_id}/companion",
+        params={"draft": "true", "projection": "full"},
+        headers=READ,
+    )
+    assert found.status_code == 200, found.text
+    body: dict[str, Any] = found.json()
+    return body
+
+
+async def dress_companion(
+    client: httpx.AsyncClient,
+    character_id: str,
+    body: dict[str, Any],
+    *,
+    publish: bool = True,
+    principal: str = PRINCIPAL,
+) -> str:
+    """Give the companion of ``character_id`` (#116) the ``COMPANION_GROUPS`` of the scenario
+    ``body`` (its two slots stay its own), and with ``publish`` publish it alone (its character
+    must be published). Answers its id. The listing tests use it where they once made a scenario
+    a companion with SQL."""
+    companion = await read_companion(client, character_id)
+    patch = {group: value for group, value in body.items() if group in COMPANION_GROUPS}
+    saved = await client.patch(
+        f"/catalog/scenarios/{companion['id']}",
+        json={"draft_revision": companion["draft_revision"], **patch},
+        headers=headers(principal=principal),
+    )
+    assert saved.status_code == 200, saved.text
+    if publish:
+        done = await client.post(
+            f"/catalog/scenarios/{companion['id']}/publish",
+            json={"draft_revision": saved.json()["draft_revision"]},
+            headers=headers(principal=principal),
+        )
+        assert done.status_code == 201, done.text
+    return str(companion["id"])
+
+
 @asynccontextmanager
 async def scratch_catalog(pg_url: str) -> AsyncIterator[tuple[Settings, AsyncEngine]]:
     """A fresh database migrated to head (dropped afterwards), for a test that counts the whole
@@ -217,6 +264,7 @@ async def scratch_catalog(pg_url: str) -> AsyncIterator[tuple[Settings, AsyncEng
 __all__ = [
     "BASE",
     "CARD_KEYS",
+    "COMPANION_GROUPS",
     "LIST_EXTRA_KEYS",
     "PRINCIPAL",
     "READ",
@@ -225,6 +273,7 @@ __all__ = [
     "character",
     "count",
     "create",
+    "dress_companion",
     "entry_row",
     "every",
     "headers",
@@ -233,6 +282,7 @@ __all__ = [
     "publish",
     "published",
     "read",
+    "read_companion",
     "save",
     "scratch_catalog",
     "set_listing_status",

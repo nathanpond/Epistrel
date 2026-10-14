@@ -10,7 +10,8 @@ location (``("cast", "roles", 0, "id")``) into the field path reports use
 - At most one role is the player's (zero is allowed), and it is ``open``.
 - A ``locked`` or ``default`` role names its ``character`` and an ``open`` one names none; a
   role's ``character.version`` is a version or omitted (the latest published at story
-  creation), never ``null``.
+  creation), never ``null`` — except on a companion (#116), whose locked role names ``null``
+  before its character's first publish (the version it is pinned to: none yet).
 - A relationship names another declared role, never its own; every starting location names a
   declared location, and every role a seed's holder, a reveal or the opening names is declared
   (a holder may also be ``world``); location, entity and seed ids are unique.
@@ -52,9 +53,10 @@ def _unknown_location(loc: Loc, location_id: str) -> dict[str, Any]:
     return _error(loc, "unknown_location", f"no location of this scenario is `{location_id}`")
 
 
-def rule_errors(draft: ScenarioDraft) -> list[dict[str, Any]]:
+def rule_errors(draft: ScenarioDraft, *, companion: bool = False) -> list[dict[str, Any]]:
     """Every rule ``draft`` breaks (see the module docstring), each at its location in the
-    document; ``[]`` when it keeps them all."""
+    document; ``[]`` when it keeps them all. A ``companion`` draft (#116) may name its locked
+    character's ``version`` as ``null``: its pin before the character's first publish."""
     errors: list[dict[str, Any]] = []
     roles = draft.cast.roles
     role_ids = {role.id for role in roles}
@@ -135,7 +137,8 @@ def rule_errors(draft: ScenarioDraft) -> list[dict[str, Any]]:
             )
         character = role.character
         if (
-            character is not None
+            not companion
+            and character is not None
             and character.version is None
             and "version" in character.model_fields_set
         ):

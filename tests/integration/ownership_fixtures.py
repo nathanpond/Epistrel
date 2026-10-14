@@ -476,6 +476,9 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", C): Call(200, queries=ENTRY_READS, prepare=_published),
     ("GET", f"{C}/versions"): Call(200, prepare=_published),
     ("GET", f"{C}/relations"): Call(200, prepare=_related),
+    # -- catalog characters: the companion scenario made with the character (#116), read as a
+    # scenario is, after the character's publish made its first version
+    ("GET", f"{C}/companion"): Call(200, queries=ENTRY_READS, prepare=_published),
     # -- scenarios (#108): writes
     ("PATCH", SC): Call(200, {"draft_revision": 1, "drivers": {"plot_hooks": ["A knock."]}}),
     ("POST", f"{SC}/publish"): Call(201, {"draft_revision": 1}),

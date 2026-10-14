@@ -43,9 +43,11 @@ from tests.catalog_support import (
     WRITE,
     character,
     count,
+    dress_companion,
     every,
     headers,
     ids,
+    read_companion,
     scratch_catalog,
     set_listing_status,
 )
@@ -167,19 +169,6 @@ async def _updated(client: httpx.AsyncClient, entry_id: str) -> datetime:
         await client.get(f"{CHARACTERS}/{entry_id}", params={"projection": "full"}, headers=READ)
     )
     return datetime.fromisoformat(full["updated_at"])
-
-
-async def _companion_of(db: AsyncEngine, scenario_id: str, character_id: str) -> None:
-    """Make ``scenario_id`` the companion of ``character_id`` (#116 does that at creation)."""
-    async with db.begin() as conn:
-        await conn.execute(
-            text(
-                "UPDATE catalog.scenario_catalog SET companion_of = :c, listing_status = "
-                "(SELECT listing_status FROM catalog.character_catalog WHERE id = :c) "
-                "WHERE id = :s"
-            ),
-            {"c": character_id, "s": scenario_id},
-        )
 
 
 # -- search -------------------------------------------------------------------------------------
@@ -472,12 +461,12 @@ async def test_list_items_are_the_single_read_cards(space: Space) -> None:
 async def test_statuses_and_companions(space: Space) -> None:
     """A list shows published entries; ``status`` shows the drafts or the archived ones.
     Companion scenarios are left out of every scenario list, a search or a filtered one
-    included, unless ``include_companions=true``; a companion still reads directly."""
+    included, unless ``include_companions=true``; a companion still reads directly. The
+    companion is the one Mara was created with (#116), given a name and labels and published."""
     client = space.client
     mara = await _character(client, "Mara Venn")
     authored = await _scenario(client, scenarios.scenario("Sunday Dinner"))
-    companion = await _scenario(client, scenarios.scenario("Sunday Supper"))
-    await _companion_of(space.db, companion, mara)
+    companion = await dress_companion(client, mara, scenarios.scenario("Sunday Supper"))
     drafted = await _scenario(client, scenarios.scenario("Sunday Lunch"), publish=False)
     assert await ids(client, SCENARIOS) == [authored]
     assert await ids(client, SCENARIOS, include_companions=True) == [companion, authored]
@@ -625,7 +614,10 @@ async def test_listing_status_writes(space: Space) -> None:
     again = await set_listing_status(client, CHARACTERS, mara, "public", principal="p-ed", key=key)
     assert again.json() == first.json()
     assert again.headers.get(REPLAY) == "true"
-    events = "SELECT count(*) FROM ownership_events WHERE kind = 'listing_status'"
+    events = (
+        "SELECT count(*) FROM ownership_events "
+        "WHERE kind = 'listing_status' AND entity_type = 'character'"
+    )  # each character's companion (#116) records its own event too
     assert await count(db, events) == 1
     (operation,) = await rows(
         db, "SELECT kind, principal FROM operations WHERE idempotency_key = :k", k=key
@@ -679,18 +671,20 @@ async def test_listing_status_writes(space: Space) -> None:
 
 
 async def test_companions_follow_and_hooks_run(space: Space) -> None:
-    """A character's listing-status change moves its companion scenarios in the same
-    transaction (one event each, by the acting principal, a companion already at the value
-    left alone) and runs every registered hook once per entry it changes, inside that
-    transaction; a companion's own change is 422 ``companion_follows_character`` and runs no
-    hook. A scenario that is nobody's companion changes alone."""
+    """A character's listing-status change moves its companion scenario in the same transaction
+    (one event each, by the acting principal; a companion already at the value is left alone,
+    with no event), whether the companion was published or is a draft, and runs every
+    registered hook once per entry it changes, inside that transaction; a companion's own
+    change is 422 ``companion_follows_character`` and runs no hook. A scenario that is nobody's
+    companion changes alone. The companions are the ones each character was created with
+    (#116); one is put out of step with SQL, which only SQL can do."""
     client, db = space.client, space.db
     mara = await _character(client, "Mara Venn")
-    first = await _scenario(client, scenarios.scenario("Gull Rock"))
-    second = await _scenario(client, scenarios.scenario("Tide Pool"), publish=False)
-    ahead = await _scenario(client, scenarios.scenario("Low Water"))
-    for companion in (first, second, ahead):
-        await _companion_of(db, companion, mara)
+    ivo = await _character(client, "Ivo Brand", publish=False)
+    lev = await _character(client, "Lev Arno")
+    first = (await read_companion(client, mara))["id"]
+    second = (await read_companion(client, ivo))["id"]
+    ahead = (await read_companion(client, lev))["id"]
     async with db.begin() as conn:
         await conn.execute(
             text("UPDATE catalog.scenario_catalog SET listing_status = 'public' WHERE id = :s"),
@@ -705,8 +699,11 @@ async def test_companions_follow_and_hooks_run(space: Space) -> None:
 
     listing.on_listing_status_change(hook)
     try:
-        moved = await set_listing_status(client, CHARACTERS, mara, "public", principal="p-ed")
-        assert moved.status_code == 200, moved.text
+        for character_id in (mara, ivo, lev):
+            moved = await set_listing_status(
+                client, CHARACTERS, character_id, "public", principal="p-ed"
+            )
+            assert moved.status_code == 200, moved.text
         refused = await set_listing_status(client, SCENARIOS, first, "private")
         assert _error(refused)[:2] == (422, "companion_follows_character")
         assert _error(refused)[2] == {
@@ -716,10 +713,13 @@ async def test_companions_follow_and_hooks_run(space: Space) -> None:
         }
     finally:
         listing.remove_listing_status_hook(hook)
-    companions = sorted([first, second])
+    change = ("private", "public", "p-ed")
     assert calls == [
-        (True, EntityType.CHARACTER, mara, "private", "public", "p-ed"),
-        *((True, EntityType.SCENARIO, s, "private", "public", "p-ed") for s in companions),
+        (True, EntityType.CHARACTER, mara, *change),
+        (True, EntityType.SCENARIO, first, *change),
+        (True, EntityType.CHARACTER, ivo, *change),
+        (True, EntityType.SCENARIO, second, *change),
+        (True, EntityType.CHARACTER, lev, *change),
     ]
     found = await rows(
         db,
@@ -727,13 +727,12 @@ async def test_companions_follow_and_hooks_run(space: Space) -> None:
         "WHERE kind = 'listing_status' ORDER BY entity_type, entity_id",
     )
     assert [tuple(row) for row in found] == [
-        ("character", mara, "private", "public", "p-ed"),
-        *(("scenario", s, "private", "public", "p-ed") for s in companions),
+        *(("character", c, *change) for c in sorted([mara, ivo, lev])),
+        *(("scenario", s, *change) for s in sorted([first, second])),
     ]
     statuses = await rows(
         db,
-        "SELECT id, listing_status FROM catalog.scenario_catalog WHERE companion_of = :c",
-        c=mara,
+        "SELECT id, listing_status FROM catalog.scenario_catalog WHERE companion_of IS NOT NULL",
     )
     assert dict(tuple(row) for row in statuses) == dict.fromkeys((first, second, ahead), "public")
     alone = await _scenario(client, scenarios.scenario("Inland"))
@@ -806,15 +805,15 @@ async def test_listing_status_values_setting(space: Space) -> None:
     drafted = await _character(client, "Ada Lowe", publish=False)
     archived = await _character(client, "Tom Reed")
     await _ok(await client.post(f"{CHARACTERS}/{archived}/archive", headers=WRITE))
-    companion = await _scenario(client, scenarios.scenario("Gull Rock"), publish=False)
-    await _companion_of(db, companion, published)
     held = await write(["private", "in_review"])
     status, code, details = _error(held)
+    # The three characters and the companion each was created with (#116): published, never
+    # published, archived.
     assert (status, code, details["value"], details["count"]) == (
         409,
         "listing_status_in_use",
         "public",
-        4,
+        6,
     )
     for entry_id in (drafted, archived, published):
         await _ok(await set_listing_status(client, CHARACTERS, entry_id, "private"))

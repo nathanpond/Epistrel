@@ -24,8 +24,7 @@ at runtime, so ``updated_at`` and ``companion_of`` are used where a table has th
 **Companions follow their character** (FR-AUTH-5). Transferring a character also transfers every
 scenario whose ``companion_of`` names it, in the same transaction and with one event per entity.
 A companion's owner and relations cannot be changed on their own (422
-``companion_follows_character``). The rule takes effect when #108's and #116's tables have the
-column.
+``companion_follows_character``). Every character has one companion, created with it (#116).
 
 **Writes.** Each write is one transaction under the entity's row lock: ``FOR UPDATE`` for a
 transfer, ``FOR NO KEY UPDATE`` for a relation change. So the writes to one entity's relations

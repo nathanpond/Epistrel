@@ -58,7 +58,10 @@ class Subject:
     """What is validated: an entry of ``entity_type`` (``entry_id``), its ``version`` (a
     published version's number, or ``"draft"``), the stored ``document``, and the model the
     document is validated as (the kind's draft model). ``memo`` holds what one check derives
-    and another reuses within this one validation (the parsed document, the role characters)."""
+    and another reuses within this one validation (the parsed document, the role characters).
+    ``waived`` names the codes this validation does not report: a companion version that a
+    character-alone publish copies needs no world or opening (``world_required``,
+    ``opening_required``; FR-CAT-10, #116)."""
 
     entity_type: EntityType
     entry_id: str
@@ -66,6 +69,7 @@ class Subject:
     document: Mapping[str, Any]
     model: type[BaseModel]
     memo: dict[str, Any] = field(default_factory=dict)
+    waived: frozenset[str] = frozenset()
 
     def entry(
         self,

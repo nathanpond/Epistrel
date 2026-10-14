@@ -113,6 +113,7 @@ from epistrel.config import Settings
 from epistrel.core.catalog.characters import (
     CharacterCreate,
     CharacterPatch,
+    CharacterPublishRequest,
     Projection,
     PublishRequest,
 )
@@ -345,6 +346,15 @@ def _scenario_body(ids: dict[str, Any]) -> dict[str, Any]:
 
 SCENARIO_PATCH = {"draft_revision": 1, "drivers": {"plot_hooks": ["A stranger knocks."]}}
 SCENARIO_GHOST = {"public_card": {"name": "Ghost"}}
+COMPANION_PATCH = {
+    "draft_revision": 2,
+    "world": {"description": "A lighthouse on Gull Rock."},
+    "starting_state": {"opening": {"narration": "Mara hangs her coat by the stove."}},
+}
+"""The character's companion scenario (#116), at draft revision 2 (its pin moved by the
+character's first publish), given a world and an opening, so its draft publishes."""
+PAIR = {"draft_revision": 3, "companion_draft_revision": 3}
+"""The character's draft and its companion's, published together (#116)."""
 ENTRY_ANSWERS = [
     ("create_scenario_draft", 201),
     ("save_scenario_draft", 200),
@@ -365,12 +375,18 @@ ENTRY_ANSWERS = [
     ("transfer_owner", 200),
     ("add_relation", 201),
     ("list_relations", 200),
+    ("get_companion", 200),
+    ("save_scenario_draft", 200),
+    ("publish_character", 201),
+    ("get_companion", 200),
 ]
 """What the scenario steps (#108) answer on both surfaces: a draft created, saved, refused as
 stale, published, validated (#111: the draft, version 1, and a stale draft revision refused),
 read as its card, as version 1 in full and as its draft in full, its versions listed, archived
 and unarchived; a second draft never published (422 ``not_published``) and deleted; and the
-first scenario's owner and relations."""
+first scenario's owner and relations. Then the character's companion scenario (#116): read
+through the character, its draft saved, published with the character as a pair, and its
+version 2 read in full."""
 ENTRY_GROUP = "scenario"
 """The ``Step.group`` of the scenario steps (#108)."""
 PUBLIC = {"value": "public"}
@@ -1033,6 +1049,55 @@ def _steps() -> list[Step]:
             lambda e, ids: _relations(e, EntityType.SCENARIO, ids["scenario"]),
             group=ENTRY_GROUP,
         ),
+        # -- the character's companion scenario (#116): read, saved, published with the
+        # character, and read again
+        Step(
+            "get_companion",
+            lambda ids: Rest("GET", "/catalog/characters/{character}/companion"),
+            lambda e, ids: _scenario_of(e.get_companion(CTX, ids["character"])),
+            _keep("companion", "id"),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "save_scenario_draft",
+            lambda ids: Rest("PATCH", "/catalog/scenarios/{companion}", COMPANION_PATCH),
+            lambda e, ids: _scenario_draft(
+                e.save_scenario_draft(
+                    CTX, ids["companion"], ScenarioPatch.model_validate(COMPANION_PATCH)
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "publish_character",
+            lambda ids: Rest(
+                "POST",
+                "/catalog/characters/{character}/publish",
+                PAIR,
+                params={"with_companion": "true"},
+            ),
+            lambda e, ids: _published(
+                e.publish_character(
+                    CTX,
+                    ids["character"],
+                    CharacterPublishRequest(**PAIR),
+                    with_companion=True,
+                )
+            ),
+            group=ENTRY_GROUP,
+        ),
+        Step(
+            "get_companion",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/characters/{character}/companion",
+                params={"version": 2, "projection": "full"},
+            ),
+            lambda e, ids: _scenario_of(
+                e.get_companion(CTX, ids["character"], version=2, projection=Projection.FULL)
+            ),
+            group=ENTRY_GROUP,
+        ),
         # -- listing status and listings (#110): the character made `public`, then found by a
         # search with that status, and the scenarios listed by a label
         Step(
@@ -1635,6 +1700,10 @@ async def _scenario(engine: Engine, scenario_id: str, **params: Any) -> dict[str
     return dump(await engine.get_scenario(CTX, scenario_id, **params))
 
 
+async def _scenario_of(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(await call)
+
+
 async def _scenario_versions(engine: Engine, scenario_id: str) -> dict[str, Any]:
     return dump(ScenarioVersionsBody.of(await engine.list_scenario_versions(CTX, scenario_id)))
 
@@ -2047,6 +2116,7 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         ("create_character_draft", 201),
         ("get_character", 422),
         ("delete_character", 204),
+        ("publish_character", 201),
     ]
     # The media steps (#105) too (``MEDIA_ANSWERS``), and the session steps' (#107).
     media = [

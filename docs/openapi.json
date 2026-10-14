@@ -1102,7 +1102,7 @@
       },
       "CharacterFull": {
         "additionalProperties": false,
-        "description": "A catalog character in full (``projection=full``; FR-SCN-10): the entry's envelope, the\npublic card's fields with each image's media row, the aliases, the private ``definition``\nand the ``visual_identity``. ``draft_revision`` is present only on a draft read\n(``?draft=true``): the revision the next save or publish must send. ``published_at`` is\nwhen ``version`` was published; ``companion_id`` names the character's companion scenario\n(#116; ``null`` until then). ``owner_principal`` is the entry's owner (FR-AUTH-5), recorded\nfor listing and attribution only.",
+        "description": "A catalog character in full (``projection=full``; FR-SCN-10): the entry's envelope, the\npublic card's fields with each image's media row, the aliases, the private ``definition``\nand the ``visual_identity``. ``draft_revision`` is present only on a draft read\n(``?draft=true``): the revision the next save or publish must send. ``published_at`` is\nwhen ``version`` was published; ``companion_id`` names the character's companion scenario,\ncreated with it (#116). ``owner_principal`` is the entry's owner (FR-AUTH-5), recorded\nfor listing and attribution only.",
         "properties": {
           "aliases": {
             "items": {
@@ -1822,9 +1822,52 @@
         "title": "CharacterPublicCardPatch",
         "type": "object"
       },
-      "CharacterPublishedBody": {
-        "description": "The version a publish made: its number, the draft's new ``draft_revision`` (the draft\nstill equals what was published), the entry's ``status``, when it was published, and the\nvalidation ``report`` (no errors; its warnings and the checks this deployment cannot\nrun).",
+      "CharacterPublishRequest": {
+        "additionalProperties": false,
+        "description": "``POST /catalog/characters/{id}/publish``: the character's ``draft_revision`` (FR-CAT-3)\nand, when its companion's draft is published with it (``?with_companion=true``; FR-CAT-10),\nthe companion draft's ``companion_draft_revision``: required then, refused otherwise. A\nstale revision of either is 409 ``draft_stale``.",
+        "examples": [
+          {
+            "draft_revision": 2
+          },
+          {
+            "companion_draft_revision": 4,
+            "draft_revision": 3
+          }
+        ],
         "properties": {
+          "companion_draft_revision": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The companion draft's revision, with `with_companion=true` only (#116).",
+            "title": "Companion Draft Revision"
+          },
+          "draft_revision": {
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "Draft Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "draft_revision"
+        ],
+        "title": "CharacterPublishRequest",
+        "type": "object"
+      },
+      "CharacterPublishedBody": {
+        "description": "The version a publish made: its number, the draft's new ``draft_revision`` (the draft\nstill equals what was published), the entry's ``status``, when it was published, the\nvalidation ``report`` (no errors; its warnings and the checks this deployment cannot\nrun), and the ``companion`` version made with it.",
+        "properties": {
+          "companion": {
+            "$ref": "#/components/schemas/CompanionPublishedBody"
+          },
           "config_revision": {
             "title": "Config Revision",
             "type": "integer"
@@ -1871,7 +1914,8 @@
           "draft_revision",
           "status",
           "published_at",
-          "report"
+          "report",
+          "companion"
         ],
         "title": "CharacterPublishedBody",
         "type": "object"
@@ -1958,7 +2002,7 @@
         "type": "object"
       },
       "CharacterStatusBody": {
-        "description": "The entry after archive or unarchive: its status, listing status, latest published\nversion and when it was published, its timestamps and its companion (``null`` until #116).",
+        "description": "The entry after archive or unarchive: its status, listing status, latest published\nversion and when it was published, its timestamps and its companion scenario (archived and\nunarchived with it; #116).",
         "properties": {
           "companion_id": {
             "anyOf": [
@@ -2085,6 +2129,34 @@
           "items"
         ],
         "title": "CharacterVersionsBody",
+        "type": "object"
+      },
+      "CompanionPublishedBody": {
+        "description": "The companion version a character's publish made (FR-CAT-10; #116): the companion\nscenario's id, its new version (pinned to the character's new version), its draft's new\n``draft_revision`` (the draft's pin moved with it; with ``with_companion`` it is what was\npublished) and that version's validation ``report`` (a rating difference with the character\nis a ``rating_looser`` warning there).",
+        "properties": {
+          "draft_revision": {
+            "title": "Draft Revision",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "report": {
+            "$ref": "#/components/schemas/ValidationReport"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "draft_revision",
+          "report"
+        ],
+        "title": "CompanionPublishedBody",
         "type": "object"
       },
       "ConfigChangeItem": {
@@ -13514,6 +13586,17 @@
             "title": "Owner Principal",
             "type": "string"
           },
+          "pinned_character_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned Character Version"
+          },
           "public_card": {
             "$ref": "#/components/schemas/ScenarioPublicCard"
           },
@@ -13582,6 +13665,7 @@
           "updated_at",
           "published_at",
           "companion_of",
+          "pinned_character_version",
           "schema_version",
           "public_card",
           "metadata",
@@ -13712,7 +13796,7 @@
       },
       "ScenarioFull": {
         "additionalProperties": false,
-        "description": "A scenario in full (``projection=full``; FR-SCN-10): the entry's envelope and every field\nof the document. ``draft_revision`` is present only on a draft read (``?draft=true``): the\nrevision the next save or publish must send. ``published_at`` is when ``version`` was\npublished. ``owner_principal`` is the entry's owner (FR-AUTH-5), recorded for listing and\nattribution only.",
+        "description": "A scenario in full (``projection=full``; FR-SCN-10): the entry's envelope and every field\nof the document. ``draft_revision`` is present only on a draft read (``?draft=true``): the\nrevision the next save or publish must send. ``published_at`` is when ``version`` was\npublished. ``owner_principal`` is the entry's owner (FR-AUTH-5), recorded for listing and\nattribution only. A companion (``companion_of``, #116) also shows ``pinned_character_version``:\nthe version of its character the shown version or draft is pinned to (``null`` before the\ncharacter's first publish, and for every other scenario); its locked role's\n``character.version`` holds the same.",
         "properties": {
           "cast": {
             "$ref": "#/components/schemas/ScenarioCast"
@@ -13775,6 +13859,17 @@
           "owner_principal": {
             "title": "Owner Principal",
             "type": "string"
+          },
+          "pinned_character_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned Character Version"
           },
           "public_card": {
             "$ref": "#/components/schemas/ScenarioPublicCard"
@@ -13842,6 +13937,7 @@
           "updated_at",
           "published_at",
           "companion_of",
+          "pinned_character_version",
           "schema_version",
           "public_card",
           "metadata",
@@ -21929,7 +22025,7 @@
         ]
       },
       "post": {
-        "description": "Create a catalog character whose draft holds the given fields (FR-CAT-2,4): its `public_card` (name, public description, images), its private `definition`, its `metadata` (aliases, labels, content rating) and optionally its `visual_identity`. Any field may be missing from a draft; a publish needs the rest. Draft revision 1, status `draft`, and the first of the deployment's `listing_status_values` (`private` by default) as its listing status. `owner` names its owner principal (default: the requesting principal; never `system`). A reference image without an `audience` (`perceivable` or `restricted`; there is no default) and an alias that is the name or another alias are 422 `validation_error`; a rating that cannot be assigned is 422 `rating_retired`, and an image that is not live 422 `media_retired`. Answers 201 with the draft in `full`. A draft larger than 256 KiB is 413 `draft_too_large`.",
+        "description": "Create a catalog character whose draft holds the given fields (FR-CAT-2,4): its `public_card` (name, public description, images), its private `definition`, its `metadata` (aliases, labels, content rating) and optionally its `visual_identity`. Any field may be missing from a draft; a publish needs the rest. Draft revision 1, status `draft`, and the first of the deployment's `listing_status_values` (`private` by default) as its listing status. Its companion scenario (FR-CAT-5) is created with it: one NPC slot locked to the character and one player slot, the character's name and content rating and an empty world, owned and listed as the character is (`companion_id` names it). `owner` names its owner principal (default: the requesting principal; never `system`). A reference image without an `audience` (`perceivable` or `restricted`; there is no default) and an alias that is the name or another alias are 422 `validation_error`; a rating that cannot be assigned is 422 `rating_retired`, and an image that is not live 422 `media_retired`. Answers 201 with the draft in `full`. A draft larger than 256 KiB is 413 `draft_too_large`.",
         "operationId": "create_character_draft",
         "parameters": [
           {
@@ -22080,7 +22176,7 @@
     },
     "/catalog/characters/{character_id}": {
       "delete": {
-        "description": "Remove the entry and every published version, from any status (204), recorded in the audit log. Stories created from it keep their snapshot and their provenance (`source_catalog_id@version`; FR-CAT-9). A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`.",
+        "description": "Remove the entry and every published version, from any status (204), recorded in the audit log, and its companion scenario with its versions, in the same transaction (FR-CAT-5), recorded in its own audit row. Stories created from them keep their snapshot and their provenance (`source_catalog_id@version`; FR-CAT-9). A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`.",
         "operationId": "delete_character",
         "parameters": [
           {
@@ -22552,7 +22648,7 @@
     },
     "/catalog/characters/{character_id}/archive": {
       "post": {
-        "description": "Archive the entry: it still reads in both projections, but its draft cannot be saved or published (422 `entry_archived`), and it cannot be used to create a story, until it is unarchived. Stories created from it are untouched (FR-CAT-9). Archiving an archived entry changes nothing (200).",
+        "description": "Archive the entry: it still reads in both projections, but its draft cannot be saved or published (422 `entry_archived`), and it cannot be used to create a story, until it is unarchived. Its companion scenario is archived with it, in the same transaction (FR-CAT-5). Stories created from either are untouched (FR-CAT-9). Archiving an archived entry changes nothing (200).",
         "operationId": "archive_character",
         "parameters": [
           {
@@ -22701,6 +22797,157 @@
           }
         ],
         "summary": "Archive a catalog character",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
+    "/catalog/characters/{character_id}/companion": {
+      "get": {
+        "description": "The character's companion scenario (FR-CAT-5): the scenario created with it, one NPC slot locked to the character and one player slot, where its default world lives. It reads as `GET /catalog/scenarios/{id}` reads it — `version`, `draft=true` and `projection` as there — except that a companion never published reads as its draft (with its `draft_revision`). In `full`, `companion_of` names the character and `pinned_character_version` the character version the shown version or draft is pinned to (`null` before the character's first publish). 404 for an unknown character or version.",
+        "operationId": "get_companion",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A published version of the companion.",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A published version of the companion.",
+              "title": "Version"
+            }
+          },
+          {
+            "description": "Read the companion's draft instead of a version.",
+            "in": "query",
+            "name": "draft",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Read the companion's draft instead of a version.",
+              "title": "Draft",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "`card` (the default) or `full` (FR-SCN-10).",
+            "in": "query",
+            "name": "projection",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Projection",
+              "default": "card",
+              "description": "`card` (the default) or `full` (FR-SCN-10)."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ScenarioCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ScenarioFull"
+                    }
+                  ],
+                  "title": "Response Get Companion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a catalog character's companion scenario",
         "tags": [
           "catalog"
         ]
@@ -23040,7 +23287,7 @@
     },
     "/catalog/characters/{character_id}/publish": {
       "post": {
-        "description": "Publish the draft as the next immutable version (FR-CAT-3): `draft_revision` is compared like a save's (409 `draft_stale`). The draft must be publishable (422 `publish_invalid` with `details.report`, every error at once): every field of the public card and the definition but the optional ones (images, background flavor, deflection style, safe fallback line; lists may be empty), each disposition axis, a true age (`true_age_missing`), a content rating that can be assigned (`content_rating_missing`, `rating_retired`), an `audience` on every reference image (`reference_image_missing_audience`), live images (`media_retired`, …) and, when the deployment's `require_primary_image` is on, a primary image (`primary_image_required`; off by default, so a character publishes with no image). The draft stays equal to what was published, at the next revision. Publishing an unchanged draft still makes a new version, and the visual identity is versioned with the rest.",
+        "description": "Publish the draft as the next immutable version (FR-CAT-3): `draft_revision` is compared like a save's (409 `draft_stale`). The draft must be publishable (422 `publish_invalid` with `details.report`, every error at once): every field of the public card and the definition but the optional ones (images, background flavor, deflection style, safe fallback line; lists may be empty), each disposition axis, a true age (`true_age_missing`), a content rating that can be assigned (`content_rating_missing`, `rating_retired`), an `audience` on every reference image (`reference_image_missing_audience`), live images (`media_retired`, …) and, when the deployment's `require_primary_image` is on, a primary image (`primary_image_required`; off by default, so a character publishes with no image). The draft stays equal to what was published, at the next revision. Publishing an unchanged draft still makes a new version, and the visual identity is versioned with the rest. In the same transaction (FR-CAT-10) the character's companion scenario gets a new version pinned to the new character version: a copy of its latest published content (on the character's first publish, its defaults: its two slots and an empty world), while an unpublished companion draft stays unpublished with its pin moved; or, with `with_companion=true`, the companion's draft, whose revision `companion_draft_revision` names (required then, 422 otherwise). The companion version is validated as part of the publish: a problem with either side refuses the whole publish (`details.entity` is `character` or `companion`, with its id) and nothing is written. A rating difference between the two is a `rating_looser` warning. The answer nests the companion version (`companion`).",
         "operationId": "publish_character",
         "parameters": [
           {
@@ -23056,6 +23303,18 @@
               "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
               "title": "Character Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "Publish the companion's draft with the character, as one pair (`companion_draft_revision` names its revision).",
+            "in": "query",
+            "name": "with_companion",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Publish the companion's draft with the character, as one pair (`companion_draft_revision` names its revision).",
+              "title": "With Companion",
+              "type": "boolean"
             }
           },
           {
@@ -23083,7 +23342,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PublishRequest"
+                "$ref": "#/components/schemas/CharacterPublishRequest"
               }
             }
           },
@@ -23675,7 +23934,7 @@
     },
     "/catalog/characters/{character_id}/unarchive": {
       "post": {
-        "description": "Restore an archived entry to `published` (`draft` if it was never published); any other entry is left as it is (200).",
+        "description": "Restore an archived entry to `published` (`draft` if it was never published), and its companion scenario with it; any other entry is left as it is (200).",
         "operationId": "unarchive_character",
         "parameters": [
           {
@@ -24292,7 +24551,7 @@
     },
     "/catalog/scenarios/{scenario_id}": {
       "delete": {
-        "description": "Remove the scenario and every published version, from any status (204), recorded in the audit log. Stories created from it keep their snapshot and their provenance (FR-CAT-9). A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`.",
+        "description": "Remove the scenario and every published version, from any status (204), recorded in the audit log. Stories created from it keep their snapshot and their provenance (FR-CAT-9). A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`. A companion scenario is deleted only with its character: 422 `companion_follows_character`.",
         "operationId": "delete_scenario",
         "parameters": [
           {
@@ -24407,7 +24666,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`."
+            "description": "Invalid request; nothing was written: `companion_follows_character`, `validation_error`."
           },
           "503": {
             "content": {
@@ -24588,7 +24847,7 @@
         ]
       },
       "patch": {
-        "description": "Change the draft with a JSON merge patch (RFC 7386) over its groups: a key sets that field, `null` removes it, an object merges and an array (`roles`, `seeded_memories`, …) replaces the stored one; unknown keys are 422. The merged draft keeps the save rules, as on create. `draft_revision` is the revision the patch is based on: when another save or publish came first it is 409 `draft_stale` (`details.current_draft_revision`) and nothing changes (FR-CAT-3). Every save moves the draft to the next revision. An archived scenario is 422 `entry_archived`.",
+        "description": "Change the draft with a JSON merge patch (RFC 7386) over its groups: a key sets that field, `null` removes it, an object merges and an array (`roles`, `seeded_memories`, …) replaces the stored one; unknown keys are 422. The merged draft keeps the save rules, as on create. `draft_revision` is the revision the patch is based on: when another save or publish came first it is 409 `draft_stale` (`details.current_draft_revision`) and nothing changes (FR-CAT-3). Every save moves the draft to the next revision. An archived scenario is 422 `entry_archived`. A companion scenario (FR-CAT-5) keeps its two slots: a patch that adds, removes or changes a role's `id`, `kind`, `fill` or `character` (roles are matched by `id`, so their order is free; a slot echoed unchanged is accepted) is 422 `companion_slots_fixed` (`details.role`, `details.field`), before any other rule; every other field is editable. A patch that names a companion's `metadata.content_rating_id` sets its rating explicitly: until then it takes its character's.",
         "operationId": "save_scenario_draft",
         "parameters": [
           {
@@ -24730,7 +24989,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `cast_limit_exceeded`, `entry_archived`, `media_retired`, `rating_retired`, `validation_error`."
+            "description": "Invalid request; nothing was written: `cast_limit_exceeded`, `companion_slots_fixed`, `entry_archived`, `media_retired`, `rating_retired`, `validation_error`."
           },
           "503": {
             "content": {
@@ -24764,7 +25023,7 @@
     },
     "/catalog/scenarios/{scenario_id}/archive": {
       "post": {
-        "description": "Archive the scenario: it still reads in both projections, but its draft cannot be saved or published (422 `entry_archived`), and it cannot be used to create a story, until it is unarchived. Stories created from it are untouched (FR-CAT-9). Archiving an archived scenario changes nothing (200).",
+        "description": "Archive the scenario: it still reads in both projections, but its draft cannot be saved or published (422 `entry_archived`), and it cannot be used to create a story, until it is unarchived. Stories created from it are untouched (FR-CAT-9). Archiving an archived scenario changes nothing (200). A companion scenario is archived only with its character: 422 `companion_follows_character`.",
         "operationId": "archive_scenario",
         "parameters": [
           {
@@ -24886,7 +25145,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`."
+            "description": "Invalid request; nothing was written: `companion_follows_character`, `validation_error`."
           },
           "503": {
             "content": {
@@ -25252,7 +25511,7 @@
     },
     "/catalog/scenarios/{scenario_id}/publish": {
       "post": {
-        "description": "Publish the draft as the next immutable version (FR-SCN-1): `draft_revision` is compared like a save's (409 `draft_stale`). The draft is validated first (FR-SCN-5): any error is 422 `publish_invalid` with `details.report` (a `ValidationReport`) and nothing is written. Errors include a missing name, content rating, role, world description or opening narration; a role limit exceeded (`cast_limit_exceeded`); a `locked` or `default` role's character missing, unpublished, archived or failing the role's eligibility; a seed without its holder, audience or disclosure (`seed_missing_holder`, `seed_missing_audience`, `seed_missing_disclosure`); a media asset missing, retired, of a kind, type or size not allowed; and an undeclared provider. Warnings never block: a looser-rated character or asset (`rating_looser`), text that fails an input policy (`input_policy`), and role text that asserts personality (`personality_in_role`). The 201 answer carries the report, with the checks this deployment cannot run listed in `unavailable`, and the version keeps it. The draft stays equal to what was published, at the next revision. Publishing an unchanged draft still makes a new version.",
+        "description": "Publish the draft as the next immutable version (FR-SCN-1): `draft_revision` is compared like a save's (409 `draft_stale`). The draft is validated first (FR-SCN-5): any error is 422 `publish_invalid` with `details.report` (a `ValidationReport`) and nothing is written. Errors include a missing name, content rating, role, world description or opening narration; a role limit exceeded (`cast_limit_exceeded`); a `locked` or `default` role's character missing, unpublished, archived or failing the role's eligibility; a seed without its holder, audience or disclosure (`seed_missing_holder`, `seed_missing_audience`, `seed_missing_disclosure`); a media asset missing, retired, of a kind, type or size not allowed; and an undeclared provider. Warnings never block: a looser-rated character or asset (`rating_looser`), text that fails an input policy (`input_policy`), and role text that asserts personality (`personality_in_role`). The 201 answer carries the report, with the checks this deployment cannot run listed in `unavailable`, and the version keeps it. The draft stays equal to what was published, at the next revision. Publishing an unchanged draft still makes a new version. A companion scenario published alone (FR-CAT-10) is pinned to its character's latest published version, never to a character draft (`pinned_character_version`); before the character's first publish it is refused with `character_not_published`, and a rating that differs from the character's is a `rating_looser` warning.",
         "operationId": "publish_scenario",
         "parameters": [
           {
@@ -25887,7 +26146,7 @@
     },
     "/catalog/scenarios/{scenario_id}/unarchive": {
       "post": {
-        "description": "Restore an archived scenario to `published` (`draft` if it was never published); any other is left as it is (200).",
+        "description": "Restore an archived scenario to `published` (`draft` if it was never published); any other is left as it is (200). A companion scenario is unarchived only with its character: 422 `companion_follows_character`.",
         "operationId": "unarchive_scenario",
         "parameters": [
           {
@@ -26009,7 +26268,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`."
+            "description": "Invalid request; nothing was written: `companion_follows_character`, `validation_error`."
           },
           "503": {
             "content": {

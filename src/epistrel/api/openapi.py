@@ -222,6 +222,7 @@ ERROR_STATUS: dict[str, int] = {
     "cast_limit_exceeded": 422,
     "checksum_mismatch": 422,
     "companion_follows_character": 422,
+    "companion_slots_fixed": 422,
     "cursor_invalid": 422,
     "entry_archived": 422,
     "guardrail_violation": 422,
@@ -366,11 +367,23 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "rating_retired",
         "media_retired",
     ),
+    # A character's publish makes its companion's version too (#116): each refusal may be the
+    # companion's (``details.entity``).
     "publish_character": ("draft_stale", "entry_archived", "publish_invalid", "rating_retired"),
     "get_character": ("not_published",),
     "create_scenario_draft": _SCENARIO_SAVE,
-    "save_scenario_draft": ("draft_stale", "entry_archived", *_SCENARIO_SAVE),
+    # A companion scenario (#116): its slots are fixed, and it is archived, unarchived and
+    # deleted only with its character.
+    "save_scenario_draft": (
+        "draft_stale",
+        "entry_archived",
+        *_SCENARIO_SAVE,
+        "companion_slots_fixed",
+    ),
     "publish_scenario": ("draft_stale", "entry_archived", "publish_invalid", "rating_retired"),
+    "archive_scenario": ("companion_follows_character",),
+    "unarchive_scenario": ("companion_follows_character",),
+    "delete_scenario": ("companion_follows_character",),
     # The dry run (#111): a draft revision the draft has moved on from.
     "validate_scenario": ("draft_stale",),
     "get_scenario": ("not_published",),

@@ -6,7 +6,11 @@
   default); 201 with the draft in ``full``.
 - ``PATCH /catalog/characters/{id}``: a JSON merge patch over the draft with the
   ``draft_revision`` it is based on; 409 ``draft_stale`` when another save or publish came first.
-- ``POST /catalog/characters/{id}/publish``: the draft becomes the next immutable version (201).
+- ``POST /catalog/characters/{id}/publish``: the draft becomes the next immutable version (201),
+  with a new companion version pinned to it in the same transaction (``?with_companion=true``
+  publishes the companion's draft as that version; #116).
+- ``GET /catalog/characters/{id}/companion``: the character's companion scenario (#116), read as
+  ``GET /catalog/scenarios/{id}`` reads it (its draft while it was never published).
 - ``GET /catalog/characters/{id}``: the latest published version (``?version=n`` another one,
   ``?draft=true`` the draft) as its public ``card`` (the default) or in ``full``.
 - ``GET /catalog/characters/{id}/versions``: every published version, oldest first.
@@ -59,15 +63,17 @@ from epistrel.core.catalog.characters import (
     CharacterFull,
     CharacterListItem,
     CharacterPatch,
+    CharacterPublished,
+    CharacterPublishRequest,
+    CompanionPublished,
     DraftWrite,
     Projection,
-    Published,
-    PublishRequest,
     StatusChange,
     VersionSummary,
 )
 from epistrel.core.catalog.listing import ListingStatusRequest
 from epistrel.core.catalog.report import ValidationReport
+from epistrel.core.catalog.scenario_models import ScenarioCard, ScenarioFull
 from epistrel.core.catalog.search import DEFAULT_PAGE as DEFAULT_LIST_PAGE
 from epistrel.core.catalog.search import CatalogPage
 from epistrel.core.enums import EntryStatus
@@ -87,11 +93,33 @@ class CharacterDraftBody(CharacterFull, DeploymentMutationResponse):
         return cls(**write.character.model_dump(), config_revision=write.config_revision)
 
 
+class CompanionPublishedBody(BaseModel):
+    """The companion version a character's publish made (FR-CAT-10; #116): the companion
+    scenario's id, its new version (pinned to the character's new version), its draft's new
+    ``draft_revision`` (the draft's pin moved with it; with ``with_companion`` it is what was
+    published) and that version's validation ``report`` (a rating difference with the character
+    is a ``rating_looser`` warning there)."""
+
+    id: str
+    version: int
+    draft_revision: int
+    report: ValidationReport
+
+    @classmethod
+    def of(cls, published: CompanionPublished) -> CompanionPublishedBody:
+        return cls(
+            id=published.id,
+            version=published.version,
+            draft_revision=published.draft_revision,
+            report=published.report,
+        )
+
+
 class CharacterPublishedBody(DeploymentMutationResponse):
     """The version a publish made: its number, the draft's new ``draft_revision`` (the draft
-    still equals what was published), the entry's ``status``, when it was published, and the
+    still equals what was published), the entry's ``status``, when it was published, the
     validation ``report`` (no errors; its warnings and the checks this deployment cannot
-    run)."""
+    run), and the ``companion`` version made with it."""
 
     id: str
     version: int
@@ -99,9 +127,10 @@ class CharacterPublishedBody(DeploymentMutationResponse):
     status: EntryStatus
     published_at: datetime
     report: ValidationReport
+    companion: CompanionPublishedBody
 
     @classmethod
-    def of(cls, published: Published) -> CharacterPublishedBody:
+    def of(cls, published: CharacterPublished) -> CharacterPublishedBody:
         return cls(
             id=published.id,
             version=published.version,
@@ -109,13 +138,15 @@ class CharacterPublishedBody(DeploymentMutationResponse):
             status=published.status,
             published_at=published.published_at,
             report=published.report,
+            companion=CompanionPublishedBody.of(published.companion),
             config_revision=published.config_revision,
         )
 
 
 class CharacterStatusBody(DeploymentMutationResponse):
     """The entry after archive or unarchive: its status, listing status, latest published
-    version and when it was published, its timestamps and its companion (``null`` until #116)."""
+    version and when it was published, its timestamps and its companion scenario (archived and
+    unarchived with it; #116)."""
 
     id: str
     status: EntryStatus
@@ -230,8 +261,11 @@ async def search_catalog_character(
         "`metadata` (aliases, labels, content rating) and optionally its `visual_identity`. Any "
         "field may be missing from a draft; a publish needs the rest. Draft revision 1, status "
         "`draft`, and the first of the deployment's `listing_status_values` (`private` by default) "
-        "as its listing status. `owner` names its owner principal (default: the requesting "
-        "principal; never `system`). A reference image without an `audience` (`perceivable` or "
+        "as its listing status. Its companion scenario (FR-CAT-5) is created with it: one NPC "
+        "slot locked to the character and one player slot, the character's name and content "
+        "rating and an empty world, owned and listed as the character is (`companion_id` names "
+        "it). `owner` names its owner principal (default: the requesting principal; never "
+        "`system`). A reference image without an `audience` (`perceivable` or "
         "`restricted`; there is no default) and an alias that is the name or another alias are 422 "
         "`validation_error`; a rating that cannot be assigned is 422 `rating_retired`, and an "
         "image that is not live 422 `media_retired`. Answers 201 with the draft in `full`. A draft "
@@ -289,17 +323,35 @@ async def save_character_draft(
         "deployment's `require_primary_image` is on, a primary image (`primary_image_required`; "
         "off by default, so a character publishes with no image). The draft stays equal to what "
         "was published, at the next revision. Publishing an unchanged draft still makes a new "
-        "version, and the visual identity is versioned with the rest."
+        "version, and the visual identity is versioned with the rest. In the same transaction "
+        "(FR-CAT-10) the character's companion scenario gets a new version pinned to the new "
+        "character version: a copy of its latest published content (on the character's first "
+        "publish, its defaults: its two slots and an empty world), while an unpublished "
+        "companion draft stays unpublished with its pin moved; or, with `with_companion=true`, "
+        "the companion's draft, whose revision `companion_draft_revision` names (required then, "
+        "422 otherwise). The companion version is validated as part of the publish: a problem "
+        "with either side refuses the whole publish (`details.entity` is `character` or "
+        "`companion`, with its id) and nothing is written. A rating difference between the two "
+        "is a `rating_looser` warning. The answer nests the companion version (`companion`)."
     ),
 )
 async def publish_character(
     character_id: CharacterId,
-    body: PublishRequest,
+    body: CharacterPublishRequest,
     response: Response,
     ctx: ContextDep,
     engine: EngineDep,
+    with_companion: Annotated[
+        bool,
+        Query(
+            description="Publish the companion's draft with the character, as one pair "
+            "(`companion_draft_revision` names its revision)."
+        ),
+    ] = False,
 ) -> CharacterPublishedBody:
-    published = await engine.publish_character(ctx, character_id, body)
+    published = await engine.publish_character(
+        ctx, character_id, body, with_companion=with_companion
+    )
     return answered(
         CharacterPublishedBody.of(published), ctx, response, replayed=published.replayed
     )
@@ -351,6 +403,42 @@ async def list_character_versions(
     return CharacterVersionsBody.of(await engine.list_character_versions(ctx, character_id))
 
 
+@router.get(
+    "/{character_id}/companion",
+    response_model=ScenarioCard | ScenarioFull,
+    operation_id="get_companion",
+    summary="Read a catalog character's companion scenario",
+    description=(
+        "The character's companion scenario (FR-CAT-5): the scenario created with it, one NPC "
+        "slot locked to the character and one player slot, where its default world lives. It "
+        "reads as `GET /catalog/scenarios/{id}` reads it — `version`, `draft=true` and "
+        "`projection` as there — except that a companion never published reads as its draft "
+        "(with its `draft_revision`). In `full`, `companion_of` names the character and "
+        "`pinned_character_version` the character version the shown version or draft is pinned "
+        "to (`null` before the character's first publish). 404 for an unknown character or "
+        "version."
+    ),
+)
+async def get_companion(
+    character_id: CharacterId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    version: Annotated[
+        int | None,
+        Query(ge=1, le=REVISION_MAX, description="A published version of the companion."),
+    ] = None,
+    draft: Annotated[
+        bool, Query(description="Read the companion's draft instead of a version.")
+    ] = False,
+    projection: Annotated[
+        Projection, Query(description="`card` (the default) or `full` (FR-SCN-10).")
+    ] = Projection.CARD,
+) -> ScenarioCard | ScenarioFull:
+    return await engine.get_companion(
+        ctx, character_id, version=version, draft=draft, projection=projection
+    )
+
+
 @router.post(
     "/{character_id}/archive",
     response_model=CharacterStatusBody,
@@ -359,7 +447,8 @@ async def list_character_versions(
     description=(
         "Archive the entry: it still reads in both projections, but its draft cannot be saved "
         "or published (422 `entry_archived`), and it cannot be used to create a story, until "
-        "it is unarchived. Stories created from it are untouched (FR-CAT-9). Archiving an "
+        "it is unarchived. Its companion scenario is archived with it, in the same transaction "
+        "(FR-CAT-5). Stories created from either are untouched (FR-CAT-9). Archiving an "
         "archived entry changes nothing (200)."
     ),
 )
@@ -376,8 +465,8 @@ async def archive_character(
     operation_id="unarchive_character",
     summary="Unarchive a catalog character",
     description=(
-        "Restore an archived entry to `published` (`draft` if it was never published); any "
-        "other entry is left as it is (200)."
+        "Restore an archived entry to `published` (`draft` if it was never published), and its "
+        "companion scenario with it; any other entry is left as it is (200)."
     ),
 )
 async def unarchive_character(
@@ -413,9 +502,10 @@ async def set_listing_status_character(
     summary="Delete a catalog character",
     description=(
         "Remove the entry and every published version, from any status (204), recorded in the "
-        "audit log. Stories created from it keep their snapshot and their provenance "
-        "(`source_catalog_id@version`; FR-CAT-9). A retry under the same `Idempotency-Key` is a "
-        "204 with `Idempotent-Replay: true`."
+        "audit log, and its companion scenario with its versions, in the same transaction "
+        "(FR-CAT-5), recorded in its own audit row. Stories created from them keep their "
+        "snapshot and their provenance (`source_catalog_id@version`; FR-CAT-9). A retry under "
+        "the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true`."
     ),
 )
 async def delete_character(

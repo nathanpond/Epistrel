@@ -1,5 +1,5 @@
 """Catalog characters: one draft per entry and immutable, numbered published versions
-(FR-CAT-1..4,9, FR-CAT-12, FR-RATE-3; FR-SCN-10; docs/02 §4.10; #103, #115).
+(FR-CAT-1..5,9,10, FR-CAT-12, FR-RATE-3; FR-SCN-10; docs/02 §4.10; #103, #115, #116).
 
 An entry is a ``catalog.character_catalog`` row; its draft is a JSON document that
 ``CharacterDraft`` validates (``core.catalog.models``: the public card, the private definition,
@@ -21,14 +21,21 @@ the deployment's ``require_primary_image`` is on, and live images (422 ``publish
 version. A character carries no world truths of its own: those belong to a scenario, normally
 the character's companion scenario (FR-CAT-5).
 
+**The companion** (``core.catalog.companion``, #116): every character is created with its
+companion scenario, which is archived, unarchived and deleted with it and takes its rating
+until the companion's own is set. Publishing the character makes a companion version in the
+same transaction, pinned to the new character version: a copy of the latest published
+companion content (the defaults on the first publish), or, with ``with_companion``, the
+companion's draft; ``get_companion`` reads it.
+
 A read returns one projection (FR-SCN-10): ``card`` (the default), only the public card (the
 images as ``{primary, gallery}`` of ``{media_id, alt_text}``, the labels and the rating), or
 ``full``, which adds the entry's envelope, the aliases, every definition field and the visual
 identity, with each image's and reference image's live media row inlined. Both show the rating
 the version recorded, or for a draft the rating's current version. A listing
 (``core.catalog.search``, #110) shows each entry as a ``CharacterListItem``: its card, its owner
-and ``updated_at``. A character's companion scenarios (``scenario_catalog.companion_of``, #116)
-follow its listing status (FR-CAT-11).
+and ``updated_at``. A character's companion (``scenario_catalog.companion_of``, #116) follows
+its listing status (FR-CAT-11) and its owner (FR-AUTH-5); ``full`` names it (``companion_id``).
 """
 
 from __future__ import annotations
@@ -42,11 +49,13 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core.catalog import companion
 from epistrel.core.catalog.checks.character_documents import (
     images_of,
     rating_id_of,
     reference_images_of,
 )
+from epistrel.core.catalog.companion import CharacterPublished, CompanionPublished
 from epistrel.core.catalog.models import (
     BACKGROUND_FLAVOR_MAX,
     GALLERY_MAX,
@@ -73,6 +82,7 @@ from epistrel.core.catalog.models import (
     CharacterPatch,
     CharacterPublicCard,
     CharacterPublicCardPatch,
+    CharacterPublishRequest,
     Name,
     ReferenceImageDetail,
     VisualIdentityDetail,
@@ -80,6 +90,7 @@ from epistrel.core.catalog.models import (
     character_rules,
 )
 from epistrel.core.catalog.report import ValidationReport
+from epistrel.core.catalog.scenario_models import ScenarioCard, ScenarioFull
 from epistrel.core.catalog.service import (
     FIRST_DRAFT_REVISION,
     REVISION_MAX,
@@ -277,7 +288,7 @@ async def _project(
         created_at=entry.created_at,
         updated_at=entry.updated_at,
         published_at=published_at,
-        companion_id=None,
+        companion_id=await companion.companion_id(conn, entry.id),
         definition=CharacterDefinition.model_validate(document.get("definition") or {}),
         visual_identity=identity,
     )
@@ -350,6 +361,60 @@ class CharacterCatalog(CatalogService):
     def max_bytes(self) -> int:
         return DRAFT_MAX_BYTES  # read at call time, so a test may lower it
 
+    async def created(
+        self,
+        conn: AsyncConnection,
+        entry_id: str,
+        document: Mapping[str, Any],
+        *,
+        owner: str,
+        listing_status: str,
+    ) -> None:
+        """A character is created with its companion scenario (FR-CAT-5; #116)."""
+        await companion.create(conn, entry_id, document, owner=owner, listing_status=listing_status)
+
+    async def saved(
+        self,
+        conn: AsyncConnection,
+        entry_id: str,
+        document: Mapping[str, Any],
+        previous: Mapping[str, Any],
+    ) -> None:
+        """A changed content rating reaches the companion's draft (until set there; #116)."""
+        await companion.follow_rating(conn, entry_id, document, previous)
+
+    async def archived(self, conn: AsyncConnection, entry_id: str, archived: bool) -> None:
+        """The companion is archived and unarchived with its character (FR-CAT-5; #116)."""
+        await companion.set_archived(conn, entry_id, archived)
+
+    async def dropped(
+        self, conn: AsyncConnection, entry_id: str, *, principal: str
+    ) -> list[tuple[EntityType, str]]:
+        """The companion is deleted with its character (FR-CAT-5; #116)."""
+        return await companion.drop(conn, entry_id, principal=principal)
+
+    async def publish(
+        self,
+        db: AsyncEngine,
+        entry_id: str,
+        request: PublishRequest,
+        *,
+        principal: str,
+        ports: Ports | None = None,
+        with_companion: bool = False,
+    ) -> CharacterPublished:
+        """Publish the draft, and a companion version with it (FR-CAT-10;
+        ``core.catalog.companion``)."""
+        return await companion.publish(
+            self,
+            db,
+            entry_id,
+            request,
+            with_companion=with_companion,
+            principal=principal,
+            ports=ports or Ports(),
+        )
+
     async def followers(self, conn: AsyncConnection, entry_id: str) -> list[Follower]:
         """The character's companion scenarios (``companion_of``; #116 creates them), locked
         after the character, in id order: their listing status follows the character's."""
@@ -417,6 +482,7 @@ class CharacterCatalog(CatalogService):
             created_at=entry.created_at,
             updated_at=entry.updated_at,
             published_at=await self.published_at(conn, entry.id, entry.current_version),
+            companion_id=await companion.companion_id(conn, entry.id),
         )
 
 
@@ -456,9 +522,20 @@ async def publish(
     *,
     principal: str,
     ports: Ports | None = None,
-) -> Published:
-    """Publish the draft as version ``current_version + 1`` (see ``core.catalog.service``)."""
-    return await SERVICE.publish(db, character_id, request, principal=principal, ports=ports)
+    with_companion: bool = False,
+) -> CharacterPublished:
+    """Publish the draft as version ``current_version + 1``, and a companion version with it:
+    the latest published companion content (the defaults on the first publish), or with
+    ``with_companion`` the companion's draft (``request.companion_draft_revision``), pinned to
+    the new version, in one transaction (``core.catalog.companion``)."""
+    return await SERVICE.publish(
+        db,
+        character_id,
+        request,
+        principal=principal,
+        ports=ports,
+        with_companion=with_companion,
+    )
 
 
 async def archive(db: AsyncEngine, character_id: str, *, principal: str) -> StatusChange:
@@ -512,6 +589,21 @@ async def versions(db: AsyncEngine, character_id: str) -> list[VersionSummary]:
     return await SERVICE.list_versions(db, character_id)
 
 
+async def get_companion(
+    db: AsyncEngine,
+    character_id: str,
+    *,
+    version: int | None = None,
+    draft: bool = False,
+    projection: Projection = Projection.CARD,
+) -> ScenarioCard | ScenarioFull:
+    """The character's companion scenario, as a scenario read gives it; its draft while it was
+    never published; 404 for an unknown character (``core.catalog.companion.get``)."""
+    return await companion.get(
+        db, character_id, version=version, draft=draft, projection=projection
+    )
+
+
 __all__ = [
     "BACKGROUND_FLAVOR_MAX",
     "DRAFT_MAX_BYTES",
@@ -545,6 +637,9 @@ __all__ = [
     "CharacterPatch",
     "CharacterPublicCard",
     "CharacterPublicCardPatch",
+    "CharacterPublishRequest",
+    "CharacterPublished",
+    "CompanionPublished",
     "DeletedCharacter",
     "DraftWrite",
     "Envelope",
@@ -561,6 +656,7 @@ __all__ = [
     "create",
     "delete",
     "get",
+    "get_companion",
     "merge_patch",
     "publish",
     "save",

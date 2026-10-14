@@ -13,11 +13,9 @@ one file. Later stories add theirs here (#106 profiles, #110 listing status, #11
 - ``test_i_21__nothing_gates``: the matrix. Every route under an owned entity answers its owner,
   a stranger, and a principal holding relations named ``admin`` and ``owner`` with the same
   status, and every read with the same body.
-- ``test_i_21__companion``: a character's companion scenario moves with it and cannot be
-  transferred or related on its own; a scenario transfer leaves stories alone. It runs on real
-  scenarios (#108) in its own scratch database (it counts every ownership event). Until #116
-  creates companions with their characters, the test makes a scenario a companion by setting
-  its ``companion_of``.
+- ``test_i_21__companion``: a character's companion scenario (created with it, #116) moves with
+  it and cannot be transferred or related on its own; a scenario transfer leaves stories alone.
+  It runs in its own scratch database (it counts every ownership event).
 
 The detailed tests are in ``tests/integration/test_ownership.py``. The story-creation clauses
 (player relations, creating from another owner's entry) are #119's.
@@ -543,29 +541,22 @@ async def _owners(db: AsyncEngine) -> dict[str, str]:
     return {str(r.id): str(r.owner_principal) for r in found}
 
 
-async def _scenario(lib: Engine, owner: str, *, companion_of: str | None = None) -> str:
-    """A scenario created as ``owner``; made the companion of ``companion_of`` (#116 does that
-    itself, at the character's creation)."""
+async def _scenario(lib: Engine, owner: str) -> str:
+    """An authored scenario (nobody's companion) created as ``owner``."""
     created = await lib.create_scenario_draft(
         _as(owner), ScenarioCreate.model_validate({"public_card": {"name": "Gull Rock"}})
     )
-    scenario_id = created.scenario.id
-    if companion_of is not None:
-        async with lib.db.begin() as conn:
-            await conn.execute(
-                text("UPDATE catalog.scenario_catalog SET companion_of = :x WHERE id = :y"),
-                {"x": companion_of, "y": scenario_id},
-            )
-    return scenario_id
+    return created.scenario.id
 
 
 @pytest.mark.integration
 @pytest.mark.part("M3", "FR-AUTH-5; FR-CAT-9")
 async def test_i_21__companion(companion_db: tuple[Engine, AsyncEngine]) -> None:
-    """Transferring catalog character X moves X and its companion scenario Y to the new owner in
-    one transaction: one ``transfer`` event each, at the same time, by the acting principal,
-    with Y's ``updated_at`` moved on. A companion row already at the new owner (Y2, made out of
-    step; #116 keeps one per character) is left as it is, with no event of its own. Y cannot be
+    """Transferring catalog character X moves X and its companion scenario Y (created with X,
+    #116) to the new owner in one transaction: one ``transfer`` event each, at the same time, by
+    the acting principal, with Y's ``updated_at`` moved on. A companion already at the new owner
+    (Y2, W's companion, put out of step with SQL, which only SQL can do) is left as it is when
+    W is transferred, with no event of its own and its ``updated_at`` unmoved. Y cannot be
     transferred, related or unrelated on its own (422 ``companion_follows_character``), and
     nothing changes. A scenario that is nobody's companion transfers and takes relations
     normally. A story whose character came from X stays byte-identical throughout.
@@ -575,10 +566,19 @@ async def test_i_21__companion(companion_db: tuple[Engine, AsyncEngine]) -> None
     created = await lib.create_character_draft(
         _as(OWNER), CharacterCreate.model_validate(named("Mara Venn"))
     )
-    x = created.character.id
-    y = await _scenario(lib, OWNER, companion_of=x)
+    x, y = created.character.id, created.character.companion_id
+    other = await lib.create_character_draft(
+        _as(OWNER), CharacterCreate.model_validate(named("Ivo Brand"))
+    )
+    w, y2 = other.character.id, other.character.companion_id
+    assert y is not None
+    assert y2 is not None
     z = await _scenario(lib, OWNER)
-    y2 = await _scenario(lib, NEW_OWNER, companion_of=x)  # out of step: already the new owner's
+    async with db.begin() as conn:
+        await conn.execute(
+            text("UPDATE catalog.scenario_catalog SET owner_principal = :o WHERE id = :y"),
+            {"o": NEW_OWNER, "y": y2},
+        )
     story = await lib.create_story(_as(OWNER), StorySpec.model_validate(story_body("Wren", "Ada")))
     async with db.begin() as conn:
         await conn.execute(
@@ -596,7 +596,7 @@ async def test_i_21__companion(companion_db: tuple[Engine, AsyncEngine]) -> None
         _as(RELATED), EntityType.CHARACTER, x, OwnerTransferRequest(principal=NEW_OWNER)
     )
     assert (moved.owner_principal, moved.previous_owner, moved.changed) == (NEW_OWNER, OWNER, True)
-    assert await _owners(db) == {x: NEW_OWNER, y: NEW_OWNER, y2: NEW_OWNER, z: OWNER}
+    assert await _owners(db) == {x: NEW_OWNER, y: NEW_OWNER, w: OWNER, y2: NEW_OWNER, z: OWNER}
     events = await rows(
         db,
         "SELECT entity_type, entity_id, kind, old, new, acting_principal, at "
@@ -608,7 +608,20 @@ async def test_i_21__companion(companion_db: tuple[Engine, AsyncEngine]) -> None
     ]
     assert events[0].at == events[1].at, "one transaction"
     assert await scalar(db, stamp, y=y) > y_updated
+
     # The companion already at the new owner is left as it is: no event, no new timestamp.
+    await lib.transfer_owner(
+        _as(RELATED), EntityType.CHARACTER, w, OwnerTransferRequest(principal=NEW_OWNER)
+    )
+    assert await _owners(db) == {x: NEW_OWNER, y: NEW_OWNER, w: NEW_OWNER, y2: NEW_OWNER, z: OWNER}
+    later = await rows(
+        db,
+        "SELECT entity_type, entity_id FROM ownership_events WHERE entity_id IN (:w, :y) "
+        "ORDER BY entity_type",
+        w=w,
+        y=y2,
+    )
+    assert [tuple(e) for e in later] == [("character", w)]
     assert await scalar(db, stamp, y=y2) == y2_updated
 
     request = RelationRequest(principal=STRANGER, relation="editor")
@@ -627,19 +640,25 @@ async def test_i_21__companion(companion_db: tuple[Engine, AsyncEngine]) -> None
             "entity_id": y,
             "character_id": x,
         }
-    assert await _owners(db) == {x: NEW_OWNER, y: NEW_OWNER, y2: NEW_OWNER, z: OWNER}
-    assert len(await rows(db, "SELECT 1 FROM ownership_events")) == 2
+    assert await _owners(db) == {x: NEW_OWNER, y: NEW_OWNER, w: NEW_OWNER, y2: NEW_OWNER, z: OWNER}
+    assert len(await rows(db, "SELECT 1 FROM ownership_events")) == 3
 
-    other = await lib.transfer_owner(
+    other_scenario = await lib.transfer_owner(
         _as(STRANGER), EntityType.SCENARIO, z, OwnerTransferRequest(principal=NEW_OWNER)
     )
-    assert (other.previous_owner, other.changed) == (OWNER, True)
+    assert (other_scenario.previous_owner, other_scenario.changed) == (OWNER, True)
     related = await lib.add_relation(_as(STRANGER), EntityType.SCENARIO, z, request)
     assert related.created
     listed = await lib.list_relations(_as(STRANGER), EntityType.SCENARIO, z)
     assert [(r.relation, r.principal) for r in listed.items] == [("editor", STRANGER)]
     await lib.remove_relation(_as(STRANGER), EntityType.SCENARIO, z, "editor", STRANGER)
-    assert await _owners(db) == {x: NEW_OWNER, y: NEW_OWNER, y2: NEW_OWNER, z: NEW_OWNER}
+    assert await _owners(db) == {
+        x: NEW_OWNER,
+        y: NEW_OWNER,
+        w: NEW_OWNER,
+        y2: NEW_OWNER,
+        z: NEW_OWNER,
+    }
     assert await _snapshot(db, story.story_id) == before
 
     await lib.archive_story(_as(OWNER), story.story_id)
@@ -943,13 +962,18 @@ async def test_i_21__listing_filters(pg_url: str) -> None:
                 assert found == expected, (asker, base, filters)
                 assert found < published[base], (base, filters)
 
-        # Unfiltered, the published list with the draft and archived ones is the whole table.
-        for base, table in ((CHARACTERS, "character_catalog"), (SCENARIOS, "scenario_catalog")):
+        # Unfiltered, the published list with the draft and archived ones is the whole table
+        # (for scenarios, with the companions each character was created with, #116).
+        whole: list[tuple[str, str, dict[str, Any]]] = [
+            (CHARACTERS, "character_catalog", {}),
+            (SCENARIOS, "scenario_catalog", {"include_companions": True}),
+        ]
+        for base, table, more in whole:
             shown = [
-                await listed_ids(client, base, status=status, limit=2)
+                await listed_ids(client, base, status=status, limit=2, **more)
                 for status in ("published", "draft", "archived")
             ]
-            assert shown[0] == await listed_ids(client, base, limit=2)
+            assert shown[0] == await listed_ids(client, base, limit=2, **more)
             stored = await rows(db, f"SELECT id, status FROM catalog.{table}")  # noqa: S608
             assert sorted(i for page in shown for i in page) == sorted(str(r.id) for r in stored)
             for status, page in zip(("published", "draft", "archived"), shown, strict=True):

@@ -42,6 +42,7 @@ from epistrel.core import (
 )
 from epistrel.core import story_settings as settings_store
 from epistrel.core.catalog import characters as catalog_characters
+from epistrel.core.catalog import companion as catalog_companion
 from epistrel.core.catalog import kinds as catalog_kinds
 from epistrel.core.catalog import listing as catalog_listing
 from epistrel.core.catalog import personas as catalog_personas
@@ -204,8 +205,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
         catalog_characters.DraftWrite, status=201, revision_field=_CONFIG
     ),
     "save_character_draft": ResultCodec.of(catalog_characters.DraftWrite, revision_field=_CONFIG),
+    # A character's publish makes a companion version with it (#116), nested in its result.
     "publish_character": ResultCodec.of(
-        catalog_characters.Published, status=201, revision_field=_CONFIG
+        catalog_characters.CharacterPublished, status=201, revision_field=_CONFIG
     ),
     "archive_character": ResultCodec.of(catalog_characters.StatusChange, revision_field=_CONFIG),
     "unarchive_character": ResultCodec.of(catalog_characters.StatusChange, revision_field=_CONFIG),
@@ -1857,19 +1859,38 @@ class Engine:
         ctx: RequestContext,
         character_id: str,
         request: catalog_characters.PublishRequest,
-    ) -> catalog_characters.Published:
+        *,
+        with_companion: bool = False,
+    ) -> catalog_characters.CharacterPublished:
         """Publish the draft as an immutable version ``n + 1`` (FR-CAT-3), compared on
         ``request.draft_revision`` like a save; 422 ``publish_invalid`` with the report when the
         draft cannot be published. The draft stays equal to what was published, at the next
-        revision."""
+        revision. In the same transaction (FR-CAT-10; #116) a companion version is made, pinned
+        to version ``n + 1``: a copy of the latest published companion content (the companion's
+        defaults on the first publish), leaving an unpublished companion draft unpublished with
+        its pin moved; or, with ``with_companion``, the companion's draft, compared on
+        ``request.companion_draft_revision`` (a ``CharacterPublishRequest``; required then and
+        refused otherwise, 422 before the ``Idempotency-Key`` is claimed). A companion problem
+        refuses the whole publish (``details.entity`` names the side) and nothing is written.
+        The answer nests the companion version (``companion``)."""
         principal = self.require_principal(ctx)
+        catalog_companion.companion_revision(request, with_companion)
         return await self._keyed(
             ctx,
             "publish_character",
             lambda _: catalog_characters.publish(
-                self.db, character_id, request, principal=principal, ports=self.ports
+                self.db,
+                character_id,
+                request,
+                principal=principal,
+                ports=self.ports,
+                with_companion=with_companion,
             ),
-            material={"character_id": character_id, "body": _body(request)},
+            material={
+                "character_id": character_id,
+                "body": _body(request),
+                "with_companion": with_companion,
+            },
         )
 
     async def archive_character(
@@ -1932,6 +1953,22 @@ class Engine:
     ) -> list[catalog_characters.VersionSummary]:
         """Every published version of the entry, oldest first: number, time and publisher."""
         return await catalog_characters.versions(self.db, character_id)
+
+    async def get_companion(
+        self,
+        ctx: RequestContext,
+        character_id: str,
+        *,
+        version: int | None = None,
+        draft: bool = False,
+        projection: catalog_characters.Projection = catalog_characters.Projection.CARD,
+    ) -> scenario_models.ScenarioCard | scenario_models.ScenarioFull:
+        """The character's companion scenario (FR-CAT-5; #116), as ``get_scenario`` reads it:
+        its latest published version (``version``: that one; ``draft``: the draft), and its
+        draft while it was never published. 404 for an unknown character or version."""
+        return await catalog_characters.get_companion(
+            self.db, character_id, version=version, draft=draft, projection=projection
+        )
 
     # -- the scenario catalog (FR-SCN-1..4,10; FR-API-6; #108) --------------------------------
     # The same lifecycle as the character catalog's (``core.catalog.service``), deployment-scoped

@@ -499,11 +499,23 @@ class RelationNotFound(EpistrelError):
 
 
 class CompanionFollowsCharacter(EpistrelError):
-    """A companion scenario's owner and relations follow its character (FR-AUTH-5): change them
-    on the character, and they change together. Nothing is written. ``details``:
-    ``entity_type``, ``entity_id`` and ``character_id``."""
+    """A companion scenario follows its character (FR-CAT-5, FR-CAT-11, FR-AUTH-5): its owner,
+    relations, listing status, archiving and deletion change only with the character's, so
+    change them on the character. Nothing is written. ``details``: ``entity_type``,
+    ``entity_id`` and ``character_id``."""
 
     code = "companion_follows_character"
+    http_status = 422
+
+
+class CompanionSlotsFixed(EpistrelError):
+    """A save would add, remove or change a slot of a companion scenario (FR-CAT-5; #116): its
+    two roles, ``npc`` locked to the character and ``player``, keep their ``id``, ``kind``,
+    ``fill`` and ``character``; every other field of the scenario stays editable. Nothing is
+    written. ``details``: ``scenario_id``, ``character_id``, ``role`` (the role id) and
+    ``field`` (the request path of the slot field: ``body.cast.roles[0].fill``)."""
+
+    code = "companion_slots_fixed"
     http_status = 422
 
 

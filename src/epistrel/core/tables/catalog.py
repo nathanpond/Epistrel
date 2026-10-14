@@ -10,7 +10,11 @@ and publish compares (FR-CAT-3). ``created_at`` and ``updated_at`` are written b
 application (``core.clock.now()``); ``updated_at`` moves on every draft save, publish, archive,
 listing-status change and owner transfer, and ``(updated_at, id)`` is the listings' keyset
 (#110). A scenario also has ``companion_of``: the catalog character whose companion it is
-(#116), a foreign key that cascades, so deleting a character takes its companion with it.
+(#116), unique (one companion per character), a foreign key that cascades (a character's delete
+removes its companion explicitly first, with its own audit row, so the cascade is a backstop),
+and ``content_rating_explicit``: whether the companion's rating was set on the companion itself
+(any save that names it, even to the same value); until then the companion's draft takes its
+character's rating whenever the character's changes (#116).
 
 ``character_versions`` and ``scenario_versions`` hold one row per publish, ``(catalog_id,
 version)``, with the published document (``content``), the content rating's version it was
@@ -48,6 +52,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     TIMESTAMP,
+    Boolean,
     CheckConstraint,
     Column,
     Computed,
@@ -57,6 +62,7 @@ from sqlalchemy import (
     Integer,
     Table,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 
@@ -147,15 +153,22 @@ scenario_catalog = Table(
         ForeignKey(character_catalog.c.id, ondelete="CASCADE"),
         nullable=True,
     ),
+    Column(
+        "content_rating_explicit",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False),
     schema=CATALOG_SCHEMA,
 )
 
-# Listing by owner and principal lookup (#104, #117); a character's companions (#104's transfer,
-# #116, and the cascade of a character's delete); the listings' keyset (#110).
+# Listing by owner and principal lookup (#104, #117); a character's one companion (unique: #116
+# creates exactly one per character; #104's transfer and the cascades find it); the listings'
+# keyset (#110).
 Index("ix_scenario_catalog_owner_principal", scenario_catalog.c.owner_principal)
-Index("ix_scenario_catalog_companion_of", scenario_catalog.c.companion_of)
+Index("uq_scenario_catalog_companion_of", scenario_catalog.c.companion_of, unique=True)
 Index("ix_scenario_catalog_updated_at_id", scenario_catalog.c.updated_at, scenario_catalog.c.id)
 
 PIN_COMPLETE_CHECK = "(pinned_character_id IS NULL) = (pinned_character_version IS NULL)"

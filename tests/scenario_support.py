@@ -74,6 +74,7 @@ FULL_KEYS = frozenset(
         "updated_at",
         "published_at",
         "companion_of",
+        "pinned_character_version",
         "schema_version",
         *GROUPS,
     }

@@ -267,7 +267,8 @@ async def test_s_promote(stub_settings: Settings, engine: AsyncEngine) -> None:
     (appearance, personality and dispositions, likes and dislikes, interaction style), his safe
     fallback line and his image, by reference, rated as the story, and none of the story's
     facts: a phrase planted in the story's narration, pinned memories and custom instructions
-    appears nowhere in the entry. The answer carries the new ``catalog_id``.
+    appears nowhere in the entry. The answer carries the new ``catalog_id``. Like any catalog
+    character, the draft is created with its companion scenario (#116).
 
     Complements asserted: promoting him again makes a second draft (no deduplication); his row
     is byte-identical through both promotions except ``promoted_to``, which names both entries,
@@ -367,6 +368,22 @@ async def test_s_promote(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert PHRASE not in str(stored)
         unpublished = await client.get(f"/catalog/characters/{first}", headers=READ)
         assert error_of(unpublished)[:2] == (422, "not_published")
+        # Like any creation, the promotion creates the draft's companion scenario with it (#116):
+        # the author's, named and rated as the draft.
+        companion = await client.get(
+            f"/catalog/characters/{first}/companion", params={"projection": "full"}, headers=READ
+        )
+        assert companion.status_code == 200, companion.text
+        made = companion.json()
+        assert (made["id"], made["companion_of"], made["owner_principal"]) == (
+            entry["companion_id"],
+            first,
+            AUTHOR,
+        )
+        assert (made["public_card"]["name"], made["metadata"]["content_rating_id"]) == (
+            "Dale Pruitt",
+            story["content_rating"]["id"],
+        )
 
         again = await client.post(
             f"/stories/{story_id}/characters/{dale}/promote", json={}, headers=as_(AUTHOR)

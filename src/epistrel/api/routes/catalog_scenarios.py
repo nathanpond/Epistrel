@@ -14,7 +14,9 @@ FR-API-6; #108). The same lifecycle as ``/catalog/characters``:
   ``?draft=true`` the draft) as its public ``card`` (the default) or in ``full``.
 - ``GET /catalog/scenarios/{id}/versions``: every published version, oldest first.
 - ``POST /catalog/scenarios/{id}/archive`` and ``…/unarchive`` (200); ``DELETE
-  /catalog/scenarios/{id}`` (204).
+  /catalog/scenarios/{id}`` (204). A companion scenario (#116) keeps its slots, is pinned to its
+  character's latest published version when published alone, and is archived, unarchived and
+  deleted only with its character (422 ``companion_follows_character``).
 - ``GET /catalog/scenarios``: list and search, a page of cards, companions only when asked
   (#110; ``routes.catalog_listing``).
 - ``PUT /catalog/scenarios/{id}/listing-status``: the scenario's listing status (FR-CAT-11;
@@ -275,7 +277,14 @@ async def create_scenario_draft(
         "rules, as on create. `draft_revision` is the revision the patch is based on: when "
         "another save or publish came first it is 409 `draft_stale` "
         "(`details.current_draft_revision`) and nothing changes (FR-CAT-3). Every save moves "
-        "the draft to the next revision. An archived scenario is 422 `entry_archived`."
+        "the draft to the next revision. An archived scenario is 422 `entry_archived`. A "
+        "companion scenario (FR-CAT-5) keeps its two slots: a patch that adds, removes or "
+        "changes a role's `id`, `kind`, `fill` or `character` (roles are matched by `id`, so "
+        "their order is free; a slot echoed unchanged is accepted) is 422 "
+        "`companion_slots_fixed` (`details.role`, `details.field`), before any other rule; "
+        "every other field is editable. A patch that names a companion's "
+        "`metadata.content_rating_id` sets its rating explicitly: until then it takes its "
+        "character's."
     ),
 )
 async def save_scenario_draft(
@@ -310,7 +319,11 @@ async def save_scenario_draft(
         "text that asserts personality (`personality_in_role`). The 201 answer carries the "
         "report, with the checks this deployment cannot run listed in `unavailable`, and the "
         "version keeps it. The draft stays equal to what was published, at the next revision. "
-        "Publishing an unchanged draft still makes a new version."
+        "Publishing an unchanged draft still makes a new version. A companion scenario "
+        "published alone (FR-CAT-10) is pinned to its character's latest published version, "
+        "never to a character draft (`pinned_character_version`); before the character's "
+        "first publish it is refused with `character_not_published`, and a rating that differs "
+        "from the character's is a `rating_looser` warning."
     ),
 )
 async def publish_scenario(
@@ -409,7 +422,8 @@ async def list_scenario_versions(
         "Archive the scenario: it still reads in both projections, but its draft cannot be "
         "saved or published (422 `entry_archived`), and it cannot be used to create a story, "
         "until it is unarchived. Stories created from it are untouched (FR-CAT-9). Archiving "
-        "an archived scenario changes nothing (200)."
+        "an archived scenario changes nothing (200). A companion scenario is archived only with "
+        "its character: 422 `companion_follows_character`."
     ),
 )
 async def archive_scenario(
@@ -426,7 +440,8 @@ async def archive_scenario(
     summary="Unarchive a scenario",
     description=(
         "Restore an archived scenario to `published` (`draft` if it was never published); any "
-        "other is left as it is (200)."
+        "other is left as it is (200). A companion scenario is unarchived only with its "
+        "character: 422 `companion_follows_character`."
     ),
 )
 async def unarchive_scenario(
@@ -466,7 +481,8 @@ async def set_listing_status_scenario(
         "Remove the scenario and every published version, from any status (204), recorded in "
         "the audit log. Stories created from it keep their snapshot and their provenance "
         "(FR-CAT-9). A retry under the same `Idempotency-Key` is a 204 with "
-        "`Idempotent-Replay: true`."
+        "`Idempotent-Replay: true`. A companion scenario is deleted only with its character: "
+        "422 `companion_follows_character`."
     ),
 )
 async def delete_scenario(scenario_id: ScenarioId, ctx: ContextDep, engine: EngineDep) -> Response:

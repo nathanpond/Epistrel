@@ -68,7 +68,7 @@ from pydantic import (
 )
 
 from epistrel.core.catalog.scenario_models import ALIASES_MAX, LABELS_MAX, Alias, Label
-from epistrel.core.catalog.service import CardRating, Revision
+from epistrel.core.catalog.service import CardRating, PublishRequest, Revision
 from epistrel.core.enums import EntryStatus
 from epistrel.core.ids import Ulid
 from epistrel.core.json_numbers import require_finite
@@ -508,6 +508,28 @@ class CharacterCreate(CharacterDraft):
     )
 
 
+class CharacterPublishRequest(PublishRequest):
+    """``POST /catalog/characters/{id}/publish``: the character's ``draft_revision`` (FR-CAT-3)
+    and, when its companion's draft is published with it (``?with_companion=true``; FR-CAT-10),
+    the companion draft's ``companion_draft_revision``: required then, refused otherwise. A
+    stale revision of either is 409 ``draft_stale``."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {"draft_revision": 2},
+                {"draft_revision": 3, "companion_draft_revision": 4},
+            ]
+        },
+    )
+
+    companion_draft_revision: Revision | None = Field(
+        default=None,
+        description="The companion draft's revision, with `with_companion=true` only (#116).",
+    )
+
+
 # -- the save rules (beyond the schema) ---------------------------------------------------------
 
 Loc = tuple[str | int, ...]
@@ -699,8 +721,8 @@ class CharacterFull(CharacterModel):
     public card's fields with each image's media row, the aliases, the private ``definition``
     and the ``visual_identity``. ``draft_revision`` is present only on a draft read
     (``?draft=true``): the revision the next save or publish must send. ``published_at`` is
-    when ``version`` was published; ``companion_id`` names the character's companion scenario
-    (#116; ``null`` until then). ``owner_principal`` is the entry's owner (FR-AUTH-5), recorded
+    when ``version`` was published; ``companion_id`` names the character's companion scenario,
+    created with it (#116). ``owner_principal`` is the entry's owner (FR-AUTH-5), recorded
     for listing and attribution only."""
 
     id: str
@@ -917,6 +939,7 @@ __all__ = [
     "CharacterPatch",
     "CharacterPublicCard",
     "CharacterPublicCardPatch",
+    "CharacterPublishRequest",
     "Dispositions",
     "DispositionsPatch",
     "Dominance",

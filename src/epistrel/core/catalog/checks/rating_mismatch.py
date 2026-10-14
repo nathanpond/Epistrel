@@ -116,7 +116,9 @@ def _unknown(rating_id: str, version_id: str) -> RatingNode:
     )
 
 
-async def _ratings(ctx: ValidationContext) -> _Ratings:
+async def ratings_of(ctx: ValidationContext) -> _Ratings:
+    """The rating graph and the live policies, read once through ``ctx`` (the companion check,
+    #116, shares it)."""
     graph = await load_graph(ctx.conn)
     live = frozenset(
         (await ctx.conn.scalars(select(policies.c.id).where(policies.c.retired_at.is_(None)))).all()
@@ -146,7 +148,7 @@ class RatingMismatchCheck(Check):
         scenario_rating = draft_of(subject).metadata.content_rating_id
         if scenario_rating is None:
             return Findings()
-        ratings = await _ratings(ctx)
+        ratings = await ratings_of(ctx)
         guarded = ratings.effective(scenario_rating)
         found = Findings()
         for member in await filled(subject, ctx):
@@ -188,4 +190,4 @@ class RatingMismatchCheck(Check):
 
 CHECK = RatingMismatchCheck()
 
-__all__ = ["CHECK", "RatingMismatchCheck", "is_looser"]
+__all__ = ["CHECK", "RatingMismatchCheck", "is_looser", "ratings_of"]

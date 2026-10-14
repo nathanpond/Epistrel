@@ -1,5 +1,5 @@
-"""Scenarios in the catalog: drafts and immutable, numbered published versions (FR-SCN-1..4,10;
-docs/02 §4.10; #108).
+"""Scenarios in the catalog: drafts and immutable, numbered published versions (FR-SCN-1..4,10,
+FR-CAT-5,10; docs/02 §4.10; #108, #116).
 
 A scenario is a ``catalog.scenario_catalog`` row; its draft and versions are documents that
 ``ScenarioDraft`` validates (``core.catalog.scenario_models``). The lifecycle — create, save (a
@@ -36,10 +36,17 @@ a scenario's own:
 ``effective_cast_limit`` (``scenario_models``) gives the starting-cast limit a story created from
 a scenario has; #119 calls it.
 
-A companion (``companion_of``, #116) follows its character's listing status: it changes with the
-character's and is refused on its own (422 ``companion_follows_character``; FR-CAT-11, #110).
-A listing (``core.catalog.search``) shows a scenario as a ``ScenarioListItem`` and leaves
-companions out unless asked.
+**A companion** (``companion_of``, #116; created with its character by
+``core.catalog.companion``) keeps its two slots: a save that adds, removes or changes one (the
+``id``, ``kind``, ``fill`` or ``character`` of a role, matched by id) is 422
+``companion_slots_fixed``, checked before the save rules, and its locked role may name its pin
+``null`` before the character's first publish. A save naming its content rating sets it
+explicitly (``content_rating_explicit``). Published alone, it is pinned to its character's latest
+published version (``publish_alone``). Its listing status, archiving and deletion follow its
+character's and are refused on their own (422 ``companion_follows_character``; FR-CAT-5,
+FR-CAT-11, #110); ``full`` shows its pin (``pinned_character_version``). A listing
+(``core.catalog.search``) shows a scenario as a ``ScenarioListItem`` and leaves companions out
+unless asked.
 """
 
 from __future__ import annotations
@@ -54,7 +61,16 @@ from sqlalchemy import and_, select
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.catalog.report import ValidationReport, ValidationResult
+from epistrel.core import clock, control
+from epistrel.core.catalog.companion_slots import (
+    NPC_ROLE,
+    PLAYER_ROLE,
+    pin_of,
+    pinned_columns,
+    repinned,
+    slot_change,
+)
+from epistrel.core.catalog.report import DRAFT, ValidationReport, ValidationResult
 from epistrel.core.catalog.scenario_models import (
     CastLimits,
     ScenarioCard,
@@ -78,20 +94,27 @@ from epistrel.core.catalog.service import (
     ValidateRequest,
     VersionSummary,
     card_rating,
+    config_revision,
 )
 from epistrel.core.catalog.validation import RUNNER, validate_entry
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import EntryStatus
 from epistrel.core.erasure.index import Declared, drop_references, index_references
-from epistrel.core.errors import CastLimitExceeded, InvalidRequest, ScenarioNotFound
+from epistrel.core.errors import (
+    CastLimitExceeded,
+    CompanionSlotsFixed,
+    InvalidRequest,
+    ScenarioNotFound,
+)
 from epistrel.core.ids import new_ulid
 from epistrel.core.media.assets import assert_referenceable, rating_version
 from epistrel.core.ports import Ports
 from epistrel.core.ratings import require_assignable
 from epistrel.core.tables import media_assets
-from epistrel.core.tables.catalog import scenario_catalog, scenario_versions
+from epistrel.core.tables.catalog import character_catalog, scenario_catalog, scenario_versions
 from epistrel.core.tables.media import SubjectKind, subject_references
 from epistrel.core.tables.ownership import EntityType
+from epistrel.testing import pauses
 
 ENTITY_TYPE = EntityType.SCENARIO.value
 """The entry type an audit row and ``core.ownership`` (#104) name."""
@@ -108,15 +131,16 @@ VERSION_RECORD = scenario_versions.name
 # -- the save rules ----------------------------------------------------------------------------
 
 
-def stored_document(document: Any) -> dict[str, Any]:
+def stored_document(document: Any, *, companion: bool = False) -> dict[str, Any]:
     """``document`` as a stored scenario draft: valid as ``ScenarioDraft``, keeping every save
-    rule, each seed with an ``id``; 422 ``validation_error`` at ``body.<path>`` otherwise (every
-    finding in ``details.errors``)."""
+    rule (a ``companion``'s, #116, may name its locked character's version ``null``), each seed
+    with an ``id``; 422 ``validation_error`` at ``body.<path>`` otherwise (every finding in
+    ``details.errors``)."""
     try:
         draft = ScenarioDraft.model_validate(document)
     except ValidationError as exc:
         raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
-    errors = rule_errors(draft)
+    errors = rule_errors(draft, companion=companion)
     if errors:
         raise InvalidRequest.from_errors(errors, prefix=("body",))
     for _, seed in draft.seeds():
@@ -327,13 +351,50 @@ class ScenarioCatalog(CatalogService):
         return DRAFT_MAX_BYTES  # read at call time, so a test may lower it
 
     def leader(self, entry: Any) -> str | None:
-        """A companion's character (``companion_of``, #116): its listing status follows the
-        character's (FR-CAT-11)."""
+        """A companion's character (``companion_of``, #116): its listing status, archiving and
+        deletion follow the character's (FR-CAT-5, FR-CAT-11)."""
         found = entry.companion_of
         return None if found is None else str(found)
 
     def stored(self, document: Any) -> dict[str, Any]:
         return stored_document(document)
+
+    def saving(
+        self, entry: Any, merged: Mapping[str, Any], patch: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """A companion's slots stay as they are (FR-CAT-5): a save that adds, removes or changes
+        one (``companion_slots.slot_change``) is 422 ``companion_slots_fixed``, checked before
+        the save rules; a slot echoed unchanged is accepted, and the locked role may name its
+        pin, ``null`` before the character's first publish."""
+        character_id = self.leader(entry)
+        if character_id is None:
+            return self.stored(merged)
+        change = slot_change(entry.draft, merged)
+        if change is not None:
+            role, field = change
+            raise CompanionSlotsFixed(
+                f"scenario {entry.id} is the companion of catalog character {character_id}: its "
+                f"slots (`{NPC_ROLE}` locked to the character, and `{PLAYER_ROLE}`) cannot be "
+                "added, removed or changed; every other field can",
+                {
+                    "scenario_id": str(entry.id),
+                    "character_id": character_id,
+                    "role": role,
+                    "field": f"body.{field}",
+                },
+            )
+        return stored_document(merged, companion=True)
+
+    def save_values(self, entry: Any, patch: Mapping[str, Any]) -> dict[str, Any]:
+        """A save that names a companion's content rating (even to the value it has, or to
+        remove it) sets it explicitly: from then on the companion keeps its own rating instead
+        of taking its character's (#116)."""
+        if self.leader(entry) is None or "metadata" not in patch:
+            return {}
+        metadata = patch["metadata"]
+        if metadata is None or (isinstance(metadata, Mapping) and "content_rating_id" in metadata):
+            return {"content_rating_explicit": True}
+        return {}
 
     async def checked(
         self, conn: AsyncConnection, document: Mapping[str, Any], previous: Any
@@ -398,9 +459,106 @@ class ScenarioCatalog(CatalogService):
             )
         )
 
+    async def publish_read(
+        self,
+        db: AsyncEngine,
+        read: Any,
+        request: PublishRequest,
+        *,
+        principal: str,
+        ports: Ports,
+    ) -> Published:
+        """A scenario's publish; a companion's is pinned to its character (``publish_alone``)."""
+        if self.leader(read) is None:
+            return await super().publish_read(db, read, request, principal=principal, ports=ports)
+        return await self.publish_alone(db, read, request, principal=principal, ports=ports)
+
+    async def publish_alone(
+        self,
+        db: AsyncEngine,
+        read: Any,
+        request: PublishRequest,
+        *,
+        principal: str,
+        ports: Ports,
+    ) -> Published:
+        """A companion published alone (FR-CAT-10, "companion edited alone"): its draft becomes
+        the next version, pinned to its character's latest published version, never to a
+        character draft, and the character's version does not change. Under the row locks the
+        character's publishes take too, in their order (the character ``FOR SHARE``, then the
+        companion), so the pin is the latest. Before the character's first publish there is no
+        version to pin: the validation reports ``character_not_published`` (422
+        ``publish_invalid``). The full validation applies: a world and an opening too."""
+        entry_id = str(read.id)
+        character_id = str(read.companion_of)
+        latest = select(character_catalog.c.current_version).where(
+            character_catalog.c.id == character_id
+        )
+        async with db.connect() as conn:
+            pin = await conn.scalar(latest)
+        # Outside any transaction (FR-CONC-2), like any publish's prepare phase.
+        prepared = await self.prepare_for(
+            db, entry_id, DRAFT, repinned(read.draft, pin), ports=ports
+        )
+        async with db.begin() as conn:
+            pin = await conn.scalar(latest.with_for_update(read=True))
+            entry = await self.entry(conn, entry_id, lock=True)
+            self.refuse(entry, entry_id, request.draft_revision)
+            await pauses.pause(pauses.CATALOG_PUBLISH_LOCKED)
+            document = repinned(entry.draft, pin)
+            report = await self.validated(
+                conn, entry_id, DRAFT, document, prepared=prepared, ports=ports
+            )
+            version = int(entry.current_version or 0) + 1
+            draft_revision = int(entry.draft_revision) + 1
+            now = clock.now()
+            await self.insert_version(
+                conn,
+                entry_id,
+                version,
+                document,
+                report,
+                principal=principal,
+                now=now,
+                values=pinned_columns(character_id, pin),
+            )
+            status = await self.mark_published(
+                conn,
+                entry_id,
+                version=version,
+                draft_revision=draft_revision,
+                now=now,
+                draft=document,
+            )
+            await control.record_control_operation(conn, actor=principal)
+            await self.recorded(conn, entry_id, document, version=version)
+            if document != entry.draft:
+                await self.recorded(conn, entry_id, document, version=None)
+            revision = await config_revision(conn)
+        return Published(
+            id=entry_id,
+            version=version,
+            draft_revision=draft_revision,
+            status=status,
+            published_at=now,
+            report=report,
+            config_revision=revision,
+        )
+
     async def project(self, conn: AsyncConnection, shown: Shown, projection: Projection) -> Any:
         entry = shown.entry
-        draft = ScenarioDraft.model_validate(shown.document)
+        document = shown.document
+        pin: int | None = None
+        if projection is Projection.FULL and self.leader(entry) is not None:
+            # A companion's pin (#116), which only ``full`` shows: a version's lives in its
+            # ``pinned_character_version`` (null once that character version is erased), and is
+            # projected into the locked role's ``character.version``; a draft's is in the draft.
+            if shown.version_row is not None:
+                pin = shown.version_row.pinned_character_version
+                document = repinned(document, pin)
+            else:
+                pin = pin_of(document)
+        draft = ScenarioDraft.model_validate(document)
         if projection is Projection.FULL:
             return ScenarioFull(
                 id=entry.id,
@@ -414,6 +572,7 @@ class ScenarioCatalog(CatalogService):
                 updated_at=entry.updated_at,
                 published_at=shown.published_at,
                 companion_of=entry.companion_of,
+                pinned_character_version=pin,
                 **{name: getattr(draft, name) for name in ScenarioDraft.model_fields},
             )
         return ScenarioCard(

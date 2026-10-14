@@ -10,12 +10,18 @@ the ``draft_revision`` every save and publish compares (FR-CAT-3). Its versions 
 kind's versions table.
 
 ``CatalogService`` holds the lifecycle; a kind (catalog characters, scenarios) subclasses it and
-fills in its hooks: the tables and nouns, how a document is validated and stored (``stored``),
-the checks a save makes against the database (``checked``), the version's extra columns
-(``version_values``), what a write records beside the row (``recorded``/``forgotten``), the
-projections (``project``, ``envelope``, and the listings' ``list_item``), and the entries that
-follow one (``followers``: a character's companion scenarios). Publishing asks the kind's
-``Validator`` (``core.catalog.validation``'s runner, #111) for a ``ValidationReport``.
+fills in its hooks: the tables and nouns, how a document is validated and stored (``stored``, and
+``saving`` for a save), the checks a save makes against the database (``checked``), the version's
+extra columns (``version_values``), what a write records beside the row
+(``recorded``/``forgotten``), the projections (``project``, ``envelope``, and the listings'
+``list_item``), and the entries that follow one: a character's companion scenario (#116), made
+with it (``created``), taking its rating (``saved``), archived and deleted with it
+(``archived``, ``dropped``) and moved with its listing status (``followers``); a follower is
+refused all of these alone (``leader``, ``refuse_follower``). Publishing asks the kind's
+``Validator`` (``core.catalog.validation``'s runner, #111) for a ``ValidationReport``; its steps
+(``read_editable``, ``prepare_for``, ``validated``, ``insert_version``, ``mark_published``) are
+shared with a character's publish, which publishes a companion version with it
+(``core.catalog.companion``).
 
 - **Create** stores the request's draft at draft revision 1, status ``draft``, at the first of
   the deployment's listing status values (read with the deployment row ``FOR SHARE``, so it
@@ -43,6 +49,9 @@ follow one (``followers``: a character's companion scenarios). Publishing asks t
   changed when there is nothing to change. **Delete** removes the entry and its versions, from
   any status, and writes a ``catalog_entry_deleted`` audit row. It also removes the entry's
   relations and records a ``deleted`` ownership event (``core.ownership.drop_entity``, #104).
+  The entries that follow it are archived, unarchived and deleted with it, each deletion with
+  its own event and audit row; a follower is refused each of these alone (422
+  ``companion_follows_character``).
 - **Set the listing status** (FR-CAT-11; #110) changes the entry's value, and its followers',
   to one of the deployment's values, recorded per entry as a ``listing_status`` ownership event
   (``core.catalog.listing``); allowed in any status. A follower (a companion) is refused alone.
@@ -293,14 +302,23 @@ class CatalogService(ABC):
     def __init__(self, validator: Validator) -> None:
         self.validator = validator
 
-    def subject(self, entry_id: str, version: VersionLabel, document: Mapping[str, Any]) -> Subject:
-        """What a validation of ``document`` (``version``, or the draft) checks (#111)."""
+    def subject(
+        self,
+        entry_id: str,
+        version: VersionLabel,
+        document: Mapping[str, Any],
+        *,
+        waived: frozenset[str] = frozenset(),
+    ) -> Subject:
+        """What a validation of ``document`` (``version``, or the draft) checks (#111);
+        ``waived``: the codes it does not report (``Subject.waived``)."""
         return Subject(
             entity_type=self.entity_type,
             entry_id=entry_id,
             version=version,
             document=document,
             model=self.document_model,
+            waived=waived,
         )
 
     # -- hooks -------------------------------------------------------------------------------
@@ -314,11 +332,48 @@ class CatalogService(ABC):
         """``document`` as a stored draft: validated, normalised, every rule that needs no
         database checked; 422 ``validation_error`` at ``body.<field>`` otherwise."""
 
+    def saving(
+        self, entry: Any, merged: Mapping[str, Any], patch: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """The draft a save stores: ``merged`` (the stored draft with the merge ``patch``
+        applied) as ``stored`` makes it. A kind whose entries follow rules of their own (a
+        companion's fixed slots, #116) checks them here first."""
+        return self.stored(merged)
+
+    def save_values(self, entry: Any, patch: Mapping[str, Any]) -> dict[str, Any]:
+        """Columns a save writes besides the draft (a companion's explicit rating, #116).
+        None by default."""
+        return {}
+
     async def checked(
         self, conn: AsyncConnection, document: Mapping[str, Any], previous: Any
     ) -> None:
         """The checks a create or save makes against the database, inside its transaction
         (``previous``: the draft before a save, ``None`` on create). None by default."""
+        return None
+
+    async def created(
+        self,
+        conn: AsyncConnection,
+        entry_id: str,
+        document: Mapping[str, Any],
+        *,
+        owner: str,
+        listing_status: str,
+    ) -> None:
+        """What a creation makes beside the entry, in its transaction (a character's companion
+        scenario, #116). Nothing by default."""
+        return None
+
+    async def saved(
+        self,
+        conn: AsyncConnection,
+        entry_id: str,
+        document: Mapping[str, Any],
+        previous: Mapping[str, Any],
+    ) -> None:
+        """What a save changes beside the entry, in its transaction (a character's rating
+        written through to its companion, #116). Nothing by default."""
         return None
 
     async def version_values(
@@ -344,6 +399,20 @@ class CatalogService(ABC):
         """What a delete removes beside the rows, in its transaction. Nothing by default."""
         return None
 
+    async def dropped(
+        self, conn: AsyncConnection, entry_id: str, *, principal: str
+    ) -> list[tuple[EntityType, str]]:
+        """The entries a delete removes with this one, in its transaction, before its own row
+        goes (a character's companion scenario, #116), each by its own delete path; answers
+        ``(type, id)`` of each, for its audit row. None by default."""
+        return []
+
+    async def archived(self, conn: AsyncConnection, entry_id: str, archived: bool) -> None:
+        """What archiving (``archived``) or unarchiving the entry does to the entries that
+        follow it, in its transaction (a character's companion scenario, #116). Nothing by
+        default."""
+        return None
+
     @abstractmethod
     async def project(self, conn: AsyncConnection, shown: Shown, projection: Projection) -> Any:
         """``shown`` as ``projection`` (FR-SCN-10)."""
@@ -360,6 +429,22 @@ class CatalogService(ABC):
     def leader(self, entry: Any) -> str | None:
         """The id of the entry ``entry`` follows (a companion's character), or ``None``."""
         return None
+
+    def refuse_follower(self, entry: Any, entry_id: str, what: str) -> None:
+        """422 ``companion_follows_character`` when ``entry`` follows another entry (a
+        companion): ``what`` (its listing status, its archiving, its deletion) changes only
+        with its character's (FR-CAT-5, FR-CAT-11)."""
+        leader = self.leader(entry)
+        if leader is not None:
+            raise CompanionFollowsCharacter(
+                f"{self.noun} {entry_id} is the companion of catalog character {leader}: {what} "
+                "follows the character's; change it on the character",
+                {
+                    "entity_type": self.entity_type.value,
+                    "entity_id": entry_id,
+                    "character_id": leader,
+                },
+            )
 
     async def list_card(self, conn: AsyncConnection, shown: Shown, *, rank: float | None) -> Any:
         """``shown`` as a listing's item: exactly the single-entry read's card, plus the owner,
@@ -489,8 +574,9 @@ class CatalogService(ABC):
     ) -> tuple[Any, int]:
         """``create`` inside ``conn``'s transaction, which the caller commits: a write that
         makes an entry as one step of its own (a promotion from a story, #114) gets the same
-        entry, operation and records a creation gets. ``entry_id`` is the new entry's id (a
-        new ULID by default)."""
+        entry, operation and records a creation gets, and what ``created`` makes with it (a
+        character's companion, #116). ``entry_id`` is the new entry's id (a new ULID by
+        default)."""
         draft = self.stored(document)
         self.check_size(draft)
         entry_id = entry_id or new_ulid()
@@ -511,6 +597,7 @@ class CatalogService(ABC):
             )
         )
         await self.checked(conn, draft, None)
+        await self.created(conn, entry_id, draft, owner=owner, listing_status=first)
         await control.record_control_operation(conn, actor=principal)
         await self.recorded(conn, entry_id, draft, version=None)
         return await self.draft_shown(conn, entry_id), await config_revision(conn)
@@ -530,7 +617,7 @@ class CatalogService(ABC):
         async with db.connect() as conn:
             entry = await self.entry(conn, entry_id)
         self.refuse(entry, entry_id, draft_revision)
-        document = self.stored(merge_patch(entry.draft, patch))
+        document = self.saving(entry, merge_patch(entry.draft, patch), patch)
         self.check_size(document)
         await pauses.pause(pauses.CATALOG_SAVE_BEFORE_CAS)
         async with db.begin() as conn:
@@ -545,6 +632,7 @@ class CatalogService(ABC):
                     draft=document,
                     draft_revision=self.catalog.c.draft_revision + 1,
                     updated_at=clock.now(),
+                    **self.save_values(entry, patch),
                 )
                 .returning(self.catalog.c.id)
             )
@@ -553,6 +641,7 @@ class CatalogService(ABC):
                 # gone).
                 raise self.conflict(await self.entry(conn, entry_id), entry_id, draft_revision)
             await self.checked(conn, document, entry.draft)
+            await self.saved(conn, entry_id, document, entry.draft)
             await control.record_control_operation(conn, actor=principal)
             await self.recorded(conn, entry_id, document, version=None)
             return await self.draft_shown(conn, entry_id), await config_revision(conn)
@@ -567,60 +656,40 @@ class CatalogService(ABC):
         ports: Ports | None = None,
     ) -> Published:
         """Publish the draft as version ``current_version + 1`` (see the module docstring)."""
-        ports = ports or Ports()
-        async with db.connect() as conn:
-            read = await self.entry(conn, entry_id)
-        self.refuse(read, entry_id, request.draft_revision)
+        read = await self.read_editable(db, entry_id, request.draft_revision)
+        return await self.publish_read(
+            db, read, request, principal=principal, ports=ports or Ports()
+        )
+
+    async def publish_read(
+        self,
+        db: AsyncEngine,
+        read: Any,
+        request: PublishRequest,
+        *,
+        principal: str,
+        ports: Ports,
+    ) -> Published:
+        """``publish`` once the entry is read (``read``, editable at the request's revision)."""
+        entry_id = str(read.id)
         # Outside any transaction: the input policies may call a model (FR-CONC-2). The revision
         # compared under the lock below proves the draft is the one prepared from.
-        settings = (await read_settings(db)).as_settings()
-        prepared = await self.validator.prepare(
-            self.subject(entry_id, DRAFT, read.draft), Preparation(db, settings, ports)
-        )
+        prepared = await self.prepare_for(db, entry_id, DRAFT, read.draft, ports=ports)
         async with db.begin() as conn:
             entry = await self.entry(conn, entry_id, lock=True)
             self.refuse(entry, entry_id, request.draft_revision)
             await pauses.pause(pauses.CATALOG_PUBLISH_LOCKED)
-            context = ValidationContext(
-                conn=conn,
-                settings=(await read_settings(conn)).as_settings(),
-                ports=ports,
-                prepared=prepared,
+            report = await self.validated(
+                conn, entry_id, DRAFT, entry.draft, prepared=prepared, ports=ports
             )
-            report = await self.validator.validate(
-                self.subject(entry_id, DRAFT, entry.draft), context
-            )
-            log_report(report, entity_type=self.entity_type.value, entry_id=entry_id)
-            if not report.ok:
-                raise PublishInvalid(
-                    f"the draft of {self.noun} {entry_id} cannot be published",
-                    {self.id_key: entry_id, "report": report.as_json()},
-                )
             version = int(entry.current_version or 0) + 1
             draft_revision = int(entry.draft_revision) + 1
             now = clock.now()
-            extra = await self.version_values(conn, entry.draft, report)
-            await conn.execute(
-                insert(self.versions).values(
-                    catalog_id=entry_id,
-                    version=version,
-                    content=entry.draft,
-                    published_at=now,
-                    published_by=principal,
-                    **extra,
-                )
+            await self.insert_version(
+                conn, entry_id, version, entry.draft, report, principal=principal, now=now
             )
-            # The answer reports the status the entry row now holds, not the one intended.
-            stored_status = await conn.scalar(
-                update(self.catalog)
-                .where(self.catalog.c.id == entry_id)
-                .values(
-                    status=EntryStatus.PUBLISHED.value,
-                    current_version=version,
-                    draft_revision=draft_revision,
-                    updated_at=now,
-                )
-                .returning(self.catalog.c.status)
+            stored_status = await self.mark_published(
+                conn, entry_id, version=version, draft_revision=draft_revision, now=now
             )
             await control.record_control_operation(conn, actor=principal)
             await self.recorded(conn, entry_id, entry.draft, version=version)
@@ -629,64 +698,208 @@ class CatalogService(ABC):
             id=entry_id,
             version=version,
             draft_revision=draft_revision,
-            status=EntryStatus(stored_status),
+            status=stored_status,
             published_at=now,
             report=report,
             config_revision=revision,
         )
 
+    # -- the steps of a publish (shared with a companion's, #116) -------------------------------
+
+    async def read_editable(self, db: AsyncEngine, entry_id: str, draft_revision: int) -> Any:
+        """The entry, read without a lock: 404 for an unknown entry, 422 ``entry_archived``, 409
+        ``draft_stale`` unless its draft is at ``draft_revision``."""
+        async with db.connect() as conn:
+            read = await self.entry(conn, entry_id)
+        self.refuse(read, entry_id, draft_revision)
+        return read
+
+    async def prepare_for(
+        self,
+        db: AsyncEngine,
+        entry_id: str,
+        version: VersionLabel,
+        document: Mapping[str, Any],
+        *,
+        ports: Ports,
+        waived: frozenset[str] = frozenset(),
+    ) -> Mapping[str, Any]:
+        """The validation's prepare phase for ``document``, outside any transaction (it may call
+        a model, FR-CONC-2)."""
+        settings = (await read_settings(db)).as_settings()
+        return await self.validator.prepare(
+            self.subject(entry_id, version, document, waived=waived),
+            Preparation(db, settings, ports),
+        )
+
+    async def validated(
+        self,
+        conn: AsyncConnection,
+        entry_id: str,
+        version: VersionLabel,
+        document: Mapping[str, Any],
+        *,
+        prepared: Mapping[str, Any],
+        ports: Ports,
+        waived: frozenset[str] = frozenset(),
+        details: Mapping[str, Any] | None = None,
+    ) -> ValidationReport:
+        """Validate ``document`` inside ``conn``'s transaction with what was ``prepared``, and
+        log the report's codes and locations: 422 ``publish_invalid`` with ``details.report``
+        (and ``details``) when it holds an error."""
+        context = ValidationContext(
+            conn=conn,
+            settings=(await read_settings(conn)).as_settings(),
+            ports=ports,
+            prepared=prepared,
+        )
+        report = await self.validator.validate(
+            self.subject(entry_id, version, document, waived=waived), context
+        )
+        log_report(report, entity_type=self.entity_type.value, entry_id=entry_id)
+        if not report.ok:
+            message = (
+                f"the draft of {self.noun} {entry_id} cannot be published"
+                if version == DRAFT
+                else f"version {version} of {self.noun} {entry_id} cannot be published"
+            )
+            raise PublishInvalid(
+                message,
+                {**dict(details or {}), self.id_key: entry_id, "report": report.as_json()},
+            )
+        return report
+
+    async def insert_version(
+        self,
+        conn: AsyncConnection,
+        entry_id: str,
+        version: int,
+        document: Mapping[str, Any],
+        report: ValidationReport,
+        *,
+        principal: str,
+        now: datetime,
+        values: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Insert version ``version`` of the entry with ``document`` as its content (and the
+        kind's ``version_values``, then ``values``)."""
+        extra = await self.version_values(conn, document, report)
+        await conn.execute(
+            insert(self.versions).values(
+                catalog_id=entry_id,
+                version=version,
+                content=document,
+                published_at=now,
+                published_by=principal,
+                **{**extra, **dict(values or {})},
+            )
+        )
+
+    async def mark_published(
+        self,
+        conn: AsyncConnection,
+        entry_id: str,
+        *,
+        version: int,
+        draft_revision: int,
+        now: datetime,
+        draft: Mapping[str, Any] | None = None,
+    ) -> EntryStatus:
+        """Make ``version`` the entry's latest and the entry ``published``, at draft revision
+        ``draft_revision`` (and with ``draft`` as its draft, when given). Answers the status the
+        row now holds, not the one intended."""
+        values: dict[str, Any] = {
+            "status": EntryStatus.PUBLISHED.value,
+            "current_version": version,
+            "draft_revision": draft_revision,
+            "updated_at": now,
+        }
+        if draft is not None:
+            values["draft"] = draft
+        stored = await conn.scalar(
+            update(self.catalog)
+            .where(self.catalog.c.id == entry_id)
+            .values(**values)
+            .returning(self.catalog.c.status)
+        )
+        return EntryStatus(stored)
+
     async def set_archived(
         self, db: AsyncEngine, entry_id: str, archived: bool, *, principal: str
     ) -> tuple[Any, bool, int]:
         """Archive (``archived``) or unarchive the entry: ``(envelope, changed,
-        config_revision)``. An entry already in that state is left as it is."""
+        config_revision)``. An entry already in that state is left as it is. The entries that
+        follow it change with it (``archived``); one that follows another is refused alone (422
+        ``companion_follows_character``)."""
         async with db.begin() as conn:
             entry = await self.entry(conn, entry_id, lock=True)
+            self.refuse_follower(entry, entry_id, "its archiving")
             if (entry.status == EntryStatus.ARCHIVED.value) == archived:
                 return await self.envelope(conn, entry), False, await config_revision(conn)
-            if archived:
-                status = EntryStatus.ARCHIVED
-            elif entry.current_version is not None:
-                status = EntryStatus.PUBLISHED
-            else:
-                status = EntryStatus.DRAFT
-            await conn.execute(
-                update(self.catalog)
-                .where(self.catalog.c.id == entry_id)
-                .values(status=status.value, updated_at=clock.now())
-            )
+            await self.set_status(conn, entry, archived)
+            await self.archived(conn, entry_id, archived)
             await control.record_control_operation(conn, actor=principal)
             shown = await self.envelope(conn, await self.entry(conn, entry_id))
             return shown, True, await config_revision(conn)
 
+    async def set_status(self, conn: AsyncConnection, entry: Any, archived: bool) -> EntryStatus:
+        """Archive ``entry`` (``archived``), or restore it to ``published`` (``draft`` if it was
+        never published), moving its ``updated_at``; answers the status set."""
+        if archived:
+            status = EntryStatus.ARCHIVED
+        elif entry.current_version is not None:
+            status = EntryStatus.PUBLISHED
+        else:
+            status = EntryStatus.DRAFT
+        await conn.execute(
+            update(self.catalog)
+            .where(self.catalog.c.id == entry.id)
+            .values(status=status.value, updated_at=clock.now())
+        )
+        return status
+
     async def delete(self, db: AsyncEngine, entry_id: str, *, principal: str) -> int:
         """Remove the entry and its versions (from any status) and write a
-        ``catalog_entry_deleted`` audit row; 404 for an unknown entry. Its relations go too,
-        recorded as a ``deleted`` ownership event (#104). Stories created from it keep their
-        snapshot and provenance (FR-CAT-9). Answers how many versions went with it."""
+        ``catalog_entry_deleted`` audit row; 404 for an unknown entry, 422
+        ``companion_follows_character`` for an entry that follows another (it goes with its
+        character). Its relations go too, recorded as a ``deleted`` ownership event (#104), and
+        so do the entries that follow it (``dropped``), each with its own event and audit row.
+        Stories created from it keep their snapshot and provenance (FR-CAT-9). Answers how
+        many versions went with it."""
         async with db.begin() as conn:
-            await self.entry(conn, entry_id, lock=True)
-            await ownership.drop_entity(conn, self.entity_type, entry_id, principal=principal)
-            versions = await conn.scalar(
-                select(func.count())
-                .select_from(self.versions)
-                .where(self.versions.c.catalog_id == entry_id)
-            )
-            await self.forgotten(conn, entry_id)
+            entry = await self.entry(conn, entry_id, lock=True)
+            self.refuse_follower(entry, entry_id, "its deletion")
             # The one exemption the versions' immutability trigger knows (shared with #124).
             await conn.execute(select(func.set_config(ERASURE_GUC, "on", True)))
-            await conn.execute(sql_delete(self.catalog).where(self.catalog.c.id == entry_id))
+            followers = await self.dropped(conn, entry_id, principal=principal)
+            versions = await self.remove(conn, entry_id, principal=principal)
             operation_id = await control.record_control_operation(conn, actor=principal)
-            await audit.record(
-                conn,
-                AuditKind.CATALOG_ENTRY_DELETED,
-                principal=principal,
-                details={
-                    "entity_type": self.entity_type.value,
-                    "entity_id": entry_id,
-                    "operation_id": operation_id,
-                },
-            )
+            for entity_type, removed_id in [(self.entity_type, entry_id), *followers]:
+                await audit.record(
+                    conn,
+                    AuditKind.CATALOG_ENTRY_DELETED,
+                    principal=principal,
+                    details={
+                        "entity_type": entity_type.value,
+                        "entity_id": removed_id,
+                        "operation_id": operation_id,
+                    },
+                )
+        return versions
+
+    async def remove(self, conn: AsyncConnection, entry_id: str, *, principal: str) -> int:
+        """Delete the entry's row (its versions cascade) inside a delete's transaction, which
+        has set ``epistrel.erasure``: its relations go first, recorded as a ``deleted``
+        ownership event, and what ``forgotten`` keeps beside it. Answers how many versions went
+        with it."""
+        await ownership.drop_entity(conn, self.entity_type, entry_id, principal=principal)
+        versions = await conn.scalar(
+            select(func.count())
+            .select_from(self.versions)
+            .where(self.versions.c.catalog_id == entry_id)
+        )
+        await self.forgotten(conn, entry_id)
+        await conn.execute(sql_delete(self.catalog).where(self.catalog.c.id == entry_id))
         return int(versions or 0)
 
     async def set_listing_status(
@@ -705,17 +918,7 @@ class CatalogService(ABC):
             listing.refuse_unknown(value, allowed, field="body.value")
             await pauses.pause(pauses.CATALOG_LISTING_STATUS_LOCKED)
             entry = await self.entry(conn, entry_id, lock=True)
-            leader = self.leader(entry)
-            if leader is not None:
-                raise CompanionFollowsCharacter(
-                    f"{self.noun} {entry_id} is the companion of catalog character {leader}: its "
-                    "listing status follows the character's; change it on the character",
-                    {
-                        "entity_type": self.entity_type.value,
-                        "entity_id": entry_id,
-                        "character_id": leader,
-                    },
-                )
+            self.refuse_follower(entry, entry_id, "its listing status")
             previous = str(entry.listing_status)
             changed = previous != value
             if changed:

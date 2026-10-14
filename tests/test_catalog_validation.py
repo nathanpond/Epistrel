@@ -248,6 +248,7 @@ def test_the_checks_and_the_capabilities() -> None:
         "media",
         "providers",
         "rating_mismatch",
+        "companion",
         "input_policy",
         "personality",
         "seed_normalization",

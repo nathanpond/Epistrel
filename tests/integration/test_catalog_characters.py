@@ -38,7 +38,7 @@ from tests.catalog_support import (
     save,
     version_rows,
 )
-from tests.event_support import execute_in_tx, rows, sqlstate
+from tests.event_support import execute_in_tx, rows, scalar, sqlstate
 from tests.story_support import rest
 
 REPLAY = "Idempotent-Replay"
@@ -176,7 +176,11 @@ async def test_draft_save_publish_and_versions(
         None,
         None,
     )
-    assert created["companion_id"] is None
+    # The companion scenario created with it (#116) is named; its own tests are
+    # ``tests/integration/test_companion.py``.
+    assert created["companion_id"] == await scalar(
+        engine, "SELECT id FROM catalog.scenario_catalog WHERE companion_of = :c", c=cid
+    )
     assert isinstance(created["config_revision"], int)
     assert created["idempotency_key"]
 

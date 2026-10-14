@@ -8,7 +8,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel import __version__
+from epistrel.core.catalog.companion_slots import defaults
+from epistrel.core.catalog.scenario_models import ScenarioDraft
 from epistrel.core.db import make_sync_engine
+from epistrel.core.ids import new_ulid
 from tests.conftest import alembic_config
 
 
@@ -305,3 +308,151 @@ def test_character_documents_move_under_the_public_card(scratch_database: str) -
     assert _documents(scratch_database) == (MOVED, MOVED, {"definition": {}}, True, True)
     command.downgrade(cfg, "0031")
     assert _documents(scratch_database) == (INTERIM, INTERIM, {"definition": {}}, True, False)
+
+
+PUBLISHED_ID, ARCHIVED_ID, NAMELESS_ID, TWICE_ID, RATING_ID = (new_ulid() for _ in range(5))
+CHARACTERS_0032 = {
+    # id: (owner, listing status, status, current version, draft)
+    PUBLISHED_ID: (
+        "p-1",
+        "public",
+        "published",
+        2,
+        {
+            "public_card": {"name": "Mara Venn"},
+            "metadata": {"content_rating_id": RATING_ID},
+        },
+    ),
+    ARCHIVED_ID: ("p-2", "private", "archived", None, {"public_card": {"name": "Ivo"}}),
+    NAMELESS_ID: ("p-3", "in_review", "draft", None, {}),
+    TWICE_ID: ("p-4", "private", "draft", None, {"public_card": {"name": "Wren"}}),
+}
+"""Catalog characters as 0032 holds them (a published, an archived, a nameless draft, and one
+that two scenarios name as their companion)."""
+OLDER = new_ulid()
+NEWER = new_ulid()
+
+
+def _companions(url: str) -> dict[str, Any]:
+    """Each scenario row, by id: what a companion is."""
+    engine = make_sync_engine(url)
+    try:
+        with engine.connect() as conn:
+            found = conn.execute(
+                text(
+                    "SELECT id, companion_of, owner_principal, listing_status, status, "
+                    "current_version, draft_revision, draft FROM catalog.scenario_catalog"
+                )
+            ).all()
+        return {str(r.id): r for r in found}
+    finally:
+        engine.dispose()
+
+
+def test_every_character_gets_a_companion(scratch_database: str) -> None:
+    """0033 (#116) gives every catalog character without a companion scenario the one #116's
+    creation makes: the defaults, named and rated as the character's draft is, pinned to its
+    latest published version (none before its first publish), at the character's owner and
+    listing status, ``archived`` with an archived character and a ``draft`` otherwise, at draft
+    revision 1, with no version. A character two scenarios name keeps the older as its
+    companion; the newer becomes an ordinary scenario. ``companion_of`` becomes unique and
+    ``content_rating_explicit`` is false. Downgrading drops the flag and the unique index, and
+    keeps the companions."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0032")
+    engine = make_sync_engine(scratch_database)
+    try:
+        with engine.begin() as conn:
+            for cid, (owner, listing, status, version, draft) in CHARACTERS_0032.items():
+                conn.execute(
+                    text(
+                        "INSERT INTO catalog.character_catalog (id, owner_principal, "
+                        "listing_status, status, current_version, draft, draft_revision, "
+                        "created_at, updated_at) VALUES (:c, :o, :l, "
+                        "CAST(:s AS catalog.entry_status), :v, CAST(:d AS jsonb), 1, now(), now())"
+                    ),
+                    {
+                        "c": cid,
+                        "o": owner,
+                        "l": listing,
+                        "s": status,
+                        "v": version,
+                        "d": json.dumps(draft),
+                    },
+                )
+            for sid, age in ((OLDER, "2 days"), (NEWER, "1 day")):
+                conn.execute(
+                    text(
+                        "INSERT INTO catalog.scenario_catalog (id, owner_principal, "
+                        "listing_status, status, draft, draft_revision, companion_of, created_at, "
+                        "updated_at) VALUES (:s, 'p-4', 'private', 'draft', '{}'::jsonb, 3, :c, "
+                        "now() - CAST(:a AS interval), now())"
+                    ),
+                    {"s": sid, "c": TWICE_ID, "a": age},
+                )
+    finally:
+        engine.dispose()
+
+    command.upgrade(cfg, "0033")
+    found = _companions(scratch_database)
+    assert found[NEWER].companion_of is None
+    assert (found[OLDER].companion_of, found[OLDER].draft_revision) == (TWICE_ID, 3)
+    made = {str(r.companion_of): r for r in found.values() if str(r.id) not in (OLDER, NEWER)}
+    assert set(made) == set(CHARACTERS_0032) - {TWICE_ID}
+    for cid, (owner, listing, status, version, draft) in CHARACTERS_0032.items():
+        if cid not in made:
+            continue
+        row = made[cid]
+        expected = "archived" if status == "archived" else "draft"
+        assert (row.owner_principal, row.listing_status, row.status) == (owner, listing, expected)
+        assert (row.current_version, row.draft_revision) == (None, 1)
+        name = draft.get("public_card", {}).get("name")
+        rating = draft.get("metadata", {}).get("content_rating_id")
+        assert ScenarioDraft.model_validate(row.draft).document() == defaults(
+            cid, name=name, rating_id=rating, pin=version
+        )
+    assert made[PUBLISHED_ID].draft["cast"]["roles"][0]["character"]["version"] == 2
+    engine = make_sync_engine(scratch_database)
+    try:
+        with engine.connect() as conn:
+            assert conn.scalar(text("SELECT count(*) FROM catalog.scenario_versions")) == 0
+            assert (
+                conn.scalar(
+                    text(
+                        "SELECT count(*) FROM catalog.scenario_catalog "
+                        "WHERE content_rating_explicit"
+                    )
+                )
+                == 0
+            )
+            assert conn.scalar(
+                text(
+                    "SELECT indexdef LIKE 'CREATE UNIQUE INDEX%' FROM pg_indexes "
+                    "WHERE indexname = 'uq_scenario_catalog_companion_of'"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    command.downgrade(cfg, "0032")
+    assert set(_companions(scratch_database)) == set(found)
+    engine = make_sync_engine(scratch_database)
+    try:
+        with engine.connect() as conn:
+            assert (
+                conn.scalar(
+                    text(
+                        "SELECT count(*) FROM information_schema.columns "
+                        "WHERE column_name = 'content_rating_explicit'"
+                    )
+                )
+                == 0
+            )
+            assert conn.scalar(
+                text(
+                    "SELECT indexdef LIKE 'CREATE INDEX%' FROM pg_indexes "
+                    "WHERE indexname = 'ix_scenario_catalog_companion_of'"
+                )
+            )
+    finally:
+        engine.dispose()

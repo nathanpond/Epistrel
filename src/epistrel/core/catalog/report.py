@@ -78,9 +78,11 @@ CODES: Mapping[str, str] = types.MappingProxyType(
         "persona (FR-CAT-6; story creation, #114)",
         "player_role_fixed": "a player put in a role that is not the scenario's player role, or "
         "the player's role filled as a character slot (FR-CAT-6; story creation, #114)",
+        "companion_slots_fixed": "a companion scenario's cast is not its two slots, `npc` locked "
+        "to its character and `player` (FR-CAT-5, #116)",
         # warnings
-        "rating_looser": "an item's rating lacks a guardrail the scenario's rating has "
-        "(FR-RATE-5; kept)",
+        "rating_looser": "an item's rating lacks a guardrail the scenario's rating has, or a "
+        "companion's lacks one its character's has (FR-RATE-5; kept)",
         "input_policy": "text fails an input policy (FR-GUARD-10; kept)",
         "personality_in_role": "role text asserts personality (FR-SCN-7; ignored: the "
         "character's applies)",

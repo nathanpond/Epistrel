@@ -111,11 +111,12 @@ def _content(body: dict[str, Any]) -> dict[str, Any]:
 
 async def test_scenario_tables_have_the_planned_shape(engine: AsyncEngine) -> None:
     """``catalog.scenario_catalog`` mirrors the character catalog plus ``companion_of`` (a
-    foreign key to the character catalog that cascades); ``catalog.scenario_versions`` is keyed
-    ``(catalog_id, version)``, cascades with its scenario, and pins a character version through
-    a foreign key that is set to NULL (both pin columns or neither), and keeps the validation
-    report its publish produced (#111). The deployment gains the starting-cast default (16) and
-    ceiling (none)."""
+    foreign key to the character catalog that cascades, unique: one companion per character,
+    #116) and ``content_rating_explicit`` (#116: false until a companion's rating is set on
+    it); ``catalog.scenario_versions`` is keyed ``(catalog_id, version)``, cascades with its
+    scenario, and pins a character version through a foreign key that is set to NULL (both pin
+    columns or neither), and keeps the validation report its publish produced (#111). The
+    deployment gains the starting-cast default (16) and ceiling (none)."""
     found = await rows(
         engine,
         "SELECT table_name, column_name, udt_name, is_nullable FROM information_schema.columns "
@@ -137,6 +138,7 @@ async def test_scenario_tables_have_the_planned_shape(engine: AsyncEngine) -> No
             "companion_of",
             "created_at",
             "updated_at",
+            "content_rating_explicit",
         ],
         "scenario_versions": [
             "catalog_id",
@@ -155,6 +157,19 @@ async def test_scenario_tables_have_the_planned_shape(engine: AsyncEngine) -> No
     assert types[("scenario_catalog", "status")] == ("entry_status", "NO")
     assert types[("scenario_catalog", "draft")] == ("jsonb", "NO")
     assert types[("scenario_catalog", "companion_of")] == ("bpchar", "YES")
+    assert types[("scenario_catalog", "content_rating_explicit")] == ("bool", "NO")
+    unique = await rows(
+        engine,
+        "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'catalog' "
+        "AND tablename = 'scenario_catalog' AND indexdef LIKE '%(companion_of)%'",
+    )
+    assert [tuple(r) for r in unique] == [
+        (
+            "uq_scenario_catalog_companion_of",
+            "CREATE UNIQUE INDEX uq_scenario_catalog_companion_of ON catalog.scenario_catalog "
+            "USING btree (companion_of)",
+        )
+    ]
     assert types[("scenario_versions", "content")] == ("jsonb", "NO")
     assert types[("scenario_versions", "search")] == ("tsvector", "YES")  # generated (#110)
     assert types[("scenario_versions", "report")] == ("jsonb", "YES")  # #111
@@ -980,11 +995,15 @@ async def test_subject_references_are_indexed(
         )
     )
     sid, revision = await published(client, body)
+    # The character's companion (#116) indexes it too; this scenario's rows are the ones here.
     found = await rows(
         engine,
         "SELECT record_table, record_id, field, ref_kind FROM subject_references "
-        "WHERE subject_id = :s ORDER BY record_table, field",
+        "WHERE subject_id = :s AND (record_id = :sid OR record_id LIKE :version) "
+        "ORDER BY record_table, field",
         s=held["id"],
+        sid=sid,
+        version=f"{sid}@%",
     )
     assert [tuple(r) for r in found] == [
         ("scenario_catalog", sid, "cast.roles[0].character.catalog_id", "declared"),

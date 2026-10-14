@@ -88,6 +88,7 @@ from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
 from epistrel.core.ratings import change as rating_change
 from epistrel.core.ratings import reactivation
+from epistrel.core.ratings import suggest as rating_suggestion
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
@@ -144,6 +145,7 @@ from epistrel.orchestrator.policies.schemas import (
     PolicyReplacement,
     StoryPolicyItem,
 )
+from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
 from epistrel.testing import crash
 
 logger = logging.getLogger(__name__)
@@ -2358,6 +2360,51 @@ class Engine:
         """Every published version of the scenario, oldest first: number, time and publisher."""
         return await catalog_scenarios.versions(self.db, scenario_id)
 
+    # -- the rating suggestion (FR-RATE-8; #121) --------------------------------------------------
+    # Advisory: nothing reads its table (the import-linter contract
+    # ``rating-suggestion-is-advisory``), and it writes nothing.
+
+    async def suggest_ratings(
+        self,
+        ctx: RequestContext,
+        entity_type: EntityType | str,
+        entry_id: str,
+        request: rating_suggestion.SuggestionRequest | None = None,
+        *,
+        include_retired: bool = False,
+    ) -> rating_suggestion.RatingSuggestion:
+        """Suggest ratings for a catalog character or scenario (FR-RATE-8): a table with one row
+        for every rating (``include_retired``: the retired ones too), each ``appropriate`` or not
+        and, for a no, every concern: the policy or description clause broken and the element
+        that breaks it. ``request.version``: a published version or ``"draft"``; omitted, the
+        latest published version, else the draft. Deterministic policies are evaluated
+        directly, the rest through one ``rating_suggestion`` call per rating (a failed call
+        leaves its row ``error`` set). Advisory (``advisory: true``): it changes no rating,
+        blocks nothing, and nothing reads it. It writes nothing, so it takes no
+        ``Idempotency-Key``. Its concerns quote private fields: an author-facing read. 404 for
+        an unknown entry or version."""
+        service = catalog_kinds.service_of(entity_type)
+        kind: rating_suggestion.EntryType = (
+            "character" if service.entity_type is EntityType.CHARACTER else "scenario"
+        )
+        version = None if request is None else request.version
+        started = ctx.received_at if ctx.received_at is not None else time.monotonic()
+        with model_metrics.recording() as calls:
+            table = await rating_suggestion_driver.suggest(
+                self.db,
+                self.models,
+                kind,
+                entry_id,
+                version,
+                include_retired=include_retired,
+            )
+        return table.model_copy(
+            update={
+                "model_calls": [call.model_dump(mode="json") for call in calls.calls],
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+            }
+        )
+
     # -- listing status and listings (FR-CAT-11, FR-API-6, FR-AUTH-8; #110) ----------------------
     # One method per operation for both catalog kinds (``entity_type`` ``character`` or
     # ``scenario``), each served by one route per kind. Nothing here gates on the listing status,
@@ -3004,9 +3051,18 @@ class Engine:
 
     @property
     def purposes(self) -> Purposes:
-        """The model purposes a profile may route: the Orchestrator's delivered purposes, and the
-        ones it reserves for later milestones (naming one is naming something undelivered)."""
-        return Purposes.of(list(model_registry.DELIVERED), list(model_registry.RESERVED))
+        """The model purposes a profile may route: the Orchestrator's delivered story purposes,
+        the ones it reserves for later milestones (naming one is naming something undelivered),
+        and the deployment-level ones no profile routes (``rating_suggestion``, #121)."""
+        return Purposes.of(
+            list(model_registry.STORY_PURPOSES),
+            list(model_registry.RESERVED),
+            [
+                name
+                for name in model_registry.DELIVERED
+                if name not in model_registry.STORY_PURPOSES
+            ],
+        )
 
     async def create_profile(
         self, ctx: RequestContext, request: profiles.ProfileCreate

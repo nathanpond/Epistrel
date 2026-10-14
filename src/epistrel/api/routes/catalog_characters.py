@@ -18,6 +18,9 @@
   /catalog/characters/{id}`` (204).
 - ``GET /catalog/characters``: list and search, a page of cards (#110; ``routes.catalog_listing``).
 - ``PUT /catalog/characters/{id}/listing-status``: the entry's listing status (FR-CAT-11; #110).
+- ``POST /catalog/characters/{id}/rating-suggestion``: the advisory table of every rating's
+  fit (FR-RATE-8; #121; ``routes.rating_suggestion``): author-facing, nothing written, no
+  ``Idempotency-Key``.
 - ``PUT /catalog/characters/{id}/owner``, ``POST``/``GET …/relations`` and ``DELETE
   …/relations/{relation}/{principal}``: the entry's owner and relations (``routes.ownership``,
   #104). Nothing gates on them (FR-AUTH-8).
@@ -36,9 +39,10 @@ from fastapi import APIRouter, Query, Response
 from fastapi import status as http_status
 from pydantic import BaseModel
 
-from epistrel.api.deps import CharacterId, ContextDep, EngineDep
+from epistrel.api.deps import CharacterId, ContextDep, EngineDep, route_flags
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse
+from epistrel.api.routes import rating_suggestion as suggestion
 from epistrel.api.routes.catalog_listing import (
     SET_LISTING_STATUS,
     ContentRatingParam,
@@ -77,6 +81,7 @@ from epistrel.core.catalog.scenario_models import ScenarioCard, ScenarioFull
 from epistrel.core.catalog.search import DEFAULT_PAGE as DEFAULT_LIST_PAGE
 from epistrel.core.catalog.search import CatalogPage
 from epistrel.core.enums import EntryStatus
+from epistrel.core.ratings.suggest import RatingSuggestion
 from epistrel.core.tables.ownership import EntityType
 
 router = APIRouter(prefix="/catalog/characters", tags=["catalog"])
@@ -513,6 +518,28 @@ async def delete_character(
 ) -> Response:
     deleted = await engine.delete_character(ctx, character_id)
     return no_content(ctx, replayed=deleted.replayed)
+
+
+@router.post(
+    "/{character_id}/rating-suggestion",
+    response_model=RatingSuggestion,
+    operation_id="suggest_ratings_character",
+    summary="Suggest ratings for a character (advisory)",
+    description=suggestion.DESCRIPTION.format(noun="character", inputs=""),
+    **route_flags(mutating=False),
+)
+async def suggest_ratings_character(
+    character_id: CharacterId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    body: suggestion.Request = None,
+    include_retired: suggestion.IncludeRetired = False,
+    projection: suggestion.RefusedProjection = None,
+) -> RatingSuggestion:
+    suggestion.refuse_projection(projection)
+    return await engine.suggest_ratings(
+        ctx, EntityType.CHARACTER, character_id, body, include_retired=include_retired
+    )
 
 
 mount_ownership_routes(router, EntityType.CHARACTER)

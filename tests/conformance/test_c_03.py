@@ -146,6 +146,7 @@ from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpda
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
+from epistrel.core.ratings.suggest import SuggestionRequest
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
 from epistrel.core.stories import AdHocCharacter, StorySpec
@@ -400,6 +401,11 @@ through the character, its draft saved, published with the character as a pair, 
 version 2 read in full."""
 ENTRY_GROUP = "scenario"
 """The ``Step.group`` of the scenario steps (#108)."""
+SUGGESTION_ANSWERS = [("suggest_ratings", 200), ("suggest_ratings", 200), ("suggest_ratings", 404)]
+"""What the rating-suggestion steps (#121) answer on both surfaces: a scenario's version 1 and a
+character's draft get the table; a version the scenario does not have is 404."""
+SUGGESTION_GROUP = "suggestion"
+"""The ``Step.group`` of the rating-suggestion steps (#121)."""
 PUBLIC = {"value": "public"}
 CHARACTER_SEARCH = {"q": "Mara", "listing_status": "public"}
 SCENARIO_SEARCH = {"label": ["family"]}
@@ -1010,6 +1016,44 @@ def _steps() -> list[Step]:
                 e.validate_scenario(CTX, ids["scenario"], ValidateRequest(draft_revision=1))
             ),
             group=ENTRY_GROUP,
+        ),
+        # -- the advisory rating table (#121): the scenario's version 1, the character's draft,
+        # and a version the scenario does not have (404 on both)
+        Step(
+            "suggest_ratings",
+            lambda ids: Rest(
+                "POST", "/catalog/scenarios/{scenario}/rating-suggestion", {"version": 1}
+            ),
+            lambda e, ids: _validated(
+                e.suggest_ratings(
+                    CTX, EntityType.SCENARIO, ids["scenario"], SuggestionRequest(version=1)
+                )
+            ),
+            group=SUGGESTION_GROUP,
+        ),
+        Step(
+            "suggest_ratings",
+            lambda ids: Rest(
+                "POST", "/catalog/characters/{character}/rating-suggestion", {"version": "draft"}
+            ),
+            lambda e, ids: _validated(
+                e.suggest_ratings(
+                    CTX, EntityType.CHARACTER, ids["character"], SuggestionRequest(version="draft")
+                )
+            ),
+            group=SUGGESTION_GROUP,
+        ),
+        Step(
+            "suggest_ratings",
+            lambda ids: Rest(
+                "POST", "/catalog/scenarios/{scenario}/rating-suggestion", {"version": 9}
+            ),
+            lambda e, ids: _validated(
+                e.suggest_ratings(
+                    CTX, EntityType.SCENARIO, ids["scenario"], SuggestionRequest(version=9)
+                )
+            ),
+            group=SUGGESTION_GROUP,
         ),
         Step(
             "get_scenario",
@@ -2258,6 +2302,14 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         if step.group == ENTRY_GROUP
     ]
     assert entries == ENTRY_ANSWERS
+    suggestions = [
+        (step.operation, status, body)
+        for step, (status, body) in zip(steps, rest, strict=True)
+        if step.group == SUGGESTION_GROUP
+    ]
+    assert [(operation, status) for operation, status, _ in suggestions] == SUGGESTION_ANSWERS
+    tables = [body for _, status, body in suggestions if status == 200]
+    assert all(table["advisory"] is True and table["rows"] for table in tables)
     listings = [
         (step.operation, status, body)
         for step, (status, body) in zip(steps, rest, strict=True)

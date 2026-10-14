@@ -136,10 +136,17 @@ async def test_c_04(model_engine: Engine, adapter_settings: Settings, mock: Mock
     if kind == "openai":
         # FR-MODEL-8, NFR-PORT-1: each purpose reached its configured base_url.
         assert observed.unconfigured_error == "not_configured"
+        # A purpose that defaults to guardrail_check's row (M3, #121) reaches its base_url too.
+        inheriting = {
+            name: "/gateway/v1/chat/completions"
+            for name, purpose in DELIVERED.items()
+            if purpose.default_model_key == "guardrail_check"
+        }
         assert observed.paths == {
             "generation": "/v1/chat/completions",
             "lite_summary": "/v1/chat/completions",
             "guardrail_check": "/gateway/v1/chat/completions",
+            **inheriting,
         }
         assert observed.authorizations == {f"Bearer {DEFAULT_KEY}"}
     else:

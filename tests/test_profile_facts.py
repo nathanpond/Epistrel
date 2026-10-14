@@ -59,7 +59,7 @@ from epistrel.core.profiles.validate import parse_settings
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
 from epistrel.orchestrator.models.config import ConfigRow
 from epistrel.orchestrator.models.facts import TEMPLATE_HASHES, identities
-from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, DELIVERED
+from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, STORY_PURPOSES
 from epistrel.testing.profiles import data_producing
 from tests.conftest import REPO_ROOT
 from tests.profile_support import LITE_CAPABILITIES, merged, nest
@@ -279,9 +279,9 @@ def test_model_ids_and_template_hashes() -> None:
     found = identities(
         {DEFAULT_MODEL_KEY: row(DEFAULT_MODEL_KEY, "base"), "generation": row("generation", "big")}
     )
-    assert set(found) == set(DELIVERED)
+    assert set(found) == set(STORY_PURPOSES)
     assert found["generation"].id == "big"
-    assert {found[name].id for name in DELIVERED if name != "generation"} == {"base"}
+    assert {found[name].id for name in STORY_PURPOSES if name != "generation"} == {"base"}
     assert all(model.reported_version is None for model in found.values())
     assert identities({})["generation"].id is None
     folder = resources.files("epistrel.orchestrator.models").joinpath("templates")
@@ -289,7 +289,7 @@ def test_model_ids_and_template_hashes() -> None:
         purpose.template.removesuffix(".j2"): hashlib.sha256(
             folder.joinpath(purpose.template).read_bytes()
         ).hexdigest()
-        for purpose in DELIVERED.values()
+        for purpose in STORY_PURPOSES.values()
     }
 
 

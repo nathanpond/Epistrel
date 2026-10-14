@@ -13,6 +13,9 @@ FR-API-6; #108). The same lifecycle as ``/catalog/characters``:
 - ``GET /catalog/scenarios/{id}``: the latest published version (``?version=n`` another one,
   ``?draft=true`` the draft) as its public ``card`` (the default) or in ``full``.
 - ``GET /catalog/scenarios/{id}/versions``: every published version, oldest first.
+- ``POST /catalog/scenarios/{id}/rating-suggestion``: the advisory table of every rating's fit,
+  its default and locked characters included (FR-RATE-8; #121; ``routes.rating_suggestion``):
+  author-facing, nothing written, no ``Idempotency-Key``.
 - ``POST /catalog/scenarios/{id}/archive`` and ``…/unarchive`` (200); ``DELETE
   /catalog/scenarios/{id}`` (204). A companion scenario (#116) keeps its slots, is pinned to its
   character's latest published version when published alone, and is archived, unarchived and
@@ -43,6 +46,7 @@ from pydantic import BaseModel
 from epistrel.api.deps import ContextDep, EngineDep, ScenarioId, route_flags
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import DeploymentMutationResponse
+from epistrel.api.routes import rating_suggestion as suggestion
 from epistrel.api.routes.catalog_listing import (
     SET_LISTING_STATUS,
     ContentRatingParam,
@@ -81,6 +85,7 @@ from epistrel.core.catalog.service import (
     VersionSummary,
 )
 from epistrel.core.enums import EntryStatus
+from epistrel.core.ratings.suggest import RatingSuggestion
 from epistrel.core.tables.ownership import EntityType
 
 router = APIRouter(prefix="/catalog/scenarios", tags=["catalog"])
@@ -488,6 +493,28 @@ async def set_listing_status_scenario(
 async def delete_scenario(scenario_id: ScenarioId, ctx: ContextDep, engine: EngineDep) -> Response:
     deleted = await engine.delete_scenario(ctx, scenario_id)
     return no_content(ctx, replayed=deleted.replayed)
+
+
+@router.post(
+    "/{scenario_id}/rating-suggestion",
+    response_model=RatingSuggestion,
+    operation_id="suggest_ratings_scenario",
+    summary="Suggest ratings for a scenario (advisory)",
+    description=suggestion.DESCRIPTION.format(noun="scenario", inputs=suggestion.SCENARIO_INPUTS),
+    **route_flags(mutating=False),
+)
+async def suggest_ratings_scenario(
+    scenario_id: ScenarioId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    body: suggestion.Request = None,
+    include_retired: suggestion.IncludeRetired = False,
+    projection: suggestion.RefusedProjection = None,
+) -> RatingSuggestion:
+    suggestion.refuse_projection(projection)
+    return await engine.suggest_ratings(
+        ctx, EntityType.SCENARIO, scenario_id, body, include_retired=include_retired
+    )
 
 
 mount_ownership_routes(router, EntityType.SCENARIO)

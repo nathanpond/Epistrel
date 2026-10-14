@@ -105,6 +105,12 @@ def _purposes_problems(
         if name in purposes.reserved:
             undelivered.append(UndeliveredSetting(module="models", level=None, setting=setting))
             continue
+        if name in purposes.deployment:
+            raise InvalidRequest(
+                f"{name!r} runs outside any story, so a profile does not route it; configure it "
+                "under /admin/model-config",
+                {"field": ".".join((*field, setting)), "purpose": name},
+            )
         raise InvalidRequest(
             f"{name!r} is not a model purpose",
             {"field": ".".join((*field, setting)), "purpose": name},

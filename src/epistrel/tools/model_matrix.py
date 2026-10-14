@@ -85,7 +85,7 @@ from epistrel.orchestrator.models.capability import (
 )
 from epistrel.orchestrator.models.errors import ModelError
 from epistrel.orchestrator.models.metrics import CallLog, ModelCall, recording
-from epistrel.orchestrator.models.registry import DELIVERED, GENERATION, GUARDRAIL_CHECK
+from epistrel.orchestrator.models.registry import GENERATION, GUARDRAIL_CHECK, STORY_PURPOSES
 from epistrel.orchestrator.policies.output_gate import DEADLINE
 from epistrel.tools.generated import REPO_ROOT
 
@@ -590,7 +590,7 @@ def render(rows: Sequence[Mapping[str, Any]]) -> str:
     """``docs/model-matrix.md`` for ``rows``. The notes appear only while they apply: *not
     recorded* while a row lacks the call breakdown, and the turn-path note while a row was
     measured on the guarded reply (#303)."""
-    purposes = list(DELIVERED)
+    purposes = list(STORY_PURPOSES)  # a turn's purposes: the matrix measures turns
     header = ["Tier", "Policies", "Protocol", *[f"`{p}`" for p in purposes]]
     header += ["E-06", "Turns", "p50", "p95", "Calls per turn"]
     calls_header = ["Tier", "Policies", "Designed per turn", "Extra calls", "Failed calls"]
@@ -850,8 +850,8 @@ async def _main(args: argparse.Namespace) -> int:
 
 def _purpose_model(value: str) -> tuple[str, str]:
     purpose, sep, model = value.partition("=")
-    if not sep or purpose not in DELIVERED or not model:
-        raise argparse.ArgumentTypeError(f"expected <delivered purpose>=<model>, got {value!r}")
+    if not sep or purpose not in STORY_PURPOSES or not model:
+        raise argparse.ArgumentTypeError(f"expected <story purpose>=<model>, got {value!r}")
     return purpose, model
 
 

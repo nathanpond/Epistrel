@@ -114,6 +114,22 @@ source_modules = [
 ]
 forbidden_modules = ["epistrel.orchestrator.policies.admin"]
 
+[[tool.importlinter.contracts]]
+# FR-RATE-8 (#121): the rating suggestion is advisory. No guardrail (the deterministic evaluator
+# and the Orchestrator's gates), catalog/publish, story-creation or rating-change code reads it,
+# directly or through another module; `tests/gates/test_rating_suggestion_contract.py` checks
+# that the contract exists and is kept.
+name = "rating-suggestion-is-advisory"
+type = "forbidden"
+source_modules = [
+    "epistrel.core.policies",
+    "epistrel.orchestrator.policies",
+    "epistrel.core.catalog",
+    "epistrel.core.genesis",
+    "epistrel.core.ratings.change",
+]
+forbidden_modules = ["epistrel.core.ratings.suggest", "epistrel.orchestrator.ratings.suggest"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

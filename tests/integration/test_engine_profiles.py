@@ -111,8 +111,8 @@ from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
 from epistrel.core.settings_schema import ConfigClass
 from epistrel.core.stories import delete_story
 from epistrel.orchestrator.jobs.handlers import retention
-from epistrel.orchestrator.models.registry import DELIVERED as DELIVERED_PURPOSES
 from epistrel.orchestrator.models.registry import RESERVED as RESERVED_PURPOSES
+from epistrel.orchestrator.models.registry import STORY_PURPOSES
 from epistrel.testing import pauses
 from epistrel.testing.profiles import TEST_CLAUSE, data_producing, extra_rule
 from tests.auth_support import auth_settings, bearer
@@ -152,7 +152,7 @@ from tests.summary_support import summary_jobs
 READ = bearer()
 A = "p-profiles-a"
 B = "p-profiles-b"
-PURPOSES = Purposes.of(list(DELIVERED_PURPOSES), list(RESERVED_PURPOSES))
+PURPOSES = Purposes.of(list(STORY_PURPOSES), list(RESERVED_PURPOSES))
 
 
 def headers(principal: str, key: str | None = None) -> dict[str, str]:
@@ -321,7 +321,7 @@ async def test_u_28__schema(engine: AsyncEngine) -> None:
         "compress_threshold_tokens": 6_000,
     }
     assert shipped["budgets"] == {"model_calls": None, "deadline_ms": 45_000}
-    assert set(shipped["models"]["purposes"]) == set(DELIVERED_PURPOSES)
+    assert set(shipped["models"]["purposes"]) == set(STORY_PURPOSES)
     (stored,) = await rows(
         engine,
         "SELECT p.name, p.owner_principal, p.preset, v.settings, v.created_by, "
@@ -1873,7 +1873,7 @@ async def test_the_schema_route_publishes_what_is_delivered(
             "budgets": ["on"],
             "models": ["on"],
         }
-        assert found["purposes"] == sorted(DELIVERED_PURPOSES)
+        assert found["purposes"] == sorted(STORY_PURPOSES)
         assert found["tags"]["pins.max_pinned"] == {
             "tag": "behavioral",
             "class": "prospective",
@@ -1904,7 +1904,7 @@ def test_lite_settings_validate_as_a_model() -> None:
     assert lite.repair == defaults.repair
     assert lite.budgets == defaults.budgets
     assert lite.models.generation == defaults.models.generation
-    assert set(lite.models.purposes) == set(DELIVERED_PURPOSES)
+    assert set(lite.models.purposes) == set(STORY_PURPOSES)
     assert all(route.model is None for route in lite.models.purposes.values())
 
 

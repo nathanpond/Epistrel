@@ -1022,10 +1022,15 @@ class Purposes:
 
     delivered: frozenset[str]
     reserved: frozenset[str] = field(default_factory=frozenset)
+    deployment: frozenset[str] = field(default_factory=frozenset)
+    """Delivered purposes that run outside any story (``rating_suggestion``, #121): a profile
+    cannot route them."""
 
     @classmethod
-    def of(cls, delivered: Sequence[str], reserved: Sequence[str] = ()) -> Purposes:
-        return cls(frozenset(delivered), frozenset(reserved))
+    def of(
+        cls, delivered: Sequence[str], reserved: Sequence[str] = (), deployment: Sequence[str] = ()
+    ) -> Purposes:
+        return cls(frozenset(delivered), frozenset(reserved), frozenset(deployment))
 
 
 __all__ = [

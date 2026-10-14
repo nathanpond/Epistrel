@@ -528,6 +528,8 @@ CALLS: dict[tuple[str, str], Call] = {
     ("POST", f"{C}/relations"): Call(201, {"principal": NEW_OWNER, "relation": "editor"}),
     ("DELETE", f"{C}{RELATION}"): Call(204, prepare=_related),
     ("PUT", f"{C}/listing-status"): Call(200, {"value": "public"}),
+    # the advisory rating table (#121), of the draft: a read that writes nothing
+    ("POST", f"{C}/rating-suggestion"): Call(200),
     # -- catalog characters: reads of a `private` entry: the latest version as the card (the
     # default) and in full, version 1, and the draft in both projections
     ("GET", C): Call(200, queries=ENTRY_READS, prepare=_published),
@@ -547,6 +549,7 @@ CALLS: dict[tuple[str, str], Call] = {
     ("DELETE", f"{SC}{RELATION}"): Call(204, prepare=_related),
     ("PUT", f"{SC}/listing-status"): Call(200, {"value": "public"}),
     ("POST", f"{SC}/validate"): Call(200),  # a dry run that writes nothing (#111)
+    ("POST", f"{SC}/rating-suggestion"): Call(200),  # the advisory rating table (#121)
     # -- scenarios: reads of a `private` scenario, as for catalog characters
     ("GET", SC): Call(200, queries=ENTRY_READS, prepare=_published),
     ("GET", f"{SC}/versions"): Call(200, prepare=_published),

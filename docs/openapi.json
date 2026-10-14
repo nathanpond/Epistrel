@@ -2357,6 +2357,48 @@
         "title": "CompanionRef",
         "type": "object"
       },
+      "Concern": {
+        "additionalProperties": false,
+        "description": "One conflict between the entry and a rating: the policy (``policy_id``) or the quoted\nrating-description ``clause`` it breaks (exactly one), the element, and why.",
+        "properties": {
+          "clause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clause"
+          },
+          "element": {
+            "$ref": "#/components/schemas/Element"
+          },
+          "explanation": {
+            "maxLength": 2000,
+            "title": "Explanation",
+            "type": "string"
+          },
+          "policy_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Id"
+          }
+        },
+        "required": [
+          "element",
+          "explanation"
+        ],
+        "title": "Concern",
+        "type": "object"
+      },
       "ConfigChangeItem": {
         "description": "One change: the revision it produced, the setting, its class, the old and new values\n(secret-bearing values redacted), who made it and when.",
         "properties": {
@@ -3808,6 +3850,105 @@
         "title": "EffectivePolicyBody",
         "type": "object"
       },
+      "Element": {
+        "additionalProperties": false,
+        "description": "The part of the entry a concern names: its kind and its location.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "field",
+              "seed",
+              "role",
+              "reveal",
+              "cast_character",
+              "media_caption"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/ElementLocation"
+          }
+        },
+        "required": [
+          "kind",
+          "location"
+        ],
+        "title": "Element",
+        "type": "object"
+      },
+      "ElementLocation": {
+        "additionalProperties": false,
+        "description": "Where an element sits (#111's location): the catalog ``entry`` and its ``version``\n(``\"draft\"`` for a draft; for a cast character, the character and the version used), and\nwhere they apply the ``role``, the dotted ``field``, the ``seed_id`` and the ``media_id``.",
+        "properties": {
+          "entry": {
+            "title": "Entry",
+            "type": "string"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "media_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Id"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "seed_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed Id"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "const": "draft",
+                "type": "string"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "entry",
+          "version"
+        ],
+        "title": "ElementLocation",
+        "type": "object"
+      },
       "EngineProfile": {
         "description": "An engine profile at one version: ``version`` is the one read (the latest unless a read\nnames another), ``current_version`` the latest. ``settings`` is what that version sets; a\nsetting it leaves out takes the default. ``preset`` is true for a profile shipped with\nEpistrel (owned by ``system``); a preset is edited, copied and deleted like any profile. A\ndeleted profile (``deleted_at``) still reads and serves the stories that use it.",
         "properties": {
@@ -4315,6 +4456,43 @@
         "title": "EntryLocation",
         "type": "object"
       },
+      "EntryRef": {
+        "additionalProperties": false,
+        "description": "The entry reviewed: its type, id, and the version (``\"draft\"`` for the draft).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "character",
+              "scenario"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "const": "draft",
+                "type": "string"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "version"
+        ],
+        "title": "EntryRef",
+        "type": "object"
+      },
       "EntryStatus": {
         "description": "A catalog entry's version status (FR-CAT-2; #103, #108): ``draft`` until its first\npublish, then ``published``; ``archived`` entries still read but cannot be edited,\npublished or used to create a story until they are unarchived. Postgres enum\n``catalog.entry_status``.",
         "enum": [
@@ -4380,6 +4558,26 @@
           "details"
         ],
         "title": "ErrorBody",
+        "type": "object"
+      },
+      "EvaluatedRating": {
+        "additionalProperties": false,
+        "description": "A rating the table evaluated, at the version it used (the version's id).",
+        "properties": {
+          "rating_id": {
+            "title": "Rating Id",
+            "type": "string"
+          },
+          "rating_version": {
+            "title": "Rating Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rating_id",
+          "rating_version"
+        ],
+        "title": "EvaluatedRating",
         "type": "object"
       },
       "Feedback": {
@@ -13362,6 +13560,62 @@
         "title": "RatingReplacement",
         "type": "object"
       },
+      "RatingSuggestion": {
+        "additionalProperties": false,
+        "description": "The advisory table (FR-RATE-8): one row per rating, the rating versions it evaluated,\nthe entry, the cast characters it skipped, and the model calls it made.",
+        "properties": {
+          "advisory": {
+            "const": true,
+            "default": true,
+            "title": "Advisory",
+            "type": "boolean"
+          },
+          "elapsed_ms": {
+            "default": 0,
+            "title": "Elapsed Ms",
+            "type": "integer"
+          },
+          "entry": {
+            "$ref": "#/components/schemas/EntryRef"
+          },
+          "evaluated": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluatedRating"
+            },
+            "title": "Evaluated",
+            "type": "array"
+          },
+          "model_calls": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Model Calls",
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/SuggestionRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "unavailable": {
+            "items": {
+              "$ref": "#/components/schemas/UnavailableCharacter"
+            },
+            "title": "Unavailable",
+            "type": "array"
+          }
+        },
+        "required": [
+          "entry",
+          "evaluated",
+          "rows"
+        ],
+        "title": "RatingSuggestion",
+        "type": "object"
+      },
       "RebuildQueuedResponse": {
         "description": "The ``rebuild_projections`` job a large story's rebuild was handed to (202), with the\nstory's revision when it was queued.",
         "properties": {
@@ -18014,11 +18268,12 @@
         "type": "object"
       },
       "Sources": {
-        "description": "Where each effective value came from; ``params`` per key.",
+        "description": "Where each effective value came from, per field (``params`` per key): ``own``, ``inherited``\n(the row of the purpose this one defaults to: ``rating_suggestion`` → ``guardrail_check``)\nor ``default``.",
         "properties": {
           "api_key": {
             "enum": [
               "own",
+              "inherited",
               "default"
             ],
             "title": "Api Key",
@@ -18027,6 +18282,7 @@
           "base_url": {
             "enum": [
               "own",
+              "inherited",
               "default"
             ],
             "title": "Base Url",
@@ -18035,6 +18291,7 @@
           "model": {
             "enum": [
               "own",
+              "inherited",
               "default"
             ],
             "title": "Model",
@@ -18044,6 +18301,7 @@
             "additionalProperties": {
               "enum": [
                 "own",
+                "inherited",
                 "default"
               ],
               "type": "string"
@@ -19421,6 +19679,113 @@
         "title": "SubjectKind",
         "type": "string"
       },
+      "SuggestionRequest": {
+        "additionalProperties": false,
+        "description": "``POST …/rating-suggestion``'s body: the version to review (``\"draft\"`` for the draft;\nomitted: the latest published version, else the draft).",
+        "examples": [
+          {
+            "version": "draft"
+          },
+          {
+            "version": 2
+          },
+          {}
+        ],
+        "properties": {
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "const": "draft",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "examples": [
+              "draft",
+              2
+            ],
+            "title": "Version"
+          }
+        },
+        "title": "SuggestionRequest",
+        "type": "object"
+      },
+      "SuggestionRow": {
+        "additionalProperties": false,
+        "description": "One rating's row. ``appropriate``: ``false`` when the row has a concern, ``null`` when\nits model call failed (``error``) and nothing deterministic was found, else ``true``.\n``truncated``: the entry was longer than the model's context, so it saw the private text\nfirst and not all of it. ``dropped_concerns``: concerns the model gave that named a policy,\nclause or element it was not given, which were dropped.",
+        "properties": {
+          "appropriate": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Appropriate"
+          },
+          "concerns": {
+            "items": {
+              "$ref": "#/components/schemas/Concern"
+            },
+            "title": "Concerns",
+            "type": "array"
+          },
+          "dropped_concerns": {
+            "default": 0,
+            "title": "Dropped Concerns",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "enum": [
+                  "model_unavailable",
+                  "deadline",
+                  "invalid_response"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "rating_id": {
+            "title": "Rating Id",
+            "type": "string"
+          },
+          "rating_name": {
+            "title": "Rating Name",
+            "type": "string"
+          },
+          "rating_version": {
+            "title": "Rating Version",
+            "type": "string"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "rating_id",
+          "rating_name",
+          "rating_version",
+          "appropriate",
+          "concerns"
+        ],
+        "title": "SuggestionRow",
+        "type": "object"
+      },
       "SummarySegmentModel": {
         "description": "A rolling-summary segment the prompt includes (#72).",
         "properties": {
@@ -19743,6 +20108,44 @@
           "message"
         ],
         "title": "TurnSummaryModel",
+        "type": "object"
+      },
+      "UnavailableCharacter": {
+        "additionalProperties": false,
+        "description": "A default or locked role's character the review could not read (missing, unpublished or\narchived), skipped.",
+        "properties": {
+          "entry": {
+            "title": "Entry",
+            "type": "string"
+          },
+          "reason": {
+            "const": "character_unavailable",
+            "default": "character_unavailable",
+            "title": "Reason",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "role",
+          "entry",
+          "version"
+        ],
+        "title": "UnavailableCharacter",
         "type": "object"
       },
       "UndeliveredSetting": {
@@ -25614,6 +26017,156 @@
         ]
       }
     },
+    "/catalog/characters/{character_id}/rating-suggestion": {
+      "post": {
+        "description": "Suggest content ratings for the character (FR-RATE-8): a table with **one row for every rating** in the deployment (`include_retired=true`: the retired ones too), in display order, never a single answer, since ratings need not form a line. Each row says whether the rating is `appropriate` and, for a no, every concern: exactly one of the `policy_id` or the rating-description `clause` the entry breaks, the `element` that breaks it (`kind` `field`, `seed`, `role`, `reveal`, `cast_character` or `media_caption`, and its `location`), and an `explanation`. The judgment is limited to content policy: a rating is appropriate unless the entry breaks its policies, and nothing is ever too mild for a rating. Deterministic policies are evaluated directly; the rest goes to one `rating_suggestion` model call per rating (its model is the purpose's own row, else `guardrail_check`'s, else `default`'s). A call that fails or runs past the 20 s deadline leaves its row's `error` set (`model_unavailable`, `deadline` or `invalid_response`) and `appropriate` null unless a deterministic concern was found; the answer is still 200. The body's `version` names a published version or `\"draft\"`; without it the latest published version is reviewed, else the draft (404 for an unknown character or version). `evaluated` records the rating versions used.\n\n**Advisory** (`advisory: true`): it never changes a rating or blocks a publish, and no guardrail, publish, story-creation or rating-change path reads it; output guardrails apply whatever it says. It writes nothing and takes no `Idempotency-Key`.\n\n**Author-facing:** its concerns quote private fields (seeds, roles, the director's material, a character's definition), like the `full` projection; the `card`/`full` distinction does not apply, and a `projection` parameter is refused (422).",
+        "operationId": "suggest_ratings_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Add a row for every retired rating too (default: live ones only).",
+            "in": "query",
+            "name": "include_retired",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Add a row for every retired rating too (default: live ones only).",
+              "title": "Include Retired",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SuggestionRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatingSuggestion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Suggest ratings for a character (advisory)",
+        "tags": [
+          "catalog"
+        ],
+        "x-epistrel-mutating": false
+      }
+    },
     "/catalog/characters/{character_id}/relations": {
       "get": {
         "description": "A catalog character's owner and its relations, by relation name, then principal. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
@@ -27824,6 +28377,156 @@
         "tags": [
           "catalog"
         ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/rating-suggestion": {
+      "post": {
+        "description": "Suggest content ratings for the scenario (FR-RATE-8): a table with **one row for every rating** in the deployment (`include_retired=true`: the retired ones too), in display order, never a single answer, since ratings need not form a line. Each row says whether the rating is `appropriate` and, for a no, every concern: exactly one of the `policy_id` or the rating-description `clause` the entry breaks, the `element` that breaks it (`kind` `field`, `seed`, `role`, `reveal`, `cast_character` or `media_caption`, and its `location`), and an `explanation`. The judgment is limited to content policy: a rating is appropriate unless the entry breaks its policies, and nothing is ever too mild for a rating. Deterministic policies are evaluated directly; the rest goes to one `rating_suggestion` model call per rating (its model is the purpose's own row, else `guardrail_check`'s, else `default`'s). A call that fails or runs past the 20 s deadline leaves its row's `error` set (`model_unavailable`, `deadline` or `invalid_response`) and `appropriate` null unless a deterministic concern was found; the answer is still 200. A scenario's review covers its own content and the definitions of its default and locked roles' characters (their pinned version, else the latest published one); a character that cannot be read is skipped and listed in `unavailable`. The body's `version` names a published version or `\"draft\"`; without it the latest published version is reviewed, else the draft (404 for an unknown scenario or version). `evaluated` records the rating versions used.\n\n**Advisory** (`advisory: true`): it never changes a rating or blocks a publish, and no guardrail, publish, story-creation or rating-change path reads it; output guardrails apply whatever it says. It writes nothing and takes no `Idempotency-Key`.\n\n**Author-facing:** its concerns quote private fields (seeds, roles, the director's material, a character's definition), like the `full` projection; the `card`/`full` distinction does not apply, and a `projection` parameter is refused (422).",
+        "operationId": "suggest_ratings_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Add a row for every retired rating too (default: live ones only).",
+            "in": "query",
+            "name": "include_retired",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Add a row for every retired rating too (default: live ones only).",
+              "title": "Include Retired",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SuggestionRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatingSuggestion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Suggest ratings for a scenario (advisory)",
+        "tags": [
+          "catalog"
+        ],
+        "x-epistrel-mutating": false
       }
     },
     "/catalog/scenarios/{scenario_id}/relations": {

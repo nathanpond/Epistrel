@@ -4975,3 +4975,120 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** The M3 section continues here, after #120's `## Ad-hoc` entry. Later stories append below.
   **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111 and #113 to #119 did. Cost if wrong: one heading.
   **Issue:** #120
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #121 delivered the `rating_suggestion` purpose and the advisory table. Some of what it built differs from, or adds to, what later plans name.
+  - **The surface.** The routes are `POST /catalog/{characters|scenarios}/{id}/rating-suggestion` (`suggest_ratings_character`, `suggest_ratings_scenario`), flagged `mutating=False`. Their body is `{version?: n | "draft"}`, and `include_retired` is a query parameter. The answer is `{advisory, entry, evaluated, rows, unavailable, model_calls, elapsed_ms}`. Each row is `{rating_id, rating_name, rating_version, appropriate, concerns, error, truncated, dropped_concerns}`. A concern's `element.location` is #111's location plus `media_id`.
+  - **The model configuration.** `rating_suggestion` is now a delivered, configurable purpose: `/admin/model-config` lists it. It resolves its model as its own row, then `guardrail_check`'s, then `default`'s. `sources` values gain `inherited`, which is additive. The registry's `Purpose.default_model_key` now names the parent row. The new `Purpose.story_scoped` (`false` for `rating_suggestion`) and `STORY_PURPOSES` decide what an engine profile routes, a story's runtime facts fingerprint and the model matrix measures. A profile that names `rating_suggestion` is 422.
+  - **The isolation.** The contract `rating-suggestion-is-advisory` lists `epistrel.core.policies` and `epistrel.orchestrator.policies` where the plan named `epistrel.core.guardrails`, which does not exist.
+  **Why:** #121's AC and pass-1 lines as corrected by its drift notes; the decision entries below give the details.
+  **Affects:**
+  - **M3 #128 (API surface).** Its route table, parity and replay tests should list the two suggestion routes as `mutating=False`. `info.version` and the tags are unchanged. The model-config `Source` enum has three values now.
+  - **M3 #126 (feedback).** Its planned contract `feedback-is-flag-only` names `epistrel.core.guardrails` too. Use `epistrel.core.policies` and `epistrel.orchestrator.policies`, as here.
+  - **M4+ purposes (for example `time_estimation` M6, `belief_adjudication` M5, `image_prompt` M8).** A purpose that defaults to another purpose's row sets `default_model_key` to that purpose. A purpose that runs outside stories sets `story_scoped=False`.
+  - **The Console (nathanpond/Epistrel-Console).** It needs an author-facing rating-suggestion view per catalog entry (the whole table, never one answer, with each concern's element and the row's `error`). Its model-config page should show `rating_suggestion` and the `inherited` source.
+  - **Next step:** `/n8-replan M3` for #126 and #128, or apply this in their drift checks.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision (drift):** #121's purpose is declared in the registry, not in a `purposes/` package. `RATING_SUGGESTION` is a `Purpose` in `orchestrator/models/registry.py` and is in `DELIVERED`; its `ReservedPurpose` is removed.
+  - **Shape:** `hot_path=False`, structured floor `parse_validate_retry`, template `rating_suggestion.j2`.
+  - **Inputs:** `RatingSuggestionInputs` (the rating's name, description and guidance, the model-assisted policies, the deterministic hits, subjects, and the elements). It uses two new `ContentCategory` values, `catalog_text` and `rating_description`, both described in `tools/model_guide.py`.
+  - **Output:** `RatingSuggestionVerdict {concerns: [{policy_id?, clause?, element: {kind, location}, explanation}]}`. It has no `appropriate` and no confidence.
+  - **Template:** states verbatim "Report only conflicts with the listed policies — never taste, audience fit or quality."
+  - **Model guide:** the "Returns" line now says "its free text is author-facing" for a schema with a string field, because the old fixed "no free-text field" would be false here. `docs/models.md` was regenerated.
+  **Why:** The drift note: no `orchestrator/purposes` package exists, and `_build` refuses a name that is both delivered and reserved. Cost if wrong: one module move.
+  **Issue:** #121
+- **Decision (drift):** The resolution chain own row → `guardrail_check` row → `default` reuses `Purpose.default_model_key`, which until now was always `default`. `rating_suggestion` sets it to `guardrail_check`.
+  - `config.parent_of`, `resolve(..., parent=)`, `ConfigCache.effective` and `describe` walk own → parent → `default` per field and per params key. `_build` refuses a parent that is not an earlier delivered purpose defaulting to `default`.
+  - `/admin/model-config`'s `sources` gains a third value, `inherited`, which is additive in the API.
+  **Why:** The drift note asks for a third source value. Reusing the registry field keeps one place that names the parent. Cost if wrong: the new source value would need renaming in the Console.
+  **Issue:** #121
+- **Decision:** The layout follows the pass-1 split.
+  - `core/ratings/suggest.py` holds the response models, `load_entry`, elements, `deterministic_concerns`, `row` and the INFO line (entry id, row count and latency only).
+  - `orchestrator/ratings/suggest.py` builds each rating's policy set with `creation_context(db, rating, cast)` (the entry's true ages, so the minors policy is active only with a minor), runs one call per rating with `asyncio.Semaphore(4)` and one shared `TurnBudget(deadline_s=20)`, and filters the answers.
+  - `Engine.suggest_ratings(ctx, entity_type, entry_id, request, *, include_retired)` fills `model_calls` and `elapsed_ms`.
+  - The two routes are `suggest_ratings_character` and `suggest_ratings_scenario`. They live in `api/routes/catalog_characters.py` and `catalog_scenarios.py` (the drift note: there is no `catalog.py`) and share `api/routes/rating_suggestion.py`. Both are flagged `mutating=False`.
+  **Why:** Pass-1 Discretion and the layering (core never imports the orchestrator). Cost if wrong: module moves only.
+  **Issue:** #121
+- **Decision:** The response shape as built, settling what the AC and pass 1 left open.
+  - **Top level:** `{advisory: true, entry {type, id, version}, evaluated [{rating_id, rating_version}], rows, unavailable, model_calls, elapsed_ms}`.
+  - **Row:** `{rating_id, rating_name, rating_version, appropriate, concerns, error, truncated, dropped_concerns}`. `error`, `truncated` and `dropped_concerns` are always present (null, false, 0) rather than omitted.
+  - **`element.location`:** #111's shape plus `media_id`, with `entry` and `version` always set. For the entry's own elements they are the entry's id and version label. For a `cast_character` they are the character's id and the version read.
+  - **Element kinds:**
+    - a scenario's planned reveal (truth and conditions) is `reveal`;
+    - other seeds are `seed` (with `seed_id`);
+    - every other role text (setup description, public label, relationships, name overrides, starting values) is `role`;
+    - an asset's caption, alt text and `generation_metadata.prompt`/`negative_prompt` are `media_caption` (`field` `caption`, `alt_text` or `generation_metadata.<key>`), and so is a scenario video's own caption (`field` `public_card.media.videos[i].caption`).
+  - **What the elements cover:**
+    - for a scenario, #111's `policy_texts` plus the public card, labels, role labels and the visual style;
+    - for a character, the public card, labels, aliases, every definition string except the disposition `setting` enums, and the identity prompts.
+  - **`unavailable`:** entries are `{role, entry, version, reason: character_unavailable}`.
+  - **Request:** the body is `{version?: n | "draft"}`, and `include_retired` is a query parameter.
+  **Why:** AC1 names `rows`/`evaluated`/`concerns`, and pass 1 names the echoes and the location object. Cost if wrong: response field changes before #128 freezes the surface.
+  **Issue:** #121
+- **Decision:** Model answers are filtered as follows. A model concern is kept only when it:
+  - names exactly one of `policy_id` and `clause`;
+  - names a `policy_id` among the rating's active text policies (deterministic or model-assisted), or a `clause` that appears, whitespace- and case-normalised, in the rating's description;
+  - names an element exactly as one that was sent.
+  Anything else is dropped and counted in `dropped_concerns`. A repeat of a deterministic concern is skipped but not counted.
+  - Element truncation is greedy within `CONTEXT_CHARS = 24000` characters, private elements first. Deterministic evaluation always covers every element.
+  - Failures map to `error` values:
+    - `ModelUnavailable` with reason `deadline` → `deadline`;
+    - reason `garbage`, a refusal, a `length` finish, or text that fails strict parsing → `invalid_response`;
+    - any other `ModelError` → `model_unavailable`.
+  - The call is a plain `ModelAccessLayer.call` with the declared response schema: no structured retry and no deterministic-first step (pass 1: "plain adapter call").
+  **Why:** Pass 1's "outside the enumerated sets are dropped". Checking clauses against the description is my reading of "description clause", because an invented clause would otherwise pass. Cost if wrong: a real clause the model paraphrased is dropped, and the row still lists the deterministic concerns.
+  **Issue:** #121
+- **Decision (drift):** The contract `rating-suggestion-is-advisory` uses the drift note's importer list, because the AC's `epistrel.core.guardrails` does not exist.
+  - **Source modules:** `epistrel.core.policies`, `epistrel.orchestrator.policies`, `epistrel.core.catalog`, `epistrel.core.genesis` and `epistrel.core.ratings.change`.
+  - **Forbidden modules:** `epistrel.core.ratings.suggest` and the driver `epistrel.orchestrator.ratings.suggest`, indirect imports included.
+  - To keep it holdable, the registry's output models (`Suggested*`) are separate from core's response models. The registry is imported by `orchestrator.policies`, so it must not import `core.ratings.suggest`. `core/ratings/__init__.py` does not re-export it.
+  - Tests in `tests/gates/test_rating_suggestion_contract.py` (unmarked): the contract as written, KEPT on the real tree, BROKEN on a fake tree's indirect import, and an AST scan showing the only importers are the Engine, the driver and the three route modules.
+  **Why:** The drift note's resolution. Pass 1's direction (core module as source) would prove layering, not advisory isolation. Cost if wrong: a list edit.
+  **Issue:** #121
+- **Decision (drift):** The tests are in `tests/conformance/test_c_21.py`, not `tests/integration/test_rating_suggestion.py`.
+  - Six slices, each on its own scratch database: `test_c_21__affair_table`, `__gentle_scenario`, `__deterministic_without_model`, `__characters`, `__retired_and_unavailable` and `__model_and_documentation`.
+  - Markers: `part("M3", "FR-RATE-8")`. The affair table and the model slice carry `part("M3", "FR-RATE-8; FR-MODEL-2")`, because §15 lists FR-MODEL-2 under C-21 (M3).
+  - The scratch database makes the ratings exactly the four seeded ones plus the custom non-linear `Workplace` (it inherits Explicit and adds an `affair` word list).
+  - The counts-unchanged check enumerates every base table of `public` and `catalog` from `information_schema`. `subject_references` does not exist yet, and `rating_check_jobs` is covered by the enumeration. Complement: a draft save moves the counts.
+  - Mutation-checked: accepting any policy or clause fails the affair slice. The source was restored from a scratch copy.
+  **Why:** The drift note's correction (§15 maps FR-RATE-8 only to C-21; one file per test ID). Cost if wrong: renames only.
+  **Issue:** #121
+- **Decision:** Pass-1 lines not applied as written.
+  - "An `@draft` pin uses the draft": `RoleCharacter.version` is an int or null at HEAD, and no `@draft` pin exists, so there is nothing to apply.
+  - "`appropriate` is derived": it is `null` only when the model failed and no deterministic concern exists.
+  - The pass-1 `?projection=` 422 is a hidden query parameter (not in the schema) refused at `query.projection` with `validation_error`.
+  **Why:** HEAD's shapes. Cost if wrong: small additions when a pin syntax lands.
+  **Issue:** #121
+- **Decision:** Wiring around the new operation.
+  - C-03 gains three `suggest_ratings` steps (a scenario's version 1, a character's draft, a missing version → 404) in group `suggestion`, asserted against `SUGGESTION_ANSWERS`.
+  - The ownership matrix gains `CALLS` for both routes, under the lesson from #118.
+  - `docs/openapi.json` was regenerated.
+  - `tests/test_registry.py`'s delivered-set assertion now includes `rating_suggestion`, whose default key is `guardrail_check`. This is a change the story requires, not a loosening.
+  **Why:** The per-story gate rules (C-03 parity, the ownership `CALLS` lesson, OpenAPI drift). Cost if wrong: none.
+  **Issue:** #121
+- **Decision:** `rating_suggestion` is delivered but not story-scoped. `Purpose.story_scoped` is a new field (default `true`, `false` here), and `registry.STORY_PURPOSES` holds the story-scoped purposes. Code that is about a story uses `STORY_PURPOSES`:
+  - `Engine.purposes`, which is what a profile may route. A profile naming `rating_suggestion` is 422 at `models.purposes.rating_suggestion` ("runs outside any story"), through the new `Purposes.deployment` set.
+  - A story's runtime facts: `facts.identities` and `TEMPLATE_HASHES`.
+  - The model matrix's columns and its `--purpose-model` check.
+  The capability assessment (C-07), the model guide, the prompts and `/admin/model-config` still cover every delivered purpose.
+  - Existing tests that compared with `DELIVERED` as the profile's purpose set now compare with `STORY_PURPOSES`: `test_engine_profiles` (the Lite preset's stored purposes, `GET /engine-profiles/schema`'s `purposes`, the Lite model) `test_profile_facts::test_model_ids_and_template_hashes`, and `test_two_stage::test_c_18__fingerprint` (the turn's recorded models).
+  - C-04 `[openai]` expects each purpose that defaults to `guardrail_check` at the gateway's base URL. It derives these from `DELIVERED` rather than naming the purpose, because of the lexicon gate.
+  These are behaviour changes the story causes, and no assertion is loosened.
+  **Why:** The alternative was to add `rating_suggestion` to the Lite preset. That needs a migration of the seeded preset, would change every story's profile fingerprint (so certifications go stale) whenever the suggestion's model is configured, and would let a profile "route" a purpose no story ever calls. Cost if wrong: a later story that wants per-profile routing of the suggestion flips the flag and migrates the preset.
+  **Issue:** #121
+- **Decision:** The table's `model_calls` lists the calls in rating order. Each rating's call records into its own `metrics.recording()` log inside its task, and `suggest` appends those logs to the Engine's log in row order. The metrics counters are still counted once, at the call.
+  **Why:** C-03's parity run failed because parallel calls finished in a different order on the two surfaces. The order of a table's call list should not depend on timing. Cost if wrong: none.
+  **Issue:** #121
+- **Decision:** `SuggestionRequest` carries model-level examples (`{"version": "draft"}`, `{"version": 2}`, `{}`), because C-01 requires an example on every request body. The database-free registry and configuration tests are in an unmarked new file, `tests/test_rating_suggestion_model.py`, whose docstrings name no requirement ID. A test that names an M3 term inside an M2 part fails the lexicon gate, and an unmarked test whose docstring names `FR-MODEL-2` counts as an M2 part.
+  **Why:** The C-01 and lexicon gates. Cost if wrong: none.
+  **Issue:** #121
+- **Decision:** #121's gate, run under M3's per-story rule (the orchestrator runs the full suite at the end of group C). The final run covered:
+  - `tests/conformance/`, the route guard, the response bases, `test_openapi_calls_the_message_finished_never_verified`, ownership, I-21 and `tests/gates/`;
+  - the modules touching the purpose registry, model configuration, profiles, the catalog and ratings: registry, model guide, profile facts, structured output, model matrix (unit and run), adapters, catalog units, policy evaluation, U-29, model-config API, config changes, two-stage, engine profiles, effective config, API key at rest, catalog characters, scenario catalog and validation, companion, ratings API, rating change, model unavailable, X-07 and P-08.
+  Result: 1139 passed and 1 failed in 723 s. The failure was `test_c_18__fingerprint`, a `DELIVERED` → `STORY_PURPOSES` fix (above). After the fix, `test_two_stage.py` plus `test_rating_suggestion_model.py` gave 14 passed, and `test_feedback.py` gave 19 passed. An earlier run of the same set found the C-03 order, C-01 example, C-04, lexicon, matrix and profile issues fixed above.
+  Static checks all pass: ruff check and format, mypy (543 files), lint-imports (4 kept), check-assignment, check-parts (222 parts), check-lexicon (0 violations), check-traceability (191 code parts), check-deps, `openapi --check` (regenerated) and `model_guide --check` (regenerated). No dependency changed, so check-licenses was not run.
+  **Why:** M3's per-story gate rule. Cost if wrong: a failure surfaces in group C's full run.
+  **Issue:** #121

@@ -39,6 +39,8 @@ class ContentCategory(StrEnum):
     POLICY_TEXT = "policy_text"
     SUBJECT_TRUE_AGE = "subject_true_age"
     CHECKED_TEXT = "checked_text"
+    CATALOG_TEXT = "catalog_text"
+    RATING_DESCRIPTION = "rating_description"
 
 
 class StructuredOutput(StrEnum):
@@ -179,6 +181,95 @@ class GuardrailVerdict(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class SuggestionElement(InputSchema):
+    """One part of a catalog entry a rating suggestion reviews (FR-RATE-8; #121): its kind, its
+    location as canonical JSON (what a concern must name to be kept), and its text."""
+
+    kind: Annotated[str, C.CATALOG_TEXT]
+    location: Annotated[str, C.CATALOG_TEXT]
+    text: Annotated[str, C.CATALOG_TEXT]
+
+
+class SuggestionPolicy(InputSchema):
+    """A model-assisted policy of the rating under review: its id (what a concern names), its
+    name and its prompt (the live threshold already in place)."""
+
+    policy_id: Annotated[str, C.POLICY_TEXT]
+    name: Annotated[str, C.POLICY_TEXT]
+    prompt: Annotated[str, C.POLICY_TEXT]
+
+
+class KnownHit(InputSchema):
+    """A deterministic policy hit already found, given as context so the model does not repeat
+    it: the policy's id and the element's kind and location."""
+
+    policy_id: Annotated[str, C.POLICY_TEXT]
+    kind: Annotated[str, C.CATALOG_TEXT]
+    location: Annotated[str, C.CATALOG_TEXT]
+
+
+class RatingSuggestionInputs(InputSchema):
+    """One rating's review of one catalog entry (FR-RATE-8; #121): the rating's name,
+    description and prompt guidance, its model-assisted policies, the deterministic hits found
+    already, the entry's characters as opaque labels with true ages (for an age-conditioned
+    policy, #55), and the entry's elements."""
+
+    rating_name: Annotated[str, C.RATING_DESCRIPTION]
+    rating_description: Annotated[str, C.RATING_DESCRIPTION] = ""
+    rating_guidance: Annotated[str, C.RATING_GUIDANCE] = ""
+    policies: list[SuggestionPolicy] = Field(default_factory=list)
+    deterministic_hits: list[KnownHit] = Field(default_factory=list)
+    subjects: list[Subject] = Field(default_factory=list)
+    elements: list[SuggestionElement] = Field(default_factory=list)
+
+
+ElementKind = Literal["field", "seed", "role", "reveal", "cast_character", "media_caption"]
+"""What part of a catalog entry a rating-suggestion concern names (FR-RATE-8)."""
+
+
+class SuggestedLocation(BaseModel):
+    """Where a concern points, as the element list gave it (#111's location: ``field``,
+    ``role``, ``seed_id``; a cast character's ``entry`` and ``version``; a medium's
+    ``media_id``)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    entry: str | None = None
+    version: int | Literal["draft"] | None = None
+    role: str | None = None
+    field: str | None = None
+    seed_id: str | None = None
+    media_id: str | None = None
+
+
+class SuggestedElement(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: ElementKind
+    location: SuggestedLocation
+
+
+class SuggestedConcern(BaseModel):
+    """One conflict a model reports: the policy (``policy_id``) or the rating-description clause
+    (``clause``, quoted) it breaks, the element that breaks it, and why."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    policy_id: str | None = None
+    clause: str | None = Field(default=None, max_length=2_000)
+    element: SuggestedElement
+    explanation: str = Field(min_length=1, max_length=2_000)
+
+
+class RatingSuggestionVerdict(BaseModel):
+    """The structured result of one ``rating_suggestion`` call: the concerns only (no verdict,
+    no confidence: a rating is appropriate exactly when no concern is kept)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    concerns: list[SuggestedConcern] = Field(default_factory=list, max_length=200)
+
+
 # -- purposes ---------------------------------------------------------------------------------
 
 
@@ -198,6 +289,10 @@ class Purpose:
     history_field: str | None = None
     """An input field whose ``TranscriptLine``s render as chat messages between the ``system``
     and ``user`` blocks, each with its own role, through the template's ``line`` macro."""
+    story_scoped: bool = True
+    """Whether the purpose runs inside a story (its turns, its background work), so an engine
+    profile may route it and a story's runtime facts name its model. ``rating_suggestion``
+    reviews catalog entries and is deployment-level (#121)."""
     status: PurposeStatus = field(default=PurposeStatus.DELIVERED, init=False)
 
 
@@ -253,6 +348,29 @@ LITE_SUMMARY = Purpose(
     never_receives=frozenset({C.POLICY_TEXT, C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT}),
 )
 
+RATING_SUGGESTION = Purpose(
+    name="rating_suggestion",
+    description=(
+        "Reviews one catalog entry against one rating's content policy: its description, "
+        "guidance and model-assisted policies (FR-RATE-8)."
+    ),
+    default_model_key=GUARDRAIL_CHECK.name,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=RatingSuggestionInputs,
+    template="rating_suggestion.j2",
+    hot_path=False,
+    never_receives=_EVERYTHING
+    - {
+        C.CATALOG_TEXT,
+        C.RATING_DESCRIPTION,
+        C.RATING_GUIDANCE,
+        C.POLICY_TEXT,
+        C.SUBJECT_TRUE_AGE,
+    },
+    response_schema=RatingSuggestionVerdict,
+    story_scoped=False,
+)
+
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("regeneration", "Regenerates a span under corrected constraints.", "M4"),
     ReservedPurpose("entailment", "The fuzzy residual of verify.", "M4"),
@@ -269,12 +387,6 @@ RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
         "Best-guess duration of a narrated skip.",
         "M6",
         defaults_to="extraction_backstop",
-    ),
-    ReservedPurpose(
-        "rating_suggestion",
-        "Per-rating content-policy review.",
-        "M3",
-        defaults_to="guardrail_check",
     ),
     ReservedPurpose("image_prompt", "Writes image prompts.", "M8", defaults_to="generation"),
     ReservedPurpose("image_check", "Vision checks of image outputs; no default.", "M8"),
@@ -374,12 +486,28 @@ def _build(purposes: tuple[Purpose, ...]) -> Mapping[str, Purpose]:
         validate_purpose(purpose)
         if purpose.name in built or purpose.name in reserved or purpose.name == DEFAULT_MODEL_KEY:
             raise RegistryError(f"{purpose.name}: declared twice")
+        parent = purpose.default_model_key
+        if parent != DEFAULT_MODEL_KEY and (
+            parent not in built or built[parent].default_model_key != DEFAULT_MODEL_KEY
+        ):
+            raise RegistryError(
+                f"{purpose.name}: defaults to {parent!r}, which is not a delivered purpose "
+                "declared before it that defaults to the default row"
+            )
         built[purpose.name] = purpose
     return types.MappingProxyType(built)
 
 
-DELIVERED: Mapping[str, Purpose] = _build((GENERATION, GUARDRAIL_CHECK, LITE_SUMMARY))
+DELIVERED: Mapping[str, Purpose] = _build(
+    (GENERATION, GUARDRAIL_CHECK, LITE_SUMMARY, RATING_SUGGESTION)
+)
 """Purposes a model call may use now, by name."""
+
+STORY_PURPOSES: Mapping[str, Purpose] = types.MappingProxyType(
+    {name: purpose for name, purpose in DELIVERED.items() if purpose.story_scoped}
+)
+"""The delivered purposes that run inside a story: what an engine profile routes, a story's
+runtime facts fingerprint and the model matrix measures (not ``rating_suggestion``, #121)."""
 
 RESERVED: Mapping[str, ReservedPurpose] = types.MappingProxyType(
     {r.name: r for r in RESERVED_PURPOSES}
@@ -395,23 +523,34 @@ def get_purpose(name: str) -> Purpose:
 __all__ = [
     "DEFAULT_MODEL_KEY",
     "DELIVERED",
+    "RATING_SUGGESTION",
     "RESERVED",
+    "STORY_PURPOSES",
     "SUBJECT_LABEL_PATTERN",
     "CapabilityFloor",
     "CharacterDefinition",
     "ContentCategory",
+    "ElementKind",
     "GenerationInputs",
     "GuardrailCheckInputs",
     "GuardrailVerdict",
     "InputSchema",
+    "KnownHit",
     "LiteSummaryInputs",
     "PlayerInput",
     "Purpose",
     "PurposeStatus",
+    "RatingSuggestionInputs",
+    "RatingSuggestionVerdict",
     "RegistryError",
     "ReservedPurpose",
     "StructuredOutput",
     "Subject",
+    "SuggestedConcern",
+    "SuggestedElement",
+    "SuggestedLocation",
+    "SuggestionElement",
+    "SuggestionPolicy",
     "TranscriptLine",
     "declared_paths",
     "field_categories",

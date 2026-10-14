@@ -32,7 +32,7 @@ from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import FINGERPRINT_PATTERN, RuntimeFacts
 from epistrel.core.profiles.validate import parse_settings
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
-from epistrel.orchestrator.models.registry import DELIVERED as DELIVERED_PURPOSES
+from epistrel.orchestrator.models.registry import STORY_PURPOSES
 from epistrel.testing.profiles import data_producing
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
@@ -190,7 +190,7 @@ async def test_c_18__fingerprint(scratch: Space) -> None:
         configured = (await ok(await client.get("/admin/model-config", headers=READ)))["purposes"]
         assert recorded["models"] == {
             purpose: {"id": configured[purpose]["model"], "reported_version": None}
-            for purpose in DELIVERED_PURPOSES
+            for purpose in STORY_PURPOSES
         }
         assert recorded["models"]["generation"]["id"] == "house-model"
 

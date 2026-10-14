@@ -5839,3 +5839,38 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** CodeQL's error-severity `py/clear-text-logging-sensitive-data` alert at `src/epistrel/cli.py:168` was not dismissed, and the code was not changed. `epistrel moderation-secret` prints the derived hook secret by design, as the README documents (#105). The alert is filed for the owner as #332 (`needs-owner-action`), with three options. CodeQL is not a required check, so the merge waits only on `gate`.
   **Why:** Dismissing a security alert, or changing a documented CLI's security posture, is the owner's call, not a low-cost guess. Cost if wrong: the alert stays open on the dashboard until the owner decides.
   **Issue:** #105, #332
+
+## /n8-exec M3 (verify fixes) — 2026-10-14
+
+Fix pass on the 13 bugs `/n8-verify M3` filed (#333–#345), on `milestone/m3-verify-fixes` from `687796a`.
+
+- **Decision:** The owner's M3 batched test gate (`.n8/memory/m3-batched-test-gate.md`) applies to this fix pass too. Each fix ran its own tests plus its area's tests and the static checks; the branch ran one full suite before the PR.
+  **Why:** This is still M3, and the batched gate was the owner's M3 rule. A per-bug full suite is about 23 minutes × 12. Cost if wrong: a cross-bug regression is found at the branch's full run instead of per fix, and then bisected.
+  **Issue:** #333–#345
+- **Decision:** #333 is fixed in `Engine.get_operation`: after reading the view, it runs the erasure gate on the operation's `story_id`, so the read is 503 `erasure_pending` on both surfaces. OpenAPI documents the 503 and `ledger_unavailable` for the route. The feedback review lists and export were checked and already exclude blocked stories (`feedback_reporting.unblocked`). Catalog content during a pending *catalog-scope* reapply is a separate design question (FR-ADMIN-7 speaks of stories), filed as #346 rather than fixed inline.
+  **Why:** `gate_story_methods` gates by signature, and the operations read has no `story_id`. Gating after the read keeps 404 and viewpoint answers unchanged. Cost if wrong: an operation of a blocked story answers 503 for its window instead of its stored result.
+  **Issue:** #333, #346
+- **Decision:** #334: `media_upload_sessions` is a registered subject writer. Its index rows are written at open and dropped when the sweep purges the closed row. Catalog-scope erasure redacts a naming session's texts and removes the subject from `depicted_subjects`, as for a media asset. An **open** session that depicted only the subject is aborted; its parts are left to the sweep's stray-part pass rather than aborted inline, because the erasure transaction has no blob store. The coverage test now enumerates every `public` and `catalog` table with a text or JSON column, and the 15 deployment tables it newly finds are exempt with reasons. Content ratings' guidance and engine-profile names are exempt as operator configuration, not subject content.
+  **Why:** A session is a not-yet-committed asset, so mirroring the asset rules is the least surprising behaviour. Cost if wrong: an aborted session's parts linger until the next sweep (at most one interval).
+  **Issue:** #334
+- **Decision:** Rule 1 (#334 follow-up, found by `test_every_content_write_path_is_guarded`): opening an upload session that depicts a subject a catalog-scope erasure removed is 409 `erased_subject_referenced` (`assert_not_erased`, as `POST /media`), and `epistrel.core.media.uploads` is a `CATALOG_REFERENCES` write path.
+  **Why:** Once sessions are a subject writer, FR-ADMIN-9's guard must cover them, or a completed session would create an asset of an erased subject. Cost if wrong: none expected; it is the same refusal media uploads already give.
+  **Issue:** #334
+- **Decision:** #335: `index.reindex_catalog_subject(kind, id)` rewrites one catalog subject's `mentioned` rows from every catalog record. It runs on persona create and rename and on every catalog character draft write (a publish copies the draft's terms). Each such write scans the catalog's records once.
+  **Why:** This is the catalog counterpart of `reindex_story`, and it keeps rebuild equal to incremental. The O(catalog) scan per draft write is acceptable at hobby scale. Cost if wrong: draft saves slow down on a very large catalog. The next step would be to reindex only when the name or aliases changed, comparing against the previous draft.
+  **Issue:** #335
+- **Decision:** #336: `StoryFromScenario` now derives from `TwoStageRequest` and keeps `ignore_warnings` as `StrictBool`, with the same alias.
+  **Why:** It gets the same camelCase spelling and disagreement check as the other two-stage mutations, without loosening the field's existing strictness. Cost if wrong: none.
+  **Issue:** #336
+- **Decision:** #341: the I-22 [M3] companion-rating clause was added as an I-22 test (`test_i_22__companion_rating`) rather than moved by amending docs/04 to I-20.
+  **Why:** That needs no docs change (docs are authoritative, and amending them is the owner's to approve) and traces the row as planned. Cost if wrong: the clause is tested twice (I-20 and I-22).
+  **Issue:** #341
+- **Decision:** #344: `test_erasure_resurrection`'s body became the helper `resurrection_clauses`, run by a new part-marked slice `test_s_erasure_boundary__in_flight` in the S-ERASURE-BOUNDARY file.
+  **Why:** A part marker on the old name would map to an ERASURE-RESURRECTION test ID that docs/04 lacks ("missing from §15"), and traceability counts a test ID per milestone in one file. Cost if wrong: none.
+  **Issue:** #344
+- **Decision:** #340 is blocked (`blocked`, `needs-owner-action`). docs/04 C-15 says the card is in "no story record", but the genesis snapshot and creation report keep it as provenance. The options (amend docs/04, or drop card fields from the snapshot) are on the issue.
+  **Why:** It is a choice between the authoritative docs and the design. Cost if wrong: a docs change or a snapshot-shape change made against the owner's intent.
+  **Issue:** #340
+- **Decision:** `current_milestone = 3` (the M3 Definition of Done). Every gate passes at M3: assignment, parts (250 parts), lexicon (0 violations, after moving two M3 parts' helper imports to module level, since a body-level `import` reads as the M7 term), traceability (160 rows at ≤ M3), deps and licenses.
+  **Why:** This is the DoD item, and it is the step that verify showed failing. Cost if wrong: none; the gate is green.
+  **Issue:** #341, #342, #343

@@ -107,6 +107,8 @@ from epistrel.core.catalog.service import (
 )
 from epistrel.core.catalog.validation import RUNNER
 from epistrel.core.enums import EntryStatus
+from epistrel.core.erasure.index import drop_prefixed, drop_references, index_records
+from epistrel.core.erasure.records import character_draft_record, character_version_record
 from epistrel.core.errors import CharacterNotFound, InvalidRequest
 from epistrel.core.media.assets import assert_referenceable, rating_version
 from epistrel.core.ports import Ports
@@ -481,6 +483,31 @@ class CharacterCatalog(CatalogService):
             if rating is None
             else await rating_version(conn, rating)
         }
+
+    async def recorded(
+        self,
+        conn: AsyncConnection,
+        entry_id: str,
+        document: Mapping[str, Any],
+        *,
+        version: int | None,
+    ) -> None:
+        """A draft write or a publish indexes the record it wrote (FR-ADMIN-6; #123): the
+        character defines its subject, and every text of its document is scanned (the whole
+        definition and its lists, the visual identity's prompts and opaque parameters)."""
+        await index_records(
+            conn,
+            [
+                character_draft_record(entry_id, document)
+                if version is None
+                else character_version_record(entry_id, version, document)
+            ],
+        )
+
+    async def forgotten(self, conn: AsyncConnection, entry_id: str) -> None:
+        """A delete drops the draft's and every version's index rows (#123)."""
+        await drop_references(conn, character_catalog.name, entry_id)
+        await drop_prefixed(conn, character_versions.name, f"{entry_id}@")
 
     async def project(self, conn: AsyncConnection, shown: Shown, projection: Projection) -> Any:
         return await _project(

@@ -74,6 +74,13 @@ KNOWN_FIELDS = frozenset(
         "purpose",
         "model",
         "content_logging",
+        # the subject-reference index's counts (#123)
+        "record_table",
+        "record_id",
+        "records",
+        "rows",
+        "missing",
+        "extra",
     }
 )
 """Fields whose values are identifiers, enums, numbers or developer-written messages."""

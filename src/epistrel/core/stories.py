@@ -57,6 +57,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -75,6 +76,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import audit, clock, ownership, pause
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
+from epistrel.core.erasure.index import drop_many, index_records, reindex_story
+from epistrel.core.erasure.records import character_record, idempotency_id, index_rows, story_record
 from epistrel.core.errors import (
     InvalidRequest,
     StoryArchived,
@@ -534,6 +537,10 @@ async def create_story_from(
                 **columns,
             )
         )
+        await index_records(
+            conn,
+            [story_record(SimpleNamespace(id=story_id, name=spec.name, scenario_snapshot=None))],
+        )
 
     async def insert_cast(conn: AsyncConnection) -> None:
         # One multi-row VALUES (not executemany) so ``age_recorded_at`` can be the commit's
@@ -557,6 +564,7 @@ async def create_story_from(
                 ]
             )
         )
+        await index_rows(conn, characters, characters.c.story_id == story_id, character_record)
 
     op = Operation(
         db,
@@ -837,6 +845,9 @@ async def add_story_character(
                 images=list(request.images),
             )
         )
+        # The new name may already be in the story's records: they are scanned again
+        # (FR-ADMIN-6; #123), the new row with them.
+        await reindex_story(conn, story_id)
 
     async with op:
         op.append(
@@ -1021,7 +1032,8 @@ async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, 
     # deployment-scoped key bound to one of its operations (the creation's), so no stored
     # result outlives the story.
     result = await conn.execute(
-        delete(idempotency_keys).where(
+        delete(idempotency_keys)
+        .where(
             or_(
                 and_(
                     idempotency_keys.c.scope == Scope.STORY.value,
@@ -1032,8 +1044,14 @@ async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, 
                 ),
             )
         )
+        .returning(idempotency_keys.c.scope, idempotency_keys.c.scope_id, idempotency_keys.c.key)
     )
-    removed[idempotency_keys.name] = result.rowcount
+    keys = result.all()
+    removed[idempotency_keys.name] = len(keys)
+    # A deployment-scoped result's rows are catalog-scoped: they do not go with the story's.
+    await drop_many(
+        conn, idempotency_keys.name, [idempotency_id(k.scope, k.scope_id, k.key) for k in keys]
+    )
     for table in STORY_TABLES:
         result = await conn.execute(delete(table).where(table.c.story_id == story_id))
         removed[table.name] = result.rowcount

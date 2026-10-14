@@ -49,8 +49,9 @@ its own). Concurrent writes of one rating serialise:
 **The subject index.** ``index_hook`` is called in the write's transaction after a write that
 changes the rating (the first and every changing re-rating) with the rating's ``record_id``
 (``<message_id>:<principal>``, the same across re-ratings), its story and ``{"text": ...}``;
-``drop_hook`` after a retraction. Both are no-ops until #123 rebinds them to the subject-reference
-index, so an erasure finds and redacts the subjects a rating's text names (FR-ADMIN-6, FR-FB-2).
+``drop_hook`` after a retraction. They write and drop the rating's rows in the subject-reference
+index (``core.erasure.index``; #123), and each history entry is indexed as it is appended, so an
+erasure finds and redacts the subjects a rating's text names (FR-ADMIN-6, FR-FB-2).
 
 **Never read by the story.** Feedback is an audit-category record (FR-STORE-25, FR-FB-2): no
 story view, retrieval index or prompt assembler reads it, and nothing in the engine changes
@@ -66,6 +67,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints
@@ -76,6 +78,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import clock
 from epistrel.core.config_changes import section
 from epistrel.core.enums import Provenance
+from epistrel.core.erasure.index import Record, drop_references, index_records, index_references
+from epistrel.core.erasure.records import rating_record_id
 from epistrel.core.errors import (
     FeedbackTagInUse,
     InvalidRequest,
@@ -237,30 +241,66 @@ IndexHook = Callable[[AsyncConnection, str, str, Mapping[str, str | None]], Awai
 DropHook = Callable[[AsyncConnection, str], Awaitable[None]]
 
 
-async def _index_nothing(
+async def _index_rating(
     conn: AsyncConnection, record_id: str, story_id: str, fields: Mapping[str, str | None]
 ) -> None:
-    """The default ``index_hook``: nothing is indexed until #123 wires the index in."""
+    """The default ``index_hook``: the rating's rows in the subject-reference index (#123)."""
+    await index_references(conn, message_feedback.name, record_id, story_id=story_id, fields=fields)
 
 
-async def _drop_nothing(conn: AsyncConnection, record_id: str) -> None:
-    """The default ``drop_hook``."""
+async def _drop_rating(conn: AsyncConnection, record_id: str) -> None:
+    """The default ``drop_hook``: the retracted rating's index rows go (#123)."""
+    await drop_references(conn, message_feedback.name, record_id)
 
 
-index_hook: IndexHook = _index_nothing
+index_hook: IndexHook = _index_rating
 """Called as ``index_hook(conn, record_id, story_id, {"text": text})`` in the transaction of
-every write that changes a rating (see the module docstring). #123 rebinds it to the
-subject-reference index."""
+every write that changes a rating (see the module docstring): the subject-reference index."""
 
-drop_hook: DropHook = _drop_nothing
+drop_hook: DropHook = _drop_rating
 """Called as ``drop_hook(conn, record_id)`` in a retraction's transaction (see the module
-docstring). #123 rebinds it."""
+docstring)."""
+
+
+def _history_record(row: Any) -> Record:
+    return Record(feedback_history.name, str(row.id), str(row.story_id), {"text": row.text})
+
+
+async def index_records_of(
+    conn: AsyncConnection, story_id: str | None, *, history: bool
+) -> list[Record]:
+    """The subject-index records of the story's ratings (or of its history entries, with
+    ``history``) for the index rebuild (``core.erasure.records``); none in the catalog
+    scope."""
+    if story_id is None:
+        return []
+    if history:
+        found = await conn.execute(
+            select(
+                feedback_history.c.id, feedback_history.c.story_id, feedback_history.c.text
+            ).where(feedback_history.c.story_id == story_id)
+        )
+        return [_history_record(r) for r in found]
+    found = await conn.execute(
+        select(
+            message_feedback.c.message_id, message_feedback.c.principal, message_feedback.c.text
+        ).where(message_feedback.c.story_id == story_id)
+    )
+    return [
+        Record(
+            message_feedback.name,
+            record_id(str(r.message_id), str(r.principal)),
+            story_id,
+            {"text": r.text},
+        )
+        for r in found
+    ]
 
 
 def record_id(message_id: str, principal: str) -> str:
     """A rating's id for the subject index: ``<message_id>:<principal>``, the same across
     re-ratings and after a retraction (the row's own id is not)."""
-    return f"{message_id}:{principal}"
+    return rating_record_id(message_id, principal)
 
 
 # -- the message and its context -------------------------------------------------------------------
@@ -472,9 +512,10 @@ def _check(
 
 
 async def _append_history(conn: AsyncConnection, row: Any, kind: HistoryKind, at: datetime) -> None:
+    history_id = new_ulid()
     await conn.execute(
         insert(feedback_history).values(
-            id=new_ulid(),
+            id=history_id,
             story_id=row.story_id,
             message_id=row.message_id,
             turn=row.turn,
@@ -487,6 +528,10 @@ async def _append_history(conn: AsyncConnection, row: Any, kind: HistoryKind, at
             rated_at=row.updated_at,
             replaced_at=at,
         )
+    )
+    await index_records(
+        conn,
+        [_history_record(SimpleNamespace(id=history_id, story_id=row.story_id, text=row.text))],
     )
 
 

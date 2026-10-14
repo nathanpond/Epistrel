@@ -71,6 +71,31 @@ HASH_MARK = "«hash»"
 _STORY_RANK = "(SELECT s.created_at FROM stories s WHERE s.id = t.story_id)"
 _CAST_RANK = "(SELECT c.ordinal FROM characters c WHERE c.id = t.character_id)"
 
+_RECORD_RANK = (
+    "(SELECT e.seq FROM events e WHERE e.story_id = t.story_id AND e.id::text = t.record_id) "
+    "NULLS FIRST, "
+    "(SELECT c.ordinal FROM characters c WHERE c.story_id = t.story_id "
+    "AND (c.id::text = t.record_id OR t.record_id = t.story_id::text || ':' || c.id::text)) "
+    "NULLS FIRST, "
+    "(SELECT o.started_at FROM operations o WHERE o.operation_id::text = t.record_id) NULLS FIRST, "
+    "(SELECT d.field_ref FROM genesis_deferred d WHERE d.id::text = t.record_id) NULLS FIRST, "
+    "(SELECT p.name FROM policies p WHERE p.id = t.record_id) NULLS FIRST, "
+    "(SELECT f.turn * 100 + f.variant FROM message_feedback f WHERE f.story_id = t.story_id "
+    "AND f.message_id::text || ':' || f.principal = t.record_id) NULLS FIRST, "
+    "(SELECT h.replaced_at FROM feedback_history h WHERE h.id::text = t.record_id) NULLS FIRST, "
+    "(SELECT x.at FROM config_changes x WHERE x.change_id::text = t.record_id) NULLS FIRST, "
+    "split_part(t.record_id, ':', 3)"
+)
+"""A subject-index row's record by its natural position: an event's seq, a character's (or its
+snapshot's) ordinal, an operation's start, a deferred item's field, a policy's name, a rating's
+turn, a history entry's or change's time, a stored result's key."""
+_SUBJECT_RANK = (
+    "(SELECT min(c.ordinal) FROM characters c WHERE c.story_id = t.story_id AND "
+    "(c.id::text = t.subject_id OR c.source_catalog_id::text = t.subject_id "
+    "OR c.persona_id::text = t.subject_id))"
+)
+"""A subject by the cast ordinal of the story character it is (or that links it)."""
+
 ORDER: dict[str, str] = {
     "deployment_state": "t.id",
     "stories": "t.created_at",
@@ -98,9 +123,10 @@ ORDER: dict[str, str] = {
     "client_events": f"{_STORY_RANK}, t.client_event_id",
     "audit_log": f"{_STORY_RANK} NULLS FIRST, t.at, t.kind",
     "config_changes": "t.at, t.config_revision, t.setting",
-    # #105 creates the index; #123 writes its story-scoped rows and may refine this order.
+    # The subject index (#105, #123): by record (its own natural position), field and subject.
     "subject_references": (
-        f"{_STORY_RANK}, t.record_table, t.field NULLS FIRST, t.ref_kind, t.subject_kind"
+        f"{_STORY_RANK}, t.record_table, {_RECORD_RANK}, t.field NULLS FIRST, t.ref_kind, "
+        f"t.subject_kind, {_SUBJECT_RANK}"
     ),
     # Message feedback (#112): a principal's rating of a message variant, and its history.
     "message_feedback": f"{_STORY_RANK}, t.turn, t.variant, t.principal",

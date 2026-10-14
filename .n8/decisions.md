@@ -5191,3 +5191,122 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** The M3 section continues here, after #122's `## Ad-hoc` entry. Later stories append below.
   **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
   **Issue:** #122
+- **Decision (drift):** No new migration. `subject_references` already exists in #123's full shape, from #105's migration 0022: the subject-kind, scope and ref-kind CHECKs, the story-scope CHECK, the unique key and both AC1 indexes. AC1's migration clause is satisfied by 0022, and `test_the_index_table_has_its_lookups` asserts the two indexes. `record_table` keeps #105's plain table names (`events`, `characters`, `character_versions` and so on), not the schema-qualified names pass 1 proposed.
+  **Why:** #105's entry settled this ("#123's full shape", plain names as its AC wrote them), and #108's rows already use plain names. Cost if wrong: one `UPDATE` to qualify the names, and #124 reads whichever names are stored.
+  **Issue:** #123, #105
+- **Decision:** A subject is defined as the pass-1 line says. A story character's terms are its name, its snapshot's `public_card.name` and `metadata.aliases`, its role's `name_overrides` (canonical and aliases, read from `stories.scenario_snapshot` by `role_id`) and `persona_snapshot.name`. A catalog character's terms are the names and aliases of its draft and of every version. A persona's term is its name. In a story record, a row that names a catalog-sourced or persona-made character also gets a `catalog_character` or `persona` row in the same field, in story scope. Defining rows (a `characters` row, a catalog draft or version, a persona) are `declared` with `field` null. An event's `character_id` column is `authored`. The matcher compiles one alternation per subject (NFC, casefold, whitespace runs, `(?<!\w)…(?!\w)`, at least 2 characters). It matches a possessive "'s" because `'` is not a word character.
+  **Why:** The pass-1 lines. `ReferenceKind`'s own docstring reads "authored by it", which fits the speaker column, not a defining row. Cost if wrong: a ref_kind relabel, which #124 does not branch on.
+  **Issue:** #123
+- **Decision (deviation):** Writers call `index_records(conn, [Record…])`, the batch form, or `records.index_rows(conn, table, where, build)` as often as `index_references(...)`. All three end in `index_records`, which reads the term set once per scope for the whole batch. There is no per-transaction cache: the terms are read again on every call.
+  **Why:** An operation commits several events, and genesis writes four tables, so one term read per call is the cache the plan asked for. A cache that lives across calls would go stale inside a transaction that defines a character (genesis, ad-hoc add). Cost if wrong: one read per call (the timing check below found no measurable cost).
+  **Issue:** #123
+- **Decision (deviation):** An unknown structured id does not raise. In a story record, a character id that is not one of the story's characters is skipped. Other declared ids are kept as given.
+  **Why:** Drafts may hold dangling ids. A scenario draft naming a deleted catalog character is a legal save, and #111 reports it as `character_missing`. Raising would turn those saves into 500s. A story record's ids are written by the engine itself, so skipping one that names no character of the story loses nothing. Cost if wrong: an `UnknownSubject` refusal added at the writers that should refuse.
+  **Issue:** #123, #111
+- **Decision (drift):** Where each record type is indexed:
+  - **Events:** in `Operation._write`, after the commit steps (so a character a step inserts is already a subject). This covers `commit` and `write_in`, so ingest, job outputs (#72's summary segments) and genesis go through it. The direct inserts call it explicitly: `config_changes._story_event`, `ratings.change`'s control event, and the fork. A fork re-indexes the whole story after its copy (`reindex_story`), its own genesis event included.
+  - **JSON columns** are walked whole (`records.text_fields`: every string leaf at its dotted path, except the values of id-like keys). That covers payloads, `turn_report`, `scenario_snapshot`, `character_snapshots.content`, `persona_snapshot`, `genesis_deferred.payload.value`, config `old`/`new`, policy rules, stored results, and catalog character documents (the whole definition, lists, visual identity prompts and opaque `adapter_params`, as #115 asked). `character_id` and the `*character_ids` lists declare their characters.
+  - **Exempt projections:** `lite_summary_segments`, `transcript_messages`, `story_texts` and `story_heads`, because their source events are indexed. `client_events`, `timers`, `turn_queue`, `jobs`, `story_profile_overrides`, `rating_check_jobs`, `guardrail_check_results` and `audit_log` are exempt with reasons in `EXEMPT_TABLES`.
+  - **Registered writers** beyond the plan's list: `policies` (in `orchestrator/policies/admin._insert`/`_replace`), `config_changes` (`record_config_change`) and `operations.turn_report` (genesis's creation report and the Lite pipeline's `write_report`).
+  **Why:** The drift notes' corrections. A whole-document walk indexes fields added later without a change here. Over-inclusion is the safe direction for erasure. Cost if wrong: extra rows for strings that name nobody (none are written unless a term matches).
+  **Issue:** #123, #45, #72, #119, #122
+- **Decision:** I applied the group B hand-offs:
+  - **#111:** a scenario version's record adds `report.warnings[i].text` and `.source`. These are `scenarios.version_record`'s fields, read back from the stored row in `recorded`, so #124's catalog pass finds a version whose report names the subject. The `publish_scenario` and `publish_character` stored results are covered by the whole-result walk.
+  - **#114/#115:** the catalog character's `recorded`/`forgotten` hooks now index the draft and each version (the whole document), and personas are indexed on create and update and dropped on delete. `characters.persona_snapshot` and `characters.deflection_style` are fields of the character row.
+  - **#116:** companion drafts and versions are scenario records, as before. The migration-0033 backfills get rows from `reindex_subjects --catalog --write` or their next save.
+  - **#119/#122:** genesis indexes `stories` (name and `scenario_snapshot`), the cast, `character_snapshots`, `genesis_deferred` and the operation's `turn_report.creation_report` in its transaction (`genesis.create._index_genesis`).
+  - **#112:** `feedback.index_hook`/`drop_hook` now index a rating as record `<message_id>:<principal>` and drop it on retraction. Each `feedback_history` entry is indexed as it is appended. The retention sweep drops the index rows of the ratings, history entries and audit events it deletes. `core/erasure/index.py` joins the feedback-table allow-list.
+  **Why:** The drift notes' hand-offs. Cost if wrong: a missed field reopens a residue gap that #124's scan would catch.
+  **Issue:** #123, #111, #114, #115, #116, #119, #122, #112
+- **Decision:** These delete paths drop index rows:
+  - a persona delete;
+  - a catalog character or scenario delete (draft plus `<id>@*` via `drop_prefixed`);
+  - story deletion's idempotency keys (via `RETURNING`; their story-scope rows already go with `STORY_TABLES`, and deployment-scoped ones are catalog-scope rows);
+  - `idempotency.purge_expired` and `purge_idempotency`'s settled and freed keys (`drop_results`);
+  - the retention sweep's chunks.
+  Truncated, dormant and discarded records keep their rows, as the plan says.
+  **Why:** The pass-1 line ("drop_references … called by every delete path"). Cost if wrong: stale rows naming a record that is gone, which #124 would skip.
+  **Issue:** #123, #61, #71, #103, #114
+- **Decision:** An ad-hoc character added to a running story re-indexes its whole story, inside the addition's commit step. A catalog-scope term change (a new or renamed catalog character or persona) re-indexes only the record that changed, as the plan states ("re-indexes that character's own story/entry"). Older catalog-scope records that already held the new name are found by `reindex_subjects --catalog`.
+  **Why:** A story is small and its terms change rarely. Re-scanning every catalog-scope record (deployment events included) on each catalog write would cost far more than the drift it fixes. Cost if wrong: the catalog rebuild reports those rows until `--write` is run. #124's erasure should run the catalog rebuild first, or scan, before relying on the index for a subject created after the records naming it.
+  **Issue:** #123, #124
+- **Decision (drift):** The rebuild tool is `python -m epistrel.tools.reindex_subjects [--story ID | --catalog] [--write]`. With no scope it rebuilds every story, then the catalog. It is report-only by default and prints JSON (per scope: `clean`, `missing`, `extra`, as identifier and field-path rows). It exits 1 on any difference, 78 on a configuration error and 69 when the database is unavailable. `--write` runs a story's rebuild as a `maintenance` operation under the story lock (no event, no revision bump) and the catalog's under the deployment lock. A report-only run reads in one repeatable-read transaction per scope. Equality ignores surrogate ids and order.
+  **Why:** The pass-1 line, with `projections.rebuild` as the model for the maintenance operation. Cost if wrong: flags only.
+  **Issue:** #123
+- **Decision (drift):** The test plan's `test_subject_index` is unmarked, in `tests/integration/test_subject_index.py`.
+  - It maps to no §15 test ID, and S-ERASURE-BOUNDARY is #124's. M2's #44/#52 left such tests unmarked, and their docstrings carry no FR IDs.
+  - The writer-coverage check runs first (`test_the_coverage_check_reports_a_writer_that_never_indexes`), against the fixture `tests/subject_writer_fixture.py`.
+  - The enumeration test lists the public tables that have a `story_id` and a text or JSON column, plus the `catalog` tables, plus the hand-listed `config_changes`, `idempotency_keys`, `personas` and `media_assets`.
+  - The runtime half is a context-var spy (`index.recording()`) around the played story: every table holding one of the story's records, or one of the test's catalog records, was indexed during the run. #127's plan names this spy.
+  - Name overrides are asserted through the role alias "Mum's".
+  - The planned "a message that does not mention her has no row for her" is asserted as written on an ingested narration. A stub reply that names nobody is still hers by `render_character_ids`, a declared reference, so the test asserts it has no mention row.
+  **Why:** The drift notes. In a Lite story every reply is voiced by its NPC, so "no row" holds only for a message nobody voices. Cost if wrong: renames only.
+  **Issue:** #123
+- **Decision (drift):** Invariant 3 is checked in two places:
+  - `test_indexing_logs_counts_only` captures DEBUG through Epistrel's JSON handler. The line has the table, record, counts and ids only, and neither the caption nor the name.
+  - C-08's canaries gain `character_name` (a third character in `canary_scenario.py`, named in Ada's definition and the stub's reply), so the telemetry run exercises indexing with a planted name.
+  The logger is `epistrel.core.erasure.index` (structlog `get_logger(__name__)`, not the plan's `epistrel.erasure.index`). `record_table`, `record_id`, `records`, `rows`, `missing` and `extra` join `content.KNOWN_FIELDS`. The tool prints an error's class name only.
+  **Why:** The drift note: #74 shipped no fixture. Cost if wrong: none.
+  **Issue:** #123, #74
+- **Decision:** I changed one existing test because the story changes the behaviour it pins. No assertion was loosened. `test_i_27__lite` enumerates every `story_id` table a creation grows, and `subject_references` now grows too. The test pops that table, asserts it grew, and keeps the exact expected set for every other table. `test_feedback`'s allow-list adds `core/erasure/index.py`, which its docstring had reserved for "#123's subject-index registry". The reader functions were named `read_ratings`/`read_rating_history` so that `records.py` does not name the tables.
+  **Why:** The index is not a record of the story. I-27's "no placeholder record" is about story records. Cost if wrong: none.
+  **Issue:** #123, #122, #112
+- **Decision:** #323 was left open (`needs-triage`). The catalog scenario records keep #108's curated `indexed_fields` list, plus the report's fields. The story-scope `scenario_snapshot` is walked whole, so a story created from such a scenario is indexed in full. Only the catalog-scope draft and version miss the strings stored as given.
+  **Why:** #323 is a filed issue awaiting triage. Walking the catalog documents whole would change #108's pinned row set. Cost if wrong: #124's catalog pass misses a name in those objects until #323 is fixed (one line: merge `text_fields(document)` into `draft_record`/`version_record`).
+  **Issue:** #123, #323, #108
+- **Decision:** A timing check found no measurable cost. The same three modules (I-18, C-03, the scenario catalog; 34 tests) took 14.99 s at HEAD in a scratch worktree and 15.25 s with indexing.
+  **Why:** The hook runs on every commit. Cost if wrong: the group C gate's metrics would show it.
+  **Issue:** #123
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #123 completed the subject-reference index. Shapes later stories build on:
+  - **Table and ids.** No migration: `subject_references` is #105's 0022 table. `record_table` holds plain table names. Record ids are a row's id, or composite ids joined by `:`:
+    - `character_snapshots` `<story_id>:<character_id>`;
+    - stored results `<scope>:<scope_id>:<key>`;
+    - ratings `<message_id>:<principal>`.
+    Catalog versions are `<id>@<n>`.
+  - **Kinds.** `field` is a dotted path (`payload.text`, `content.metadata.aliases[0]`, `report.warnings[0].source`); a defining row has `field` null. `ref_kind` is one of:
+    - `declared`: a structured id, or a defining row;
+    - `mentioned`: found in prose;
+    - `authored`: an event's speaking `character_id`.
+    A story record naming a catalog-sourced or persona-made character also has `catalog_character`/`persona` rows, in story scope.
+  - **API** (`core.erasure.index`):
+    - writing: `index_references`, `index_records([Record])` and `records.index_rows`;
+    - dropping: `drop_references`, `drop_many`, `drop_prefixed`;
+    - rebuilding: `reindex_story`, `rebuild`/`rebuild_scope` (a `Difference` of `RowKey`s), `records_of(conn, story_id | None)`;
+    - the matcher: `story_subjects`/`catalog_subjects` and `mentions`;
+    - coverage: the runtime spy `recording()`, and the registry `SUBJECT_WRITERS` (`table`, `writers` modules, `reader` `module:function`) with `EXEMPT_TABLES`.
+    `core.erasure.records` builds a `Record` from a row and walks JSON columns whole.
+  - **Tool.** `python -m epistrel.tools.reindex_subjects [--story ID | --catalog] [--write]` (JSON; exit 1 on differences).
+  - **Not done:**
+    - A catalog-scope term change (a new or renamed catalog character or persona) re-indexes only its own record. Older catalog records that hold the name are found by the catalog rebuild.
+    - An unknown structured id is skipped, not raised.
+    - #323 (scenario strings stored as given, catalog side) stays open.
+  **Why:** #123's AC and pass-1 lines, corrected by its drift notes and the group B hand-offs; the decision entries above give the details.
+  **Affects:**
+  - **M3 #124 (erasure).**
+    - Find records through `subject_references` with plain `record_table` names and the id formats above, not schema-qualified names.
+    - Run (or include) the catalog rebuild before a catalog-scope erasure of a subject created after records that name it.
+    - Purge the subject's rows with the drop helpers.
+    - A story's index is recomputed by `reindex_story` after the projection rebuild.
+  - **M3 #125 (boundary).** The subject index's in-scope tables are `SUBJECT_WRITERS`.
+  - **M3 #127 (resurrection guard).** Derive `CONTENT_WRITE_PATHS` from `SUBJECT_WRITERS` (writer modules per table). The runtime spy is `index.recording()`.
+  - **M4 #135 (memories), #149, and M5 #178.** New content tables register a `SubjectWriter` with a reader in `core.erasure.records` and call `index_records` in their write transaction. `test_every_content_table_has_a_writer` fails otherwise.
+  - **M7 #247 (prune).** Delete pruned events' index rows with `drop_many(conn, "events", ids)`.
+  - **M7 #249 (export).** `subject_references` is index data, not story content.
+  - **M8 #266 (images).** `story_images`, `image_candidates` and `image_jobs` register in `SUBJECT_WRITERS`. Media's own record is `records.media_record`.
+  - **Next step:** #124, #125 and #127 are later group C stories in this run: their drift check should apply this, or `/n8-replan M3` should run before them. `/n8-replan` for M4, M5, M7 and M8 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #123's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #123
+- **Decision (Rule 1):** The area run found three failures in #123's own code, all fixed:
+  - **The rebuild crashed on an invalid stored draft.** The shared database holds a scenario draft that no longer validates (an extra key planted by an earlier test), and the rebuild reads every draft. `scenarios.draft_record`/`version_record` now walk such a document whole and declare every role's `character.catalog_id`, so the rebuild never fails on one. A valid document keeps #108's field list.
+  - **S-DELETE counted removed index rows its "owned" set did not list.** These were the rows of the creation's deployment-scoped stored result, which story deletion now drops along with the key. `_rows_of` counts those rows as the story's.
+  - **The determinism comparator ordered the index rows ambiguously.** The order is now a natural key: an event's seq, a character's (or its snapshot's) ordinal, an operation's start, a deferred item's field, a policy's name, a rating's turn, a history entry's or change's time, a stored result's key, then the subject's cast ordinal. No ids are in the key.
+  `test_subject_index` passes in the shared database after the earlier tests' plantings. That is the regression check for the first fix. S-DELETE and the determinism test are the regression checks for the other two.
+  **Why:** Rule 1, inside the story's scope. Cost if wrong: none.
+  **Issue:** #123

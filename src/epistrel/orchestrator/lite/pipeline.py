@@ -82,6 +82,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -91,6 +92,8 @@ from epistrel.core import idempotency, pause, turn_gate
 from epistrel.core.concurrency import LiteReadSet, check_expected_revision, run_with_revalidation
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
+from epistrel.core.erasure.index import index_records
+from epistrel.core.erasure.records import operation_record
 from epistrel.core.errors import RevisionConflict, StoryArchived, TimelineChanged
 from epistrel.core.events import Operation
 from epistrel.core.events.types import GuardrailOutputRejected, RejectedViolation
@@ -639,6 +642,16 @@ async def _play(
             update(operations)
             .where(operations.c.operation_id == op.operation_id)
             .values(turn_report=report)
+        )
+        await index_records(
+            conn,
+            [
+                operation_record(
+                    SimpleNamespace(
+                        operation_id=op.operation_id, story_id=story_id, turn_report=report
+                    )
+                )
+            ],
         )
 
     async def fail_queue(conn: AsyncConnection) -> None:

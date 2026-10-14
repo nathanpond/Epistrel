@@ -84,6 +84,7 @@ from epistrel.core.enums import (
     Provenance,
     StoryStatus,
 )
+from epistrel.core.erasure.index import reindex_story
 from epistrel.core.errors import (
     DatabaseUnavailable,
     InvalidRequest,
@@ -380,6 +381,9 @@ async def _copy(
         variant_chain=request.variant_chain,
     )
     genesis = await _genesis(conn, fork_id, name, origin, principal)
+    # A fork copies no subject-reference rows: its copied records are indexed again, under
+    # their new ids (FR-ADMIN-6; #123).
+    await reindex_story(conn, fork_id)
     for statement in _TEARDOWN:
         await conn.exec_driver_sql(statement)
     call = idempotency.current_call()

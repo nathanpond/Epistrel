@@ -55,6 +55,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import audit, clock, control, ownership
 from epistrel.core.catalog.search import Position, decode_cursor, encode_cursor
 from epistrel.core.catalog.service import config_revision, merge_patch
+from epistrel.core.erasure.index import drop_references, index_records
+from epistrel.core.erasure.records import persona_record
 from epistrel.core.errors import InvalidRequest, PersonaNameTaken, PersonaNotFound
 from epistrel.core.ids import new_ulid
 from epistrel.core.ownership import Owner, RelationFilter
@@ -304,7 +306,9 @@ async def create(db: AsyncEngine, request: PersonaCreate, *, principal: str) -> 
                 )
             )
             await control.record_control_operation(conn, actor=principal)
-            persona = persona_of(await _row(conn, persona_id))
+            row = await _row(conn, persona_id)
+            await index_records(conn, [persona_record(row)])
+            persona = persona_of(row)
             revision = await config_revision(conn)
     return PersonaWrite(persona=persona, config_revision=revision)
 
@@ -361,7 +365,9 @@ async def update(
                 .values(**fields, updated_at=clock.now())
             )
             await control.record_control_operation(conn, actor=principal)
-            persona = persona_of(await _row(conn, persona_id))
+            updated = await _row(conn, persona_id)
+            await index_records(conn, [persona_record(updated)])
+            persona = persona_of(updated)
             revision = await config_revision(conn)
     except IntegrityError as exc:
         if not is_name_conflict(exc):
@@ -378,6 +384,7 @@ async def delete(db: AsyncEngine, persona_id: str, *, principal: str) -> Deleted
         await _row(conn, persona_id, lock=True)
         await ownership.drop_entity(conn, EntityType.PERSONA, persona_id, principal=principal)
         await conn.execute(sql_delete(personas).where(personas.c.id == persona_id))
+        await drop_references(conn, personas.name, persona_id)
         operation_id = await control.record_control_operation(conn, actor=principal)
         await audit.record(
             conn,

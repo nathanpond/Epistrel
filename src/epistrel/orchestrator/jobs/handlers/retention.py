@@ -50,6 +50,7 @@ Results hold counts only, never story text.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -73,7 +74,15 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import clock, offboarding
 from epistrel.core.config_changes import read_section
 from epistrel.core.enums import EventCategory, OperationStatus
-from epistrel.core.idempotency import KeyStatus, purge_expired, read_idempotency_settings
+from epistrel.core.erasure.index import drop_many
+from epistrel.core.erasure.records import rating_record_id
+from epistrel.core.idempotency import (
+    KEY_COLUMNS,
+    KeyStatus,
+    drop_results,
+    purge_expired,
+    read_idempotency_settings,
+)
 from epistrel.core.profiles import store as profiles
 from epistrel.core.ratings import change as rating_change
 from epistrel.core.settings_schema import STORY_LIFETIME, FeedbackSettings, RetentionSettings
@@ -178,6 +187,16 @@ async def _expire_feedback(db: AsyncEngine, moment: datetime) -> dict[str, int]:
     }
 
 
+async def _drop_index(conn: AsyncConnection, table: Any, gone: Sequence[Any]) -> None:
+    """The subject-index rows of the deleted records (FR-ADMIN-6; #123): an expired audit event,
+    rating or history entry. A rating's record id is ``<message_id>:<principal>``."""
+    if table is message_feedback:
+        ids = [rating_record_id(str(r.message_id), str(r.principal)) for r in gone]
+    else:
+        ids = [str(r.id) for r in gone]
+    await drop_many(conn, table.name, ids)
+
+
 async def _chunked(db: AsyncEngine, table: Any, ids_query: Any, *, audit: bool) -> int:
     deleted = 0
     for _ in range(MAX_CHUNKS):
@@ -186,7 +205,10 @@ async def _chunked(db: AsyncEngine, table: Any, ids_query: Any, *, audit: bool) 
                 await _allow_audit_expiry(conn)
             ids = list((await conn.scalars(ids_query)).all())
             if ids:
-                await conn.execute(delete(table).where(table.c.id.in_(ids)))
+                gone = (
+                    await conn.execute(delete(table).where(table.c.id.in_(ids)).returning(*table.c))
+                ).all()
+                await _drop_index(conn, table, gone)
         deleted += len(ids)
         if len(ids) < CHUNK:
             break
@@ -267,25 +289,35 @@ async def purge_idempotency(db: AsyncEngine, now: datetime | None = None) -> dic
         idempotency_keys.c.lease_until < lapsed_before,
     )
     async with db.begin() as conn:
-        settled = await conn.execute(
-            update(idempotency_keys)
-            .where(stale, op_status == OperationStatus.COMMITTED.value)
-            .values(status=KeyStatus.DONE.value, result=None, expires_at=moment)
-        )
-        freed = await conn.execute(
-            delete(idempotency_keys).where(
-                stale,
-                or_(
-                    idempotency_keys.c.operation_id.is_(None),
-                    op_status.is_(None),
-                    op_status.in_([OperationStatus.FAILED.value, OperationStatus.ABANDONED.value]),
-                ),
+        settled = (
+            await conn.execute(
+                update(idempotency_keys)
+                .where(stale, op_status == OperationStatus.COMMITTED.value)
+                .values(status=KeyStatus.DONE.value, result=None, expires_at=moment)
+                .returning(*KEY_COLUMNS)
             )
-        )
+        ).all()
+        freed = (
+            await conn.execute(
+                delete(idempotency_keys)
+                .where(
+                    stale,
+                    or_(
+                        idempotency_keys.c.operation_id.is_(None),
+                        op_status.is_(None),
+                        op_status.in_(
+                            [OperationStatus.FAILED.value, OperationStatus.ABANDONED.value]
+                        ),
+                    ),
+                )
+                .returning(*KEY_COLUMNS)
+            )
+        ).all()
+        await drop_results(conn, [*settled, *freed])
     return {
         "results_purged": purged,
-        "keys_settled": int(settled.rowcount or 0),
-        "keys_freed": int(freed.rowcount or 0),
+        "keys_settled": len(settled),
+        "keys_freed": len(freed),
     }
 
 

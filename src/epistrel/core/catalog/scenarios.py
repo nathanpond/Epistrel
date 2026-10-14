@@ -57,8 +57,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import and_, select
-from sqlalchemy import delete as sql_delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock, control
@@ -99,7 +98,14 @@ from epistrel.core.catalog.service import (
 from epistrel.core.catalog.validation import RUNNER, validate_entry
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import EntryStatus
-from epistrel.core.erasure.index import Declared, drop_references, index_references
+from epistrel.core.erasure.index import (
+    Declared,
+    Record,
+    drop_prefixed,
+    drop_references,
+    index_records,
+)
+from epistrel.core.erasure.records import text_fields
 from epistrel.core.errors import (
     CastLimitExceeded,
     CompanionSlotsFixed,
@@ -112,7 +118,7 @@ from epistrel.core.ports import Ports
 from epistrel.core.ratings import require_assignable
 from epistrel.core.tables import media_assets
 from epistrel.core.tables.catalog import character_catalog, scenario_catalog, scenario_versions
-from epistrel.core.tables.media import SubjectKind, subject_references
+from epistrel.core.tables.media import SubjectKind
 from epistrel.core.tables.ownership import EntityType
 from epistrel.testing import pauses
 
@@ -244,6 +250,60 @@ def declared_subjects(draft: ScenarioDraft) -> list[Declared]:
         for index, role in enumerate(draft.cast.roles)
         if role.character is not None
     ]
+
+
+def report_fields(report: Any) -> dict[str, str | None]:
+    """The texts of a published version's validation report (#111): each warning's ``text``
+    (it quotes the version) and ``source`` (it can name a ``default`` role's character)."""
+    warnings = report.get("warnings") if isinstance(report, Mapping) else None
+    fields: dict[str, str | None] = {}
+    for index, warning in enumerate(warnings if isinstance(warnings, list) else []):
+        if not isinstance(warning, Mapping):
+            continue
+        for key in ("text", "source"):
+            value = warning.get(key)
+            if isinstance(value, str):
+                fields[f"report.warnings[{index}].{key}"] = value
+    return fields
+
+
+def _indexed(document: Any) -> tuple[dict[str, str | None], tuple[Declared, ...]]:
+    """A stored document's indexed fields and declared subjects. A document that no longer
+    validates as a draft (stored before a later rule, or planted) is walked whole, every role's
+    ``character.catalog_id`` declared, so the rebuild never fails on it."""
+    try:
+        draft = ScenarioDraft.model_validate(document)
+    except ValidationError:
+        roles = _group(document, "cast").get("roles")
+        declared: list[Declared] = []
+        for index, role in enumerate(roles if isinstance(roles, list) else []):
+            found = role.get("character") if isinstance(role, Mapping) else None
+            catalog_id = found.get("catalog_id") if isinstance(found, Mapping) else None
+            if isinstance(catalog_id, str):
+                declared.append(
+                    (
+                        SubjectKind.CATALOG_CHARACTER,
+                        catalog_id,
+                        f"cast.roles[{index}].character.catalog_id",
+                    )
+                )
+        return text_fields(document), tuple(declared)
+    return indexed_fields(draft), tuple(declared_subjects(draft))
+
+
+def draft_record(entry_id: str, document: Any) -> Record:
+    """A scenario draft's subject-index record (see ``indexed_fields``)."""
+    fields, subjects = _indexed(document)
+    return Record(DRAFT_RECORD, entry_id, None, fields, subjects)
+
+
+def version_record(entry_id: str, version: int, document: Any, report: Any) -> Record:
+    """A published version's subject-index record (``<id>@<version>``): its content's fields and
+    its report's (``report_fields``)."""
+    fields, subjects = _indexed(document)
+    return Record(
+        VERSION_RECORD, f"{entry_id}@{version}", None, {**fields, **report_fields(report)}, subjects
+    )
 
 
 # -- results -----------------------------------------------------------------------------------
@@ -438,26 +498,20 @@ class ScenarioCatalog(CatalogService):
         *,
         version: int | None,
     ) -> None:
-        draft = ScenarioDraft.model_validate(document)
-        await index_references(
-            conn,
-            DRAFT_RECORD if version is None else VERSION_RECORD,
-            entry_id if version is None else f"{entry_id}@{version}",
-            story_id=None,
-            fields=indexed_fields(draft),
-            subjects=declared_subjects(draft),
+        if version is None:
+            await index_records(conn, [draft_record(entry_id, document)])
+            return
+        report = await conn.scalar(
+            select(scenario_versions.c.report).where(
+                scenario_versions.c.catalog_id == entry_id,
+                scenario_versions.c.version == version,
+            )
         )
+        await index_records(conn, [version_record(entry_id, version, document, report)])
 
     async def forgotten(self, conn: AsyncConnection, entry_id: str) -> None:
         await drop_references(conn, DRAFT_RECORD, entry_id)
-        await conn.execute(
-            sql_delete(subject_references).where(
-                and_(
-                    subject_references.c.record_table == VERSION_RECORD,
-                    subject_references.c.record_id.like(f"{entry_id}@%"),
-                )
-            )
-        )
+        await drop_prefixed(conn, VERSION_RECORD, f"{entry_id}@")
 
     async def publish_read(
         self,

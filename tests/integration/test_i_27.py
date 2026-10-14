@@ -203,6 +203,9 @@ async def test_i_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
         report = made["report"]
         added = lg.grown(before, await lg.story_table_counts(engine))
         expected = lg.expected_deferred(body)
+        # The subject-reference index (#123) records what genesis wrote; its rows are the
+        # index's, not a record of the story (tests/integration/test_subject_index.py).
+        assert added.pop("subject_references", 0) > 0
         assert added == {
             "stories": 1,
             "characters": 4,

@@ -55,6 +55,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from types import SimpleNamespace
 from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
@@ -74,6 +75,8 @@ from epistrel.core.enums import (
     Provenance,
     StoryStatus,
 )
+from epistrel.core.erasure.index import index_records
+from epistrel.core.erasure.records import event_record
 from epistrel.core.errors import (
     RatingCheckNotFound,
     RatingRetired,
@@ -204,19 +207,29 @@ async def control_event(
     last = await conn.scalar(
         select(func.coalesce(func.max(events.c.seq), 0)).where(events.c.story_id == story_id)
     )
+    event_id = new_ulid()
+    stored = payload.model_dump(mode="json")
     await conn.execute(
         insert(events).values(
-            id=new_ulid(),
+            id=event_id,
             story_id=story_id,
             seq=int(last or 0) + 1,
             operation_id=operation_id,
             category=EventCategory.CONTROL.value,
             principal=actor,
             type=type_,
-            payload=payload.model_dump(mode="json"),
+            payload=stored,
             provenance=Provenance.CONSUMER.value,
             authority=Authority.AUTHORITATIVE.value,
         )
+    )
+    await index_records(
+        conn,
+        [
+            event_record(
+                SimpleNamespace(id=event_id, story_id=story_id, character_id=None, payload=stored)
+            )
+        ],
     )
 
 

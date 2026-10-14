@@ -973,9 +973,10 @@ ALLOWED: dict[str, str] = {
     "core/stories.py": "story deletion enumerates them; forks leave them behind (#50, #67)",
     "orchestrator/jobs/handlers/retention.py": "the retention sweep expires them (#71's sweep)",
     "testing/determinism.py": "the determinism comparator orders every story table (#75)",
+    "core/erasure/index.py": "the subject-index registry lists the indexed tables (#123)",
 }
 """The modules that may name the feedback tables, and why. Later stories add theirs: #126's
-reporting and export, #124's erasure, #123's subject-index registry, #128's route table."""
+reporting and export, #124's erasure, #128's route table."""
 
 
 def naming(root: Path) -> set[str]:

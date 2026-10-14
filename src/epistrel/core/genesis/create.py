@@ -124,6 +124,14 @@ from epistrel.core.catalog.scenario_models import (
 from epistrel.core.catalog.validation import run as run_checks
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import EntryStatus, OperationKind, Provenance
+from epistrel.core.erasure.records import (
+    character_record,
+    deferred_record,
+    index_rows,
+    operation_record,
+    snapshot_record,
+    story_record,
+)
 from epistrel.core.errors import (
     CreationArchived,
     CreationCastLimit,
@@ -1430,6 +1438,21 @@ async def insert_deferred(
         await conn.execute(insert(genesis_deferred), rows)
 
 
+async def _index_genesis(conn: AsyncConnection, story_id: str, operation_id: str) -> None:
+    """The subject-reference rows of what genesis wrote beside its events (FR-ADMIN-6; #123):
+    the story row with its scenario snapshot, the cast, the catalog characters' snapshots, the
+    deferred items and the creation report."""
+    await index_rows(conn, stories, stories.c.id == story_id, story_record)
+    await index_rows(conn, characters, characters.c.story_id == story_id, character_record)
+    await index_rows(
+        conn, character_snapshots, character_snapshots.c.story_id == story_id, snapshot_record
+    )
+    await index_rows(
+        conn, genesis_deferred, genesis_deferred.c.story_id == story_id, deferred_record
+    )
+    await index_rows(conn, operations, operations.c.operation_id == operation_id, operation_record)
+
+
 async def genesis(
     db: AsyncEngine,
     found: Plan,
@@ -1524,6 +1547,7 @@ async def genesis(
                     }
                 )
             )
+            await _index_genesis(conn, story_id, op.operation_id)
             revision = 1
             if narration:
                 turn = Operation(

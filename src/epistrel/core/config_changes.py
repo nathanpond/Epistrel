@@ -29,6 +29,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from types import SimpleNamespace
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -37,6 +38,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import control
 from epistrel.core.enums import Authority, EventCategory, Provenance
+from epistrel.core.erasure.index import index_records
+from epistrel.core.erasure.records import config_change_record, event_record
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid, ulid_after
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
@@ -128,9 +131,10 @@ async def _story_event(
     last = await conn.scalar(
         select(func.coalesce(func.max(events.c.seq), 0)).where(events.c.story_id == story_id)
     )
+    event_id = new_ulid()
     await conn.execute(
         insert(events).values(
-            id=new_ulid(),
+            id=event_id,
             story_id=story_id,
             seq=int(last or 0) + 1,
             operation_id=operation_id,
@@ -141,6 +145,14 @@ async def _story_event(
             provenance=Provenance.CONSUMER.value,
             authority=Authority.AUTHORITATIVE.value,
         )
+    )
+    await index_records(
+        conn,
+        [
+            event_record(
+                SimpleNamespace(id=event_id, story_id=story_id, character_id=None, payload=payload)
+            )
+        ],
     )
 
 
@@ -183,6 +195,16 @@ async def record_config_change(
             **{"class": ConfigClass(change_class).value},
             actor=actor,
         )
+    )
+    await index_records(
+        conn,
+        [
+            config_change_record(
+                SimpleNamespace(
+                    change_id=change_id, scope=scope.value, scope_id=scope_id, old=old, new=new
+                )
+            )
+        ],
     )
     return change_id
 

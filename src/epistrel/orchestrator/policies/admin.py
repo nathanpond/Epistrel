@@ -40,6 +40,7 @@ from epistrel.core.config_changes import (
     record_config_change,
 )
 from epistrel.core.enums import StoryStatus
+from epistrel.core.erasure.records import index_rows, policy_record
 from epistrel.core.errors import (
     CannotRelax,
     ConfigConflict,
@@ -264,7 +265,13 @@ async def _insert(
             **content.values(),
         )
     )
+    await _index(conn, policy_id)
     return await _require(conn, policy_id)
+
+
+async def _index(conn: AsyncConnection, policy_id: str) -> None:
+    """The policy's subject-reference rows (FR-ADMIN-6; #123): its name, message and rule."""
+    await index_rows(conn, policies, policies.c.id == policy_id, policy_record)
 
 
 async def _replace(
@@ -280,6 +287,7 @@ async def _replace(
             **content.values(),
         )
     )
+    await _index(conn, current.id)
     return await _require(conn, current.id)
 
 

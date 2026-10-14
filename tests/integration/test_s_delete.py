@@ -149,8 +149,8 @@ async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
     ``information_schema`` (every table with a ``story_id`` column), not from ``STORY_TABLES``,
     so a table the deletion forgets shows up as rows left behind; plus the story-scoped rows of
     ``config_changes`` and ``idempotency_keys`` (#61), which name the story by ``scope_id``, the
-    key of the story's creation (#61), which names its operation, and the story's relations
-    (#104), which name it by ``entity_id``."""
+    key of the story's creation (#61), which names its operation, with those keys' subject-index
+    rows (#123), and the story's relations (#104), which name it by ``entity_id``."""
     owned: dict[str, set[str]] = {}
     async with engine.connect() as conn:
         scoped = await conn.scalars(
@@ -183,6 +183,20 @@ async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
                     "SELECT t::text FROM idempotency_keys t WHERE (scope = 'story' AND "
                     "scope_id = :s) OR operation_id IN "
                     "(SELECT operation_id FROM operations WHERE story_id = :s)"
+                ),
+                {"s": story_id},
+            )
+        )
+        # The index rows of those keys' stored results (#123): a deployment-scoped result's are
+        # catalog-scoped (no story_id), and they go with the key.
+        owned["subject_references"] |= set(
+            await conn.scalars(
+                text(
+                    "SELECT t::text FROM subject_references t "
+                    "WHERE t.record_table = 'idempotency_keys' AND t.record_id IN "
+                    "(SELECT k.scope || ':' || k.scope_id || ':' || k.key FROM idempotency_keys k "
+                    "WHERE (k.scope = 'story' AND k.scope_id = :s) OR k.operation_id IN "
+                    "(SELECT operation_id FROM operations WHERE story_id = :s))"
                 ),
                 {"s": story_id},
             )

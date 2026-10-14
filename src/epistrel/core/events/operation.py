@@ -48,7 +48,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import Any, Literal, Self
 
 from sqlalchemy import and_, delete, func, insert, select, text, update
@@ -84,6 +84,8 @@ from epistrel.core.enums import (
     Provenance,
     StoryStatus,
 )
+from epistrel.core.erasure.index import index_records
+from epistrel.core.erasure.records import event_record
 from epistrel.core.errors import (
     ChainBroken,
     InvalidRequest,
@@ -676,6 +678,23 @@ class Operation:
             )
         for step in self._commit_steps:
             await step(conn)
+        if self._staged:
+            # The subject-reference index (FR-ADMIN-6; #123), after the commit steps so a
+            # character a step adds is one of the story's subjects.
+            await index_records(
+                conn,
+                [
+                    event_record(
+                        SimpleNamespace(
+                            id=event_id,
+                            story_id=self.story_id,
+                            character_id=staged.character_id,
+                            payload=staged.payload.model_dump(mode="json"),
+                        )
+                    )
+                    for event_id, staged in zip(ids, self._staged, strict=True)
+                ],
+            )
         await self._finalise(conn, advance, current_revision)
         if self.story_id is not None and self.kind is OperationKind.TURN:
             # The guardrail set the turn variant passed (FR-RATE-7, #118), in force now.

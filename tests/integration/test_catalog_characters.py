@@ -670,13 +670,13 @@ async def test_every_write_is_idempotent_and_attributed(
         BASE, json=character("Someone Else"), headers=headers(f"create-{tag}")
     )
     assert (reused.status_code, _error(reused)["code"]) == (409, "idempotency_conflict")
-    assert (
-        await count(
-            engine,
-            "SELECT count(*) FROM catalog.character_catalog WHERE draft->>'name' = 'Someone Else'",
-        )
-        == 0
+    # The name lives under the draft's public_card since migration 0032 (#115); the complement
+    # (the saved entry found by the same path) shows the query can match.
+    by_name = (
+        "SELECT count(*) FROM catalog.character_catalog WHERE draft->'public_card'->>'name' = :n"
     )
+    assert await count(engine, by_name, n="Someone Else") == 0
+    assert await count(engine, f"{by_name} AND id = :c", n="Ilse", c=cid) == 1
 
 
 async def test_owner_is_the_requester_unless_named(

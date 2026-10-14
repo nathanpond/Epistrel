@@ -23,6 +23,10 @@ Every C-15 (M3) part lives in this file (traceability counts a test ID per miles
   and warnings without side effects (FR-API-6), in the report a publish answers. The checks
   themselves are I-20's (``tests/integration/test_i_20.py``) and U-26's; the details are in
   ``tests/integration/test_scenario_validation.py``.
+- #115's part, ``test_c_15__character_content``: a catalog character's public card, private
+  definition, metadata and visual identity (reference images with their audience), and the
+  publish checks over them (FR-CAT-2,4). The details are in
+  ``tests/integration/test_character_content.py``.
 """
 
 from __future__ import annotations

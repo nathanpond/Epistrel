@@ -146,6 +146,10 @@ AdapterParams = Annotated[
     AfterValidator(require_finite),  # a JSON dump would store a non-finite number as null
     AfterValidator(_params_bounded),
 ]
+FiniteParams = Annotated[dict[str, Any], AfterValidator(require_finite)]
+"""``adapter_params`` in a draft patch: finite numbers only, since the patch is dumped as JSON
+(a non-finite number would become ``null``, which the merge reads as "remove this key"); the
+bound is checked on the merged draft."""
 
 
 class CharacterModel(BaseModel):
@@ -862,7 +866,7 @@ class VisualIdentityPatch(CharacterModel):
     reference_images: list[ReferenceImage] | None = Field(
         default=None, max_length=REFERENCE_IMAGES_MAX
     )
-    adapter_params: dict[str, Any] | None = None
+    adapter_params: FiniteParams | None = None
     restricted_details_prompt: Prompt | None = None
 
 

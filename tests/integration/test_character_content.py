@@ -328,7 +328,8 @@ async def test_saves_refuse_what_breaks_a_rule(
 async def test_numbers_in_adapter_params_must_be_finite(client: httpx.AsyncClient) -> None:
     """``adapter_params`` is stored and read back as sent, nested values included; a number JSON
     cannot hold (``1e400``) is refused at the field rather than stored as ``null``. Complement:
-    finite numbers, nulls and nested objects round-trip."""
+    finite numbers, nulls and nested objects round-trip. A save is refused the same way, and leaves
+    the stored parameters as they were; complement: a finite save merges (a ``null`` removes)."""
     raw = '{"public_card": {"name": "Mara"}, "visual_identity": {"adapter_params": {"x": 1e400}}}'
     refused = await client.post(
         BASE, content=raw, headers={**WRITE, "Content-Type": "application/json"}
@@ -338,6 +339,30 @@ async def test_numbers_in_adapter_params_must_be_finite(client: httpx.AsyncClien
     params = {"lora": {"weight": 0.75, "tags": ["a", None]}, "cfg": 12.5, "steps": 30}
     created = await create(client, named("Mara", visual_identity={"adapter_params": params}))
     assert created["visual_identity"]["adapter_params"] == params
+    # A save is checked the same way: dumped as JSON, the infinity would be a ``null``, which
+    # the merge reads as "remove this key" (#115's verification, round 1).
+    cid = created["id"]
+    for number in ("1e400", "-1e400", "NaN", "Infinity"):
+        raw = (
+            '{"draft_revision": 1, "visual_identity": {"adapter_params": '
+            f'{{"cfg": {number}, "steps": 31}}}}}}'
+        )
+        patched = await client.patch(
+            f"{BASE}/{cid}", content=raw, headers={**WRITE, "Content-Type": "application/json"}
+        )
+        assert _refused(patched)[:2] == (422, "validation_error"), (number, patched.text)
+        assert _refused(patched)[2].startswith("body.visual_identity.adapter_params"), number
+    draft = (await read(client, cid, draft=True, projection="full")).json()
+    assert draft["draft_revision"] == 1
+    assert draft["visual_identity"]["adapter_params"] == params
+    merged = await save(
+        client, cid, 1, visual_identity={"adapter_params": {"cfg": None, "steps": 31}}
+    )
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["visual_identity"]["adapter_params"] == {
+        "lora": {"weight": 0.75, "tags": ["a", None]},
+        "steps": 31,
+    }
 
 
 # -- images and the rating, at save and at publish -------------------------------------------------

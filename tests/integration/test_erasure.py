@@ -5,8 +5,9 @@ Lite story that names her everywhere a name can sit, and checks zero residue wit
 own scan over every story-scoped table with a text column (``tests/erasure_support.py``), the
 transcript read and the rolling summary, while Bobby, named beside her, keeps every mention.
 The other tests cover the dry run's complement (an unknown subject answers zeros and writes
-nothing), the refusals, and an erasure with no model to regenerate the summary, on an archived
-story.
+nothing), the refusals, an erasure with no model to regenerate the summary, on an archived
+story, a persona erased in story scope (its player character and the beats it authored) and
+then in catalog scope, and a reply voiced for the subject alone, which is hers.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from epistrel.core.erasure.erase import ErasureRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ports import Ports
 from tests import erasure_support as e
+from tests import genesis_support as g
 from tests.auth_support import auth_settings
 from tests.event_support import rows, scalar
 from tests.respond_support import body, new_story, played, respond, respond_client
@@ -63,6 +65,27 @@ async def test_i_09(erasure_settings: Settings, engine: AsyncEngine) -> None:
         revision = await scalar(
             engine, "SELECT timeline_revision FROM stories WHERE id = :s", s=sid
         )
+
+        deferred = await rows(
+            engine, "SELECT id, payload FROM genesis_deferred WHERE story_id = :s", s=sid
+        )
+        hers = {
+            str(d.id) for d in deferred if set(d.payload["characters"].values()) == {story.mother}
+        }
+        assert hers  # her role's name_overrides item resolves to her alone
+        assert len(deferred) > len(hers)  # and others (the player's) are not hers
+        declared = await rows(
+            engine,
+            "SELECT record_id, field FROM subject_references WHERE story_id = :s "
+            "AND record_table = 'genesis_deferred' AND ref_kind = 'declared' "
+            "AND subject_kind = 'character' AND subject_id = :c",
+            s=sid,
+            c=story.mother,
+        )
+        # The index declares her by the role-to-character mapping genesis writes.
+        assert {(r.record_id, r.field) for r in declared} >= {
+            (d, "payload.characters.mother") for d in hers
+        }
 
         before = await dump(engine)
         preview = await e.erase(client, "character", story.mother, sid, dry_run=True)
@@ -186,6 +209,19 @@ async def test_i_09(erasure_settings: Settings, engine: AsyncEngine) -> None:
         assert {(m.record_table, m.record_id) for m in marked} >= {
             ("characters", story.mother),
             ("character_snapshots", f"{sid}:{story.mother}"),
+        } | {("genesis_deferred", d) for d in hers}
+        # Her deferred items are gone; every other keeps its role-to-character mapping.
+        kept = await rows(
+            engine, "SELECT id, payload FROM genesis_deferred WHERE story_id = :s", s=sid
+        )
+        assert {str(d.id) for d in kept} == {str(d.id) for d in deferred} - hers
+        for item in kept:
+            assert isinstance(item.payload["characters"], dict), item.payload
+            assert story.mother not in item.payload["characters"].values()
+        assert {str(d.id): d.payload["characters"] for d in kept} == {
+            str(d.id): {r: c for r, c in d.payload["characters"].items() if c != story.mother}
+            for d in deferred
+            if str(d.id) not in hers
         }
         assert len(markers) == len(marked)
         assert {m["text"] for m in markers} == {f"[erasure marker: {story.mother}, story]"}
@@ -280,6 +316,154 @@ async def test_erasure_without_a_model_redacts_the_summary(
     assert status == "archived"
     refused = await respond_or_none(erasure_settings, engine, story, wren)
     assert refused == 409
+
+
+PERSONA = "Marguerite Pell"
+PERSONA_TERMS = (PERSONA, "Marguerite")
+
+
+async def _beats(engine: AsyncEngine, story: str, kind: str) -> list[Any]:
+    return await rows(
+        engine,
+        "SELECT id, seq, type, operation_id, narrative_turn, beat, character_id, payload, "
+        "redacted_at FROM events WHERE story_id = :s AND type = :t ORDER BY seq",
+        s=story,
+        t=kind,
+    )
+
+
+def _place(beat: Any) -> tuple[Any, ...]:
+    return (str(beat.id), beat.seq, beat.type, str(beat.operation_id), beat.narrative_turn)
+
+
+async def test_erasure_of_a_persona(erasure_settings: Settings, engine: AsyncEngine) -> None:
+    """Persona ``Marguerite Pell`` plays two stories. Erased in story scope from the first: its
+    player character is deleted with a marker, and the beats it authored (its
+    ``player_input``, which never names it) become ``[erased]`` whole, keeping their type,
+    position and operation, shown ``redacted`` in the transcript, with no speaker; the replies
+    it did not author keep their text (complement), the residue is 0 and the other story is
+    untouched. Then in catalog scope: the persona is deleted (a ``persona_deleted`` audit row),
+    the residue is 0, and the other story is listed with its player character."""
+    owner = f"p-persona-{new_ulid()}"
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        saved = await client.post(
+            "/personas",
+            json={"name": PERSONA, "age": 31, "description": f"{PERSONA} counts every coin."},
+            headers=g.headers(principal=owner),
+        )
+        assert saved.status_code == 201, saved.text
+        persona = saved.json()["id"]
+        scenario = g.scenario_body(
+            g.role("mother", starting_location="kitchen"),
+            g.role("player", kind="player", label="The eldest"),
+        )
+        scenario_id, _ = await g.published_scenario(client, scenario)
+        stories: list[tuple[str, str]] = []
+        for _n in range(2):
+            made = await g.create_from(
+                client,
+                g.from_scenario(
+                    scenario_id,
+                    slots={"mother": g.ad_hoc_slot("Maud", 58)},
+                    players={"player": g.player(persona_id=persona)},
+                    ignore_warnings=True,
+                ),
+            )
+            player = next(c["id"] for c in made["characters"] if c["role_id"] == "player")
+            stories.append((made["story_id"], player))
+        (story, player), (other, other_player) = stories
+        lib.models.stub.script("generation", ["Maud pours the tea.", "Maud hums to herself."])
+        for say in ("Pass the jam, Maud.", "Is there more tea?"):
+            await played(client, story, body(player, say))
+        inputs = await _beats(engine, story, "player_input")
+        replies = await _beats(engine, story, "message_rendered")
+        assert [b.character_id for b in inputs] == [player, player]
+        other_before = await dump(engine)
+
+        done = await e.erase(client, "persona", persona, story)
+        assert done["residue"] == 0
+        assert await scalar(engine, "SELECT count(*) FROM characters WHERE id = :c", c=player) == 0
+        markers = await rows(
+            engine,
+            "SELECT payload->>'record_table' AS tab, payload->>'record_id' AS rec FROM events "
+            "WHERE story_id = :s AND type = 'erasure_marker'",
+            s=story,
+        )
+        assert ("characters", player) in {(m.tab, m.rec) for m in markers}
+        erased = await _beats(engine, story, "player_input")
+        assert [_place(b) for b in erased] == [_place(b) for b in inputs]
+        for beat in erased:
+            assert beat.payload["say"] == "[erased]", beat.payload
+            assert (beat.character_id, beat.redacted_at is not None) == (None, True)
+        # Complement: the replies it did not author are as they were.
+        assert [(_place(b), b.payload["text"], b.redacted_at) for b in replies] == [
+            (_place(b), b.payload["text"], b.redacted_at)
+            for b in await _beats(engine, story, "message_rendered")
+        ]
+        read = await _history(client, story, viewpoint="omniscient")
+        assert read.status_code == 200, read.text
+        said = [i for i in read.json()["items"] if i["kind"] == "player_input"]
+        assert [(i["text"], i["redacted"]) for i in said] == [("[erased]", True)] * 2
+        assert {"Maud pours the tea.", "Maud hums to herself."} <= {
+            i["text"] for i in read.json()["items"] if i["kind"] == "message_rendered"
+        }
+        assert sum((await e.residue(engine, story, PERSONA_TERMS)).values()) == 0
+        # The other story is untouched by a story-scope erasure.
+        after = await dump(engine)
+        for table in ("characters", "character_snapshots", "genesis_deferred"):
+            assert {r for r in after[table] if other in r} == {
+                r for r in other_before[table] if other in r
+            }, table
+        assert sum((await e.residue(engine, other, PERSONA_TERMS)).values()) > 0
+
+        catalog = await e.erase(client, "persona", persona)
+        assert catalog["residue"] == 0
+        assert catalog["records"]["personas"] == 1
+        assert await scalar(engine, "SELECT count(*) FROM personas WHERE id = :p", p=persona) == 0
+        assert (
+            await scalar(
+                engine,
+                "SELECT count(*) FROM audit_log WHERE kind = 'persona_deleted' "
+                "AND details::text LIKE :p",
+                p=f"%{persona}%",
+            )
+            == 1
+        )
+        assert catalog["referencing_stories"] == [
+            {"story_id": other, "character_ids": [other_player]}
+        ]
+
+
+async def test_a_reply_voiced_only_by_the_subject_is_erased_whole(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """A reply with no speaker of its own whose ``render_character_ids`` are the subject's
+    alone is hers: it becomes ``[erased]`` whole (type, position and operation kept, no render
+    ids left) though its text never names her. Complement: a reply voiced for another
+    character, beside it, keeps its text and is not marked redacted."""
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story, ids = await new_story(client, "Wren", "Linnea Strand", "Oskar")
+        linnea, wren, oskar = ids["Linnea Strand"], ids["Wren"], ids["Oskar"]
+        lib.models.stub.script("generation", ["Hush now, the kettle.", "A shrug, then a nod."])
+        await played(client, story, body(wren, "Evening.", render_character_ids=[linnea]))
+        await played(client, story, body(wren, "Evening again.", render_character_ids=[oskar]))
+        before = await _beats(engine, story, "message_rendered")
+        assert [b.payload["render_character_ids"] for b in before] == [[linnea], [oskar]]
+
+        done = await e.erase(client, "character", linnea, story)
+        assert done["residue"] == 0
+        hers, his = await _beats(engine, story, "message_rendered")
+        assert [_place(hers), _place(his)] == [_place(b) for b in before]
+        assert (hers.payload["text"], hers.payload["render_character_ids"]) == ("[erased]", [])
+        assert hers.redacted_at is not None
+        assert (his.payload, his.redacted_at) == (before[1].payload, None)
+        read = await _history(client, story, viewpoint="omniscient")
+        assert read.status_code == 200, read.text
+        shown = [i for i in read.json()["items"] if i["kind"] == "message_rendered"]
+        assert [(i["text"], i.get("redacted", False)) for i in shown][-2:] == [
+            ("[erased]", True),
+            ("A shrug, then a nod.", False),
+        ]
 
 
 async def respond_or_none(settings: Settings, engine: AsyncEngine, story: str, actor: str) -> int:

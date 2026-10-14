@@ -171,12 +171,12 @@ def story_record(row: Any) -> Record:
 
 def deferred_record(row: Any) -> Record:
     """A deferred genesis item (#122): the scenario's original JSON and the characters it
-    resolved (``payload.characters``)."""
+    resolved (``payload.characters``: role id to character id, as genesis writes it)."""
     payload = row.payload if isinstance(row.payload, Mapping) else {}
     named = payload.get("characters")
     subjects: list[Declared] = [
-        (SubjectKind.CHARACTER, item, f"payload.characters[{index}]")
-        for index, item in enumerate(named if isinstance(named, list) else [])
+        (SubjectKind.CHARACTER, item, f"payload.characters.{role}")
+        for role, item in (named.items() if isinstance(named, Mapping) else ())
         if isinstance(item, str)
     ]
     subjects.extend(character_ids(payload.get("value"), "payload.value"))

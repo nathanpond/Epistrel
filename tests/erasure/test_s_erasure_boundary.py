@@ -9,6 +9,7 @@ in every version of herself, a scenario's seed and role, media of her own and sh
 another character, and a story created from the scenario. Afterwards the catalog, media and
 persona tables name her nowhere (the test's own scan); her versions, draft and companion are
 gone; the scenario is redacted; media are purged or rewritten under ``erasure_shared_media``
+(bytes another live asset shares are kept)
 (``purge`` for her, ``retire`` for a second character); and the story is untouched until erased
 separately.
 """
@@ -157,10 +158,11 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
     the response's residue is 0); the ledger holds identifiers only; the story created from the
     scenario is listed with her character and its rows are unchanged (complement: they still
     name her, until it is erased separately). Media: her caption-only asset nobody else uses is
-    purged with its bytes; the asset she shares with Corvin stays, without her in its subjects
-    or caption; her primary image, which the story's snapshot references, is purged under
-    ``purge`` (its content 404, its bytes gone, nothing left for the sweep); Corvin's, under
-    ``retire``, stays retired with its bytes still served."""
+    purged with its bytes; her asset whose bytes a bystander's asset shares is purged while the
+    bytes stay and serve the bystander's; the asset she shares with Corvin stays, without her
+    in its subjects or caption; her primary image, which the story's snapshot references, is
+    purged under ``purge`` (its content 404, its bytes gone, nothing left for the sweep);
+    Corvin's, under ``retire``, stays retired with its bytes still served."""
     async with respond_client(erasure_settings, engine) as (client, lib):
         portrait = await media.uploaded(client, caption=f"{NAME} at the lamp room door.")
         second_portrait = await media.uploaded(client, caption=f"{SECOND} by the boats.")
@@ -177,6 +179,12 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
         alone = await media.uploaded(
             client, depicted_subjects=[{"kind": "catalog_character", "id": thessaly}]
         )
+        same_bytes = media.png()
+        twin = await media.uploaded(
+            client, same_bytes, depicted_subjects=[{"kind": "catalog_character", "id": thessaly}]
+        )
+        bystander = await media.uploaded(client, same_bytes, caption="The quay at low tide.")
+        assert twin["checksum"] == bystander["checksum"]
         scenario = g.scenario_body(
             g.role(
                 "keeper",
@@ -206,7 +214,7 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
         assert done["records"]["catalog.character_catalog"] == 1
         assert done["records"]["catalog.character_versions"] == 2
         assert done["records"]["catalog.scenario_catalog"] >= 2  # her companion, the scenario
-        assert done["media"] == 3  # her portrait, the asset she shares, her own
+        assert done["media"] == 4  # her portrait, the asset she shares, her own two
         assert done["residue"] == 0
         assert done["referencing_stories"] == [
             {"story_id": story, "character_ids": [cast["keeper"]]}
@@ -259,6 +267,14 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
             assert await content(client, asset["id"]) == 404
             assert not media.blob_path(MEDIA_ROOT, asset["checksum"]).exists()
             assert await collect_blob(engine, lib.media, asset["checksum"]) is False
+        # Her twin is purged, but another live asset shares its bytes: they stay and serve.
+        assert (
+            await scalar(engine, "SELECT count(*) FROM media_assets WHERE id = :i", i=twin["id"])
+            == 0
+        )
+        assert await content(client, twin["id"]) == 404
+        assert await content(client, bystander["id"]) == 200
+        assert media.blob_path(MEDIA_ROOT, bystander["checksum"]).exists()
         # The ledger: identifiers only.
         (entry,) = await rows(
             engine,

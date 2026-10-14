@@ -38,8 +38,10 @@ complete erasure:
    and the ``genesis_deferred`` items that belong only to them are deleted, each leaving one
    position-less ``erasure_marker`` event; every string of every record that names the subject
    is redacted in place (``Redactor``: each matched span becomes ``[erased]``), and a beat the
-   subject authored becomes ``[erased]`` whole, keeping its type, position and operation, with
-   ``redacted_at``; their ids leave ``render_character_ids`` and the events' ``character_id``;
+   subject authored (its ``character_id`` is theirs, or it is a reply whose
+   ``render_character_ids`` are theirs alone) becomes ``[erased]`` whole, keeping its type,
+   position and operation, with ``redacted_at``; their ids leave ``render_character_ids`` and
+   the events' ``character_id``;
    the story's default viewpoint is cleared when it names them; stored idempotency results that
    name them are purged (``result`` null: a replay answers the reference); the projections are
    refolded and the story's index rebuilt (the subject's rows go last); the residue is scanned;
@@ -171,6 +173,7 @@ BEATS = frozenset({"player_input", "message_rendered", "think", "latent"})
 BEAT_TEXTS = ("text", "say", "do")
 SUMMARY_EVENT = "lite_summary_segment"
 RENDER_IDS = "render_character_ids"
+RENDERED = "message_rendered"
 CHARACTER_POLICY = "character"
 STORY_KEY_SCOPE = "story"
 DEPLOYMENT_KEY_SCOPE = "deployment"
@@ -400,6 +403,15 @@ def _drop_render_ids(document: Any, removed: set[str]) -> Any:
     return document
 
 
+def _voiced_only_by(row: Any, payload: Mapping[str, Any], removed: set[str]) -> bool:
+    """A reply with no speaker of its own, rendered for the subject alone: she authored it
+    (``render_character_ids`` are the characters it voices)."""
+    if row.type != RENDERED or row.character_id is not None or not removed:
+        return False
+    voiced = payload.get(RENDER_IDS)
+    return isinstance(voiced, list) and bool(voiced) and set(voiced) <= removed
+
+
 def _erase_beat(payload: Mapping[str, Any]) -> tuple[dict[str, Any], int]:
     """A beat the subject authored: each of its texts becomes ``[erased]`` whole."""
     erased = dict(payload)
@@ -566,7 +578,7 @@ async def _redact_events(
             payload = dict(row.payload or {})
             new, changed = redactor.document(payload)
             authored = row.character_id is not None and str(row.character_id) in removed
-            if authored and row.type in BEATS:
+            if (authored or _voiced_only_by(row, payload, removed)) and row.type in BEATS:
                 new, whole = _erase_beat(new)
                 changed = max(changed, whole)
             new = _drop_render_ids(new, removed)
@@ -833,8 +845,10 @@ async def _redact_deferred(
     )
     for row in rows:
         payload = dict(row.payload or {})
-        named = [c for c in payload.get("characters") or () if isinstance(c, str)]
-        if named and set(named) <= removed:
+        held = payload.get("characters")
+        resolved = dict(held) if isinstance(held, Mapping) else {}
+        named = {c for c in resolved.values() if isinstance(c, str)}
+        if named and named <= removed:
             await _delete(
                 conn,
                 run,
@@ -845,9 +859,9 @@ async def _redact_deferred(
             )
             continue
         value, changed = redactor.document(payload.get("value"))
-        new = {**payload, "value": value, "characters": [c for c in named if c not in removed]}
-        if "characters" not in payload:
-            new.pop("characters")
+        new = {**payload, "value": value}
+        if isinstance(held, Mapping):
+            new["characters"] = {r: c for r, c in resolved.items() if c not in removed}
         if new == payload:
             continue
         tally.record(genesis_deferred.name, changed)

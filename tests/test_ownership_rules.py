@@ -39,6 +39,7 @@ READERS = frozenset(
         "core/tables/ownership.py",  # the table's declaration
         "core/tables/__init__.py",  # registers it with the metadata
         "core/principals.py",  # principal lookup (#117)
+        "core/erasure/index.py",  # names it among the tables the subject index exempts (#334)
     }
 )
 """The only source files that may name ``entity_relations``. #110 adds its catalog list query

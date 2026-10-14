@@ -35,6 +35,12 @@ The lines form a hash chain. `ledger_hash` is the SHA-256 of the line's canonica
 
 The file is append-only and small: one line per erasure, so it needs no rotation at hobby scale.
 
+### The resurrection guard
+
+The keyed hashes also stop an erasure being undone by work that was already in flight (FR-ADMIN-9). Every write to an erased story is checked before it commits: a turn reply, a background job's result, a model output, and a client's write whose context predates the erasure. A write that names the erased subject, or references one of the deleted characters, is refused with 409 `erased_subject_referenced` and nothing is written. Text a client writes after the erasure is not refused, even if it types the name. A fork of the story copies its ledger rows, so the fork is guarded too.
+
+**Rotating `EPISTREL_CONFIG_KEY` disables the guard for earlier erasures.** Their hashes were made with the old key, and the names are gone by design, so they cannot be hashed again. The erasures themselves stand: nothing is un-erased. Only text written afterwards that names the subject is no longer refused.
+
 ## Verify
 
 `epistrel backup verify <dump>` checks a dump without restoring it. It reads the dump's `erasure_ledger` and `events` data through `pg_restore` (`--pg-restore` names the executable) and reports:

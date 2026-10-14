@@ -105,6 +105,7 @@ if TYPE_CHECKING:
         EntityNotFound,
         EntryArchived,
         EpistrelError,
+        ErasedSubjectReferenced,
         FeedbackExportDisabled,
         FeedbackExportNotFound,
         FeedbackTagInUse,
@@ -458,6 +459,7 @@ _EXPORTS: dict[str, str] = {
     "Promotion": "epistrel.core.catalog.promote",
     # errors (REST answers each as ``{"error": {code, message, details}}``)
     "EpistrelError": "epistrel.core.errors",
+    "ErasedSubjectReferenced": "epistrel.core.errors",
     "BudgetBelowSafetyMinimum": "epistrel.core.errors",
     "CannotRelax": "epistrel.core.errors",
     "CastLimitExceeded": "epistrel.core.errors",
@@ -601,6 +603,7 @@ __all__ = [
     "EntryArchived",
     "EntryLocation",
     "EpistrelError",
+    "ErasedSubjectReferenced",
     "Feedback",
     "FeedbackAggregates",
     "FeedbackContext",

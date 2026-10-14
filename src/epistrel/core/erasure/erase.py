@@ -44,7 +44,10 @@ complete erasure:
    the events' ``character_id``;
    the story's default viewpoint is cleared when it names them; stored idempotency results that
    name them are purged (``result`` null: a replay answers the reference); the projections are
-   refolded and the story's index rebuilt (the subject's rows go last); the residue is scanned;
+   refolded and the story's index rebuilt (the subject's rows go last); nothing in flight can
+   write them back (#127, ``_stop_in_flight``: queued turns fail ``timeline_changed``, the turn
+   slot's lease is cleared, and the redacted events' operations have their ``membership_tx``
+   moved so a background job that read them drops its output); the residue is scanned;
    the ``erasure_ledger`` row and a deployment ``audit_log`` row are written. Stages
    ``redacted`` and ``ledger_written`` go to the operation's ``stage_log``.
 2. one ``consolidation`` operation regenerates the level-0 rolling-summary segments whose text
@@ -97,12 +100,22 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from sqlalchemy import Text, and_, cast, delete, func, insert, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import audit, clock, control, feedback, idempotency, ownership, projections
+from epistrel.core import (
+    audit,
+    clock,
+    control,
+    feedback,
+    idempotency,
+    ownership,
+    projections,
+    turn_gate,
+)
 from epistrel.core.config_changes import read_section
 from epistrel.core.enums import (
     Authority,
     EventCategory,
     OperationKind,
+    OperationStatus,
     Provenance,
 )
 from epistrel.core.erasure import index
@@ -126,7 +139,12 @@ from epistrel.core.erasure.records import (
 )
 from epistrel.core.erasure.redact import ERASED, Redactor, regenerate_summaries
 from epistrel.core.erasure.verify import Residue, verify
-from epistrel.core.errors import ErasureKeyMissing, InvalidErasureScope, SubjectNotFound
+from epistrel.core.errors import (
+    ErasureKeyMissing,
+    InvalidErasureScope,
+    SubjectNotFound,
+    TimelineChanged,
+)
 from epistrel.core.events.registry import validate
 from epistrel.core.ids import Ulid, new_ulid
 from epistrel.core.ports import SummaryCompressor
@@ -1781,6 +1799,7 @@ async def _erase_story(
         async def step(conn: AsyncConnection) -> None:
             tally = await _story_pass(conn, run)
             await _insert_markers(conn, run)
+            found["failed_queue"] = await _stop_in_flight(conn, story_id, run)
             await projections.replace_with_fold(conn, story_id)
             await reindex_story(conn, story_id)
             residue = await verify(conn, story_id, redactor)
@@ -1805,6 +1824,8 @@ async def _erase_story(
         op.add_commit_step(step)
         await op.commit()
     timeline_revision = op.timeline_revision
+    if found.get("failed_queue"):
+        turn_gate.wakeups.wake(story_id)
     degradation: list[str] = []
     try:
         regenerated = await regenerate_summaries(
@@ -1848,6 +1869,47 @@ async def _erase_story(
         else None,
         residue=residue.count,
     )
+
+
+async def _stop_in_flight(conn: AsyncConnection, story_id: str, run: _StoryRun) -> list[str]:
+    """Nothing in flight writes the subject back (FR-ADMIN-9; #127). The erasure is a control
+    action, so a turn generating meanwhile abandons at its commit (#47); here, in the erasure's
+    own transaction: the turns waiting in the queue fail with ``timeline_changed``; the turn
+    slot's lease is cleared (the turn holding it abandons on its own); and the operations whose
+    events were redacted have their ``membership_tx`` moved, so a background job that read them
+    (#72's summary job declares its source turns, #70) drops its output at commit and is
+    requeued. Returns the failed queued turns."""
+    redacted = select(events.c.operation_id).where(
+        events.c.story_id == story_id, events.c.redacted_at == run.now
+    )
+    await conn.execute(
+        update(operations)
+        .where(
+            operations.c.operation_id.in_(redacted),
+            operations.c.status == OperationStatus.COMMITTED.value,
+        )
+        .values(membership_tx=func.transaction_timestamp())
+    )
+    revision = await conn.scalar(
+        select(stories.c.timeline_revision).where(stories.c.id == story_id)
+    )
+    failed = await turn_gate.fail_queued(
+        conn,
+        story_id,
+        TimelineChanged(
+            "an erasure changed the timeline before the queued turn started",
+            {
+                "current_revision": int(revision or 0) + 1,
+                "control_operation_id": run.operation_id,
+            },
+        ),
+    )
+    await conn.execute(
+        update(stories)
+        .where(stories.c.id == story_id)
+        .values(in_flight_turn=None, in_flight_lease_until=None)
+    )
+    return failed
 
 
 async def _erase_catalog(

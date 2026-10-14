@@ -98,6 +98,7 @@ from epistrel.core.catalog.service import (
 from epistrel.core.catalog.validation import RUNNER, validate_entry
 from epistrel.core.config_changes import read_settings
 from epistrel.core.enums import EntryStatus
+from epistrel.core.erasure import guard as erasure_guard
 from epistrel.core.erasure.index import (
     Declared,
     Record,
@@ -165,6 +166,19 @@ def _group(document: Mapping[str, Any] | None, *path: str) -> Mapping[str, Any]:
     for key in path:
         found = found.get(key) if isinstance(found, Mapping) else None
     return found if isinstance(found, Mapping) else {}
+
+
+def _role_characters(document: Mapping[str, Any] | None) -> list[tuple[str, str]]:
+    """``(catalog_id, field)`` of every role a stored or submitted document fills with a catalog
+    character (read loosely: the document may not validate)."""
+    roles = _group(document, "cast").get("roles")
+    found: list[tuple[str, str]] = []
+    for index, role in enumerate(roles if isinstance(roles, list) else []):
+        character = role.get("character") if isinstance(role, Mapping) else None
+        catalog_id = character.get("catalog_id") if isinstance(character, Mapping) else None
+        if isinstance(catalog_id, str):
+            found.append((catalog_id, f"body.cast.roles[{index}].character.catalog_id"))
+    return found
 
 
 def media_references(document: Mapping[str, Any] | None) -> list[tuple[str, str]]:
@@ -478,6 +492,13 @@ class ScenarioCatalog(CatalogService):
         for field, media_id in media_references(document):
             if media_id not in before:
                 await assert_referenceable(conn, [media_id], field=field)
+        # No role is newly filled with a catalog character an erasure removed (#127).
+        filled = {catalog_id for catalog_id, _ in _role_characters(previous)}
+        for catalog_id, field in _role_characters(document):
+            if catalog_id not in filled:
+                await erasure_guard.assert_not_erased(
+                    conn, [catalog_id], field=field, path=__name__
+                )
 
     async def version_values(
         self, conn: AsyncConnection, document: Mapping[str, Any], report: ValidationReport

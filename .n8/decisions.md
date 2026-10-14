@@ -5641,3 +5641,75 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
 - **Decision:** (Rule 1, verification round 1, found by the area test run and not raised by the verifier) `tests/test_ownership_rules.py::test_documentation_says_ownership_confers_nothing` has failed since a75f104. It asserted `info.description == TRUST_BOUNDARY_STATEMENT`, but #125's plan (pass 2) sets `info.description` to the statement, a blank line, then `render_boundary()`. I updated the assertion to that exact value, which is still an equality check and not a looser prefix check, and updated its docstring.
   **Why:** The story requires this behaviour change, and the plan already expected #44's assertion to be a substring check. `tests/test_trust_boundary.py` already checks the prefix. Cost if wrong: none; the test pins the exact rendered text.
   **Issue:** #125
+
+- **Decision (drift):** The resurrection guard is `core.erasure.guard.check_content`, called from `Operation._write` (so `commit`, `write_in`, ingest batches and job results share it). It runs after #47's revalidation and after the commit steps, just before the subject index is written. The drift note placed it before the event INSERT. Because the whole commit is one transaction, the result is the same, and this order lets #70's stale-input guard (a commit step) drop an in-flight summary job before the ledger check refuses it.
+  **Why:** AC1 needs a summary job whose window predates the erasure to be dropped and re-enqueued, not failed. Cost if wrong: one extra INSERT that is rolled back on a refusal.
+  **Issue:** #127, #45, #70
+- **Decision (deviation):** The guard compares #124's existing keyed hashes: HMAC-SHA256 under `EPISTREL_CONFIG_KEY` of each normalised term, already in `erasure_ledger.scan_term_hashes` and in the ledger file line. Pass 2 called for a separate salt, HKDF(`EPISTREL_CONFIG_KEY`, info `erasure-terms`); this does not add one. Each text is hashed as every span of 1 to 6 words (`MAX_NGRAM`; pass 1 said 1 to 4), cut at word boundaries of the normalised text. That way a possessive, a hyphenated surname or a three-word name matches exactly where `index.mentions` matches. `test_the_span_matcher_finds_what_the_prose_matcher_finds` pins this. Every Engine registers its key with `guard.bind_key`. Without a key, a check that needs a prose comparison answers 503 `config_key_missing`.
+  **Why:** #124 and #125 had already shipped keyed hashes in the table and the file. A second hash would mean a migration and would re-derive terms that no longer exist. Cost if wrong: names longer than 6 words are missed (none in practice), and rotating the key disables the guard for earlier erasures, as `docs/OPERATIONS.md` now says.
+  **Issue:** #127, #124, #125
+- **Decision:** Which texts are refused, and what a refusal does:
+  - Engine, system and model text is always checked.
+  - `player` and `consumer` provenance (the drift note) is checked only when the operation's `base_revision` is lower than the revision the erasure committed at. A ledger row with no erasure operation in this story (a fork's copy, a reapply) is treated as before any base.
+  - A structured reference (an event's speaker, `character_id`/`*character_ids`) to the subject or to a character the erasure deleted (found from its `erasure_marker` events on `characters`) is always refused.
+  - `Operation(erasure=True)` is exempt, and so are story-less operations.
+  - A refusal is `ErasedSubjectReferenced` (409 `erased_subject_referenced`, `{erasure_id, match_count}`, the planner's message), and the operation ends `abandoned`, not `failed`.
+  - A revalidating `turn` regenerates instead (`Regenerate(reason="erased_subject_referenced")`, through `timeline._moved`'s route). Once `regenerate_retry_budget` is spent, `run_with_revalidation` raises the guard's 409 rather than `revision_conflict`.
+  **Why:** The owner's round-two decision and pass 1/pass 2. Cost if wrong: a model that keeps echoing a name the player typed after the erasure gets 409 after its budget. This is the planned behaviour ("engine text is always checked").
+  **Issue:** #127, #47
+- **Decision (drift):** A refused worker result is a counted failure. `commit_job` re-raises, and the worker's `fail_job` runs; `lite_summary` has `max_attempts=1`, so the job ends `failed` and the next trigger re-enqueues it. It is not a `StaleInputs` requeue.
+  **Why:** The drift note offered both. A requeue with no count would loop forever on a model that keeps naming her, and pass 1 says "counting toward `max_attempts`". Cost if wrong: one window's summary waits for the next trigger.
+  **Issue:** #127, #70, #72
+- **Decision:** The erasure's control step (`erase._stop_in_flight`, inside #124's commit step) does three things. It fails queued turns with `timeline_changed` (`control_operation_id` = the erasure's operation). It clears `in_flight_turn`/`in_flight_lease_until` itself. It sets `membership_tx = transaction_timestamp()` on the committed operations whose events it redacted (`events.redacted_at` = the run's time), so a job that read them is stale at commit. The erasure has no `story_busy` precheck to bypass: it never took the turn slot. Summary coalescing stays per story (drift note). The re-enqueue is #70's `_drop` of the same row, and the rerun summarises the redacted window.
+  **Why:** Pass 1. Cost if wrong: `GET /stories/{id}/variants` shows the erasure's time as `membership_tx` for those operations; the determinism comparator maps timestamps.
+  **Issue:** #127, #124, #63, #70
+- **Decision (drift):** A duplicate request waiting on an abandoned turn's key re-executes against the post-erasure revision, and the guard judges it. It does not receive the same 409. #61's rule is that failures are never stored. This is not asserted.
+  **Why:** The drift note: storing failures would change #61's contract, which needs an owner or ADR decision. Cost if wrong: none for erasure. The re-execution is checked like any new work.
+  **Issue:** #127, #61
+- **Decision:** The fork copies the source's story-scope ledger rows into the fork with new ids, `story_ref` = the fork and `copied_from` = the source row (`_erasure_fence`, last in the fork's transaction). Before copying, it takes `pg_advisory_xact_lock_shared(LEDGER_LOCK_KEY)`, which waits for an erasure that sits between its ledger write and its commit, and reads the source's ledger rows twice: in the snapshot and as committed. A row the snapshot lacks raises `ErasedMeanwhile`, and the existing `SNAPSHOT_ATTEMPTS` loop retries it (then 503 `database_unavailable`). Pass 2 said "compare the newest ledger `at` with its snapshot time".
+  **Why:** An id-set comparison on a fresh connection, under the ledger lock, closes the race window that comparing times would leave. Cost if wrong: a fork waits for a concurrent erasure's commit.
+  **Issue:** #127, #67, #125
+- **Decision:** `assert_not_erased` refuses only new structured references to a catalog-scope erased subject. It is called in two places: the scenario writer's `checked` hook (a role newly filled with the erased catalog id, at `body.cast.roles[i].character.catalog_id`) and the media insert (`depicted_subjects`). Catalog characters, personas and feedback are registered as exempt, with reasons: none of them references another subject by id. The catalog-scope erasure still does not bump `config_revision` (#124's decision); the ledger check carries the catalog case, as pass 2 says. Pass 1 named a deployment `config_revision` bump.
+  **Why:** Pass 2 ("structured references only"; "the `config_revision` bump is informational"). Cost if wrong: one hook per writer added later.
+  **Issue:** #127, #124, #108, #105
+- **Decision:** `guard.CONTENT_WRITE_PATHS` holds one `WritePath(module, how, why)` per module: `SUBJECT_WRITERS`' writer modules plus `core.ingest` and `orchestrator.jobs.queue`. `how` is `operation`, `assert_not_erased`, `fork_fence` or `exempt` (with a reason): `config_changes`, `ratings.change`, `policies.admin`, `feedback`, `idempotency`, `catalog.characters` and `catalog.personas`. `test_every_content_write_path_is_guarded` checks the set for equality and each claim against the module's source. Its runtime half is `guard.recording()`, a spy of the write paths that call the guard, asserted for the scenario writer. Pass 2 also named a runtime spy over a played story, which was not built.
+  **Why:** Pass 2 and #123's hand-off. Cost if wrong: a new writer (M4+, the M7 import) must register, and the set check fails until it does.
+  **Issue:** #127, #123
+- **Decision (drift):** Tests:
+  - The scenario slice is `test_s_erasure_boundary__resurrection` (`part("M3", "FR-ADMIN-2; FR-ADMIN-9; FR-STORE-1; NFR-DETERM-1; NFR-PRIV-2; NFR-SEC-4")`) in the shared `tests/erasure/test_s_erasure_boundary.py`. Together with `__catalog` (FR-ADMIN-6; FR-MEDIA-2), `__restore` (FR-ADMIN-7) and `__docs` (FR-ADMIN-8), it covers the S15 row's set. No docs/04 edit was needed.
+  - It does not repeat the restore, the ledger reapply or `backup verify` (markers as expected gaps). `__restore` in the same file asserts those, and they need the dedicated container.
+  - The #74 clause captures through `observability.logging.configure_logging(..., stream=)` (the drift note), with the erased names and Bobby's as canaries.
+  - The determinism clause is a separate 11-step M3 script (`DETERMINISM_SCRIPT`, an `erase` step added to #75's `Run`). It runs on two fresh databases, each with its own ledger directory, and no normaliser change was needed (`erasure_ledger` has no `story_id`, and `redacted_at` is a timestamp).
+  - The hook-disabled run is the test-only `guard.DISABLED` contextvar.
+  - `test_erasure_resurrection` (the three clauses with complements) is unmarked in `tests/integration/test_erasure_resurrection.py`. The planned `part("M3", "FR-ADMIN-9")` failed check-traceability ("missing from S15"), and pass 1 says ERASURE-RESURRECTION becomes the slice.
+  - The replay clause uses a keyed pinned-memories PUT, not a turn: a turn's request hash covers its render set and resolved viewpoint, which the erasure changes, so a replayed turn is `idempotency_conflict`.
+  **Why:** The drift notes and the traceability rule. Cost if wrong: renames, or a docs/04 row for ERASURE-RESURRECTION.
+  **Issue:** #127, #74, #75, #40
+- **Decision:** `erased_subject_referenced` (409) is documented on `respond`, `regenerate` (through `_TURN`), `ingest`, `set_pinned_memories`, `set_custom_instructions` (a new `_TEXT_EDIT` tuple), `add_story_character`, the upload operations (`_UPLOADED`) and scenario create and save (`_SCENARIO_SAVE`). `ErasedSubjectReferenced` is exported from `epistrel`. `docs/openapi.json` is regenerated. `docs/OPERATIONS.md` gains "The resurrection guard" (with the key-rotation warning), and docs/02 §4.10's erasure bullet gains a paragraph describing it.
+  **Why:** The drift note's correction. Cost if wrong: #128's parity check adjusts the lists.
+  **Issue:** #127, #128
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #127 added the resurrection guard. Later stories build on these shapes:
+  - **Commit-time check.** `core.erasure.guard.check_content` runs in `Operation._write` on every staged event. It runs after #47's decision and the commit steps, and before indexing. A refused write is 409 `erased_subject_referenced` (`ErasedSubjectReferenced`, `{erasure_id, match_count}`), and the operation ends `abandoned`. A revalidating turn regenerates first (`concurrency.ERASED_SUBJECT`).
+  - **Consumer text.** `player`/`consumer` text is checked only when its base revision predates the erasure.
+  - **Catalog hook.** `assert_not_erased(conn, ids, field=, path=)` refuses a new structured reference to a catalog-scope erased subject (scenario roles, media `depicted_subjects`).
+  - **Registry.** `guard.CONTENT_WRITE_PATHS` (`WritePath(module, how, why)`) must list every module that writes story or catalog content. Its test checks the set against `SUBJECT_WRITERS` plus ingest and the job commit.
+  - **Erasure as a control action.** It now fails queued turns (`timeline_changed`), clears the turn slot's lease, and moves `membership_tx` on the operations whose events it redacted.
+  - **Fork.** A fork copies the story's `erasure_ledger` rows (`copied_from`, `story_ref` = the fork). It is retried (`ErasedMeanwhile`) when an erasure of the source commits after its snapshot.
+  - **Key.** The guard needs `EPISTREL_CONFIG_KEY` (bound per Engine). Rotating the key disables the guard for earlier erasures (`docs/OPERATIONS.md`).
+  **Why:** #127's AC and its pass-1/pass-2 lines, corrected by its drift notes. The decision entries below give the details.
+  **Affects:**
+  - **M3 #128 (API surface).** A new error code on respond, regenerate, ingest, pins, instructions, add-character, uploads and scenario create/save. `docs/openapi.json` is regenerated, and `ErasedSubjectReferenced` is exported.
+  - **M7 #251 and #250 (import).** The import path registers in `CONTENT_WRITE_PATHS`. An import that writes through `Operation` is checked automatically; one that copies rows directly (as fork does) needs its own fence, and it brings the ledger rows with `copied_from`.
+  - **M4 #135, M5 #178, M6 (new content writers).** Each new writer module registers a `WritePath`. Writers that commit through `Operation` are guarded already. Raw inserts need a check or an exemption with a reason.
+  - **M8 #266 (images).** Image promotion's "erasure ledger clear" revalidation can call `assert_not_erased` and `check_content`.
+  - **The Console (nathanpond/Epistrel-Console).** Handle 409 `erased_subject_referenced` ("rebuild your context from the current history and retry"). A respond may come back 409 `timeline_changed` naming an erasure's operation.
+  - **Next step:** #128 is the last group C story in this run: its drift check should apply this. Run `/n8-replan` for M4, M5, M6, M7 and M8 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #127's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #127

@@ -1005,6 +1005,18 @@ class ErasureKeyMissing(EpistrelError):
     http_status = 503
 
 
+class ErasedSubjectReferenced(EpistrelError):
+    """The operation's text names, or its records reference, a subject erased from the story
+    after the context it was built from (FR-ADMIN-9; #127): an in-flight turn, a late worker
+    result or a model output built before the erasure would write the subject back, so nothing
+    is written and the operation ends ``abandoned``. The caller's context is stale: rebuild it
+    from the current history and retry. ``details``: ``erasure_id`` (the erasure matched) and
+    ``match_count`` (the texts and references that matched it)."""
+
+    code = "erased_subject_referenced"
+    http_status = 409
+
+
 class ErasurePending(EpistrelError):
     """The story is blocked by the erasure reconciler (FR-ADMIN-7; #125): the erasure ledger
     holds an erasure of a subject in it that this database has not applied (a restored backup

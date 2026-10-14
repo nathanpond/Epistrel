@@ -62,6 +62,7 @@ from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext
 from epistrel.core.enums import EntryStatus, StoryStatus
 from epistrel.core.erasure import boundary as erasure_boundary
 from epistrel.core.erasure import erase as erasure
+from epistrel.core.erasure import guard as erasure_guard
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.errors import (
     InvalidRequest,
@@ -530,6 +531,11 @@ class Engine:
         # pass has compared it with the database, the first call naming a story runs one, so
         # an Engine used without the app's start-up still refuses a story a restore unerased.
         self.ledger = erasure_ledger.LedgerFile(settings.erasure_ledger_dir)
+        # The resurrection guard (FR-ADMIN-9; #127) hashes what a commit writes with the key
+        # the ledger's term hashes are keyed with.
+        erasure_guard.bind_key(
+            None if settings.config_key is None else settings.config_key.get_secret_value()
+        )
         self._erasure_marked = False
         self._mark_lock = asyncio.Lock()
         self._reconcile_task: asyncio.Task[None] | None = None

@@ -22,7 +22,10 @@ one transaction that does all of the following:
    dormant continuation at the first new turn over it, #66);
 4. assigns dense per-story ``seq`` values (``max(seq)+1`` under the lock), writes the events,
    and maintains every projection for them (``projections.apply_events``, FR-STORE-4), then
-   runs any commit steps the caller added;
+   runs any commit steps the caller added; then the resurrection guard checks the events
+   against the erasure ledger (``core.erasure.guard``, FR-ADMIN-9: 409
+   ``erased_subject_referenced``, the operation ``abandoned``; a revalidating turn regenerates
+   within its budget first) before they are indexed;
 5. finalises the operation (``committed``, ``membership_tx`` = the commit's ``tx_time``, the
    story's resulting ``timeline_revision``), bumps ``stories.timeline_revision`` by one when the
    operation ``bumps_revision`` (FR-CONC-1), records a control action on the story, and checks
@@ -64,6 +67,7 @@ from epistrel.core import (
     turn_gate,
 )
 from epistrel.core.concurrency import (
+    ERASED_SUBJECT,
     Abandon,
     ConfigRecheck,
     Decide,
@@ -84,11 +88,13 @@ from epistrel.core.enums import (
     Provenance,
     StoryStatus,
 )
+from epistrel.core.erasure import guard as erasure_guard
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import event_record
 from epistrel.core.errors import (
     ChainBroken,
+    ErasedSubjectReferenced,
     InvalidRequest,
     PrincipalRequired,
     StoryArchived,
@@ -129,6 +135,14 @@ edit, ingest, …) declares ``bumps_revision=True`` explicitly; settings and arc
 NEVER_BUMPING_KINDS = frozenset({OperationKind.CONSOLIDATION, OperationKind.MAINTENANCE})
 """Derived and maintenance work never bumps the revision (FR-CONC-1), so background work never
 invalidates in-flight turns. Audit-only records are written by such operations."""
+
+
+def _failure_status(error: BaseException) -> OperationStatus:
+    """A commit that raised ends ``failed``, except one the resurrection guard refused (#127):
+    nothing went wrong, the work's context is stale, so it ends ``abandoned``."""
+    if isinstance(error, ErasedSubjectReferenced):
+        return OperationStatus.ABANDONED
+    return OperationStatus.FAILED
 
 
 class Withdrawn(Exception):
@@ -547,7 +561,7 @@ class Operation:
             raise
         except BaseException as exc:
             self._reset_position()
-            await self._finish(OperationStatus.FAILED, exc)
+            await self._finish(_failure_status(exc), exc)
             raise
         self.status = OperationStatus.COMMITTED
         if self.kind is OperationKind.TURN:
@@ -607,7 +621,7 @@ class Operation:
         elif isinstance(error, Withdrawn):
             await self._finish(OperationStatus.ABANDONED, error)
         else:
-            await self._finish(OperationStatus.FAILED, error)
+            await self._finish(_failure_status(error), error)
 
     def _reset_position(self) -> None:
         self.narrative_turn = self.turn_variant = self.parent_variant = self.tx_time = None
@@ -694,6 +708,7 @@ class Operation:
             )
         for step in self._commit_steps:
             await step(conn)
+        await self._check_erased(conn, decide, current_revision)
         if self._staged:
             # The subject-reference index (FR-ADMIN-6; #123), after the commit steps so a
             # character a step adds is one of the story's subjects.
@@ -762,6 +777,45 @@ class Operation:
         self.attempts.append(attempt_record(state, outcome))
         if isinstance(outcome, Regenerate | Abandon | ConfigRecheck):
             raise RevalidationRequired(outcome, state)
+
+    async def _check_erased(
+        self, conn: AsyncConnection, decide: Decide | None, current_revision: int
+    ) -> None:
+        """The resurrection guard (FR-ADMIN-9; #127, ``core.erasure.guard``): refuse events that
+        name or reference a subject erased from the story since the context they were built
+        from. It runs after #47's decision and the commit steps, on the final text. A
+        revalidating turn regenerates instead (``ERASED_SUBJECT``, within its budget); an
+        erasure's own operations are exempt."""
+        if self.story_id is None or self.erasure or not self._staged:
+            return
+        try:
+            await erasure_guard.check_content(
+                conn,
+                self.story_id,
+                [
+                    erasure_guard.staged_content(
+                        staged.payload.model_dump(mode="json"),
+                        staged.character_id,
+                        staged.provenance,
+                    )
+                    for staged in self._staged
+                ],
+                base_revision=self.base_revision,
+            )
+        except ErasedSubjectReferenced as refusal:
+            if decide is None or self.kind is not OperationKind.TURN or not self.attempts:
+                raise
+            state = RevalidationState(
+                attempt=len(self.attempts),
+                base_revision=self.base_revision or 0,
+                current_revision=current_revision,
+                control_since_base=False,
+                control_operation_id=None,
+                touched=(),
+            )
+            outcome = Regenerate(reason=ERASED_SUBJECT)
+            self.attempts[-1] = attempt_record(state, outcome)
+            raise RevalidationRequired(outcome, state) from refusal
 
     async def _parent_variant(self, conn: AsyncConnection) -> int | None:
         """The active variant of the turn before this one (``None`` for turn 1)."""

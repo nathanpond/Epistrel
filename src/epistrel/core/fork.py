@@ -85,6 +85,7 @@ from epistrel.core.enums import (
     StoryStatus,
 )
 from epistrel.core.erasure.index import reindex_story
+from epistrel.core.erasure.ledger import LEDGER_LOCK_KEY
 from epistrel.core.errors import (
     DatabaseUnavailable,
     InvalidRequest,
@@ -108,6 +109,7 @@ from epistrel.core.tables import (
     characters,
     config_changes,
     content_ratings,
+    erasure_ledger,
     events,
     lite_summary_segments,
     operations,
@@ -291,7 +293,13 @@ async def fork(
                 forked = await _copy(
                     conn, story_id, request, principal, expected_revision, moved=moved
                 )
+                await _erasure_fence(db, conn, story_id, forked.story_id)
             break
+        except ErasedMeanwhile:
+            forked = None
+            logger.warning(
+                "fork of %s: an erasure committed meanwhile (attempt %d)", story_id, attempt
+            )
         except DBAPIError as exc:
             if getattr(exc.orig, "sqlstate", None) != SERIALIZATION_FAILURE:
                 raise
@@ -400,6 +408,48 @@ async def _copy(
         characters=cast,
         counts=counts,
     )
+
+
+class ErasedMeanwhile(Exception):
+    """An erasure of the source committed after the fork's snapshot was taken: the copy would
+    hold what it erased, so the fork is retried on a new snapshot (FR-ADMIN-9; #127)."""
+
+
+_LEDGER_COPY = text(
+    "INSERT INTO erasure_ledger (id, subject_kind, subject_id, scope, story_ref, principal, "
+    "operation_id, counts, scan_term_hashes, applied_at, applied_note, copied_from, at) "
+    "SELECT m.new_id, t.subject_kind, t.subject_id, t.scope, :fork, t.principal, "
+    "t.operation_id, t.counts, t.scan_term_hashes, t.applied_at, t.applied_note, t.id, t.at "
+    "FROM erasure_ledger t JOIN (SELECT unnest(CAST(:old AS text[])) AS old_id, "
+    "unnest(CAST(:new AS text[])) AS new_id) m ON m.old_id = t.id::text"
+)
+
+
+async def _erasure_fence(db: AsyncEngine, conn: AsyncConnection, source: str, fork_id: str) -> None:
+    """The fork's resurrection guard (FR-ADMIN-9; #127), last in its transaction.
+
+    The shared ledger lock waits for an erasure between its ledger write and its commit (it
+    holds the lock exclusively, #125) and keeps one from starting before the fork commits. The
+    source's story-scope ledger rows are then read twice: in the fork's snapshot and as
+    committed now; a row the snapshot misses is an erasure the copy predates
+    (``ErasedMeanwhile``: retried). The rows the snapshot holds are copied to the fork with
+    ``copied_from`` set (the reconciler ignores them, #125), so the guard keeps refusing the
+    erased subject in the fork too."""
+    await conn.execute(select(func.pg_advisory_xact_lock_shared(LEDGER_LOCK_KEY)))
+    rows = select(erasure_ledger.c.id).where(
+        erasure_ledger.c.scope == "story", erasure_ledger.c.story_ref == source
+    )
+    seen = {str(i) for i in await conn.scalars(rows)}
+    async with db.connect() as fresh:
+        committed = {str(i) for i in await fresh.scalars(rows)}
+    if committed - seen:
+        raise ErasedMeanwhile(f"{len(committed - seen)} erasure(s) of {source} committed")
+    if seen:
+        old = sorted(seen)
+        await conn.execute(
+            _LEDGER_COPY,
+            {"fork": fork_id, "old": old, "new": [new for _, new in _remapped(old)]},
+        )
 
 
 def _fork_name(source_name: str | None) -> str | None:

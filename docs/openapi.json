@@ -29838,7 +29838,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`."
           },
           "413": {
             "content": {
@@ -30310,7 +30310,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `draft_stale`, `idempotency_conflict`."
+            "description": "Conflict; nothing was written: `draft_stale`, `erased_subject_referenced`, `idempotency_conflict`."
           },
           "413": {
             "content": {
@@ -34766,7 +34766,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`."
           },
           "413": {
             "content": {
@@ -35356,7 +35356,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `upload_closed`, `upload_incomplete`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `upload_closed`, `upload_incomplete`."
           },
           "413": {
             "content": {
@@ -39642,7 +39642,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
           },
           "422": {
             "content": {
@@ -40721,7 +40721,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -41789,7 +41789,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `client_event_conflict`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `client_event_conflict`, `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -42672,7 +42672,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -43043,7 +43043,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -43782,7 +43782,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {

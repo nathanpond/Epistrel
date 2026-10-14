@@ -1,8 +1,8 @@
 """S-ERASURE-BOUNDARY: erasure reaches derived prose (docs/04 §7; #124, and later #125, #127).
 
 One file for every slice of the scenario (the traceability gate allows one file per test and
-milestone): ``__catalog`` here (#124), #125's ``__restore`` and ``__docs``; #127's resurrection
-slices join it.
+milestone): ``__catalog`` here (#124), #125's ``__restore`` and ``__docs``, and #127's
+``__resurrection``, the M3 exit evidence that assembles the rest of the clause (below).
 
 ``test_s_erasure_boundary__catalog``: a catalog-scope erasure of a catalog character who appears
 in every version of herself, a scenario's seed and role, media of her own and shared with
@@ -17,7 +17,10 @@ separately.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import logging
+import secrets
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -29,10 +32,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.api import create_app
 from epistrel.config import Settings
-from epistrel.core.erasure import boundary
+from epistrel.core import projections
+from epistrel.core.db import make_engine
+from epistrel.core.enums import OperationKind
+from epistrel.core.erasure import boundary, guard
 from epistrel.core.erasure.ledger import LedgerFile
 from epistrel.core.media.sweep import collect_blob
+from epistrel.observability import logging as telemetry_logging
 from epistrel.testing import pauses
+from epistrel.testing.determinism import differences, state
 from epistrel.tools import backup
 from tests import character_support as characters
 from tests import erasure_support as e
@@ -41,9 +49,17 @@ from tests import ledger_support as ledger
 from tests import media_support as media
 from tests import scenario_support as scenarios
 from tests.auth_support import MEDIA_ROOT, auth_settings
+from tests.conformance.conftest import migrated_database
 from tests.conftest import DUMMY_DSN, REPO_ROOT
+from tests.determinism.test_determinism import Run
 from tests.event_support import rows, scalar
-from tests.respond_support import respond_client
+from tests.idempotency_support import KEY
+from tests.model_support import config_key
+from tests.projection_support import snapshot
+from tests.respond_support import FIRST as ADA
+from tests.respond_support import SECOND as BRANN
+from tests.respond_support import body, respond, respond_client
+from tests.summary_support import run_due_jobs, segment_rows
 
 pytestmark = pytest.mark.integration
 
@@ -492,3 +508,199 @@ def test_s_erasure_boundary__docs() -> None:
         assert boundary.normalised(description).endswith(boundary.normalised(rendered))
         route = document["paths"]["/admin/erasure/boundary"]["get"]["description"]
         assert boundary.normalised(rendered) in boundary.normalised(route)
+
+
+# -- #127: resurrection, replay, fork, determinism, markers and logs ----------------------------
+
+LATE = f"{e.NAME} and {e.OTHER} argued about the deed again."
+SUMMARY_KIND = OperationKind.CONSOLIDATION.value
+"""The kind of a summary job's operation (#72)."""
+DETERMINISM_SCRIPT: list[dict[str, Any]] = [
+    {
+        "op": "create_story",
+        "alias": "s1",
+        "settings": {"lite_summary_chunk": 2},
+        "overrides": {"memory": {"rolling_summary": {"window_messages": 4}}},
+        "key": "erd-00",
+    },
+    {"op": "pins", "story": "s1", "items": [f"{BRANN} owes {ADA} a boat."], "key": "erd-01"},
+    {"op": "respond", "story": "s1", "say": f"{BRANN}, is the boat ready?", "key": "erd-02"},
+    {"op": "respond", "story": "s1", "say": f"{ADA}, ask {BRANN} too.", "key": "erd-03"},
+    {"op": "respond", "story": "s1", "say": "I walk to the harbour.", "key": "erd-04"},
+    {"op": "respond", "story": "s1", "say": f"Where is {BRANN} now?", "key": "erd-05"},
+    {"op": "drain"},
+    {"op": "erase", "story": "s1", "name": BRANN, "key": "erd-06"},
+    {"op": "respond", "story": "s1", "say": "I light a lantern.", "key": "erd-07"},
+    {"op": "respond", "story": "s1", "say": "We should leave before dawn.", "key": "erd-08"},
+    {"op": "drain"},
+]
+"""The M3 determinism script (#75's comparator): a story naming Brann in its pins, inputs,
+replies and summary, Brann erased mid-script, then play on."""
+
+
+class _ErasingRun(Run):
+    """#75's script runner with an ``erase`` step (the story-scope erasure of a cast member)."""
+
+    async def step(self, step: dict[str, Any]) -> None:
+        if step["op"] != "erase":
+            await super().step(step)
+            return
+        story = self.stories[step["story"]]
+        shown = await self.client.get(f"/stories/{story}", headers=self.headers)
+        assert shown.status_code == 200, shown.text
+        cast = {c["name"]: c["id"] for c in shown.json()["characters"]}
+        assert step["name"] in cast, shown.text
+        subject = cast[step["name"]]
+        response = await self.client.post(
+            e.PATH,
+            json=e.request("character", subject, story),
+            headers={**self.headers, KEY: step["key"]},
+        )
+        assert response.status_code == 200, f"{step}: {response.text}"
+        self.answers.append(self.normalize(response.json()))
+
+
+async def _replay_with_erasure(pg_url: str, ledger_dir: Path) -> tuple[list[Any], Any]:
+    """The determinism script on a fresh database with its own erasure ledger."""
+    with migrated_database(pg_url, f"epistrel_det_{secrets.token_hex(4)}") as url:
+        settings = auth_settings(
+            url, model_adapter="stub", config_key=config_key(), erasure_ledger_dir=ledger_dir
+        )
+        db = make_engine(settings)
+        try:
+            async with respond_client(settings, db) as (client, lib):
+                run = _ErasingRun(client, lib, "p-author")
+                for step in DETERMINISM_SCRIPT:
+                    await run.step(step)
+                return run.answers, await state(db)
+        finally:
+            await db.dispose()
+
+
+@pytest.fixture
+def captured_logs() -> Iterator[io.StringIO]:
+    """Epistrel's JSON handler (the ContentFilter included, #74) at DEBUG on a buffer; the root
+    logger restored after."""
+    root = logging.getLogger()
+    level, handlers = root.level, list(root.handlers)
+    stream = io.StringIO()
+    handler = telemetry_logging.configure_logging(level="DEBUG", stream=stream)
+    try:
+        yield stream
+    finally:
+        root.removeHandler(handler)
+        root.handlers[:] = handlers
+        root.setLevel(level)
+
+
+@pytest.mark.part("M3", "FR-ADMIN-2; FR-ADMIN-9; FR-STORE-1; NFR-DETERM-1; NFR-PRIV-2; NFR-SEC-4")
+async def test_s_erasure_boundary__resurrection(
+    erasure_settings: Settings,
+    engine: AsyncEngine,
+    pg_url: str,
+    tmp_path: Path,
+    captured_logs: io.StringIO,
+) -> None:
+    """Erase Linda from a story that names her in events, rendered messages, the summary, pins
+    and a stored result: her character row is deleted, every text is redacted and the summary
+    regenerated, with zero residue. Then, after the erasure: projections rebuilt from the
+    post-erasure log equal the live ones; the audit view shows a marker per deleted record; a
+    fork contains nothing of her and carries the ledger; the operational logs captured during
+    play and erasure never held her names (the canaries) or Bobby's; a late summary job whose
+    model output names her is written only with the guard off (shown first) and refused with
+    it on (409 ``erased_subject_referenced``, nothing written); a determinism replay of a
+    script that erases a cast member mid-way is identical on two fresh databases. The restore
+    and ``backup verify`` (markers as expected gaps) are ``__restore``'s; the catalog reach is
+    ``__catalog``'s."""
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        assert stub is not None
+        story = await e.played_story(client, lib, engine)
+        sid = story.story_id
+        assert sum((await e.residue(engine, sid, e.TERMS)).values()) > 0
+        stub.script("lite_summary", [e.REGENERATED] * 10)
+        done = await e.erase(client, "character", story.mother, sid)
+        assert (done["residue"], done["degradation"]) == (0, [])
+        assert (
+            await scalar(engine, "SELECT count(*) FROM characters WHERE id = :c", c=story.mother)
+            == 0
+        )
+        assert {t: n for t, n in (await e.residue(engine, sid, e.TERMS)).items() if n} == {}
+        assert {s.text for s in await segment_rows(engine, sid) if s.level == 0} == {e.REGENERATED}
+
+        # Replay of the post-erasure log: the projections it folds are the live ones (#46).
+        live = await snapshot(engine, sid)
+        await projections.rebuild(engine, sid, principal=e.OPERATOR)
+        assert await snapshot(engine, sid) == live
+
+        # The audit view: a marker where each deleted record was.
+        audit = await client.get(
+            f"/stories/{sid}/history",
+            params={"viewpoint": "omniscient", "include_audit": 1, "limit": 1000},
+            headers=e.WRITE,
+        )
+        assert audit.status_code == 200, audit.text
+        markers = [i for i in audit.json()["audit"] if i["kind"] == "erasure_marker"]
+        assert {m["text"] for m in markers} == {f"[erasure marker: {story.mother}, story]"}
+        assert not e.naming(audit.text, e.TERMS)
+
+        # A fork taken after the erasure: nothing of her, and the ledger comes along (#67).
+        forked = await client.post(f"/stories/{sid}/fork", json={}, headers=e.WRITE)
+        assert forked.status_code == 201, forked.text
+        fork_id = forked.json()["story_id"]
+        assert {t: n for t, n in (await e.residue(engine, fork_id, e.TERMS)).items() if n} == {}
+        copied = await rows(
+            engine, "SELECT copied_from FROM erasure_ledger WHERE story_ref = :s", s=fork_id
+        )
+        assert [r.copied_from for r in copied] == [done["erasure_id"]]
+
+        # The late worker result: two turns leave a window due, then a summary job whose model
+        # output names her. With the guard off it would be written (shown first).
+        stub.reset()
+        stub.script("generation", ["The rain stops.", "The kettle whistles."] * 2)
+        for n in range(2):
+            ok = await respond(client, sid, body(story.player, f"Anything else ({n})?"))
+            assert ok.status_code == 200, ok.text
+        segments = await segment_rows(engine, sid)
+        stub.script("lite_summary", [LATE])
+        token = guard.DISABLED.set(True)
+        try:
+            (written,) = await run_due_jobs(engine, lib.models, sid, limit=1)
+        finally:
+            guard.DISABLED.reset(token)
+        assert str(written) == "committed"
+        assert LATE in {s.text for s in await segment_rows(engine, sid)}
+        assert segments != await segment_rows(engine, sid)
+        # With the guard on, the next window's job naming her writes nothing.
+        for n in range(2):
+            ok = await respond(client, sid, body(story.player, f"And now ({n})?"))
+            assert ok.status_code == 200, ok.text
+        before = await segment_rows(engine, sid)
+        stub.script("lite_summary", [LATE])
+        (refused,) = await run_due_jobs(engine, lib.models, sid, limit=1)
+        assert refused == "failed"
+        assert await segment_rows(engine, sid) == before
+        late = await rows(
+            engine,
+            "SELECT status::text AS status FROM operations WHERE story_id = :s AND kind = :k "
+            "ORDER BY started_at DESC LIMIT 1",
+            s=sid,
+            k=SUMMARY_KIND,
+        )
+        assert late[0].status == "abandoned"
+
+    # The operational logs held no story content (#74): the erased names are the canaries.
+    logged = captured_logs.getvalue()
+    assert logged, "nothing was logged"
+    assert done["erasure_id"] in logged  # the erasure was logged, by its id
+    assert not e.naming(logged, (*e.TERMS, e.OTHER))
+
+    # Determinism (#75): the script with an erasure replays byte-identical on two databases.
+    first_answers, first_state = await _replay_with_erasure(pg_url, tmp_path / "ledger-1")
+    second_answers, second_state = await _replay_with_erasure(pg_url, tmp_path / "ledger-2")
+    assert differences(first_answers, second_answers) == []
+    assert differences(first_state, second_state) == []
+    assert any(isinstance(a, dict) and a.get("erasure_id") for a in first_answers)
+    erased_events = [r for r in first_state["events"] if r.get("type") == "erasure_marker"]
+    assert erased_events
+    assert not e.naming(json.dumps(first_state, default=str), (BRANN,))

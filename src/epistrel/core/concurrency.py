@@ -38,7 +38,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import summary
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
-from epistrel.core.errors import RevisionConflict, StoryNotFound, TimelineChanged
+from epistrel.core.errors import (
+    ErasedSubjectReferenced,
+    RevisionConflict,
+    StoryNotFound,
+    TimelineChanged,
+)
 from epistrel.core.tables import (
     characters,
     content_rating_versions,
@@ -89,6 +94,12 @@ class Rebase:
     """The story moved but nothing the operation read changed; the re-checks passed."""
 
     name: str = "rebase"
+
+
+ERASED_SUBJECT = "erased_subject_referenced"
+"""``Regenerate.reason`` when a turn's output names a subject erased since its context was
+built (#127's resurrection guard, ``core.erasure.guard``): it regenerates within the budget, then
+the guard's 409 ``erased_subject_referenced`` is the answer."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,6 +509,11 @@ async def run_with_revalidation(
                 else:
                     reason = outcome.reason
                 if regenerations >= limit:
+                    refusal = signal.__cause__
+                    if reason == ERASED_SUBJECT and isinstance(refusal, ErasedSubjectReferenced):
+                        # The output keeps naming an erased subject: the guard's refusal.
+                        await op.abandon()
+                        raise refusal from None
                     raise await conflict(state.current_revision, reason) from None
                 regenerations += 1
                 inputs = await op.restart(read=begin)

@@ -221,6 +221,7 @@ ERROR_STATUS: dict[str, int] = {
     "story_archived": 409,
     "story_paused": 409,
     "timeline_changed": 409,
+    "erased_subject_referenced": 409,
     "unknown_chain": 409,
     "config_conflict": 409,
     "draft_stale": 409,
@@ -308,7 +309,13 @@ STATUS_TEXT = {
     503: "Unavailable; nothing was written",
 }
 
-_TURN = ("model_unavailable", "budget_exhausted", "turn_interrupted", "timeline_changed")
+_TURN = (
+    "model_unavailable",
+    "budget_exhausted",
+    "turn_interrupted",
+    "timeline_changed",
+    "erased_subject_referenced",
+)
 _UPLOADED = (
     "subjects_required",
     "media_type_not_allowed",
@@ -322,12 +329,22 @@ _UPLOADED = (
     "poster_required",
     "poster_extraction_failed",
     "media_store_unavailable",
+    "erased_subject_referenced",
 )
 """What storing an upload can answer, directly or from a resumable session (#105, #107)."""
 _GATED = ("guardrail_violation", "budget_below_safety_minimum", "model_unavailable")
-_SCENARIO_SAVE = ("draft_too_large", "cast_limit_exceeded", "rating_retired", "media_retired")
+_SCENARIO_SAVE = (
+    "draft_too_large",
+    "cast_limit_exceeded",
+    "rating_retired",
+    "media_retired",
+    "erased_subject_referenced",
+)
 """What a scenario's create or save can answer besides the rules' ``validation_error`` (#108)."""
 _ADMIN_CONFIG = ("config_conflict",)
+_TEXT_EDIT = ("story_archived", "story_paused", "timeline_changed", "erased_subject_referenced")
+"""A pinned-memory or custom-instruction edit (#127: one prepared before an erasure that names
+the erased subject is refused)."""
 
 OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "create_story": (
@@ -373,9 +390,10 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "client_event_conflict",
         "timeline_changed",
         "unsupported_event_kind",
+        "erased_subject_referenced",
     ),
-    "set_pinned_memories": (*_GATED, "story_archived", "story_paused", "timeline_changed"),
-    "set_custom_instructions": (*_GATED, "story_archived", "story_paused", "timeline_changed"),
+    "set_pinned_memories": (*_GATED, *_TEXT_EDIT),
+    "set_custom_instructions": (*_GATED, *_TEXT_EDIT),
     "truncate": ("story_archived", "story_paused", "story_busy"),
     "untruncate": ("story_archived", "story_paused", "story_busy", "nothing_to_undo"),
     "swap": ("story_archived", "story_paused", "story_busy", "unknown_chain"),
@@ -391,6 +409,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "story_paused",
         "story_busy",
         "media_retired",
+        "erased_subject_referenced",
     ),
     "promote_character": ("rating_retired",),
     # Its ``policies`` are refused while the story is paused (#118); its settings are not.

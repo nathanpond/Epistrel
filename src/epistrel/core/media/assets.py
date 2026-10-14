@@ -106,6 +106,7 @@ from sqlalchemy.sql.elements import TextClause
 
 from epistrel.core import clock, control, ownership
 from epistrel.core.config_changes import read_section
+from epistrel.core.erasure import guard as erasure_guard
 from epistrel.core.erasure.index import Declared, index_references
 from epistrel.core.errors import (
     ConfigMissing,
@@ -992,6 +993,13 @@ async def _insert(
     poster_media_id: str | None,
 ) -> None:
     staged, found = probed.staged, probed.found
+    # No new medium depicts a subject a catalog-scope erasure removed (FR-ADMIN-9; #127).
+    await erasure_guard.assert_not_erased(
+        conn,
+        [s.id for s in request.depicted_subjects or []],
+        field=f"body.metadata.{DECLARED_FIELD}",
+        path=__name__,
+    )
     await conn.execute(
         insert(media_assets).values(
             id=staged.asset_id,

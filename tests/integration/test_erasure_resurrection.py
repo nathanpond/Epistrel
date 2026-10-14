@@ -7,9 +7,9 @@ clauses, each with its complement:
 
 - the in-flight turn is abandoned (409 ``timeline_changed`` naming the erasure, no events,
   status ``abandoned``), a turn queued behind it fails ``timeline_changed`` naming the erasure
-  (409, status ``failed``, no events), and the summary job's output is dropped and the job requeued; a turn
-  started after the erasure that does not name her commits normally, and so does one whose
-  player text names her (a consumer typing the name afterwards is not refused);
+  (409, status ``failed``, no events), and the summary job's output is dropped and the job
+  requeued; a turn started after the erasure that does not name her commits normally, and so
+  does one whose player text names her (a consumer typing the name afterwards is not refused);
 - a worker result built after the erasure that names her is refused (409
   ``erased_subject_referenced``, no segment, the operation ``abandoned``), as is a model reply
   naming her, after its regeneration budget; a clean summary job commits;

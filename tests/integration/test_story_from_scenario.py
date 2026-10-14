@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.config import Settings
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from tests import genesis_support as g
 from tests import scenario_support as scenarios
@@ -28,7 +29,7 @@ from tests.catalog_support import character as catalog_character
 from tests.profile_support import PROFILES, profile_body
 from tests.respond_support import body as respond_body
 from tests.respond_support import played, respond_client
-from tests.story_support import create, story_body
+from tests.story_support import create, rest, story_body
 
 pytestmark = pytest.mark.integration
 
@@ -428,3 +429,36 @@ async def test_a_catalog_cast_character_promotes_from_its_snapshot(
     assert definition["personality"] == "Mara Venn is patient, private and slow to trust."
     assert definition["background_flavor"] is None
     assert definition["true_age"] == 41
+
+
+async def test_creation_takes_either_spelling_of_the_confirm_flag(
+    settings: Settings, engine: AsyncEngine
+) -> None:
+    """``POST /stories`` from a scenario is a two-stage request like the other three (FR-PROF-7,
+    #336): ``ignoreWarnings`` is the camelCase spelling of ``ignore_warnings``, and sending both
+    with different values is 422 ``validation_error``.
+
+    Complements asserted: the held request and the disagreeing one write no row."""
+    async with rest(settings, engine) as client:
+        locked, default = await scenarios.cast_characters(client)
+        warm = await g.catalog_character_id(client, "June Harrow", age=60, labels=["warm"])
+        scenario_id, _ = await g.published_scenario(
+            client, scenarios.complete_with(locked, default)
+        )
+        request = g.from_scenario(scenario_id, slots={"mother": g.catalog_slot(warm)})
+
+        counted = await g.counts(engine)
+        held = await g.create_from(client, request, status=200)
+        assert held["applied"] is False
+        assert await g.counts(engine) == counted
+
+        status, code, _ = await g.refused(
+            client, {**request, "ignore_warnings": False, "ignoreWarnings": True}
+        )
+        assert (status, code) == (422, "validation_error")
+        assert await g.counts(engine) == counted
+
+        made = await g.create_from(client, {**request, "ignoreWarnings": True})
+        assert made["applied"] is True
+        assert made["story_id"] is not None
+        assert (await g.counts(engine))["stories"] == counted["stories"] + 1

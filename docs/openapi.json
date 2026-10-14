@@ -20398,8 +20398,15 @@
             "default": null,
             "title": "Engine Profile Id"
           },
+          "ignoreWarnings": {
+            "default": false,
+            "description": "`ignore_warnings`, for camelCase clients (send one of the two).",
+            "title": "Ignorewarnings",
+            "type": "boolean"
+          },
           "ignore_warnings": {
             "default": false,
+            "description": "Create even when the profile leaves a recommended capability unmet (FR-PROF-7); `ignoreWarnings` is the same flag for camelCase clients.",
             "title": "Ignore Warnings",
             "type": "boolean"
           },
@@ -37146,7 +37153,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",

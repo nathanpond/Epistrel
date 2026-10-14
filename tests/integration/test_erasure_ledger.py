@@ -379,9 +379,10 @@ async def test_a_blocked_story_refuses_everything_but_its_deletion(
 ) -> None:
     """An Engine that never ran the start-up compares the ledger on its first story call: the
     story becomes ``blocked_by_erasure``. The library refuses it like the API (``ErasurePending``
-    with the pending count), a background job of it stays queued and unclaimed, a story-less
-    read of one of its operations still answers, the other story is served, and deleting the
-    story is allowed and settles its entry ``story_deleted``."""
+    with the pending count), a background job of it stays queued and unclaimed, a read of one
+    of its operations is refused too (#333: its stored result may hold what the erasure
+    removes) while the other story's operation answers, the other story is served, and deleting
+    the story is allowed and settles its entry ``story_deleted``."""
     url = ledger_server.fresh()
     ledger_dir = tmp_path / "ledger"
     stories = await _pending_story(url, ledger_dir)
@@ -401,6 +402,13 @@ async def test_a_blocked_story_refuses_everything_but_its_deletion(
             await lib.list_relations(CTX, "story", stories.named)
         assert (await lib.list_relations(CTX, "story", stories.other)).entity_id == stories.other
         assert (await lib.get_story(CTX, stories.other)).id == stories.other
+        (held,) = await ledger.sql(
+            url,
+            "SELECT operation_id FROM operations WHERE story_id = :s LIMIT 1",
+            s=stories.named,
+        )
+        with pytest.raises(ErasurePending):
+            await lib.get_operation(CTX, held.operation_id)
         (status,) = await ledger.sql(
             url, "SELECT status, status_before_block FROM stories WHERE id = :s", s=stories.named
         )
@@ -415,13 +423,17 @@ async def test_a_blocked_story_refuses_everything_but_its_deletion(
         assert queued.status == "queued"
 
         async with respond_client(config, db) as (client, _):
-            operation = await ledger.sql(
-                url,
-                "SELECT operation_id FROM operations WHERE story_id = :s LIMIT 1",
-                s=stories.named,
-            )
-            read = await client.get(f"/operations/{operation[0].operation_id}", headers=WRITE)
-            assert read.status_code == 200, read.text
+            for story_id, status in ((stories.named, 503), (stories.other, 200)):
+                operations = await ledger.sql(
+                    url, "SELECT operation_id FROM operations WHERE story_id = :s", s=story_id
+                )
+                assert operations
+                for operation in operations:
+                    read = await client.get(f"/operations/{operation.operation_id}", headers=WRITE)
+                    assert read.status_code == status, read.text
+                    if status == 503:
+                        assert read.json()["error"]["code"] == "erasure_pending"
+                        assert ledger.SUBJECT not in read.text
             for path in (f"/stories/{stories.named}", f"/stories/{stories.named}/relations"):
                 refused = await client.get(path, headers=WRITE)
                 assert refused.status_code == 503, (path, refused.text)

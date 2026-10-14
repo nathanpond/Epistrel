@@ -384,9 +384,21 @@ async def test_s_erasure_boundary__restore(ledger_server: ledger.Server, tmp_pat
     assert await ledger.ledger_rows(url) == []  # the dump predates the erasure
     assert ledger.SUBJECT in " ".join(await ledger.pins(url, stories.named))
 
+    restored_operations = [
+        row.operation_id
+        for row in await ledger.sql(
+            url, "SELECT operation_id FROM operations WHERE story_id = :s", s=stories.named
+        )
+    ]
     with pauses.held(pauses.ERASURE_RECONCILE_BEFORE_REAPPLY) as hold:
         async with ledger.started(config) as (client, _):
             await hold.arrived()
+            # Nothing of the blocked story is served, its operations' stored results included
+            # (#333): a story-less read refuses like every other.
+            for operation_id in restored_operations:
+                held = await client.get(f"/operations/{operation_id}", headers=e.WRITE)
+                assert held.status_code == 503, held.text
+                assert ledger.SUBJECT not in held.text
             refused = await client.get(f"/stories/{stories.named}", headers=e.WRITE)
             assert refused.status_code == 503, refused.text
             assert refused.headers["Retry-After"] == "30"
@@ -423,6 +435,10 @@ async def test_s_erasure_boundary__restore(ledger_server: ledger.Server, tmp_pat
             hold.release()
             status = await _until_applied(client)
             assert status["applied_count"] == 1
+            for operation_id in restored_operations:
+                read = await client.get(f"/operations/{operation_id}", headers=e.WRITE)
+                assert read.status_code == 200, read.text
+                assert ledger.SUBJECT not in read.text
 
             shown = await client.get(
                 f"/stories/{stories.named}/history",

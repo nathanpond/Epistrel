@@ -37,6 +37,7 @@ from collections.abc import Iterable, Mapping
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -61,6 +62,7 @@ from epistrel.core.catalog.service import Revision
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import Ulid
 from epistrel.core.ownership import Owner, Principal
+from epistrel.core.profiles.impact import CAMEL_CASE, TwoStageRequest
 from epistrel.core.tables import character_catalog, personas
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
 
@@ -302,7 +304,7 @@ class SlotChoice(BaseModel):
         return self
 
 
-class StoryFromScenario(BaseModel):
+class StoryFromScenario(TwoStageRequest):
     """``POST /stories`` with a ``scenario`` (FR-SCN-6): the scenario (and version), who fills
     each NPC role (``slots``: a ``locked`` role and a ``default`` role kept as pre-filled need
     no entry; re-supplying a locked role's own ``character@version`` is accepted), each
@@ -349,7 +351,12 @@ class StoryFromScenario(BaseModel):
     engine_profile_id: str | None = None
     max_characters_at_start: CastLimit | None = None
     strict: StrictBool = False
-    ignore_warnings: StrictBool = False
+    ignore_warnings: StrictBool = Field(
+        default=False,
+        validation_alias=AliasChoices("ignore_warnings", CAMEL_CASE),
+        description="Create even when the profile leaves a recommended capability unmet "
+        "(FR-PROF-7); `ignoreWarnings` is the same flag for camelCase clients.",
+    )
     name: str | None = Field(default=None, max_length=STORY_NAME_MAX)
     owner: Owner | None = Field(
         default=None,

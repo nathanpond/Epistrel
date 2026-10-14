@@ -424,7 +424,12 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "rebuild_projections": ("story_busy",),
     "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
     "get_story": ("viewpoint_unresolved",),
-    "get_operation": ("idempotency_conflict", "viewpoint_unresolved"),
+    "get_operation": (
+        "idempotency_conflict",
+        "viewpoint_unresolved",
+        "erasure_pending",
+        "ledger_unavailable",
+    ),
     "create_content_rating": (*_ADMIN_CONFIG, "inheritance_cycle", "rating_retired"),
     "update_content_rating": (*_ADMIN_CONFIG, "inheritance_cycle", "rating_retired"),
     "retire_content_rating": _ADMIN_CONFIG,

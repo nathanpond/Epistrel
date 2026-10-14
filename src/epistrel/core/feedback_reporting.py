@@ -30,9 +30,10 @@ and ``tags`` (the tags present, with their counts), and the **signals** of its r
   the variant it replaced (``turn_report.regenerated_variant``), and that variant's message is
   the one regenerated. A turn written over a rewound tail is not one, though its variant is
   above 1 too;
-- ``regen_after_low_rating``: ratings of 1 or 2 followed, within the deployment's
-  ``feedback_regen_window_s`` (default 300 seconds), by a regeneration of the rated message
-  (from the rating's latest value, ``updated_at``, to the regenerate's commit);
+- ``regen_after_low_rating``: rated messages with a rating of 1 or 2 followed, within the
+  deployment's ``feedback_regen_window_s`` (default 300 seconds), by a regeneration of the
+  message (from the rating's latest value, ``updated_at``, to the regenerate's commit); a
+  message counts once however many low ratings preceded it (#345);
 - ``swaps_back``: ``swap`` events at the message's turn that made it dormant in favour of an
   older variant (a lower variant number; an untruncate that swaps back is one too);
 - ``rewinds``: ``truncate`` events whose first discarded turn is the message's own, with the
@@ -382,7 +383,7 @@ class _Tally:
     ratings: list[int] = dataclasses.field(default_factory=list)
     tags: Counter[str] = dataclasses.field(default_factory=Counter)
     messages: dict[tuple[str, str], tuple[int, int, int]] = dataclasses.field(default_factory=dict)
-    low_then_regenerated: int = 0
+    low_then_regenerated: set[tuple[str, str]] = dataclasses.field(default_factory=set)
 
     def add(self, row: Any) -> None:
         self.ratings.append(int(row.rating))
@@ -392,7 +393,8 @@ class _Tally:
             int(row.swaps_back),
             int(row.rewinds),
         )
-        self.low_then_regenerated += 1 if row.low_then_regenerated else 0
+        if row.low_then_regenerated:
+            self.low_then_regenerated.add((str(row.story_id), str(row.message_id)))
 
     def totals(self) -> dict[str, Any]:
         count = len(self.ratings)
@@ -407,7 +409,7 @@ class _Tally:
             "tags": dict(sorted(self.tags.items())),
             "signals": FeedbackSignals(
                 regenerations=sum(m[0] for m in self.messages.values()),
-                regen_after_low_rating=self.low_then_regenerated,
+                regen_after_low_rating=len(self.low_then_regenerated),
                 swaps_back=sum(m[1] for m in self.messages.values()),
                 rewinds=sum(m[2] for m in self.messages.values()),
             ),

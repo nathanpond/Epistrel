@@ -1450,12 +1450,17 @@ MEDIA_REFERENCE_SOURCES: list[ReferenceSource] = [
     ReferenceSource("catalog.scenario_catalog", "draft"),
     ReferenceSource("catalog.scenario_versions", "content"),
     ReferenceSource("public.characters", "images"),
+    ReferenceSource("public.character_snapshots", "content"),
+    ReferenceSource("public.stories", "scenario_snapshot"),
 ]
 """Where references to assets live (FR-MEDIA-2): catalog character and scenario drafts and
-published versions (#108: a scenario's cover, gallery and videos), a video's poster (#107), and
-the images of a character added in a story (``characters.images``, #114: an asset a story shows
-survives its retirement until the story is deleted); #119 (story snapshots; #316) and M8
-(candidates, story images) register theirs. A source whose table does not exist (yet) is
+published versions (#108: a scenario's cover, gallery and videos), a video's poster (#107), the
+images of a character added in a story (``characters.images``, #114: an asset a story shows
+survives its retirement until the story is deleted), and a story's genesis snapshots (#119,
+#316): the catalog character versions in ``character_snapshots.content`` and the scenario
+version in ``stories.scenario_snapshot``, so an asset a story was created with survives its
+catalog entry's deletion until the story is deleted. M8 (candidates, story images) registers
+its own. A source whose table does not exist (yet) is
 skipped; one whose column does not exist fails the query, so a source is registered only once
 its column exists."""
 
@@ -1544,6 +1549,12 @@ REFERENCE_HOLDERS: dict[str, tuple[str, str, str]] = {
         "t.story_id",
         "(SELECT s.owner_principal FROM public.stories AS s WHERE s.id = t.story_id)",
     ),
+    "public.character_snapshots": (
+        "story",
+        "t.story_id",
+        "(SELECT s.owner_principal FROM public.stories AS s WHERE s.id = t.story_id)",
+    ),
+    "public.stories": ("story", "t.id", "t.owner_principal"),
 }
 """For each reference source's table: the owned entity a record belongs to and the SQL of its
 id and owner (``t`` is the record). #117's offboarding reads them: media referenced by an entry

@@ -8,7 +8,9 @@ instructions, and the real ``POST /stories`` for character definitions; #57/#58/
 
 Every C-20 (M3) part lives in this file. #111's, ``test_c_20__catalog_input_policy``: a catalog
 scenario's content that breaks an input policy publishes with a warning and writes no audit row.
-#119 adds the story-creation half here (creating a story from that scenario is refused).
+#119's story-creation half joins it: creating a story from that scenario is refused, and so is
+one whose persona description, ad-hoc definition or cast catalog character's definition breaks
+the policy.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from epistrel.config import Settings
 from epistrel.core.ids import new_ulid
 from epistrel.core.ratings import RatingFields, RatingReplacement, create_rating, update_rating
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
+from tests import genesis_support as g
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.gate_support import ENTRY_POINTS, audit_rows, gated, input_policies
@@ -279,8 +282,13 @@ async def test_c_20__catalog_input_policy(settings: Settings, engine: AsyncEngin
     set to apply to input warns the same way for a scenario at that rating; one left at its
     default (output only) does not.
 
-    Complement asserted: the same scenario with the word taken out validates without the
-    warning."""
+    Creating a story from that scenario is refused (422 ``guardrail_violation``, an audit row
+    for the ``story_create`` entry point, nothing else written), and so is creating one from a
+    clean scenario whose player's persona description, ad-hoc character definition or cast
+    catalog character's definition holds the word.
+
+    Complements asserted: the same scenario with the word taken out validates without the
+    warning; a story from the clean scenario with a clean cast is created."""
     word = f"zarquon{new_ulid().lower()}"
     async with rest(settings, engine) as client:
         made = await _global_wordlist(client, word)
@@ -306,6 +314,42 @@ async def test_c_20__catalog_input_policy(settings: Settings, engine: AsyncEngin
             assert warning["location"]["field"] == "starting_state.seeded_memories[0].text"
             assert (warning["location"]["seed_id"], warning["text"]) == (seed_id, word.upper())
             assert await count(engine, "SELECT count(*) FROM audit_log") == audit_before
+
+            # Story creation (#119): the seed, a persona's description, an ad-hoc definition
+            # and a cast catalog character's definition are each refused, nothing written.
+            fine = await g.catalog_character_id(client, f"Mara {new_ulid()}")
+            tainted = await g.catalog_character_id(
+                client,
+                f"Ilse {new_ulid()}",
+                definition={"personality": f"Hums about the {word} all day."},
+            )
+            clean_body = catalog_scenario(
+                "Clean", starting_state={"opening": {"narration": "Dusk."}}
+            )
+            clean_id, _ = await g.published_scenario(client, clean_body)
+            requests = [
+                g.from_scenario(created["id"], slots={"mother": g.catalog_slot(fine)}),
+                g.from_scenario(
+                    clean_id,
+                    slots={"mother": g.catalog_slot(fine)},
+                    players={"player": g.player(description=f"Fond of the {word}.")},
+                ),
+                g.from_scenario(
+                    clean_id, slots={"mother": g.ad_hoc_slot("Dale", 40, f"Sells {word}.")}
+                ),
+                g.from_scenario(clean_id, slots={"mother": g.catalog_slot(tainted)}),
+            ]
+            for request in requests:
+                counted = await g.counts(engine)
+                audited = await count(engine, CREATE_ROWS)
+                status, code, details = await g.refused(client, request)
+                assert (status, code) == (422, "guardrail_violation"), details
+                assert await g.counts(engine) == counted
+                assert await count(engine, CREATE_ROWS) == audited + 1
+            made_story = await g.create_from(
+                client, g.from_scenario(clean_id, slots={"mother": g.catalog_slot(fine)})
+            )
+            assert made_story["applied"] is True
 
             clean = await client.post(
                 "/catalog/scenarios", json=catalog_scenario("Clean"), headers=WRITE

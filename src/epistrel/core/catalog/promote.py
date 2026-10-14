@@ -18,7 +18,9 @@ draft: nothing is deduplicated.
   appearance, personality, dispositions, likes and interaction style. Its typed fields
   (``personality`` and #115's others) are left empty for the author to fill before publishing.
   A definition longer than ``background_flavor`` holds (4,000 characters) is cut there, with the
-  warning ``definition_truncated``;
+  warning ``definition_truncated``. A character the story was created with from the catalog
+  (#119) is promoted from its genesis snapshot instead: the snapshot's typed ``definition``
+  (with the story's true age) and its public card's images;
 - ``definition.safe_fallback_text`` and ``definition.deflection_style`` (FR-GUARD-7), when the
   character has them;
 - the images, by reference (no bytes are copied): the first is ``public_card.images.primary``,
@@ -44,7 +46,7 @@ revision, the warnings (#111's ``Entry`` shape) and the story's unchanged ``time
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,12 +61,13 @@ from epistrel.core.catalog.characters import (
     SERVICE,
     Name,
 )
+from epistrel.core.catalog.checks.character_documents import images_of
 from epistrel.core.catalog.report import DRAFT, Entry, EntryLocation, Outcome
 from epistrel.core.errors import InvalidRequest, StoryCharacterNotFound, StoryNotFound
 from epistrel.core.ids import Ulid, new_ulid
 from epistrel.core.ownership import Owner
 from epistrel.core.ratings import require_assignable
-from epistrel.core.tables import characters, media_assets, stories
+from epistrel.core.tables import character_snapshots, characters, media_assets, stories
 from epistrel.core.tables.media import MediaState
 
 DEFINITION_TRUNCATED = "definition_truncated"
@@ -140,15 +143,28 @@ async def _live_images(conn: AsyncConnection, images: Sequence[str]) -> tuple[li
 
 
 def draft_of(
-    row: Any, request: PromoteRequest, rating_id: str, images: Sequence[str]
+    row: Any,
+    request: PromoteRequest,
+    rating_id: str,
+    images: Sequence[str],
+    snapshot: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """The draft document a promotion of the character ``row`` makes, and whether its
-    definition had to be cut (see the module docstring)."""
+    definition had to be cut (see the module docstring). A character a story was created with
+    from the catalog (``snapshot``: its ``character_snapshots.content``, #119) is promoted from
+    its snapshot's typed definition, not from the plain text the story renders."""
     text = str(row.definition)
-    definition: dict[str, Any] = {
-        "true_age": int(row.true_age),
-        "background_flavor": text[:BACKGROUND_FLAVOR_MAX],
-    }
+    typed = snapshot.get("definition") if snapshot is not None else None
+    definition: dict[str, Any]
+    if isinstance(typed, Mapping):
+        definition = {k: v for k, v in typed.items() if v is not None}
+        definition["true_age"] = int(row.true_age)
+        text = ""
+    else:
+        definition = {
+            "true_age": int(row.true_age),
+            "background_flavor": text[:BACKGROUND_FLAVOR_MAX],
+        }
     if row.safe_fallback_text:
         definition["safe_fallback_text"] = row.safe_fallback_text
     if row.deflection_style:
@@ -208,8 +224,19 @@ async def promote(
             )
         rating_id = request.content_rating_id or str(story.content_rating_id)
         await require_assignable(conn, rating_id, field="body.content_rating_id")
-        live, left_out = await _live_images(conn, row.images or [])
-        document, cut = draft_of(row, request, rating_id, live)
+        snapshot = await conn.scalar(
+            select(character_snapshots.c.content).where(
+                character_snapshots.c.story_id == story_id,
+                character_snapshots.c.character_id == character_id,
+            )
+        )
+        shown_images = list(row.images or [])
+        if isinstance(snapshot, Mapping):
+            shown_images = [media_id for _, media_id in images_of(snapshot)]
+        live, left_out = await _live_images(conn, shown_images)
+        document, cut = draft_of(
+            row, request, rating_id, live, snapshot if isinstance(snapshot, Mapping) else None
+        )
         shown, _ = await SERVICE.create_in(
             conn,
             document,

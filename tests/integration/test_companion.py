@@ -2,9 +2,10 @@
 
 - ``test_s_companion`` (S-COMPANION's M3 part): the one-to-one scenario every catalog
   character is created with, its fixed slots, its edits, its versions pinned to the character's,
-  and its archiving with the character, catalog side. Its story-creation clauses (a story from a
-  companion is a one-to-one chat; another scenario casting the character brings none of the
-  companion's world) are #119's ``test_i_22__creation``.
+  and its archiving with the character, catalog side, and a story created from the companion
+  (#119): a one-to-one chat with the character at the pinned version, which archiving leaves
+  untouched. Another scenario casting the character bringing none of the companion's world is
+  #119's ``test_i_22__creation``.
 
 I-20's M3 part, the publishing rules (alone, together, atomic, concurrent, rating difference),
 is ``test_i_20__companion`` in ``tests/integration/test_i_20.py``, beside #111's slice, because
@@ -33,11 +34,11 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.seeds.ratings import EVERYONE_ID, TEEN_ID
 from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import stories
+from tests import genesis_support as g
 from tests import scenario_support as scenarios
 from tests.catalog_support import BASE, character, headers, read_companion
 from tests.event_support import rows, scalar
-from tests.story_support import create as create_story
-from tests.story_support import rest, story_body
+from tests.story_support import rest
 from tests.validation_support import entries
 
 CHARACTERS = BASE
@@ -188,8 +189,10 @@ async def test_s_companion(client: httpx.AsyncClient, engine: AsyncEngine) -> No
     companion's world description and opening, seeds Linda's default world ("had an affair,
     known only to her") and publishes it alone: a version pinned to Linda's version 1.
     Publishing Linda's version 2 makes a companion version pinned to version 2 with the previous
-    companion content, the seed included. Archiving Linda archives her companion in the same
-    write, and a story made from Linda stays byte-identical.
+    companion content, the seed included. A story created from the companion is a one-to-one
+    chat: Linda (her version 2, the pin) and the player. Archiving Linda archives her companion
+    in the same write, the story stays byte-identical, and the archived companion starts no new
+    story.
 
     Complements asserted: the refused slot changes left the draft and its revision as they were;
     the companion's own unarchive is refused; the story snapshot does see the story's own
@@ -279,15 +282,17 @@ async def test_s_companion(client: httpx.AsyncClient, engine: AsyncEngine) -> No
     assert [s["text"] for s in copied["starting_state"]["seeded_memories"]] == [SECRET]
     assert copied["world"]["description"] == WORLD["description"]
 
-    story = await create_story(client, story_body("Wren", "Linda"))
-    async with engine.begin() as conn:
-        await conn.execute(
-            text(
-                "UPDATE characters SET source_catalog_id = :x, source_catalog_version = 2 "
-                "WHERE id = :c"
-            ),
-            {"x": linda["id"], "c": story["characters"][1]["id"]},
-        )
+    # A story from the companion (#119): a one-to-one chat with Linda, at the pinned version.
+    story = await g.create_from(client, g.from_scenario(sid))
+    cast = [(c["role_id"], c["name"]) for c in story["characters"]]
+    assert cast == [("npc", "Linda Okafor"), ("player", "Sam")]
+    linda_in_story = story["characters"][0]["id"]
+    (source,) = await rows(
+        engine,
+        "SELECT source_catalog_id, source_catalog_version FROM characters WHERE id = :c",
+        c=linda_in_story,
+    )
+    assert tuple(source) == (linda["id"], 2)
     before = await _snapshot(engine, story["story_id"])
     archived = await _ok(await client.post(f"{CHARACTERS}/{linda['id']}/archive", headers=WRITE))
     assert (archived["status"], archived["companion_id"]) == ("archived", sid)
@@ -296,6 +301,8 @@ async def test_s_companion(client: httpx.AsyncClient, engine: AsyncEngine) -> No
     refused_alone = await client.post(f"{SCENARIOS}/{sid}/unarchive", headers=WRITE)
     assert _error(refused_alone)[:2] == (422, "companion_follows_character")
     assert await _snapshot(engine, story["story_id"]) == before
+    status, code, _ = await g.refused(client, g.from_scenario(sid))
+    assert (status, code) == (422, "entry_archived"), "an archived companion starts no story"
     archived_story = await client.post(f"/stories/{story['story_id']}/archive", headers=WRITE)
     assert archived_story.status_code == 200, archived_story.text
     assert await _snapshot(engine, story["story_id"]) != before

@@ -57,7 +57,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -86,17 +86,20 @@ from epistrel.core.events import Operation
 from epistrel.core.events.types import (
     CastMember,
     CharacterDefined,
+    ScenarioOrigin,
     StoryArchivedEvent,
     StoryCreated,
     StoryDeletedEvent,
     StoryUnarchivedEvent,
 )
+from epistrel.core.genesis.models import CreationReport
 from epistrel.core.idempotency import Scope
 from epistrel.core.ids import Ulid, new_ulid
 from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.effective import ProfileVersionRef
+from epistrel.core.profiles.impact import ImpactReport
 from epistrel.core.ratings import require_assignable
 from epistrel.core.settings_schema import (
     CHARACTER_VIEWPOINT_PREFIX,
@@ -107,6 +110,7 @@ from epistrel.core.settings_schema import (
 )
 from epistrel.core.tables import (
     audit_log,
+    character_snapshots,
     characters,
     client_events,
     config_changes,
@@ -159,6 +163,7 @@ STORY_TABLES: tuple[Table, ...] = (
     story_texts,
     story_profile_overrides,
     policies,
+    character_snapshots,
     characters,
     turn_queue,
     jobs,
@@ -367,28 +372,51 @@ class RatingRef:
 class CharacterRef:
     id: str
     name: str
+    role_id: str | None = None
+    """The scenario role the character fills (a story created from a scenario, #119)."""
 
 
 @dataclass(frozen=True, slots=True)
 class CreatedStory:
+    """A new story: its id, cast, revision and rating. A story created from a scenario (#119)
+    also names the scenario version, the engine profile it runs under, its creation report and
+    #109's impact report; a blank story leaves them ``None``."""
+
     story_id: str
     characters: tuple[CharacterRef, ...]
     timeline_revision: int
     content_rating: RatingRef
+    scenario: ScenarioOrigin | None = None
+    engine_profile: ProfileVersionRef | None = None
+    report: CreationReport | None = None
+    impact: ImpactReport | None = None
+    applied: Literal[True] = True
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
 @dataclass(frozen=True, slots=True)
+class CatalogVersionRef:
+    """A catalog entry's version, by identifiers (a story character's ``source``, #119)."""
+
+    catalog_id: str
+    version: int
+
+
+@dataclass(frozen=True, slots=True)
 class CharacterView:
     """A character as a read returns it; ``true_age`` (FR-CAT-12) and ``promoted_to`` (the
-    catalog entries promoted from it, FR-CAT-8) are ``None`` unless the read is omniscient."""
+    catalog entries promoted from it, FR-CAT-8) are ``None`` unless the read is omniscient.
+    ``role_id`` and ``source`` (the catalog version it was created from) are a story created
+    from a scenario's (#119), ``None`` otherwise."""
 
     id: str
     name: str
     is_player: bool
     true_age: int | None = None
     promoted_to: tuple[str, ...] | None = None
+    role_id: str | None = None
+    source: CatalogVersionRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,6 +451,9 @@ class StoryView:
     pause: dict[str, Any] | None = None
     """While the story is paused (#118): ``{job_id, cause, progress {done, total}}``, the check
     that paused it. Read by ``get_story`` only."""
+    scenario: ScenarioOrigin | None = None
+    """The scenario version the story was created from (#119); ``None`` for a blank story.
+    Read by ``get_story`` only."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -635,6 +666,11 @@ async def resolve_story_rating(conn: AsyncConnection, content_rating_id: str | N
             )
         ).scalar_one()
     return await require_assignable(conn, content_rating_id)
+
+
+async def rating_ref(conn: AsyncConnection, rating_id: str) -> RatingRef:
+    """The rating as responses show it: its id, current version and name."""
+    return await _rating_ref(conn, rating_id)
 
 
 async def _rating_ref(conn: AsyncConnection, rating_id: str) -> RatingRef:
@@ -1060,7 +1096,13 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
     async with db.connect() as conn, conn.begin():
         row = (
             await conn.execute(
-                select(*_story_columns(), stories.c.engine_profile_id, runs_on)
+                select(
+                    *_story_columns(),
+                    stories.c.engine_profile_id,
+                    stories.c.scenario_id,
+                    stories.c.scenario_version,
+                    runs_on,
+                )
                 .join(content_ratings, content_ratings.c.id == stories.c.content_rating_id)
                 .join(engine_profiles, engine_profiles.c.id == stories.c.engine_profile_id)
                 .where(stories.c.id == story_id)
@@ -1080,6 +1122,9 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
                     characters.c.is_player,
                     characters.c.true_age,
                     characters.c.promoted_to,
+                    characters.c.role_id,
+                    characters.c.source_catalog_id,
+                    characters.c.source_catalog_version,
                 )
                 .where(characters.c.story_id == story_id)
                 .order_by(characters.c.ordinal)
@@ -1094,12 +1139,23 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
                 is_player=bool(c.is_player),
                 true_age=int(c.true_age) if omniscient else None,
                 promoted_to=tuple(str(i) for i in c.promoted_to or ()) if omniscient else None,
+                role_id=c.role_id,
+                source=None
+                if c.source_catalog_id is None or c.source_catalog_version is None
+                else CatalogVersionRef(
+                    catalog_id=str(c.source_catalog_id), version=int(c.source_catalog_version)
+                ),
             )
             for c in cast
         ),
     )
     profile = ProfileVersionRef(id=str(row.engine_profile_id), version=int(row.profile_version))
-    return dataclasses.replace(view, engine_profile=profile, pause=paused)
+    scenario = (
+        None
+        if row.scenario_id is None
+        else ScenarioOrigin(id=str(row.scenario_id), version=int(row.scenario_version))
+    )
+    return dataclasses.replace(view, engine_profile=profile, pause=paused, scenario=scenario)
 
 
 async def list_stories(

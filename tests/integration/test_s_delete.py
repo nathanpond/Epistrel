@@ -119,6 +119,16 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
             ),
             {"s": story_id, "r": new_ulid()},
         )
+        # A genesis snapshot (#119), planted on the victim's character: the story table a
+        # creation from a scenario writes.
+        await conn.execute(
+            text(
+                "INSERT INTO character_snapshots (story_id, character_id, source_catalog_id, "
+                "version, content, published_at) VALUES (:s, :c, :e, 1, "
+                '\'{"public_card": {"name": "Ada"}}\', now())'
+            ),
+            {"s": story_id, "c": character_id, "e": new_ulid()},
+        )
 
 
 def _due() -> datetime:

@@ -31,6 +31,17 @@ prompt renders it with the character's author notes, so a reply regenerated afte
 violation (#68) stays in character. It is set when the character is created: from the request
 (a story's cast, a character added later), or by #119's genesis from the catalog definition's
 ``definition.deflection_style``.
+
+#119 adds ``role_id`` (the scenario role a character of a story created from a scenario fills;
+``NULL`` otherwise) and ``character_snapshots``: one row per catalog character a story was
+created with (FR-SCN-9, FR-CAT-3,9), keyed ``(story_id, character_id)``, holding the catalog id
+and version, the version's whole ``content``, when it was published and the rating version it
+was published under. Like ``characters`` it is a story table with no foreign key: archiving,
+editing or deleting the catalog entry never touches it, story deletion enumerates it and a fork
+copies it. Ad-hoc characters and the player's persona get no row (the persona's copy is
+``persona_snapshot``). A catalog-sourced ``characters.definition`` holds a plain rendering of the
+snapshot's definition (``core.genesis.create.render_definition``) so Lite turns read one text, as
+they read an ad-hoc character's; the snapshot stays the record.
 """
 
 from __future__ import annotations
@@ -82,6 +93,7 @@ characters = Table(
     Column("images", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     Column("promoted_to", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     Column("deflection_style", Text, nullable=True),
+    Column("role_id", Text, nullable=True),
     CheckConstraint(f"true_age BETWEEN {TRUE_AGE_MIN} AND {TRUE_AGE_MAX}", name="true_age"),
     CheckConstraint(
         "(persona_id IS NULL AND persona_snapshot IS NULL) OR is_player", name="persona_player"
@@ -90,3 +102,15 @@ characters = Table(
 
 Index("uq_characters_story_name", characters.c.story_id, func.lower(characters.c.name), unique=True)
 Index("uq_characters_story_ordinal", characters.c.story_id, characters.c.ordinal, unique=True)
+
+character_snapshots = Table(
+    "character_snapshots",
+    metadata,
+    Column("story_id", ulid_type(), primary_key=True),
+    Column("character_id", ulid_type(), primary_key=True),
+    Column("source_catalog_id", ulid_type(), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("content", JSONB, nullable=False),
+    Column("published_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("content_rating_version_id", ulid_type(), nullable=True),
+)

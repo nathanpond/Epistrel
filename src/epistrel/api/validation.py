@@ -15,13 +15,17 @@ input too (``core.errors.refuse_nul``), so the library answers the same.
 
 A route whose handler takes a raw JSON object that the Engine validates (``PATCH
 /stories/{id}/settings``) registers the model that documents its body with
-``register_body_model``; that model is the one checked.
+``register_body_model``; that model is the one checked. A route whose body is one of several
+models chosen by the document (``POST /stories``: a blank story, or one from a scenario when the
+body names ``scenario``; #119) registers the choice with ``register_body_selector``, so an error
+names the field of the model the body is checked as.
 """
 
 from __future__ import annotations
 
 import email.message
 import json
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import Request
@@ -32,6 +36,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from epistrel.core.errors import nul_location
 
 _BODY_MODELS: dict[str, type[BaseModel]] = {}
+_BODY_SELECTORS: dict[str, Callable[[Any], type[BaseModel]]] = {}
 _ROUTE_ADAPTER = "_epistrel_strict_adapter"
 """The route attribute caching its body adapter (never a cache keyed by ``id``: a later app's
 route may reuse a collected one's id)."""
@@ -41,6 +46,17 @@ _MODEL_ADAPTERS: dict[type[BaseModel], TypeAdapter[Any]] = {}
 def register_body_model(operation_id: str, model: type[BaseModel]) -> None:
     """Check ``operation_id``'s body against ``model`` (its documented schema)."""
     _BODY_MODELS[operation_id] = model
+
+
+def register_body_selector(operation_id: str, selector: Callable[[Any], type[BaseModel]]) -> None:
+    """Check ``operation_id``'s body against the model ``selector(document)`` picks."""
+    _BODY_SELECTORS[operation_id] = selector
+
+
+def _model_adapter(model: type[BaseModel]) -> TypeAdapter[Any]:
+    if model not in _MODEL_ADAPTERS:
+        _MODEL_ADAPTERS[model] = TypeAdapter(model)
+    return _MODEL_ADAPTERS[model]
 
 
 def _is_json(request: Request) -> bool:
@@ -55,12 +71,13 @@ def _is_json(request: Request) -> bool:
     )
 
 
-def _adapter(route: APIRoute) -> TypeAdapter[Any] | None:
+def _adapter(route: APIRoute, document: Any) -> TypeAdapter[Any] | None:
+    selector = _BODY_SELECTORS.get(route.operation_id or "")
+    if selector is not None:
+        return _model_adapter(selector(document))
     model = _BODY_MODELS.get(route.operation_id or "")
     if model is not None:
-        if model not in _MODEL_ADAPTERS:
-            _MODEL_ADAPTERS[model] = TypeAdapter(model)
-        return _MODEL_ADAPTERS[model]
+        return _model_adapter(model)
     if route.body_field is None:
         return None
     adapter: TypeAdapter[Any] | None = getattr(route, _ROUTE_ADAPTER, None)
@@ -105,7 +122,7 @@ async def strict_json_body(request: Request) -> None:
     where = nul_location(document, ("body",))
     if where is not None:
         raise _nul_error(where)
-    adapter = _adapter(route)
+    adapter = _adapter(route, document)
     if adapter is None:
         return
     try:
@@ -115,4 +132,4 @@ async def strict_json_body(request: Request) -> None:
         raise RequestValidationError(errors) from None
 
 
-__all__ = ["register_body_model", "strict_json_body"]
+__all__ = ["register_body_model", "register_body_selector", "strict_json_body"]

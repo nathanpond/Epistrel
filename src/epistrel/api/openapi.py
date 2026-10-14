@@ -58,9 +58,11 @@ from epistrel.api.responses import STORY_PATH_PARAMETER
 from epistrel.api.routes.ownership import OWNERSHIP_TAG, ownership_operation_ids
 from epistrel.api.routes.stories import StorySettingsPatch
 from epistrel.core.context import PRINCIPAL_PATTERN
+from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
 from epistrel.core.media.assets import POSTER_FILE_FIELD, MediaUpload
 from epistrel.core.ownership import REGISTRY
+from epistrel.core.stories import StorySpec
 
 SCHEMA_VERSION = "m2"
 """``info.version``: the milestone whose contract the document describes."""
@@ -231,24 +233,32 @@ ERROR_STATUS: dict[str, int] = {
     "checksum_mismatch": 422,
     "companion_follows_character": 422,
     "companion_slots_fixed": 422,
+    "creation_conflicts": 422,
     "cursor_invalid": 422,
+    "eligibility_failed": 422,
     "entry_archived": 422,
     "guardrail_violation": 422,
     "inheritance_cycle": 422,
     "invalid_listing_status": 422,
     "invalid_profile": 422,
+    "locked_slot_reassigned": 422,
     "media_retired": 422,
     "moderation_rejected": 422,
     "not_published": 422,
     "nothing_to_regenerate": 422,
+    "override_not_allowed": 422,
     "part_invalid": 422,
+    "persona_required": 422,
+    "player_role_fixed": 422,
     "poster_extraction_failed": 422,
     "poster_invalid": 422,
     "poster_required": 422,
     "principal_reserved": 422,
     "profile_deleted": 422,
     "publish_invalid": 422,
+    "rating_check_failed": 422,
     "rating_retired": 422,
+    "slot_required": 422,
     "subjects_required": 422,
     "transfer_target_invalid": 422,
     "transfer_target_required": 422,
@@ -308,7 +318,24 @@ _SCENARIO_SAVE = ("draft_too_large", "cast_limit_exceeded", "rating_retired", "m
 _ADMIN_CONFIG = ("config_conflict",)
 
 OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
-    "create_story": (*_GATED, "rating_retired", "viewpoint_unresolved"),
+    "create_story": (
+        *_GATED,
+        "rating_retired",
+        "viewpoint_unresolved",
+        # a creation from a scenario (#119)
+        "creation_conflicts",
+        "slot_required",
+        "locked_slot_reassigned",
+        "player_role_fixed",
+        "persona_required",
+        "entry_archived",
+        "not_published",
+        "override_not_allowed",
+        "eligibility_failed",
+        "cast_limit_exceeded",
+        "rating_check_failed",
+        "profile_deleted",
+    ),
     "respond": (
         *_GATED,
         *_TURN,
@@ -515,9 +542,13 @@ CATALOG_CREATING_OPERATIONS = frozenset({"promote_character"})
 OFFBOARDING_OPERATIONS = frozenset({"offboard_principal"})
 """Operations that answer 202 with ``Location: /admin/offboarding/{job_id}`` (#117)."""
 
-DOCUMENTED_BODIES = {"update_story_settings": "StorySettingsPatch"}
-"""Operations whose handler takes a raw JSON object (validated by the Engine) and the component
-that documents it."""
+DOCUMENTED_BODIES: dict[str, str | tuple[str, ...]] = {
+    "update_story_settings": "StorySettingsPatch",
+    "create_story": ("StorySpec", "StoryFromScenario"),
+}
+"""Operations whose handler takes a raw JSON object (validated by the Engine or the handler) and
+the component that documents it, or the components it is one of (``anyOf``: ``POST /stories``
+takes a blank story or one from a scenario, #119)."""
 
 MULTIPART_BODIES = {"upload_media": "MediaUpload"}
 """Operations whose handler reads a ``multipart/form-data`` body itself (#105): a ``metadata``
@@ -717,6 +748,8 @@ def _extra_components() -> dict[str, Any]:
             (Error, "serialization"),
             (QueuedTurn, "serialization"),
             (StorySettingsPatch, "validation"),
+            (StorySpec, "validation"),
+            (StoryFromScenario, "validation"),
             (MediaUpload, "validation"),
         ],
         ref_template=REF,
@@ -761,13 +794,15 @@ def _finish_operation(operation: dict[str, Any], method: str, path: str) -> None
     if operation_id in ROUTE_TAGS:
         operation["tags"] = [ROUTE_TAGS[operation_id]]
     if operation_id in DOCUMENTED_BODIES:
+        documented = DOCUMENTED_BODIES[operation_id]
+        body_schema: dict[str, Any] = (
+            {"$ref": REF.format(model=documented)}
+            if isinstance(documented, str)
+            else {"anyOf": [{"$ref": REF.format(model=name)} for name in documented]}
+        )
         operation["requestBody"] = {
             "required": True,
-            "content": {
-                "application/json": {
-                    "schema": {"$ref": REF.format(model=DOCUMENTED_BODIES[operation_id])}
-                }
-            },
+            "content": {"application/json": {"schema": body_schema}},
         }
     if operation_id in MULTIPART_BODIES:
         operation["requestBody"] = _multipart_body(MULTIPART_BODIES[operation_id])

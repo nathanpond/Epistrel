@@ -1,4 +1,12 @@
-"""The player half of a story's creation from a scenario (FR-CAT-6, FR-SCN-6; #114, for #119).
+"""The request of a story's creation from a scenario and its report (FR-SCN-6; #119), and the
+player half (FR-CAT-6; #114).
+
+``StoryFromScenario`` is ``POST /stories``' body when it names ``scenario`` (``is_scenario_body``):
+the scenario version, the role assignments (``SlotChoice``: a catalog ``character@version`` or
+an ad-hoc definition), the players, overrides and the creation's options. ``CreationReport`` is
+#111's report with counts. ``core.genesis.create`` holds the rules.
+
+The player half:
 
 A story created from a scenario names, for each player, the role they fill and the persona they
 play as: ``players: {role_id: PlayerAssignment}``, where an assignment is the player's
@@ -26,17 +34,33 @@ role's eligibility filters (FR-SCN-3).
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    model_validator,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.catalog.personas import Persona, PersonaFields, persona_of
 from epistrel.core.catalog.report import Entry, EntryLocation, Outcome, VersionLabel
+from epistrel.core.catalog.scenario_models import (
+    DOTTED_PATH_PATTERN,
+    PATH_MAX,
+    SLUG_PATTERN,
+    CastLimit,
+)
+from epistrel.core.catalog.service import Revision
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import Ulid
-from epistrel.core.ownership import Principal
+from epistrel.core.ownership import Owner, Principal
 from epistrel.core.tables import character_catalog, personas
+from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
 
 PERSONA_REQUIRED = "persona_required"
 """A player's persona names a catalog character: a player plays a persona (FR-CAT-6)."""
@@ -210,12 +234,176 @@ async def resolve_personas(
     return found, entries
 
 
+# -- the request (#119) ----------------------------------------------------------------------
+
+RoleId = Annotated[str, Field(pattern=SLUG_PATTERN)]
+OverridePath = Annotated[str, Field(max_length=PATH_MAX, pattern=DOTTED_PATH_PATTERN)]
+NAME_MAX = 80
+"""The longest ad-hoc character name (#50's ``CharacterSpec``)."""
+DEFINITION_MAX = 20_000
+STORY_NAME_MAX = 200
+SAFE_FALLBACK_MAX = 500
+Projection = Literal["card", "full"]
+
+
+class ScenarioRef(BaseModel):
+    """The scenario a story is created from: its id and, optionally, a published version
+    (default: the latest published; any older published version may be named)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: Ulid
+    version: Revision | None = None
+
+
+class AdHocSlotCharacter(BaseModel):
+    """An ad-hoc character for an ``open`` or ``default`` role: #50's free-text shape (#114's
+    ad-hoc shape) — its name, its definition, its required true age (FR-CAT-12) and optionally
+    its safe fallback line and deflection style. Story-scoped: never a catalog entry."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: Annotated[str, Field(min_length=1, max_length=NAME_MAX)]
+    definition: str = Field(min_length=1, max_length=DEFINITION_MAX)
+    true_age: StrictInt = Field(ge=TRUE_AGE_MIN, le=TRUE_AGE_MAX)
+    safe_fallback_text: str | None = Field(default=None, max_length=SAFE_FALLBACK_MAX)
+    deflection_style: str | None = Field(
+        default=None, min_length=1, max_length=DEFLECTION_STYLE_MAX
+    )
+
+
+class SlotChoice(BaseModel):
+    """Who fills one NPC role: a catalog character (``catalog_id`` and optionally a published
+    ``version``; default the latest published) or an ad-hoc one (``ad_hoc``), never both."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [
+                {"catalog_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3", "version": 2},
+                {"ad_hoc": {"name": "Dale", "definition": "A nosy neighbour.", "true_age": 52}},
+            ]
+        },
+    )
+
+    catalog_id: Ulid | None = None
+    version: Revision | None = None
+    ad_hoc: AdHocSlotCharacter | None = None
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> Self:
+        if (self.catalog_id is None) == (self.ad_hoc is None):
+            raise ValueError("name a catalog character (catalog_id) or an ad_hoc one, not both")
+        if self.version is not None and self.catalog_id is None:
+            raise ValueError("a version names a catalog character's version (catalog_id)")
+        return self
+
+
+class StoryFromScenario(BaseModel):
+    """``POST /stories`` with a ``scenario`` (FR-SCN-6): the scenario (and version), who fills
+    each NPC role (``slots``: a ``locked`` role and a ``default`` role kept as pre-filled need
+    no entry; re-supplying a locked role's own ``character@version`` is accepted), each
+    player's principal and persona (``players``, by the scenario's player role), the
+    permitted ``overrides`` (dotted paths over ``story_settings_defaults``, and
+    ``cast.max_characters_at_start``, each named by the scenario's
+    ``creation_rules.overridable``), an optional content rating, engine profile and
+    starting-cast limit, ``strict`` (refuse on any creation conflict, FR-SCN-7), the story's
+    ``name`` (default: the scenario's) and ``owner``, the report's ``projection`` (``card``:
+    counts; ``full``: every entry), and ``ignore_warnings`` (FR-PROF-7: create even when the
+    profile leaves a recommended capability unmet). ``characters`` is #50's blank-story field
+    and is refused beside a scenario."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "scenario": {"id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"},
+                    "slots": {"mother": {"catalog_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"}},
+                    "players": {
+                        "player": {
+                            "principal": "p-7f3a9c",
+                            "persona": {"id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"},
+                        }
+                    },
+                    "overrides": {"story_settings_defaults.turn_concurrency": "queue"},
+                }
+            ]
+        },
+    )
+
+    scenario: ScenarioRef
+    slots: dict[RoleId, SlotChoice] = Field(default_factory=dict)
+    players: dict[RoleId, PlayerAssignment] = Field(default_factory=dict)
+    overrides: dict[OverridePath, Any] = Field(
+        default_factory=dict,
+        description="Dotted paths under `story_settings_defaults` (or "
+        "`cast.max_characters_at_start`) the scenario's `creation_rules.overridable` names, "
+        "each with its value (validated by the scenario's field model).",
+    )
+    content_rating_id: str | None = None
+    engine_profile_id: str | None = None
+    max_characters_at_start: CastLimit | None = None
+    strict: StrictBool = False
+    ignore_warnings: StrictBool = False
+    name: str | None = Field(default=None, max_length=STORY_NAME_MAX)
+    owner: Owner | None = Field(
+        default=None,
+        description="The story's owner principal (default: the requesting principal; never "
+        "`system`). Recorded, never interpreted.",
+    )
+    projection: Projection = "card"
+
+
+def is_scenario_body(body: Any) -> bool:
+    """Whether a ``POST /stories`` body is a creation from a scenario (it names ``scenario``)."""
+    return isinstance(body, Mapping) and "scenario" in body
+
+
+# -- the creation report (#119; #122 fills deferred and inactive) ----------------------------
+
+
+class CreationCounts(BaseModel):
+    """How many errors and warnings the creation found, and what it deferred or left inactive
+    (``0`` until #122 materialises by capability)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    errors: int = 0
+    warnings: int = 0
+    deferred: int = 0
+    inactive: int = 0
+
+
+class CreationReport(BaseModel):
+    """What a creation from a scenario found (FR-SCN-5,6): #111's report (``errors``,
+    ``warnings``: every entry, under the ``full`` projection only; ``null`` under ``card``),
+    ``unavailable`` (the checks the deployment could not run) and the ``counts``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    counts: CreationCounts
+    unavailable: list[str] = Field(default_factory=list)
+    errors: list[Entry] | None = None
+    warnings: list[Entry] | None = None
+
+
 __all__ = [
     "PERSONA_REQUIRED",
     "PLAYER_ROLE_FIXED",
     "AdHocPersona",
+    "AdHocSlotCharacter",
+    "CreationCounts",
+    "CreationReport",
     "PersonaRef",
     "PlayerAssignment",
+    "Projection",
+    "ScenarioRef",
+    "SlotChoice",
+    "StoryFromScenario",
+    "is_scenario_body",
     "player_role_entries",
     "resolve_personas",
 ]

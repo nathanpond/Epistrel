@@ -735,6 +735,46 @@ async def add_relation(
     )
 
 
+async def relate_in(
+    conn: AsyncConnection,
+    entity_type: EntityType,
+    entity_id: str,
+    related: str,
+    relation: str,
+    *,
+    principal: str,
+) -> bool:
+    """Relate ``related`` to the entity as ``relation`` inside ``conn``'s transaction, which
+    also creates the entity (#119: a story created from a scenario records each player's
+    principal as a ``player`` relation, FR-AUTH-6). Records the ``relation_added`` ownership
+    event; the creation's own operation records the call. ``False`` when the relation already
+    existed (nothing recorded)."""
+    stored = await conn.scalar(
+        pg_insert(entity_relations)
+        .values(
+            entity_type=entity_type.value,
+            entity_id=entity_id,
+            principal=related,
+            relation=relation,
+            created_by=principal,
+        )
+        .on_conflict_do_nothing()
+        .returning(entity_relations.c.created_by)
+    )
+    if stored is None:
+        return False
+    await record_event(
+        conn,
+        OwnershipEventKind.RELATION_ADDED,
+        entity_type,
+        entity_id,
+        old=None,
+        new=_pair(related, relation),
+        principal=principal,
+    )
+    return True
+
+
 async def remove_relation(
     db: AsyncEngine,
     entity_type: EntityType,
@@ -957,6 +997,7 @@ __all__ = [
     "path_relation",
     "principal_rule",
     "record_event",
+    "relate_in",
     "relation_filter_problem",
     "relation_name_problem",
     "remove_relation",

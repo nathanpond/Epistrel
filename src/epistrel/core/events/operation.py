@@ -318,6 +318,53 @@ class Operation:
         telemetry.operation_opened(self.operation_id, self.story_id)
         return result
 
+    async def begin_in(self, conn: AsyncConnection) -> None:
+        """Begin inside ``conn``'s open transaction, which the caller owns (#119's genesis,
+        which creates the story row in that transaction, as #67's fork does): the base, the
+        story settings and the configuration the operation runs under are read there, and the
+        ``in_flight`` row is inserted there. ``write_in(conn)`` then does the commit work in the
+        same transaction, and ``settle`` records the outcome once it has ended. A rollback
+        removes the row with everything else, so no ``failed`` row is left behind."""
+        if self.status is not None:
+            raise RuntimeError(f"operation {self.operation_id} has already begun")
+        if self.queued:
+            raise RuntimeError("a queued operation is started from the queue")
+        if self.story_id is not None:
+            found = (
+                await conn.execute(
+                    select(
+                        stories.c.timeline_revision,
+                        stories.c.settings,
+                        stories.c.status,
+                    ).where(stories.c.id == self.story_id)
+                )
+            ).one_or_none()
+            if found is None:
+                raise StoryNotFound(f"story {self.story_id} does not exist")
+            self._refuse_archived(found.status)
+            self.base_revision = int(found.timeline_revision)
+            self.story_settings = StorySettings.from_row(found.settings)
+            self.config_revisions = await config_dependencies.capture(
+                conn, self.story_id, self.config_captured
+            )
+        await conn.execute(
+            insert(operations).values(
+                operation_id=self.operation_id,
+                story_id=self.story_id,
+                kind=self.kind.value,
+                principal=self.principal,
+                base_revision=self.base_revision,
+                read_set=self.read_set,
+                config_revisions=self.config_revisions,
+                idempotency_key=self.idempotency_key,
+                viewpoint=self.viewpoint,
+                origin=self.origin,
+                source_window=self.source_window,
+            )
+        )
+        self.status = OperationStatus.IN_FLIGHT
+        telemetry.operation_opened(self.operation_id, self.story_id)
+
     def _span_attributes(self) -> dict[str, str]:
         """The commit span's identifiers (#74): never a payload."""
         found = {"epistrel.operation_id": self.operation_id, "epistrel.kind": self.kind.value}

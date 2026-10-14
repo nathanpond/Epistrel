@@ -12,6 +12,10 @@ file); #111 (validation) and #119 (story creation) add theirs here.
   role's character present, published and eligible. It runs on its own scratch database: it
   changes the deployment's ceiling and plants characters in #115's shape. The details are in
   ``tests/integration/test_scenario_validation.py``.
+- #119's part, ``test_u_26__creation``: what a story's creation from a scenario does with each
+  fill mode, its refusals (each with nothing written) and the starting-cast limit, player
+  slots included (FR-SCN-6). It runs on its own scratch database: it sets the deployment's
+  ceiling. The details are in ``tests/integration/test_story_from_scenario.py``.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from epistrel.config import Settings
 from epistrel.core.config_changes import read_settings
 from epistrel.core.ids import new_ulid
 from epistrel.core.seeds.ratings import EVERYONE_ID, TEEN_ID
+from tests import genesis_support as g
 from tests.catalog_support import scratch_catalog
 from tests.character_support import named
 from tests.event_support import scalar
@@ -265,3 +270,126 @@ async def test_u_26__validation(pg_url: str) -> None:
         ]
         assert report["errors"][2]["source"] == f"{fit}@9"
         assert {e["source"] for e in report["errors"][4:]} == {f"{young}@{young_version}"}
+
+
+# -- #119: story creation ----------------------------------------------------------------------
+
+
+def _npcs(count: int) -> list[dict[str, Any]]:
+    """``count`` open, optional NPC roles and the player's: ``count + 1`` slots."""
+    return [role(f"guest_{i}", required=False) for i in range(count)] + [
+        role("player", kind="player")
+    ]
+
+
+def _filling(count: int) -> dict[str, Any]:
+    return {f"guest_{i}": g.ad_hoc_slot(f"Guest {i}", 30 + i) for i in range(count)}
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-SCN-6")
+async def test_u_26__creation(pg_url: str) -> None:
+    """Creating a story from a scenario with a role in each fill mode: an ``open`` role takes a
+    catalog character or an ad-hoc definition, a ``default`` role keeps its character unless
+    replaced, a ``locked`` role refuses any reassignment (its own character re-supplied is
+    accepted). A missing required slot, an ineligible choice and a non-overridable override
+    are each refused with nothing written. **Limit:** with the deployment default, 16 slots
+    (player slots included) are accepted and 17 refused (a request lowering a 20-slot
+    scenario's limit to 16); a scenario that sets 20 accepts 20; a request overriding a
+    24-slot scenario's limit to 24 is accepted, and with a deployment ceiling of 20 the same
+    request is refused. A character added after genesis is not counted.
+
+    Complements asserted: every refusal's request succeeds once its one fault is fixed."""
+    async with scratch_catalog(pg_url) as (settings, engine), rest(settings, engine) as client:
+        aunt = await g.catalog_character_id(client, "Ivy Harrow", age=50)
+        brother = await g.catalog_character_id(client, "Tom Harrow", age=45)
+        other = await g.catalog_character_id(client, "Ada Lark", age=33)
+        roles = [
+            role("friend", required=True, eligibility={"age_range": [25, 40]}),
+            role("aunt", fill="default", character={"catalog_id": aunt}),
+            role("brother", fill="locked", character={"catalog_id": brother, "version": 1}),
+            role("player", kind="player"),
+        ]
+        body = g.scenario_body(
+            *roles,
+            creation_rules={"overridable": ["story_settings_defaults.turn_concurrency"]},
+        )
+        scenario_id, _ = await g.published_scenario(client, body)
+
+        def by_role(made: dict[str, Any]) -> dict[str, str]:
+            return {c["role_id"]: c["name"] for c in made["characters"]}
+
+        catalog_open = await g.create_from(
+            client, g.from_scenario(scenario_id, slots={"friend": g.catalog_slot(other)})
+        )
+        assert by_role(catalog_open) == {
+            "friend": "Ada Lark",
+            "aunt": "Ivy Harrow",
+            "brother": "Tom Harrow",
+            "player": "Sam",
+        }
+        ad_hoc_open = await g.create_from(
+            client,
+            g.from_scenario(
+                scenario_id,
+                slots={
+                    "friend": g.ad_hoc_slot("Dale", 30),
+                    "aunt": g.catalog_slot(other),
+                    "brother": g.catalog_slot(brother, 1),
+                },
+            ),
+        )
+        assert by_role(ad_hoc_open)["friend"] == "Dale"
+        assert by_role(ad_hoc_open)["aunt"] == "Ada Lark", "a default role is replaceable"
+
+        good = {"friend": g.ad_hoc_slot("Dale", 30)}
+        refusals: list[tuple[dict[str, Any], str]] = [
+            ({"slots": {**good, "brother": g.catalog_slot(other)}}, "locked_slot_reassigned"),
+            ({"slots": {}}, "slot_required"),
+            ({"slots": {"friend": g.ad_hoc_slot("Dale", 19)}}, "eligibility_failed"),
+            (
+                {"slots": good, "overrides": {"story_settings_defaults.audit_retention_days": 9}},
+                "override_not_allowed",
+            ),
+        ]
+        for change, code in refusals:
+            counted = await g.counts(engine)
+            status, found, _ = await g.refused(client, {**g.from_scenario(scenario_id), **change})
+            assert (status, found) == (422, code), change
+            assert await g.counts(engine) == counted, code
+        fixed = await g.create_from(
+            client,
+            g.from_scenario(
+                scenario_id,
+                slots=good,
+                overrides={"story_settings_defaults.turn_concurrency": "queue"},
+            ),
+        )
+        assert fixed["applied"] is True
+
+        # The starting-cast limit, player slots included.
+        sixteen, _ = await g.published_scenario(client, g.scenario_body(*_npcs(15)))
+        made = await g.create_from(client, g.from_scenario(sixteen, slots=_filling(15)))
+        assert len(made["characters"]) == 16
+        added = await client.post(
+            f"/stories/{made['story_id']}/characters",
+            json={"name": "Late Arrival", "definition": "Arrives after dinner.", "true_age": 40},
+            headers=g.WRITE,
+        )
+        assert added.status_code == 201, added.text
+        twenty_body = g.scenario_body(cast={"roles": _npcs(19), "max_characters_at_start": 20})
+        twenty, _ = await g.published_scenario(client, twenty_body)
+        made = await g.create_from(client, g.from_scenario(twenty, slots=_filling(19)))
+        assert len(made["characters"]) == 20
+        lowered = g.from_scenario(twenty, slots=_filling(16), max_characters_at_start=16)
+        status, code, _ = await g.refused(client, lowered)
+        assert (status, code) == (422, "cast_limit_exceeded"), "17 slots over 16"
+        lowered["slots"] = _filling(15)
+        assert len((await g.create_from(client, lowered))["characters"]) == 16
+        wide_body = g.scenario_body(cast={"roles": _npcs(23), "max_characters_at_start": 24})
+        wide, _ = await g.published_scenario(client, wide_body)
+        override = g.from_scenario(wide, slots=_filling(23), max_characters_at_start=24)
+        assert len((await g.create_from(client, override))["characters"]) == 24
+        await set_cast_limits(client, ceiling=20)
+        status, code, _ = await g.refused(client, override)
+        assert (status, code) == (422, "cast_limit_exceeded"), "the ceiling caps the override"

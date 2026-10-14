@@ -6,10 +6,12 @@ Two milestone parts live here, each the only file for its test ID's M3 part:
   edited and deleted; a player character's snapshot unchanged by the persona's edit and
   deletion; and a creation that names a catalog character as a player's persona, or puts the
   player in another role, refused without side effects. Until #119's genesis exists, the
-  snapshot is written onto a player character the way #119 will write it (``personas.snapshot``
+  snapshot is written onto a player character the way genesis writes it (``personas.snapshot``
   and ``personas.player_character``, a direct update: #103's FR-CAT-9 pattern), and the
   creation's player checks (``core.genesis.models``) run directly against the database. #119
-  wires them into ``POST /stories`` and asserts the zero-row refusal end to end, in this file.
+  wires them into ``POST /stories``: the test then asserts the zero-row refusals end to end,
+  and a story created with a saved persona keeps its copy through the persona's edit and
+  deletion.
 - ``test_s_promote``, S-PROMOTE's M3 part (docs/04 §7): a delivery driver added mid-story stays
   out of the catalog until the author promotes him, and the draft promotion makes carries his
   definition and none of the story's facts.
@@ -40,6 +42,7 @@ from epistrel.core.genesis.models import (
     resolve_personas,
 )
 from epistrel.core.ids import new_ulid
+from tests import genesis_support as g
 from tests import scenario_support as scenarios
 from tests.auth_support import auth_settings, bearer
 from tests.catalog_support import every, ids
@@ -255,6 +258,43 @@ async def test_c_19(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert not report.ok
         assert {e.code for e in report.errors} == {PERSONA_REQUIRED, PLAYER_ROLE_FIXED}
         assert await scalar(engine, "SELECT count(*) FROM stories") == stories_before
+
+        # -- end to end (#119): POST /stories refuses both with nothing written
+        mother = {"mother": g.catalog_slot(catalog_id)}
+        as_persona = g.from_scenario(
+            scenario_id,
+            slots=mother,
+            players={"player": g.player(persona_id=catalog_id)},
+        )
+        in_mother = g.from_scenario(
+            scenario_id, slots=mother, players={"mother": g.player(), "player": g.player()}
+        )
+        for request, code in ((as_persona, PERSONA_REQUIRED), (in_mother, PLAYER_ROLE_FIXED)):
+            counted = await g.counts(engine)
+            status, found_code, details = await g.refused(client, request)
+            assert (status, found_code) == (422, code)
+            assert code in g.report_codes(details)
+            assert await g.counts(engine) == counted
+
+        # -- a saved persona a story was created with: its edit leaves the story's copy
+        jo = await saved(client, other, name=f"Jo {new_ulid()}", age=31)
+        made = await g.create_from(
+            client,
+            g.from_scenario(
+                scenario_id,
+                slots=mother,
+                players={"player": g.player(persona_id=jo["id"])},
+            ),
+        )
+        player_id = next(c["id"] for c in made["characters"] if c["role_id"] == "player")
+        copied_row = await player_row(engine, player_id)
+        assert json.loads(copied_row)["persona_id"] == jo["id"]
+        renamed = await client.patch(f"/personas/{jo['id']}", json={"age": 32}, headers=as_(AUTHOR))
+        assert renamed.status_code == 200, renamed.text
+        assert await player_row(engine, player_id) == copied_row
+        gone = await client.delete(f"/personas/{jo['id']}", headers=as_(AUTHOR))
+        assert gone.status_code == 204, gone.text
+        assert await player_row(engine, player_id) == copied_row
 
 
 @pytest.mark.integration

@@ -75,6 +75,78 @@
         "title": "AdHocCharacter",
         "type": "object"
       },
+      "AdHocPersona": {
+        "additionalProperties": false,
+        "description": "A persona given for this story only: a persona's fields, saved nowhere.",
+        "properties": {
+          "ad_hoc": {
+            "$ref": "#/components/schemas/PersonaFields"
+          }
+        },
+        "required": [
+          "ad_hoc"
+        ],
+        "title": "AdHocPersona",
+        "type": "object"
+      },
+      "AdHocSlotCharacter": {
+        "additionalProperties": false,
+        "description": "An ad-hoc character for an ``open`` or ``default`` role: #50's free-text shape (#114's\nad-hoc shape) — its name, its definition, its required true age (FR-CAT-12) and optionally\nits safe fallback line and deflection style. Story-scoped: never a catalog entry.",
+        "properties": {
+          "definition": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Definition",
+            "type": "string"
+          },
+          "deflection_style": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Deflection Style"
+          },
+          "name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "safe_fallback_text": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Safe Fallback Text"
+          },
+          "true_age": {
+            "maximum": 150,
+            "minimum": 0,
+            "title": "True Age",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "definition",
+          "true_age"
+        ],
+        "title": "AdHocSlotCharacter",
+        "type": "object"
+      },
       "AffectedStory": {
         "description": "One story a change affects: the capabilities it gains and loses, its backfill, whether\nthe upgrade is unavailable to it (it has history, and the change adds data-producing\ncapability), and its fingerprint before and after with the capabilities enabled and the\nquality status after: those of the configuration it would run under, which is its current\none when the upgrade is unavailable (FR-PROF-16).",
         "properties": {
@@ -360,6 +432,25 @@
         "title": "CardRating",
         "type": "object"
       },
+      "CatalogSourceBody": {
+        "description": "The catalog version a story character was created from (``catalog_id@version``).",
+        "properties": {
+          "catalog_id": {
+            "title": "Catalog Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "catalog_id",
+          "version"
+        ],
+        "title": "CatalogSourceBody",
+        "type": "object"
+      },
       "Caution": {
         "description": "How cautious or reckless the character is.",
         "enum": [
@@ -471,7 +562,7 @@
         "type": "object"
       },
       "CharacterBody": {
-        "description": "A character as a read returns it; ``is_player`` marks a player character.",
+        "description": "A character as a read returns it; ``is_player`` marks a player character. A story created\nfrom a scenario (#119) names each character's ``role_id`` and, for a catalog character, its\n``source``; a blank story's characters carry neither.",
         "properties": {
           "id": {
             "title": "Id",
@@ -484,6 +575,27 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "role_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Id"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogSourceBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1920,25 +2032,6 @@
         "title": "CharacterPublishedBody",
         "type": "object"
       },
-      "CharacterRefBody": {
-        "description": "A character of the story: its id and name.",
-        "properties": {
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "name"
-        ],
-        "title": "CharacterRefBody",
-        "type": "object"
-      },
       "CharacterSpec": {
         "additionalProperties": false,
         "description": "One character of a new story's cast. ``true_age`` is required (FR-CAT-12).",
@@ -1960,6 +2053,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "description": "How the character refuses or changes the subject, in its own voice (FR-GUARD-7): rendered with its author notes, so a reply regenerated after a guardrail violation stays in character. Checked by the input gate.",
             "title": "Deflection Style"
           },
@@ -1984,11 +2078,12 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Safe Fallback Text"
           },
           "true_age": {
-            "maximum": 150.0,
-            "minimum": 0.0,
+            "maximum": 150,
+            "minimum": 0,
             "title": "True Age",
             "type": "integer"
           }
@@ -2395,6 +2490,113 @@
         "title": "ConfigReplacement",
         "type": "object"
       },
+      "CreatedCharacterBody": {
+        "description": "A character of the new story: its id and name, and the scenario role it fills (absent\nfor a blank story).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "role_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Id"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "CreatedCharacterBody",
+        "type": "object"
+      },
+      "CreationCounts": {
+        "additionalProperties": false,
+        "description": "How many errors and warnings the creation found, and what it deferred or left inactive\n(``0`` until #122 materialises by capability).",
+        "properties": {
+          "deferred": {
+            "default": 0,
+            "title": "Deferred",
+            "type": "integer"
+          },
+          "errors": {
+            "default": 0,
+            "title": "Errors",
+            "type": "integer"
+          },
+          "inactive": {
+            "default": 0,
+            "title": "Inactive",
+            "type": "integer"
+          },
+          "warnings": {
+            "default": 0,
+            "title": "Warnings",
+            "type": "integer"
+          }
+        },
+        "title": "CreationCounts",
+        "type": "object"
+      },
+      "CreationReport": {
+        "additionalProperties": false,
+        "description": "What a creation from a scenario found (FR-SCN-5,6): #111's report (``errors``,\n``warnings``: every entry, under the ``full`` projection only; ``null`` under ``card``),\n``unavailable`` (the checks the deployment could not run) and the ``counts``.",
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/CreationCounts"
+          },
+          "errors": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Entry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errors"
+          },
+          "unavailable": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unavailable",
+            "type": "array"
+          },
+          "warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Entry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warnings"
+          }
+        },
+        "required": [
+          "counts"
+        ],
+        "title": "CreationReport",
+        "type": "object"
+      },
       "CreationRules": {
         "additionalProperties": false,
         "description": "What a story creator may change at creation: ``overridable`` dotted paths (a path names\nthe field and everything under it), and optional ``bounds`` for settings.",
@@ -2432,14 +2634,15 @@
           "audit_retention_days": {
             "anyOf": [
               {
-                "maximum": 3650.0,
-                "minimum": 1.0,
+                "maximum": 3650,
+                "minimum": 1,
                 "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
+            "default": null,
             "description": "How many days this story's audit records are kept before the ``retention_sweep`` deletes\nthem (FR-STORE-30; #71), 1 to 3650. ``None``: the deployment's ``audit_retention_days``\n(default 90). Never affects story history. Prospective.",
             "title": "Audit Retention Days"
           },
@@ -2452,28 +2655,30 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "description": "The viewpoint a read or respond falls back to when the request names none and has no\nactor (FR-RESP-12): ``character:<id>``, never ``omniscient`` (#59 resolves it).\nInterpretive: a Lite turn depends on it (#64).",
             "title": "Default Output Viewpoint"
           },
           "lite_summary_chunk": {
             "anyOf": [
               {
-                "maximum": 200.0,
-                "minimum": 2.0,
+                "maximum": 200,
+                "minimum": 2,
                 "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
+            "default": null,
             "description": "The story's override of the transcript rows per level-0 summary segment (#72).",
             "title": "Lite Summary Chunk"
           },
           "regenerate_retry_budget": {
             "default": 2,
             "description": "How many times a turn whose read set was touched is regenerated before the call fails\nwith ``revision_conflict`` (FR-CONC-4c). Prospective.",
-            "maximum": 10.0,
-            "minimum": 0.0,
+            "maximum": 10,
+            "minimum": 0,
             "title": "Regenerate Retry Budget",
             "type": "integer"
           },
@@ -2490,14 +2695,15 @@
           "turn_queue_max": {
             "anyOf": [
               {
-                "maximum": 50.0,
-                "minimum": 1.0,
+                "maximum": 50,
+                "minimum": 1,
                 "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
+            "default": null,
             "description": "How many turns may wait behind the running one under ``queue`` (``None``: the\ndeployment's ``turn_queue_max``, default 5); one more is 423 ``story_busy``. Stored in its\nown ``stories`` column. Prospective.",
             "title": "Turn Queue Max"
           }
@@ -7889,6 +8095,27 @@
             "title": "Promoted To",
             "type": "array"
           },
+          "role_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Id"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogSourceBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "true_age": {
             "title": "True Age",
             "type": "integer"
@@ -8991,6 +9218,63 @@
         "title": "PersonaCreate",
         "type": "object"
       },
+      "PersonaFields": {
+        "additionalProperties": false,
+        "description": "A persona's own fields (FR-CAT-6): the ``name``, an optional ``gender``, the ``age`` (its\ntrue age, FR-CAT-12) and a short ``description`` the player asserts they will play as. The\nbody of an ad-hoc persona at story creation (#119) is exactly these fields.",
+        "examples": [
+          {
+            "age": 23,
+            "description": "Short-tempered and flies off the handle, but loyal to a fault. Tall, with a scar over one eyebrow.",
+            "gender": "man",
+            "name": "Sam Ortiz"
+          }
+        ],
+        "properties": {
+          "age": {
+            "description": "The persona's true age (FR-CAT-12): 0 to 150.",
+            "maximum": 150,
+            "minimum": 0,
+            "title": "Age",
+            "type": "integer"
+          },
+          "description": {
+            "description": "Personality, and optionally appearance (up to 4,000 characters): what the player asserts they will play as. Never objective canon.",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Free text (up to 40 characters).",
+            "title": "Gender"
+          },
+          "name": {
+            "description": "The player character's canonical name.",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "age",
+          "description"
+        ],
+        "title": "PersonaFields",
+        "type": "object"
+      },
       "PersonaListBody": {
         "description": "A page of personas, newest first; ``next_cursor`` fetches the next page (``null`` on the\nlast).",
         "properties": {
@@ -9088,6 +9372,23 @@
           }
         },
         "title": "PersonaPatch",
+        "type": "object"
+      },
+      "PersonaRef": {
+        "additionalProperties": false,
+        "description": "A saved persona, by id.",
+        "properties": {
+          "id": {
+            "description": "The saved persona's id.",
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "PersonaRef",
         "type": "object"
       },
       "PinnedItemBody": {
@@ -9281,6 +9582,53 @@
           "truth"
         ],
         "title": "PlannedReveal",
+        "type": "object"
+      },
+      "PlayerAssignment": {
+        "additionalProperties": false,
+        "description": "One player of a new story: the player's ``principal`` (recorded as a ``player`` relation\non the story, #119) and the ``persona`` they play as, saved or ad hoc.",
+        "examples": [
+          {
+            "persona": {
+              "id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"
+            },
+            "principal": "p-7f3a9c"
+          },
+          {
+            "persona": {
+              "ad_hoc": {
+                "age": 23,
+                "description": "Quick to anger.",
+                "name": "Sam"
+              }
+            },
+            "principal": "p-7f3a9c"
+          }
+        ],
+        "properties": {
+          "persona": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PersonaRef"
+              },
+              {
+                "$ref": "#/components/schemas/AdHocPersona"
+              }
+            ],
+            "title": "Persona"
+          },
+          "principal": {
+            "description": "The player's principal (opaque; never `system`).",
+            "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+            "title": "Principal",
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal",
+          "persona"
+        ],
+        "title": "PlayerAssignment",
         "type": "object"
       },
       "PlayerInputBody": {
@@ -15310,6 +15658,25 @@
         "title": "ScenarioOpening",
         "type": "object"
       },
+      "ScenarioOriginBody": {
+        "description": "The scenario version a story was created from (#119).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version"
+        ],
+        "title": "ScenarioOriginBody",
+        "type": "object"
+      },
       "ScenarioPatch": {
         "additionalProperties": false,
         "description": "``PATCH /catalog/scenarios/{id}``: a JSON merge patch (RFC 7386) over the draft, group\nby group — a key sets that field, ``null`` removes it, an object merges into the stored one\nand an array replaces it (``roles``, ``seeded_memories``, …) — with the ``draft_revision``\nit is based on (FR-CAT-3). The merged draft is validated as a whole: an invalid field is 422\nat ``body.<path>``, wherever the field came from.",
@@ -15666,6 +16033,36 @@
           }
         },
         "title": "ScenarioRecommendation",
+        "type": "object"
+      },
+      "ScenarioRef": {
+        "additionalProperties": false,
+        "description": "The scenario a story is created from: its id and, optionally, a published version\n(default: the latest published; any older published version may be named).",
+        "properties": {
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "ScenarioRef",
         "type": "object"
       },
       "ScenarioRole": {
@@ -17539,6 +17936,65 @@
         "title": "SettingsPatch",
         "type": "object"
       },
+      "SlotChoice": {
+        "additionalProperties": false,
+        "description": "Who fills one NPC role: a catalog character (``catalog_id`` and optionally a published\n``version``; default the latest published) or an ad-hoc one (``ad_hoc``), never both.",
+        "examples": [
+          {
+            "catalog_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3",
+            "version": 2
+          },
+          {
+            "ad_hoc": {
+              "definition": "A nosy neighbour.",
+              "name": "Dale",
+              "true_age": 52
+            }
+          }
+        ],
+        "properties": {
+          "ad_hoc": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdHocSlotCharacter"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "catalog_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalog Id"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          }
+        },
+        "title": "SlotChoice",
+        "type": "object"
+      },
       "Sources": {
         "description": "Where each effective value came from; ``params`` per key.",
         "properties": {
@@ -17714,6 +18170,16 @@
               }
             ]
           },
+          "scenario": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScenarioOriginBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "settings": {
             "additionalProperties": true,
             "title": "Settings",
@@ -17799,17 +18265,39 @@
         "type": "object"
       },
       "StoryCreatedBody": {
-        "description": "The new story: its id, its cast's ids in request order, its rating and its revision.",
+        "description": "The new story (201): its id, its cast's ids (request order for a blank story, the\nscenario's role order for one created from a scenario), its rating and its revision. A\nstory created from a scenario (#119) also names the scenario version, the engine profile\nit runs under, the creation ``report`` (counts and the unavailable checks under the\n``card`` projection, every entry under ``full``) and #109's ``impact`` report. When the\nimpact report warns and the request did not set ``ignore_warnings`` (FR-PROF-7), nothing\nis created: 200 with ``applied: false``, the reports, and no story (``story_id``,\n``content_rating`` ``null``).",
         "properties": {
+          "applied": {
+            "default": true,
+            "title": "Applied",
+            "type": "boolean"
+          },
           "characters": {
             "items": {
-              "$ref": "#/components/schemas/CharacterRefBody"
+              "$ref": "#/components/schemas/CreatedCharacterBody"
             },
             "title": "Characters",
             "type": "array"
           },
           "content_rating": {
-            "$ref": "#/components/schemas/StoryRatingBody"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StoryRatingBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "engine_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileVersionRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "idempotency_key": {
             "anyOf": [
@@ -17822,9 +18310,46 @@
             ],
             "title": "Idempotency Key"
           },
+          "impact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImpactReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CreationReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scenario": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScenarioOriginBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "story_id": {
-            "title": "Story Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
           },
           "timeline_revision": {
             "title": "Timeline Revision",
@@ -17838,6 +18363,156 @@
           "content_rating"
         ],
         "title": "StoryCreatedBody",
+        "type": "object"
+      },
+      "StoryFromScenario": {
+        "additionalProperties": false,
+        "description": "``POST /stories`` with a ``scenario`` (FR-SCN-6): the scenario (and version), who fills\neach NPC role (``slots``: a ``locked`` role and a ``default`` role kept as pre-filled need\nno entry; re-supplying a locked role's own ``character@version`` is accepted), each\nplayer's principal and persona (``players``, by the scenario's player role), the\npermitted ``overrides`` (dotted paths over ``story_settings_defaults``, and\n``cast.max_characters_at_start``, each named by the scenario's\n``creation_rules.overridable``), an optional content rating, engine profile and\nstarting-cast limit, ``strict`` (refuse on any creation conflict, FR-SCN-7), the story's\n``name`` (default: the scenario's) and ``owner``, the report's ``projection`` (``card``:\ncounts; ``full``: every entry), and ``ignore_warnings`` (FR-PROF-7: create even when the\nprofile leaves a recommended capability unmet). ``characters`` is #50's blank-story field\nand is refused beside a scenario.",
+        "examples": [
+          {
+            "overrides": {
+              "story_settings_defaults.turn_concurrency": "queue"
+            },
+            "players": {
+              "player": {
+                "persona": {
+                  "id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"
+                },
+                "principal": "p-7f3a9c"
+              }
+            },
+            "scenario": {
+              "id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+            },
+            "slots": {
+              "mother": {
+                "catalog_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"
+              }
+            }
+          }
+        ],
+        "properties": {
+          "content_rating_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content Rating Id"
+          },
+          "engine_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Engine Profile Id"
+          },
+          "ignore_warnings": {
+            "default": false,
+            "title": "Ignore Warnings",
+            "type": "boolean"
+          },
+          "max_characters_at_start": {
+            "anyOf": [
+              {
+                "maximum": 1000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Characters At Start"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "overrides": {
+            "description": "Dotted paths under `story_settings_defaults` (or `cast.max_characters_at_start`) the scenario's `creation_rules.overridable` names, each with its value (validated by the scenario's field model).",
+            "patternProperties": {
+              "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$": {}
+            },
+            "propertyNames": {
+              "maxLength": 200
+            },
+            "title": "Overrides",
+            "type": "object"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The story's owner principal (default: the requesting principal; never `system`). Recorded, never interpreted.",
+            "title": "Owner"
+          },
+          "players": {
+            "patternProperties": {
+              "^[a-z0-9_]{1,40}$": {
+                "$ref": "#/components/schemas/PlayerAssignment"
+              }
+            },
+            "title": "Players",
+            "type": "object"
+          },
+          "projection": {
+            "default": "card",
+            "enum": [
+              "card",
+              "full"
+            ],
+            "title": "Projection",
+            "type": "string"
+          },
+          "scenario": {
+            "$ref": "#/components/schemas/ScenarioRef"
+          },
+          "slots": {
+            "patternProperties": {
+              "^[a-z0-9_]{1,40}$": {
+                "$ref": "#/components/schemas/SlotChoice"
+              }
+            },
+            "title": "Slots",
+            "type": "object"
+          },
+          "strict": {
+            "default": false,
+            "title": "Strict",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "scenario"
+        ],
+        "title": "StoryFromScenario",
         "type": "object"
       },
       "StoryList": {
@@ -18600,6 +19275,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Content Rating Id"
           },
           "name": {
@@ -18612,6 +19288,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Name"
           },
           "owner": {
@@ -18624,6 +19301,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "description": "The story's owner principal (default: the requesting principal; never `system`). Recorded, never interpreted.",
             "title": "Owner"
           },
@@ -34285,7 +34963,7 @@
         ]
       },
       "post": {
-        "description": "Create a blank story with its cast (each character with a required `true_age`), its content rating (default: the deployment's) and its settings, in one operation. Every character `definition` (and `deflection_style`, how it refuses or changes the subject: FR-GUARD-7) passes the input gate first: a violation is 422 `guardrail_violation` and no story exists. Answers 201 with `Location`.",
+        "description": "Create a story, blank or from a scenario, in one operation; answers 201 with `Location`.\n\n**Blank** (`StorySpec`): its cast (each character with a required `true_age`), its content rating (default: the deployment's) and its settings. Every character `definition` (and `deflection_style`, how it refuses or changes the subject: FR-GUARD-7) passes the input gate first: a violation is 422 `guardrail_violation` and no story exists.\n\n**From a scenario** (`StoryFromScenario`, the body naming `scenario`; FR-SCN-6,9): the scenario (and a published version; default the latest), who fills each NPC role (`slots`: a catalog `character@version` or an `ad_hoc` definition; locked roles and default roles kept as pre-filled need none), each player's principal and persona (`players`, saved or ad hoc, in the scenario's player role), permitted `overrides`, an optional rating, engine profile and `max_characters_at_start`, and `strict`. The story is created in one transaction: one genesis operation, full snapshots of the scenario and of each catalog character (`catalog_id@version`), story settings and policies, a `player` relation per player principal, and the opening narration as turn 1. A refusal writes nothing: one 422 whose code is the first present of `creation_conflicts` (under `strict`), `slot_required`, `locked_slot_reassigned`, `player_role_fixed`, `persona_required`, `entry_archived`, `not_published`, `override_not_allowed`, `eligibility_failed`, `cast_limit_exceeded`, `rating_check_failed`, then the input gate's `guardrail_violation`, with the full creation report in `details.report`. A scenario rating mismatch is a warning (FR-RATE-5). Owners and listing statuses are never checked (FR-AUTH-8). When the engine profile leaves a capability the scenario recommends unmet, the answer is 200 with `applied: false` and the reports, unless the request sets `ignore_warnings` (FR-PROF-7).",
         "operationId": "create_story",
         "parameters": [
           {
@@ -34313,13 +34991,39 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StorySpec"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/StorySpec"
+                  },
+                  {
+                    "$ref": "#/components/schemas/StoryFromScenario"
+                  }
+                ]
               }
             }
           },
           "required": true
         },
         "responses": {
+          "200": {
+            "description": "A creation from a scenario held back by its impact report (FR-PROF-7): nothing was created; resend with `ignore_warnings`.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
           "201": {
             "content": {
               "application/json": {
@@ -34398,7 +35102,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `rating_retired`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `cast_limit_exceeded`, `creation_conflicts`, `eligibility_failed`, `entry_archived`, `guardrail_violation`, `locked_slot_reassigned`, `not_published`, `override_not_allowed`, `persona_required`, `player_role_fixed`, `profile_deleted`, `rating_check_failed`, `rating_retired`, `slot_required`, `validation_error`, `viewpoint_unresolved`."
           },
           "503": {
             "content": {

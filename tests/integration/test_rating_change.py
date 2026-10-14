@@ -14,8 +14,10 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
-from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID, TEEN_ID
+from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID, MATURE_ID, TEEN_ID
 from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
+from tests import genesis_support as g
+from tests.catalog_support import dress_companion
 from tests.rating_change_support import (
     AUTHOR,
     Scratch,
@@ -30,10 +32,13 @@ from tests.rating_change_support import (
     story,
     story_counts,
 )
-from tests.respond_support import FIRST, PLAYER, body, new_story, played, respond
+from tests.respond_support import FIRST, PLAYER, body, everything_sent, new_story, played, respond
 from tests.story_support import READ, WRITE
 
 pytestmark = pytest.mark.integration
+
+COMPANION_SECRET = "Linda kept the letters in the coal shed"
+"""A phrase only Linda's companion's world holds (FR-CAT-5)."""
 
 
 async def _version(s: Scratch, rating_id: str) -> str:
@@ -477,3 +482,183 @@ async def test_a_check_of_another_story_is_not_found(pg_url: str) -> None:
         )
         assert replay.status_code == 202
         assert replay.json()["job_id"] == job_id
+
+
+# -- #119: creating a story from a scenario ---------------------------------------------------
+
+
+async def _companion_version(s: Scratch, character_id: str) -> tuple[str, int, int]:
+    """The character's companion: its id, its latest version and the character version that
+    version pins."""
+    found = await s.client.get(f"/catalog/characters/{character_id}/companion", headers=READ)
+    assert found.status_code == 200, found.text
+    companion = found.json()
+    pinned = await scalar(
+        s.db,
+        "SELECT pinned_character_version FROM catalog.scenario_versions "
+        "WHERE catalog_id = :c AND version = :v",
+        c=companion["id"],
+        v=companion["version"],
+    )
+    return companion["id"], int(companion["version"]), int(pinned)
+
+
+async def _snapshot_pairs(s: Scratch, story_id: str) -> list[tuple[str, int]]:
+    found = await rows(
+        s.db,
+        "SELECT source_catalog_id, version FROM character_snapshots WHERE story_id = :s",
+        s=story_id,
+    )
+    return [(str(r.source_catalog_id), int(r.version)) for r in found]
+
+
+async def _story_text(s: Scratch, story_id: str) -> str:
+    """Every row the story holds, as text."""
+    parts: list[str] = []
+    for table in g.COUNTED:
+        column = "id" if table == "stories" else "story_id"
+        found = await rows(
+            s.db,
+            f'SELECT t::text AS row FROM "{table}" t WHERE t."{column}" = :s',  # noqa: S608
+            s=story_id,
+        )
+        parts.extend(str(r.row) for r in found)
+    return "\n".join(parts)
+
+
+@pytest.mark.part("M3", "FR-SCN-6; FR-RATE-3,7; FR-CAT-10")
+async def test_i_22__creation(pg_url: str) -> None:
+    """A story created from a Teen scenario is Teen. An Explicit catalog character cast in an
+    Everyone scenario is a ``rating_looser`` warning and the creation succeeds; the character
+    plays under Everyone: a stubbed render that breaks Everyone's guardrail is caught, and the
+    turn records Everyone's guardrail set. Creating at Teen from a Mature scenario whose seed
+    breaks a Teen policy is refused (``rating_check_failed``, by location and policy) and
+    creates nothing. The same request under the same key replays the result. Every story
+    created from a character's companion versions snapshots exactly the pinned character
+    version, as a one-to-one story (the character and the player), even with no world or
+    opening; another scenario casting the character brings none of the companion's world.
+
+    Complements asserted: the row counts move for a creation that succeeds; the Teen request
+    over the clean Mature scenario applies; a story at the scenario's own rating needs no
+    check."""
+    async with rating_db(pg_url) as s:
+        c = s.client
+        stub = s.lib.models.stub
+        roles = (g.role("mother"), g.role("player", kind="player"))
+
+        # A Teen scenario makes a Teen story.
+        tom = await g.catalog_character_id(c, "Tom Harrow", age=44, rating=TEEN_ID)
+        teen, _ = await g.published_scenario(c, g.scenario_body(*roles, rating=TEEN_ID))
+        made = await g.create_from(c, g.from_scenario(teen, slots={"mother": g.catalog_slot(tom)}))
+        assert made["content_rating"]["id"] == TEEN_ID
+        assert (await story(c, made["story_id"]))["content_rating"]["id"] == TEEN_ID
+
+        # An Explicit character in an Everyone scenario: a warning, and Everyone governs.
+        dragons = await guard_rating(s, EVERYONE_ID)
+        rex = await g.catalog_character_id(c, "Rex Dane", age=35, rating=EXPLICIT_ID)
+        everyone, version = await g.published_scenario(c, g.scenario_body(*roles))
+        before = await g.counts(s.db)
+        cast = await g.create_from(
+            c,
+            g.from_scenario(everyone, slots={"mother": g.catalog_slot(rex)}, projection="full"),
+        )
+        after = await g.counts(s.db)
+        assert after["stories"] == before["stories"] + 1
+        assert after["character_snapshots"] == before["character_snapshots"] + 1
+        assert cast["content_rating"]["id"] == EVERYONE_ID
+        looser = [w for w in cast["report"]["warnings"] if w["code"] == "rating_looser"]
+        assert [(w["location"]["role"], w["source"]) for w in looser] == [("mother", f"{rex}@1")]
+        assert cast["report"]["counts"]["errors"] == 0
+        story_id = cast["story_id"]
+        ids = {ch["role_id"]: ch["id"] for ch in cast["characters"]}
+        stub.reset()
+        stub.script("generation", ["A dragon lands on the roof."] * 3)
+        played_turn = await played(
+            c, story_id, body(ids["player"], render_character_ids=[ids["mother"]])
+        )
+        assert played_turn["guardrail"]["fallback_used"] is True
+        assert "dragon" not in played_turn["message"]["text"].lower()
+        stamp = (await _turn_rows(s, story_id))[-1].checked_guardrails
+        assert stamp["rating_id"] == EVERYONE_ID
+        assert stamp["rating_version_id"] == await _version(s, EVERYONE_ID)
+        assert dragons.id in stamp["rating"]
+
+        # Teen requested over a Mature scenario whose seed breaks a Teen policy: refused.
+        await guard_rating(s, TEEN_ID)
+        mature_body = g.scenario_body(*roles, rating=MATURE_ID)
+        mature_body["starting_state"]["seeded_memories"] = [
+            {
+                "text": "A dragon sleeps under the barn.",
+                "holder": "world",
+                "audience": ["public"],
+                "disclosure": "open",
+            }
+        ]
+        mature, _ = await g.published_scenario(c, mature_body)
+        request = g.from_scenario(
+            mature, slots={"mother": g.catalog_slot(tom)}, content_rating_id=TEEN_ID
+        )
+        counted = await g.counts(s.db)
+        status, code, details = await g.refused(c, request)
+        assert (status, code) == (422, "rating_check_failed")
+        failed = [e for e in details["report"]["errors"] if e["code"] == "rating_check_failed"]
+        assert [e["location"]["field"] for e in failed] == [
+            "starting_state.seeded_memories[0].text"
+        ]
+        assert all(e["source"] for e in failed)
+        assert await g.counts(s.db) == counted
+        # Complements: the scenario's own rating needs no check; a clean Mature one applies.
+        own = await g.create_from(c, {**request, "content_rating_id": MATURE_ID})
+        assert own["content_rating"]["id"] == MATURE_ID
+        clean, _ = await g.published_scenario(c, g.scenario_body(*roles, rating=MATURE_ID))
+        teen_story = await g.create_from(
+            c,
+            g.from_scenario(
+                clean, slots={"mother": g.catalog_slot(tom)}, content_rating_id=TEEN_ID
+            ),
+        )
+        assert teen_story["content_rating"]["id"] == TEEN_ID
+
+        # The same request under the same key replays the stored result, writing nothing.
+        keyed = g.from_scenario(everyone, version=version, slots={"mother": g.catalog_slot(tom)})
+        first = await c.post("/stories", json=keyed, headers=g.headers("key-119-replay"))
+        assert first.status_code == 201, first.text
+        counted = await g.counts(s.db)
+        again = await c.post("/stories", json=keyed, headers=g.headers("key-119-replay"))
+        assert again.status_code == 201, again.text
+        assert again.headers.get("Idempotent-Replay") == "true"
+        assert again.json()["story_id"] == first.json()["story_id"]
+        assert await g.counts(s.db) == counted
+
+        # Companion versions: each story snapshots exactly the pinned character version.
+        linda = await g.catalog_character_id(c, "Linda Shaw", age=52, versions=1)
+        companion, v1, pinned1 = await _companion_version(s, linda)
+        republished = await c.post(
+            f"/catalog/characters/{linda}/publish",
+            json={"draft_revision": 2},
+            headers=g.headers(principal="p-scenarios"),
+        )
+        assert republished.status_code == 201, republished.text
+        _, v2, pinned2 = await _companion_version(s, linda)
+        assert (pinned1, pinned2) == (1, 2)
+        for number, pinned in ((v1, pinned1), (v2, pinned2)):
+            alone = await g.create_from(c, g.from_scenario(companion, version=number))
+            assert await _snapshot_pairs(s, alone["story_id"]) == [(linda, pinned)]
+            assert sorted(ch["role_id"] for ch in alone["characters"]) == ["npc", "player"]
+            assert alone["timeline_revision"] == 1
+
+        # Another scenario casting the character brings none of its companion's world.
+        await dress_companion(
+            c,
+            linda,
+            g.scenario_body(world={"description": f"Leeds, where {COMPANION_SECRET}."}),
+        )
+        other = await g.create_from(
+            c, g.from_scenario(everyone, slots={"mother": g.catalog_slot(linda, 2)})
+        )
+        assert COMPANION_SECRET not in await _story_text(s, other["story_id"])
+        others = {ch["role_id"]: ch["id"] for ch in other["characters"]}
+        stub.reset()
+        stub.script("generation", ["Linda smiles."])
+        await played(c, other["story_id"], body(others["player"]))
+        assert COMPANION_SECRET not in everything_sent(stub)

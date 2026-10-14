@@ -69,11 +69,14 @@ TIMESTAMP_MARK = "«ts»"
 HASH_MARK = "«hash»"
 
 _STORY_RANK = "(SELECT s.created_at FROM stories s WHERE s.id = t.story_id)"
+_CAST_RANK = "(SELECT c.ordinal FROM characters c WHERE c.id = t.character_id)"
 
 ORDER: dict[str, str] = {
     "deployment_state": "t.id",
     "stories": "t.created_at",
     "characters": f"{_STORY_RANK}, t.ordinal",
+    # A story's genesis snapshots (#119): one row per catalog character, in cast order.
+    "character_snapshots": f"{_STORY_RANK}, {_CAST_RANK}",
     "operations": (
         f"{_STORY_RANK}, t.started_at, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST,"
         " t.kind"

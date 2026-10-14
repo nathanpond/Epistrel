@@ -18,7 +18,9 @@ one file. Later stories add theirs here (#106 profiles, #110 listing status, #11
   It runs in its own scratch database (it counts every ownership event).
 
 The detailed tests are in ``tests/integration/test_ownership.py``. The story-creation clauses
-(player relations, creating from another owner's entry) are #119's.
+(player relations, creating from another owner's entry) are #119's ``test_i_21__story_creation``
+at the end: a scenario has one player role in M3 (#108's save rule), so one player principal is
+recorded per story.
 
 - ``test_i_21__media_retire`` (#105): retire, not purge. An asset its owner deletes while
   another owner's published character references it is still served for that character, refuses
@@ -90,6 +92,7 @@ from epistrel.core.seeds.ratings import EVERYONE_ID, TEEN_ID
 from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import stories
 from epistrel.core.tables.ownership import EntityType
+from tests import genesis_support as g
 from tests.auth_support import auth_settings, bearer
 from tests.catalog_support import character as catalog_character
 from tests.catalog_support import ids as listed_ids
@@ -1282,3 +1285,63 @@ async def test_i_21__offboarding_resumes(pg_url: str, monkeypatch: pytest.Monkey
             for record in records
         ]
         assert len(listed) == len(set(listed)) == 11
+
+
+# -- #119: story creation from a scenario ------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("listing", ["private", "in_review", "public"])
+@pytest.mark.part("M3", "FR-AUTH-5,6,8")
+async def test_i_21__story_creation(
+    stub_settings: Settings, engine: AsyncEngine, listing: str
+) -> None:
+    """Creating a story from a scenario: the story is owned by the requester, or by the owner
+    the request names; the player's principal is recorded as a ``player`` relation on the story
+    (with the acting principal), which a list filter by relation finds. The chosen entries'
+    owners and listing statuses are never consulted: a scenario and a catalog character owned
+    by two other principals, at each listing status, create a story all the same.
+
+    Complements asserted: the story is absent from a list filtered by a relation another
+    principal holds; the owner named by one creation is not the next creation's."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        stranger, curator = f"p-own-{new_ulid()}", f"p-cur-{new_ulid()}"
+        mara = await g.catalog_character_id(client, f"Mara {new_ulid()}", owner=stranger)
+        scenario_id, _ = await g.published_scenario(
+            client,
+            g.scenario_body(g.role("mother"), g.role("player", kind="player")),
+            owner=curator,
+        )
+        for base, entry in (("/catalog/characters", mara), ("/catalog/scenarios", scenario_id)):
+            changed = await set_listing_status(client, base, entry, listing)
+            assert changed.status_code == 200, changed.text
+        player_principal = f"p-play-{new_ulid()}"
+        request = g.from_scenario(
+            scenario_id,
+            slots={"mother": g.catalog_slot(mara)},
+            players={"player": g.player(player_principal)},
+        )
+        made = await g.create_from(client, request)
+        story = await client.get(f"/stories/{made['story_id']}", headers=g.READ)
+        assert story.json()["owner_principal"] == g.AUTHOR
+        relations = await client.get(f"/stories/{made['story_id']}/relations", headers=g.READ)
+        assert relations.status_code == 200, relations.text
+        held = [(r["principal"], r["relation"], r["created_by"]) for r in relations.json()["items"]]
+        assert held == [(player_principal, "player", g.AUTHOR)]
+        found = await client.get(
+            "/stories", params={"relation": f"player:{player_principal}"}, headers=g.READ
+        )
+        assert [s["id"] for s in found.json()["items"]] == [made["story_id"]]
+        nobody = await client.get(
+            "/stories", params={"relation": f"player:{stranger}"}, headers=g.READ
+        )
+        assert nobody.json()["items"] == []
+
+        owned = await g.create_from(client, {**request, "owner": curator})
+        assert (await client.get(f"/stories/{owned['story_id']}", headers=g.READ)).json()[
+            "owner_principal"
+        ] == curator
+        again = await g.create_from(client, request)
+        assert (await client.get(f"/stories/{again['story_id']}", headers=g.READ)).json()[
+            "owner_principal"
+        ] == g.AUTHOR

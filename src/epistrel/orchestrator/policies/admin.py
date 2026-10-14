@@ -485,6 +485,21 @@ async def set_story_policies(
     return StoryPoliciesWrite(policies=tuple(written), config_revision=revision, changed=True)
 
 
+async def upsert_story_item(
+    conn: AsyncConnection,
+    story_id: str,
+    item: StoryPolicyItem,
+    *,
+    principal: str,
+    field: str,
+) -> tuple[Policy, tuple[str, Any, Any] | None]:
+    """Upsert one story or character policy of ``story_id`` inside the caller's transaction
+    (``set_story_policies``' item step; #119's genesis writes a scenario's policies as the new
+    story's with it, in the genesis transaction): the policy, and the configuration change it
+    made (``None`` when it changed nothing)."""
+    return await _upsert_story_item(conn, story_id, item, principal=principal, field=field)
+
+
 async def _upsert_story_item(
     conn: AsyncConnection,
     story_id: str,

@@ -491,22 +491,25 @@ def _body_problems(
         schema = content["application/json"]["schema"]
     refs = [schema.get("$ref")] + [option.get("$ref") for option in schema.get("anyOf", [])]
     names = [ref.rsplit("/", 1)[-1] for ref in refs if ref]
-    if len(names) != 1:
+    if not names or (len(names) > 1 and "anyOf" not in schema):
         return [f"{operation_id}: the body is not one component"]
-    component = components[names[0]]
     problems: list[str] = []
-    if component.get("additionalProperties") is not False:
-        problems.append(f"{operation_id}: {names[0]} accepts unknown fields")
-    examples = component.get("examples") or []
-    if not examples:
-        problems.append(f"{operation_id}: {names[0]} has no example")
     annotation = bodies.get(operation_id)
-    for example in examples:
-        if annotation is not None and not isinstance(annotation, type(dict[str, Any])):
-            try:
-                TypeAdapter(annotation).validate_python(example)
-            except Exception as exc:
-                problems.append(f"{operation_id}: example does not validate ({exc})")
+    # A body that is one of several components (``POST /stories``: a blank story or one from a
+    # scenario, #119) holds each of them to the same rules.
+    for name in names:
+        component = components[name]
+        if component.get("additionalProperties") is not False:
+            problems.append(f"{operation_id}: {name} accepts unknown fields")
+        examples = component.get("examples") or []
+        if not examples:
+            problems.append(f"{operation_id}: {name} has no example")
+        for example in examples:
+            if annotation is not None and not isinstance(annotation, type(dict[str, Any])):
+                try:
+                    TypeAdapter(annotation).validate_python(example)
+                except Exception as exc:
+                    problems.append(f"{operation_id}: example does not validate ({exc})")
     return problems
 
 

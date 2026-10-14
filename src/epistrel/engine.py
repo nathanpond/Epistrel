@@ -16,7 +16,7 @@ import logging
 import time
 from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, overload
 
 from pydantic import SecretStr, TypeAdapter, ValidationError
 from sqlalchemy import func, select
@@ -58,6 +58,8 @@ from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import EntryStatus, StoryStatus
 from epistrel.core.errors import InvalidRequest, PrincipalRequired, refuse_nul
+from epistrel.core.genesis import create as genesis
+from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.history import DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT
 from epistrel.core.history import History, read_history
 from epistrel.core.idempotency import (
@@ -157,7 +159,12 @@ CODECS: dict[str, ResultCodec[Any]] = {
         projections.RebuildResult | RebuildQueued,
         status=lambda result: 202 if isinstance(result, RebuildQueued) else 200,
     ),
-    "create_story": ResultCodec.of(stories.CreatedStory, status=201),
+    # A blank story or one from a scenario (201); a scenario creation #109's two stages held
+    # back (200, nothing written).
+    "create_story": ResultCodec.of(
+        stories.CreatedStory | genesis.CreationHeld,
+        status=lambda result: 201 if isinstance(result, stories.CreatedStory) else 200,
+    ),
     "respond": ResultCodec.of(RespondResult),
     "ingest": ResultCodec.of(
         ingest.IngestResult,
@@ -880,21 +887,108 @@ class Engine:
 
     # -- story lifecycle (FR-ADMIN-1, FR-STORE-14,16, FR-CAT-12) ----------------------------
 
+    @overload
     async def create_story(
         self, ctx: RequestContext, spec: stories.StorySpec
-    ) -> stories.CreatedStory:
-        """Create a blank story with its cast, rating and settings in one genesis operation.
+    ) -> stories.CreatedStory: ...
 
-        Every character ``definition`` (and ``deflection_style``, #115) goes through the input
-        gate first (FR-GUARD-10), against the global policies and the chosen rating's, with the
-        cast's true ages: a violation is 422 ``guardrail_violation`` and no story exists."""
+    @overload
+    async def create_story(
+        self, ctx: RequestContext, spec: StoryFromScenario
+    ) -> stories.CreatedStory | genesis.CreationHeld: ...
+
+    async def create_story(
+        self, ctx: RequestContext, spec: stories.StorySpec | StoryFromScenario
+    ) -> stories.CreatedStory | genesis.CreationHeld:
+        """Create a story: blank with its cast, rating and settings in one genesis operation, or
+        from a scenario (``StoryFromScenario``, FR-SCN-6,9; #119: ``core.genesis.create`` has
+        the rules).
+
+        A blank story's every character ``definition`` (and ``deflection_style``, #115) goes
+        through the input gate first (FR-GUARD-10), against the global policies and the chosen
+        rating's, with the cast's true ages: a violation is 422 ``guardrail_violation`` and no
+        story exists. A story from a scenario is refused with nothing written (one 422 with the
+        creation report in ``details.report``), held back by #109's two stages
+        (``CreationHeld``, the key released), or created in one transaction."""
         principal = self.require_principal(ctx)
+        if isinstance(spec, StoryFromScenario):
+            request = spec
+            return await self._keyed(
+                ctx,
+                "create_story",
+                lambda ctx: self._create_from_scenario(ctx, request, principal),
+                material={"body": _body(request)},
+                keep=lambda result: isinstance(result, stories.CreatedStory),
+            )
         stories.validate_spec(spec)
-        return await self._keyed(
-            ctx,
-            "create_story",
-            lambda ctx: self._create_story(ctx, spec, principal),
-            material={"body": _body(spec)},
+        blank = spec
+
+        async def run(ctx: RequestContext) -> stories.CreatedStory:
+            return await self._create_story(ctx, blank, principal)
+
+        created: stories.CreatedStory = await self._keyed(
+            ctx, "create_story", run, material={"body": _body(blank)}
+        )
+        return created
+
+    async def _create_from_scenario(
+        self, ctx: RequestContext, request: StoryFromScenario, principal: str
+    ) -> stories.CreatedStory | genesis.CreationHeld:
+        def cast_of(ages: Sequence[int]) -> list[CastMember]:
+            return [
+                CastMember(character_id=f"new:{index}", ordinal=index, true_age=age)
+                for index, age in enumerate(ages)
+            ]
+
+        async def gate(
+            texts: Sequence[tuple[str, str]], rating_id: str, ages: Sequence[int]
+        ) -> None:
+            context = await policy_store.creation_context(self.db, rating_id, cast_of(ages))
+            await input_gate.enforce_input(
+                self.db,
+                self.models,
+                context,
+                [GateText(locator, text) for locator, text in texts],
+                entry_point=EntryPoint.STORY_CREATE,
+                principal=principal,
+                story_id=None,
+            )
+
+        async def rating_check(
+            records: Sequence[rating_change.HistoryRecord], rating_id: str, ages: Sequence[int]
+        ) -> rating_change.HistoryResult:
+            context = await policy_store.creation_context(self.db, rating_id, cast_of(ages))
+            settings = await config_log.read_guardrail_settings(self.db)
+            return await rating_change.evaluate_history(
+                context.active,
+                records,
+                model_check=rating_check_job.ModelPolicyCheck(self.models, context),
+                calls_per_record=settings.rating_check_model_calls_per_record,
+            )
+
+        async def write_policies(
+            conn: Any, story_id: str, items: Sequence[scenario_models.ScenarioPolicy]
+        ) -> None:
+            for index, item in enumerate(items):
+                await policy_admin.upsert_story_item(
+                    conn,
+                    story_id,
+                    StoryPolicyItem.model_validate(
+                        {**item.model_dump(mode="json", exclude_none=True), "scope": "story"}
+                    ),
+                    principal=principal,
+                    field=f"story_settings_defaults.policies[{index}]",
+                )
+
+        return await genesis.create_from_scenario(
+            self.db,
+            request,
+            principal=principal,
+            gate=gate,
+            rating_check=rating_check,
+            write_policies=write_policies,
+            facts=await self._runtime_facts(),
+            ports=self.ports,
         )
 
     async def _create_story(

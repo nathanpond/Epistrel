@@ -467,6 +467,83 @@ class CastLimitExceeded(EpistrelError):
     http_status = 422
 
 
+class CreationRefused(EpistrelError):
+    """A story's creation from a scenario refused with nothing written (FR-SCN-6; #119):
+    ``details.report`` is the full creation report, listing every error. Each subclass is one
+    code (the first of several conditions by precedence, ``core.genesis.create``)."""
+
+    http_status = 422
+
+
+class SlotRequired(CreationRefused):
+    """A required role (or the player's role) is not filled."""
+
+    code = "slot_required"
+
+
+class LockedSlotReassigned(CreationRefused):
+    """A ``locked`` role was given another character."""
+
+    code = "locked_slot_reassigned"
+
+
+class PlayerRoleFixed(CreationRefused):
+    """A player put in a role that is not the scenario's player role, or the player's role
+    filled as a character slot (FR-CAT-6)."""
+
+    code = "player_role_fixed"
+
+
+class PersonaRequired(CreationRefused):
+    """A player's persona names a catalog character (FR-CAT-6)."""
+
+    code = "persona_required"
+
+
+class EligibilityFailed(CreationRefused):
+    """A role's character fails one of its eligibility filters (FR-SCN-3)."""
+
+    code = "eligibility_failed"
+
+
+class OverrideNotAllowed(CreationRefused):
+    """An override names a field the scenario's ``creation_rules.overridable`` does not."""
+
+    code = "override_not_allowed"
+
+
+class RatingCheckFailed(CreationRefused):
+    """The requested rating adds guardrails to the scenario's, and the genesis content fails
+    them (FR-RATE-7)."""
+
+    code = "rating_check_failed"
+
+
+class CreationConflicts(CreationRefused):
+    """``strict`` creation found a conflict (a personality warning, FR-SCN-7)."""
+
+    code = "creation_conflicts"
+
+
+class CreationArchived(CreationRefused):
+    """The scenario or a chosen catalog character is archived."""
+
+    code = EntryArchived.code
+
+
+class CreationNotPublished(CreationRefused):
+    """The scenario or a chosen catalog character has no published version (or the version is
+    gone)."""
+
+    code = NotPublished.code
+
+
+class CreationCastLimit(CreationRefused):
+    """More character slots, player slots included, than the effective starting-cast limit."""
+
+    code = CastLimitExceeded.code
+
+
 class InvalidListingStatus(EpistrelError):
     """A listing status that is not one of the deployment's ``listing_status_values``
     (FR-CAT-11; #110): set on an entry, or named as a list filter. Nothing is written.

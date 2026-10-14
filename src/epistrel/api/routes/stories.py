@@ -42,6 +42,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationError,
     WithJsonSchema,
     create_model,
     model_validator,
@@ -59,17 +60,21 @@ from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.ownership import mount_ownership_routes
 from epistrel.api.routes.timeline import VariantChainBody
-from epistrel.api.validation import register_body_model
+from epistrel.api.validation import register_body_model, register_body_selector
 from epistrel.core import idempotency
 from epistrel.core.catalog.promote import PromoteRequest, Promotion
 from epistrel.core.catalog.report import Entry
 from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.enums import StoryStatus
+from epistrel.core.errors import InvalidRequest
+from epistrel.core.genesis.create import CreationHeld
+from epistrel.core.genesis.models import CreationReport, StoryFromScenario, is_scenario_body
 from epistrel.core.ingest import IngestRequest, IngestResult
 from epistrel.core.ownership import RELATION_FILTER_PATTERN, relation_filter_problem
 from epistrel.core.policies.model import Policy, PolicyKind, Scope, Target
 from epistrel.core.profiles.effective import ProfileVersionRef
+from epistrel.core.profiles.impact import ImpactReport
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.stories import (
     AdHocCharacter,
@@ -112,10 +117,28 @@ class CharacterRefBody(BaseModel):
     name: str
 
 
+class CatalogSourceBody(BaseModel):
+    """The catalog version a story character was created from (``catalog_id@version``)."""
+
+    catalog_id: str
+    version: int
+
+
+class ScenarioOriginBody(BaseModel):
+    """The scenario version a story was created from (#119)."""
+
+    id: str
+    version: int
+
+
 class CharacterBody(CharacterRefBody):
-    """A character as a read returns it; ``is_player`` marks a player character."""
+    """A character as a read returns it; ``is_player`` marks a player character. A story created
+    from a scenario (#119) names each character's ``role_id`` and, for a catalog character, its
+    ``source``; a blank story's characters carry neither."""
 
     is_player: bool
+    role_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    source: CatalogSourceBody | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class OmniscientCharacterBody(CharacterBody):
@@ -164,20 +187,59 @@ class PromotionBody(MutationResponse):
         )
 
 
-class StoryCreatedBody(MutationResponse):
-    """The new story: its id, its cast's ids in request order, its rating and its revision."""
+class CreatedCharacterBody(CharacterRefBody):
+    """A character of the new story: its id and name, and the scenario role it fills (absent
+    for a blank story)."""
 
-    story_id: str
-    characters: list[CharacterRefBody]
-    content_rating: StoryRatingBody
+    role_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
+class StoryCreatedBody(MutationResponse):
+    """The new story (201): its id, its cast's ids (request order for a blank story, the
+    scenario's role order for one created from a scenario), its rating and its revision. A
+    story created from a scenario (#119) also names the scenario version, the engine profile
+    it runs under, the creation ``report`` (counts and the unavailable checks under the
+    ``card`` projection, every entry under ``full``) and #109's ``impact`` report. When the
+    impact report warns and the request did not set ``ignore_warnings`` (FR-PROF-7), nothing
+    is created: 200 with ``applied: false``, the reports, and no story (``story_id``,
+    ``content_rating`` ``null``)."""
+
+    applied: bool = True
+    story_id: str | None
+    characters: list[CreatedCharacterBody]
+    content_rating: StoryRatingBody | None
+    scenario: ScenarioOriginBody | None = None
+    engine_profile: ProfileVersionRef | None = None
+    report: CreationReport | None = None
+    impact: ImpactReport | None = None
 
     @classmethod
-    def of(cls, created: CreatedStory) -> StoryCreatedBody:
+    def of(cls, created: CreatedStory | CreationHeld) -> StoryCreatedBody:
+        if isinstance(created, CreationHeld):
+            return cls(
+                applied=False,
+                story_id=None,
+                characters=[],
+                content_rating=None,
+                timeline_revision=created.timeline_revision,
+                report=created.report,
+                impact=created.impact,
+            )
+        scenario = created.scenario
         return cls(
             story_id=created.story_id,
-            characters=[CharacterRefBody(id=c.id, name=c.name) for c in created.characters],
+            characters=[
+                CreatedCharacterBody(id=c.id, name=c.name, role_id=c.role_id)
+                for c in created.characters
+            ],
             timeline_revision=created.timeline_revision,
             content_rating=StoryRatingBody.of(created.content_rating),
+            scenario=None
+            if scenario is None
+            else ScenarioOriginBody(id=scenario.id, version=scenario.version),
+            engine_profile=created.engine_profile,
+            report=created.report,
+            impact=created.impact,
         )
 
 
@@ -257,6 +319,8 @@ class StoryBody(StorySummaryBody):
     """Every chain of the story, as ``GET /stories/{id}/variants`` lists them (#66)."""
     pause: StoryPauseBody | None = None
     """While ``status`` is ``paused`` (#118): the check that paused it; ``null`` otherwise."""
+    scenario: ScenarioOriginBody | None = None
+    """The scenario version the story was created from (#119); ``null`` for a blank story."""
 
     @classmethod
     def of(cls, story: StoryView, undo: UndoState, chains: list[Chain]) -> StoryBody:
@@ -279,6 +343,9 @@ class StoryBody(StorySummaryBody):
             ],
             variant_chains=[VariantChainBody.of(c) for c in chains],
             pause=StoryPauseBody.model_validate(story.pause) if story.pause else None,
+            scenario=None
+            if story.scenario is None
+            else ScenarioOriginBody(id=story.scenario.id, version=story.scenario.version),
         )
 
 
@@ -547,15 +614,74 @@ class IngestResponse(MutationResponse):
 
 
 def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterBody:
+    source = (
+        None
+        if character.source is None
+        else CatalogSourceBody(
+            catalog_id=character.source.catalog_id, version=character.source.version
+        )
+    )
     if character.true_age is not None:
         return OmniscientCharacterBody(
             id=character.id,
             name=character.name,
             is_player=character.is_player,
+            role_id=character.role_id,
+            source=source,
             true_age=character.true_age,
             promoted_to=list(character.promoted_to or ()),
         )
-    return CharacterBody(id=character.id, name=character.name, is_player=character.is_player)
+    return CharacterBody(
+        id=character.id,
+        name=character.name,
+        is_player=character.is_player,
+        role_id=character.role_id,
+        source=source,
+    )
+
+
+def _create_body_model(document: Any) -> type[BaseModel]:
+    return StoryFromScenario if is_scenario_body(document) else StorySpec
+
+
+register_body_selector("create_story", _create_body_model)
+
+
+def parse_create_body(body: dict[str, Any]) -> StorySpec | StoryFromScenario:
+    """The ``POST /stories`` body as its model (422 ``validation_error`` at ``body.<field>``)."""
+    try:
+        if is_scenario_body(body):
+            return StoryFromScenario.model_validate(body)
+        return StorySpec.model_validate(body)
+    except ValidationError as exc:
+        raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
+
+
+CREATE_DESCRIPTION = (
+    "Create a story, blank or from a scenario, in one operation; answers 201 with `Location`."
+    "\n\n**Blank** (`StorySpec`): its cast (each character with a required `true_age`), its "
+    "content rating (default: the deployment's) and its settings. Every character "
+    "`definition` (and `deflection_style`, how it refuses or changes the subject: FR-GUARD-7) "
+    "passes the input gate first: a violation is 422 `guardrail_violation` and no story exists."
+    "\n\n**From a scenario** (`StoryFromScenario`, the body naming `scenario`; FR-SCN-6,9): "
+    "the scenario (and a published version; default the latest), who fills each NPC role "
+    "(`slots`: a catalog `character@version` or an `ad_hoc` definition; locked roles and "
+    "default roles kept as pre-filled need none), each player's principal and persona "
+    "(`players`, saved or ad hoc, in the scenario's player role), permitted `overrides`, an "
+    "optional rating, engine profile and `max_characters_at_start`, and `strict`. The story is "
+    "created in one transaction: one genesis operation, full snapshots of the scenario and "
+    "of each catalog character (`catalog_id@version`), story settings and policies, a "
+    "`player` relation per player principal, and the opening narration as turn 1. A refusal "
+    "writes nothing: one 422 whose code is the first present of `creation_conflicts` (under "
+    "`strict`), `slot_required`, `locked_slot_reassigned`, `player_role_fixed`, "
+    "`persona_required`, `entry_archived`, `not_published`, `override_not_allowed`, "
+    "`eligibility_failed`, `cast_limit_exceeded`, `rating_check_failed`, then the input gate's "
+    "`guardrail_violation`, with the full creation report in `details.report`. A scenario "
+    "rating mismatch is a warning (FR-RATE-5). Owners and listing statuses are never checked "
+    "(FR-AUTH-8). When the engine profile leaves a capability the scenario recommends unmet, "
+    "the answer is 200 with `applied: false` and the reports, unless the request sets "
+    "`ignore_warnings` (FR-PROF-7)."
+)
 
 
 @router.post(
@@ -564,20 +690,27 @@ def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterB
     response_model=StoryCreatedBody,
     operation_id="create_story",
     summary="Create a story",
-    description=(
-        "Create a blank story with its cast (each character with a required `true_age`), its "
-        "content rating (default: the deployment's) and its settings, in one operation. Every "
-        "character `definition` (and `deflection_style`, how it refuses or changes the subject: "
-        "FR-GUARD-7) passes the input gate first: a violation is 422 `guardrail_violation` and no "
-        "story exists. Answers 201 with `Location`."
-    ),
+    description=CREATE_DESCRIPTION,
+    responses={
+        200: {
+            "description": "A creation from a scenario held back by its impact report "
+            "(FR-PROF-7): nothing was created; resend with `ignore_warnings`.",
+        }
+    },
 )
 async def create_story(
-    body: StorySpec, response: Response, ctx: ContextDep, engine: EngineDep
+    body: Annotated[dict[str, Any], Body()], response: Response, ctx: ContextDep, engine: EngineDep
 ) -> StoryCreatedBody:
-    created = await engine.create_story(ctx, body)
-    response.headers["Location"] = f"/stories/{created.story_id}"
-    return answered(StoryCreatedBody.of(created), ctx, response, replayed=created.replayed)
+    request = parse_create_body(body)
+    if isinstance(request, StoryFromScenario):
+        result = await engine.create_story(ctx, request)
+    else:
+        result = await engine.create_story(ctx, request)
+    if isinstance(result, CreationHeld):
+        response.status_code = http_status.HTTP_200_OK
+    else:
+        response.headers["Location"] = f"/stories/{result.story_id}"
+    return answered(StoryCreatedBody.of(result), ctx, response, replayed=result.replayed)
 
 
 def _relation_filter(value: str) -> str:

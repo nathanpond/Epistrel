@@ -14,7 +14,11 @@ deployment's default when it was created (a fork keeps its source's). It referen
 ``engine_profile_version_pin`` (FR-PROF-7,8's interim rule until M7): ``NULL`` while the story
 follows its profile's latest version; the version it keeps when a confirmed data-producing edit
 could not apply to it (``upgrade_unavailable``: it has history and M3 has no backfill). The pair
-references ``engine_profile_versions``, so a pinned version always exists.
+references ``engine_profile_versions``, so a pinned version always exists. #119 adds
+``scenario_id``, ``scenario_version`` and ``scenario_snapshot`` (FR-SCN-9): the scenario version a
+story was created from, by identifiers only (the catalog never participates in a running story),
+and that version's whole document as genesis copied it; all three or none
+(``ck_stories_scenario_snapshot``).
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -51,6 +55,11 @@ PIN_FOREIGN_KEY = "fk_stories_engine_profile_version_pin"
 STATUS_CHECK = "status IN ({})".format(", ".join(f"'{s.value}'" for s in StoryStatus))
 TURN_CONCURRENCY_CHECK = "turn_concurrency IN ('reject', 'queue')"
 TURN_QUEUE_MAX_CHECK = "turn_queue_max IS NULL OR turn_queue_max BETWEEN 1 AND 50"
+SCENARIO_SNAPSHOT_CHECK = (
+    "(scenario_id IS NULL AND scenario_version IS NULL AND scenario_snapshot IS NULL) "
+    "OR (scenario_id IS NOT NULL AND scenario_version IS NOT NULL "
+    "AND scenario_snapshot IS NOT NULL)"
+)
 
 stories = Table(
     "stories",
@@ -109,7 +118,11 @@ stories = Table(
         ["engine_profile_versions.profile_id", "engine_profile_versions.version"],
         name=PIN_FOREIGN_KEY,
     ),
+    Column("scenario_id", ulid_type(), nullable=True),
+    Column("scenario_version", Integer, nullable=True),
+    Column("scenario_snapshot", JSONB, nullable=True),
     CheckConstraint(STATUS_CHECK, name="status"),
+    CheckConstraint(SCENARIO_SNAPSHOT_CHECK, name="scenario_snapshot"),
     CheckConstraint(TURN_CONCURRENCY_CHECK, name="turn_concurrency"),
     CheckConstraint(TURN_QUEUE_MAX_CHECK, name="turn_queue_max"),
 )

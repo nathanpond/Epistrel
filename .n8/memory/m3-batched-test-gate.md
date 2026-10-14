@@ -51,14 +51,28 @@ How the columns are measured (from each agent's own `date +%s` stamps and comman
 | #108 | A | 63 | 27.7 | 72 | lane 1; gaps after 3 verify rounds, 2 fix rounds; follow-up round: 1 fix, passed (16 min); span 153 min; verifiers: 34 min, 65 runs |
 | #109 | A | 63 | 43.5 | 78 | lane 1; gaps after 3 verify rounds, 2 fix rounds; follow-up rounds: 2 fix, passed (38 min); span 158 min; verifiers: 41 min, 92 runs |
 | **A total** | | 621 | 283 | 568 | verifiers: 244 min, 483 runs |
+| #110 | B | 68 | 47.1 | 69 | main tree; gaps after 3 verify rounds, 2 fix rounds; follow-up round: 1 fix, passed; span 916 min, including the owner's overnight pause; verifiers: 46 min, 51 runs |
+| #111 | B | 80 | 27.2 | 60 | main tree; verified r2, 1 fix round; span 207 min; verifiers: 23 min, 58 runs |
+| #112 | B | 59 | 18.5 | 45 | main tree; verified r2, 1 fix round; span 228 min; verifiers: 22 min, 39 runs |
+| #113 | B | 97 | 86.8 | 85 | main tree; gaps after 3 verify rounds, 2 fix rounds; follow-up round: 1 fix, passed; span 665 min, including the pause; verifiers: 66 min, 64 runs |
+| #114 | B | 67 | 28.2 | 56 | main tree; verified r3, 2 fix rounds (the second after the pause); span 321 min, including the pause; verifiers: 36 min, 32 runs |
+| #115 | B | 65 | 35.7 | 54 | main tree; verified r2, 1 fix round (after the pause); span 217 min, including the pause; verifiers: 31 min, 29 runs |
+| #116 | B | 67 | 27.5 | 58 | main tree; verified r1 (after the pause), 0 fix rounds; span 100 min; verifiers: 12 min, 5 runs |
+| #117 | B | 50 | 33.4 | 15 | main tree; verified r2, 1 fix round; span 138 min; verifiers: 26 min, 6 runs |
+| #118 | B | 53 | 28.9 | 23 | main tree; verified r2, 1 fix round; plus the group-gate Rule 1 fix (4.4 min, #326); span 151 min; verifiers: 24 min, 16 runs |
+| #119 | B | 58 | 42.0 | 32 | main tree; verified r2, 1 fix round; span 125 min; verifiers: 22 min, 8 runs |
+| **B total** | | 668 | 375 | 497 | verifiers: 311 min, 308 runs; group B paused overnight after #116's implementation and resumed in a new session (run wf_c43e1e52-af3) |
 
 **For each group run:**
 
 | Group | Full-run wall (min) | Attempts | Failures | Attributed by test name | Needed bisect (runs) | Rework time (min) | Failures the per-story subset missed |
 |---|---|---|---|---|---|---|---|
 | A | 16.1 (967 s wall; pytest 962.75 s; 1457 passed, 14 deselected; core coverage 97.24 %) | 1 | 0 | n/a | 0 | 0 at the gate | 1, caught before the gate: #319. #105's per-story subset did not run M2's `test_respond.py`, whose FR-RESP-1 test forbids "verified" in OpenAPI descriptions. #105's new description said "unverified". #109's implementer saw the failure in its own per-story run. A per-story full run at #105 would have caught it at once. Rework: one description reworded and the OpenAPI document regenerated, inside #105's 29-minute follow-up fix (not timed separately) |
+| B | 19.5 (attempt 2 at `1a55837`: 1172 s wall; pytest 1166.30 s; 1755 passed, 14 deselected; core coverage 97.04 %). Attempt 1 at `329e619`, plain run without coverage: 1156 s wall, 1752 passed, 1 failed | 2 | 1 | 1 (`test_ownership.py::test_every_delivered_type_is_covered`, routes added by #118) | 0 | 4.4 (one fix agent, `1a55837`) + one 19.5-minute re-run | 1, #326. #118's per-story subset did not run `tests/integration/test_ownership.py`, whose coverage test requires every served route under an owned entity to be in `ownership_fixtures.CALLS`. #119's implementer saw it in its own per-story run and filed it, rather than fixing it, because it was another story's. A per-story full run at #118 would have caught it at once |
 
 Group runs use `uv run pytest --cov=epistrel.core --cov-report=term-missing:skip-covered --cov-fail-under=90`: the full suite plus CI's coverage gate, so the times include coverage overhead. The 550 s baseline is a plain run of 856 tests; group A's run had 1457 tests.
 Time saved so far (group A, 11 items), against the baseline: 11 × 550 s = 6050 s of per-story full runs, against one 967 s group run. That is about 85 minutes saved. The figure is conservative, because the suite grew with every story, so each per-story full run would have taken longer than the baseline.
+
+Time saved in group B (10 items): 10 × 550 s = 5500 s of per-story full runs, against two group runs (1156 s + 1172 s = 2328 s). That is about 53 minutes saved, net of the one failure's re-run. Cumulative after groups A and B: about 138 minutes.
 
 **Summary to compute at the end:** time saved = (30 × the baseline full-run time) − (the actual group full runs + bisect runs). Weigh that against the rework cost of failures caught late. The key number is failures that per-story tests missed but a per-story full run would have caught.

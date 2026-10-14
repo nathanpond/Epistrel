@@ -94,7 +94,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # M3's suite (1883 tests) reached 45 % in 20 minutes on the runner, against 12-16 minutes for
+    # M2's whole run: 60 leaves headroom while a faster CI run is triaged.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:

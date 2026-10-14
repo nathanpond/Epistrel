@@ -22,9 +22,13 @@ port. Options the child applies to itself before serving:
 - ``mode``: ``EPISTREL_MODE`` (``all`` by default; ``api`` runs no job worker, so a harness
   drains jobs itself).
 
-The child's media root (``EPISTREL_MEDIA_ROOT``, #105) is a temporary directory of its own,
-kept across restarts and removed when the harness's context ends (or the harness is collected),
-so a child never writes under the working directory.
+The child's media root (``EPISTREL_MEDIA_ROOT``, #105) and erasure ledger directory
+(``EPISTREL_ERASURE_LEDGER_DIR``, #125) are temporary directories of its own, kept across restarts
+and removed when the harness's context ends (or the harness is collected), so a child never
+writes under the working directory. Without its own ledger directory the child would use the
+default ``var/erasure-ledger`` under the repository, which outlives the test session: its start-up
+reconcile would load an earlier session's erasures into the test database as pending entries
+(``/health`` ``degraded``) and copy this database's erasures into that file for the next one.
 
 Nothing in ``create_app`` or the Engine imports this module.
 """
@@ -86,6 +90,8 @@ class EngineProcess:
         self.mode = mode
         self.media_root = tempfile.mkdtemp(prefix="epistrel-faults-media-")
         weakref.finalize(self, shutil.rmtree, self.media_root, ignore_errors=True)
+        self.erasure_ledger_dir = tempfile.mkdtemp(prefix="epistrel-faults-ledger-")
+        weakref.finalize(self, shutil.rmtree, self.erasure_ledger_dir, ignore_errors=True)
         self.process: asyncio.subprocess.Process | None = None
         self.markers: asyncio.Queue[str] = asyncio.Queue()
         self.starts = 0
@@ -95,11 +101,10 @@ class EngineProcess:
     def base_url(self) -> str:
         return f"http://{HOST}:{self.port}"
 
-    async def start(self) -> None:
-        """Start the child and wait until ``/health`` answers."""
-        if self.process is not None and self.process.returncode is None:
-            raise RuntimeError("the engine process is already running")
-        env = {
+    def child_env(self) -> dict[str, str]:
+        """The child's environment: this process's, without any ``EPISTREL_*`` variable, plus
+        the child's own settings (its media root and erasure ledger are its own directories)."""
+        return {
             **{k: v for k, v in os.environ.items() if not k.upper().startswith("EPISTREL_")},
             "EPISTREL_DATABASE_URL": self.database_url,
             "EPISTREL_SERVICE_CREDENTIALS": self.credential,
@@ -108,8 +113,15 @@ class EngineProcess:
             "EPISTREL_LOG_LEVEL": "WARNING",
             "EPISTREL_MODE": self.mode,
             "EPISTREL_MEDIA_ROOT": self.media_root,
+            "EPISTREL_ERASURE_LEDGER_DIR": self.erasure_ledger_dir,
             **(self.crash.env() if self.crash is not None else {}),
         }
+
+    async def start(self) -> None:
+        """Start the child and wait until ``/health`` answers."""
+        if self.process is not None and self.process.returncode is None:
+            raise RuntimeError("the engine process is already running")
+        env = self.child_env()
         args = [
             sys.executable,
             "-m",
@@ -202,6 +214,7 @@ class EngineProcess:
     async def __aexit__(self, *exc: Any) -> None:
         await self.kill()
         shutil.rmtree(self.media_root, ignore_errors=True)
+        shutil.rmtree(self.erasure_ledger_dir, ignore_errors=True)
 
 
 # -- the child ---------------------------------------------------------------------------------

@@ -395,6 +395,11 @@ async def test_a_blocked_story_refuses_everything_but_its_deletion(
         assert caught.value.details["pending_count"] == 1
         with pytest.raises(ErasurePending):
             await lib.history(CTX, stories.named, viewpoint="omniscient")
+        # A story named by ``entity_type``/``entity_id`` is refused too (the relation and owner
+        # methods); the same call for the other story answers.
+        with pytest.raises(ErasurePending):
+            await lib.list_relations(CTX, "story", stories.named)
+        assert (await lib.list_relations(CTX, "story", stories.other)).entity_id == stories.other
         assert (await lib.get_story(CTX, stories.other)).id == stories.other
         (status,) = await ledger.sql(
             url, "SELECT status, status_before_block FROM stories WHERE id = :s", s=stories.named
@@ -417,6 +422,12 @@ async def test_a_blocked_story_refuses_everything_but_its_deletion(
             )
             read = await client.get(f"/operations/{operation[0].operation_id}", headers=WRITE)
             assert read.status_code == 200, read.text
+            for path in (f"/stories/{stories.named}", f"/stories/{stories.named}/relations"):
+                refused = await client.get(path, headers=WRITE)
+                assert refused.status_code == 503, (path, refused.text)
+                assert refused.json()["error"]["code"] == "erasure_pending", path
+            served = await client.get(f"/stories/{stories.other}/relations", headers=WRITE)
+            assert served.status_code == 200, served.text
             deleted = await client.delete(f"/stories/{stories.named}", headers=WRITE)
             assert deleted.status_code == 204, deleted.text
     finally:
@@ -453,18 +464,26 @@ async def test_a_failed_reapply_keeps_the_story_blocked(
 
 
 def test_every_story_method_is_gated() -> None:
-    """Every public Engine coroutine method that takes a ``story_id`` refuses a blocked story,
-    except the deletion: the check is in the Engine, so REST and the library agree."""
+    """Every public Engine coroutine method that can name a story (a ``story_id``, or an
+    ``entity_type`` and ``entity_id``) refuses a blocked story, except the deletion: the check
+    is in the Engine, so REST and the library agree."""
+
+    def names_a_story(member: Any) -> bool:
+        parameters = inspect.signature(member).parameters
+        return "story_id" in parameters or {"entity_type", "entity_id"} <= parameters.keys()
+
     missing = [
         name
         for name, member in vars(Engine).items()
         if not name.startswith("_")
         and inspect.iscoroutinefunction(member)
-        and "story_id" in inspect.signature(member).parameters
+        and names_a_story(member)
         and name not in ERASURE_GATE_EXEMPT
         and not getattr(member, ERASURE_GATED_ATTRIBUTE, False)
     ]
     assert missing == []
+    for name in ("list_relations", "add_relation", "remove_relation", "transfer_owner"):
+        assert getattr(getattr(Engine, name), ERASURE_GATED_ATTRIBUTE, False), name
     assert not getattr(Engine.delete_story, ERASURE_GATED_ATTRIBUTE, False)
 
 

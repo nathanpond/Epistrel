@@ -3682,8 +3682,10 @@ class Engine:
 
 ERASURE_GATE_EXEMPT = frozenset({"delete_story"})
 """Methods naming a story that a blocked story still answers (#125): deleting it settles its
-pending erasures. Every other public coroutine method with a ``story_id`` parameter refuses a
-story the erasure reconciler blocked (503 ``erasure_pending``)."""
+pending erasures. Every other public coroutine method naming a story refuses a story the
+erasure reconciler blocked (503 ``erasure_pending``): one with a ``story_id`` parameter, and one
+with ``entity_type`` and ``entity_id`` parameters when ``entity_type`` is ``story`` (the
+ownership and relation methods behind ``/stories/{story_id}/owner`` and ``.../relations``)."""
 ERASURE_GATED_ATTRIBUTE = "__epistrel_erasure_gated__"
 
 
@@ -3692,8 +3694,8 @@ def _erasure_gated[F: Callable[..., Awaitable[Any]]](method: F) -> F:
 
     @functools.wraps(method)
     async def gated(self: Engine, *args: Any, **kwargs: Any) -> Any:
-        story_id = signature.bind_partial(self, *args, **kwargs).arguments.get("story_id")
-        if isinstance(story_id, str):
+        story_id = _named_story(signature.bind_partial(self, *args, **kwargs).arguments)
+        if story_id is not None:
             await self._erasure_gate(story_id)
         return await method(self, *args, **kwargs)
 
@@ -3701,10 +3703,29 @@ def _erasure_gated[F: Callable[..., Awaitable[Any]]](method: F) -> F:
     return gated  # type: ignore[return-value]
 
 
+def _names_a_story(parameters: Mapping[str, Any]) -> bool:
+    """Whether a method with ``parameters`` can name a story (#125)."""
+    return "story_id" in parameters or {"entity_type", "entity_id"} <= parameters.keys()
+
+
+def _named_story(arguments: Mapping[str, Any]) -> str | None:
+    """The story a call's bound ``arguments`` name: its ``story_id``, or its ``entity_id`` when
+    its ``entity_type`` is ``story``. An unknown entity type names none here: the method itself
+    answers it (422 ``validation_error``)."""
+    story_id = arguments.get("story_id")
+    if isinstance(story_id, str):
+        return story_id
+    entity_id = arguments.get("entity_id")
+    if isinstance(entity_id, str) and arguments.get("entity_type") == EntityType.STORY.value:
+        return entity_id
+    return None
+
+
 def gate_story_methods(engine_class: type) -> None:
     """Put the erasure block (#125) in front of every public coroutine method of
-    ``engine_class`` that takes a ``story_id``, except ``ERASURE_GATE_EXEMPT``: one check in the
-    Engine, so the REST API and the in-process library refuse alike."""
+    ``engine_class`` that can name a story (a ``story_id``, or an ``entity_type`` and
+    ``entity_id``), except ``ERASURE_GATE_EXEMPT``: one check in the Engine, so the REST API and
+    the in-process library refuse alike."""
     for name, member in list(vars(engine_class).items()):
         if name.startswith("_") or name in ERASURE_GATE_EXEMPT:
             continue
@@ -3712,7 +3733,7 @@ def gate_story_methods(engine_class: type) -> None:
             member, ERASURE_GATED_ATTRIBUTE, False
         ):
             continue
-        if "story_id" in inspect.signature(member).parameters:
+        if _names_a_story(inspect.signature(member).parameters):
             setattr(engine_class, name, _erasure_gated(member))
 
 

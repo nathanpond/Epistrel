@@ -15,6 +15,7 @@ from pydantic import ValidationError
 import epistrel
 from epistrel.api.auth import TRUST_BOUNDARY_STATEMENT
 from epistrel.api.routes.ownership import CONFERS_NOTHING, OWNERSHIP_TAG
+from epistrel.core.erasure.boundary import render_boundary
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ownership import (
     REGISTRY,
@@ -108,9 +109,9 @@ def test_only_ownership_code_reads_relations(tmp_path: Path) -> None:
 def test_documentation_says_ownership_confers_nothing() -> None:
     """The trust-boundary statement says that ownership exists for listing, attribution and
     offboarding only, and that nothing is granted or withheld because of an owner or a relation.
-    The statement is the OpenAPI description and appears in the README's trust-boundary
-    paragraph. The ``ownership`` tag says it, and so does every owner and relation route's
-    description."""
+    The statement opens the OpenAPI description (the erasure boundary, #125, follows it) and
+    appears in the README's trust-boundary paragraph. The ``ownership`` tag says it, and so does
+    every owner and relation route's description."""
     assert TRUST_BOUNDARY_STATEMENT.endswith(
         "Ownership and relations are labels the consumer defines; the engine never grants or "
         "withholds an action because of them. Ownership exists for listing, attribution and "
@@ -120,7 +121,8 @@ def test_documentation_says_ownership_confers_nothing() -> None:
     paragraph = readme.split("## Trust boundary", 1)[1].split("\n## ", 1)[0]
     assert TRUST_BOUNDARY_STATEMENT in paragraph
     document = json.loads((REPO_ROOT / "docs" / "openapi.json").read_text(encoding="utf-8"))
-    assert document["info"]["description"] == TRUST_BOUNDARY_STATEMENT
+    # #125 appends the erasure boundary after a blank line; the statement still leads.
+    assert document["info"]["description"] == f"{TRUST_BOUNDARY_STATEMENT}\n\n{render_boundary()}"
     tags = {tag["name"]: tag["description"] for tag in document["tags"]}
     assert "nothing gates on them" in tags[OWNERSHIP_TAG]
     owned = [

@@ -61,6 +61,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock, control
 from epistrel.core.config_changes import read_section
+from epistrel.core.erasure import guard as erasure_guard
 from epistrel.core.erasure.index import drop_many, index_records
 from epistrel.core.erasure.records import upload_session_record
 from epistrel.core.errors import (
@@ -75,6 +76,7 @@ from epistrel.core.errors import (
 from epistrel.core.ids import new_ulid
 from epistrel.core.media import probe
 from epistrel.core.media.assets import (
+    DECLARED_FIELD,
     EXAMPLE_UPLOAD,
     MediaUpload,
     MediaWrite,
@@ -313,6 +315,14 @@ async def open_session(
     expires_at = now + timedelta(seconds=settings.media_upload_ttl)
     try:
         async with db.begin() as conn:
+            # No new session depicts a subject a catalog-scope erasure removed (FR-ADMIN-9):
+            # its completion would make an asset of them (#334, as ``assets`` does).
+            await erasure_guard.assert_not_erased(
+                conn,
+                [s.id for s in asset.depicted_subjects or []],
+                field=f"body.{DECLARED_FIELD}",
+                path=__name__,
+            )
             await conn.execute(
                 insert(media_upload_sessions).values(
                     id=upload_id,

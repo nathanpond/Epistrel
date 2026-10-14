@@ -1260,7 +1260,8 @@ async def test_an_upload_session_is_subject_indexed_and_erased(pg_url: str, tmp_
     that depicted only her is aborted, one that also depicts another subject stays open.
 
     Complements asserted: before erasure the session names her; after it, no session row holds
-    her name or id, no index row names her, and the erasure's residue check is zero."""
+    her name or id, no index row names her, the erasure's residue check is zero, and a new
+    session depicting her is refused (409 ``erased_subject_referenced``), opening nothing."""
     async with delivery(pg_url, tmp_path / "media", "local", None) as d:
         client, db = d.client, d.space.db
         made = await client.post(
@@ -1312,6 +1313,27 @@ async def test_an_upload_session_is_subject_indexed_and_erased(pg_url: str, tmp_
         assert row.metadata["depicted_subjects"] == [{"kind": "persona", "id": bystander}]
         assert "Odile Fenn" in row.metadata["caption"]
         assert (bystander, "metadata.depicted_subjects") in refs
+
+        # A new session depicting her is refused (FR-ADMIN-9), opening nothing.
+        async with db.connect() as conn:
+            sessions = await conn.scalar(text("SELECT count(*) FROM media_upload_sessions"))
+        refused = await client.post(
+            "/media/uploads",
+            json={
+                **metadata(),
+                "size": len(data),
+                "mime_type": "image/png",
+                "sha256": sha256(data),
+                "depicted_subjects": [{"kind": "persona", "id": persona}],
+            },
+            headers=WRITE,
+        )
+        assert refused.status_code == 409, refused.text
+        error = refused.json()["error"]
+        assert error["code"] == "erased_subject_referenced"
+        assert error["details"]["field"] == "body.depicted_subjects"
+        async with db.connect() as conn:
+            assert await conn.scalar(text("SELECT count(*) FROM media_upload_sessions")) == sessions
 
 
 async def test_a_catalog_subject_is_indexed_where_it_was_named_before_it_existed(

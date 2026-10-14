@@ -720,3 +720,18 @@ async def test_s_erasure_boundary__resurrection(
     erased_events = [r for r in first_state["events"] if r.get("type") == "erasure_marker"]
     assert erased_events
     assert not e.naming(json.dumps(first_state, default=str), (BRANN,))
+
+
+@pytest.mark.part("M3", "FR-ADMIN-9; NFR-PRIV-2")
+async def test_s_erasure_boundary__in_flight(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """S-ERASURE-BOUNDARY's Resurrection clause, its in-flight half (#344): a turn generating
+    when the subject is erased is abandoned (409 ``timeline_changed`` naming the erasure, no
+    events) and one queued behind it fails; a summary job over a window naming her drops its
+    output; a worker result or model reply naming her afterwards is refused; the purged stored
+    result replays as the reference only. The clauses and their complements are
+    ``tests/integration/test_erasure_resurrection.resurrection_clauses``."""
+    from tests.integration.test_erasure_resurrection import resurrection_clauses
+
+    await resurrection_clauses(erasure_settings, engine)

@@ -77,6 +77,8 @@ from tests.model_support import CONFIG_KEY, config_key
 AUTHOR = RequestContext(principal="p-media")
 NO_SESSIONS = {"sessions_expired": 0, "sessions_purged": 0, "parts_removed": 0}
 """The media sweep's upload-session counts (#107) when there are no sessions to sweep."""
+NO_EXPORTS = {"exports_expired": 0}
+"""The media sweep's feedback-export count (#126) when no export is due."""
 
 
 @pytest.fixture
@@ -1314,7 +1316,13 @@ async def test_sweep_purges_what_nothing_references(space: Scratch) -> None:
     aged(stale, OLD)
 
     counts = await sweep(space.db, space.lib.media)
-    assert counts == {"assets_purged": 1, "blobs_deleted": 2, "staged_removed": 1, **NO_SESSIONS}
+    assert counts == {
+        "assets_purged": 1,
+        "blobs_deleted": 2,
+        "staged_removed": 1,
+        **NO_SESSIONS,
+        **NO_EXPORTS,
+    }
     assert await ids(space) == {young, in_draft, in_version, candidate}
     assert not blob_path(space.root, retired_sum).exists()
     assert not blob_path(space.root, orphan_old).exists()
@@ -1348,7 +1356,13 @@ async def test_sweep_purges_what_nothing_references(space: Scratch) -> None:
     assert later["assets_purged"] == 1
     assert await ids(space) == {in_draft, in_version, candidate}
     again = await sweep(space.db, space.lib.media, now=tomorrow)
-    assert again == {"assets_purged": 0, "blobs_deleted": 0, "staged_removed": 0, **NO_SESSIONS}
+    assert again == {
+        "assets_purged": 0,
+        "blobs_deleted": 0,
+        "staged_removed": 0,
+        **NO_SESSIONS,
+        **NO_EXPORTS,
+    }
 
     await execute(space, "UPDATE catalog.character_catalog SET draft = '{}'::jsonb")
     freed = await sweep(space.db, space.lib.media)
@@ -1416,6 +1430,7 @@ async def test_the_recurring_job(space: Scratch) -> None:
         "blobs_deleted": 1,
         "staged_removed": 0,
         **NO_SESSIONS,
+        **NO_EXPORTS,
     }
     assert retired not in await ids(space)
     assert (
@@ -1504,13 +1519,25 @@ async def test_each_run_goes_on_where_the_last_stopped(
     later = clock.now() + timedelta(hours=25)
 
     first = await sweep(space.db, store, now=later)
-    assert first == {"assets_purged": 1, "blobs_deleted": 1, "staged_removed": 0, **NO_SESSIONS}
+    assert first == {
+        "assets_purged": 1,
+        "blobs_deleted": 1,
+        "staged_removed": 0,
+        **NO_SESSIONS,
+        **NO_EXPORTS,
+    }
     assert await ids(space) == set(in_use)
     assert left.exists()
     assert store.sweep_cursor() == named[1]
 
     second = await sweep(space.db, store, now=later)
-    assert second == {"assets_purged": 0, "blobs_deleted": 1, "staged_removed": 0, **NO_SESSIONS}
+    assert second == {
+        "assets_purged": 0,
+        "blobs_deleted": 1,
+        "staged_removed": 0,
+        **NO_SESSIONS,
+        **NO_EXPORTS,
+    }
     assert not left.exists()
     assert store.sweep_cursor() is None
     assert all(blob_path(space.root, checksum).exists() for checksum in named)
@@ -1555,7 +1582,13 @@ async def test_the_sweep_waits_for_an_upload_of_the_same_bytes(space: Scratch) -
         hold.release()
         fresh = await uploading
         counts = await sweeping
-    assert counts == {"assets_purged": 1, "blobs_deleted": 0, "staged_removed": 0, **NO_SESSIONS}
+    assert counts == {
+        "assets_purged": 1,
+        "blobs_deleted": 0,
+        "staged_removed": 0,
+        **NO_SESSIONS,
+        **NO_EXPORTS,
+    }
     assert await ids(space) == {fresh}
     assert stored.exists()
     async with media_client(space.settings, space.db) as client:

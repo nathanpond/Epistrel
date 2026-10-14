@@ -6,7 +6,8 @@ unset: AWS's own), through ``boto3`` with signature v4 (region ``EPISTREL_MEDIA_
 default ``us-east-1``), path-style addressing when ``EPISTREL_MEDIA_S3_PATH_STYLE`` is on (MinIO),
 and the access key pair from the settings or, when unset, boto3's own credential chain. The key
 layout mirrors the local store: blobs under their shard, resumable uploads under ``uploads/``,
-the sweep cursor at ``.sweep-cursor`` (and ``exports/`` stays free for #126).
+the sweep cursor at ``.sweep-cursor``, and the feedback exports (#126) at
+``exports/<export id>.jsonl`` (``put_object``, ``open_object``, ``delete_object``).
 
 - **Uploads** stage on the local media root like every upload (``LocalStaging``); ``put`` sends
   the staged file with its ``Content-Type`` and ``Cache-Control: private, max-age=31536000,
@@ -57,6 +58,7 @@ from epistrel.core.media.store import (
     Sink,
     blob_key,
     check_checksum,
+    check_object_key,
 )
 
 if TYPE_CHECKING:
@@ -312,6 +314,32 @@ class S3BlobStore(LocalStaging):
             ExpiresIn=ttl_s,
         )
         return url
+
+    # -- objects (#126) ----------------------------------------------------------------------
+
+    def put_object(self, key: str, data: bytes, *, content_type: str) -> None:
+        self._call(
+            "put_object",
+            self.client.put_object,
+            Bucket=self.bucket,
+            Key=check_object_key(key),
+            Body=data,
+            ContentType=content_type,
+            CacheControl="private, no-store",
+        )
+
+    def open_object(self, key: str) -> _Body:
+        answer = self._call(
+            "get_object", self.client.get_object, Bucket=self.bucket, Key=check_object_key(key)
+        )
+        return _Body(answer["Body"])
+
+    def delete_object(self, key: str) -> bool:
+        checked = check_object_key(key)
+        if self._head(checked) is None:
+            return False
+        self._call("delete_object", self.client.delete_object, Bucket=self.bucket, Key=checked)
+        return True
 
     # -- the sweep cursor ----------------------------------------------------------------------
 

@@ -5539,3 +5539,96 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   - `test_s_erasure_boundary__catalog` now also purges an asset whose bytes a bystander's live asset shares. The bytes stay and still serve. Its expected `media` count goes from 3 to 4 because the fixture adds this one asset; the assertion is not loosened.
   **Why:** AC2 (whole-beat erasure), AC3 (the persona is deleted; bytes are removed only when no other asset shares them). Mutation checks: making `_erase_beat` a no-op, turning off the voiced-only rule, reverting the deferred fix (keys taken as ids), reverting `deferred_record` to the list form, and making `collect_blob` ignore other assets that share a blob each make at least one of these tests fail. Every mutation was reverted.
   **Issue:** #124
+
+- **Decision (drift):** #126 adds the deployment settings `feedback_export` (a `StrictBool`, off by default) and `feedback_regen_window_s` (a `StrictInt` from 1 to 86400, default 300) as `FeedbackSettings` fields of the settings document, not as `deployment_state` columns. Both are prospective, are in `SettingsPatch` and are in `test_u_18.EXPECTED`. The migration (`0041_feedback_export`) only creates `feedback_export_log` and adds the `config_fingerprint`, `profile_version` and GIN `tags` indexes on `message_feedback`.
+  **Why:** The drift note says the deployment settings are tagged section fields, and #112 handed the indexes to #126. Cost if wrong: a later column move.
+  **Issue:** #126, #112
+- **Decision (deviation, Rule 2):** A regenerate's turn operation now records the variant it replaced, as `turn_report.regenerated_variant`. The key is `core.tables.operations.REGENERATED_VARIANT`, written by the Lite pipeline. The aggregates count a regeneration from this key and attribute it to the replaced variant's message. They do not use `turn_variant > 1` as the planner line said.
+  **Why:** The drift note shows that a turn written over a rewound tail also gets `turn_variant > 1`, and the replaced variant was persisted nowhere. A marker is exact. Reconstructing it from membership changes would need a replay of `truncate`/`untruncate`/`swap`. Cost if wrong: regenerations committed before this change are not counted, which matters only for data from before M3. `test_signals_follow_the_timeline` asserts the marker on a regenerate and its absence on the turn written over a rewound tail.
+  **Issue:** #126, #66, #65
+- **Decision:** How the other signals are attributed. `swaps_back` counts a `swap` event at the message's own turn whose `dormant_operation_ids` hold the message's operation and whose activated operation at that turn has a lower variant; an untruncate that swaps back counts too. `rewinds` counts a `truncate` event whose first discarded turn (`to_turn + 1`) is the message's turn and whose `operation_ids` hold its operation. `regen_after_low_rating` counts each current rating of 1 or 2 whose latest value (`updated_at`) is followed, within the window, by the regenerate's `committed_at`. A message's signals count once per group, however many principals rated it. They are summed per group, and `messages` (distinct rated messages) is the denominator.
+  **Why:** The pass-1 lines leave open which message a swap or a rewind belongs to. The message nearest the action is the one the player rejected. Cost if wrong: a different attribution changes the counts, not the shape.
+  **Issue:** #126
+- **Decision:** The aggregates read one row per current rating in SQL: the dimension key and correlated sub-selects for the signals, with no materialized view. They group in Python, which is needed because a `tag` puts a rating in several groups and messages are counted distinct. The envelope is `{group_by, story_id, window: {from, to, regen_window_s}, groups, truncated, totals}`. Each group is `{key, count, messages, mean_rating, histogram, tags, signals}`. Groups are ordered by `count` (highest first), then `key` (`null` last), and capped at `MAX_GROUPS` (500), with `truncated`. `day` is the UTC date of `created_at`, and `content_rating` maps the recorded `rating_version_id` to its rating id. The `regeneration_rate` FR-FB-3 names is `regenerations / messages`, stated in the route description, with no field of its own.
+  **Why:** The pass-1 lines, with "SQL" read as "computed on demand in the database", since grouping by tag in pure SQL needs an unnest per signal. Cost if wrong: more memory per call at large scale; the shapes are unchanged.
+  **Issue:** #126
+- **Decision:** The review lists are `GET /feedback/review/guardrail` and `GET /feedback/review/memory`, two routes on one Engine method `feedback_review` (operation ids `feedback_review_guardrail` and `feedback_review_memory`).
+  - Each item is `{story_id, turn, variant, message_id, principal, rating, tags, text, rated_at, message_text, player_input {say, do} | null, context}`, and the page is `{review, tags, items, next_cursor}`.
+  - `context` is #112's `FeedbackContext`, so it carries `rating_version_id` where the planner wrote `rating_version`. `rated_at` is added because the list is ordered by it.
+  - Filters: `story_id`, plus `from` and `to` on `created_at`, the same meaning as the aggregates. A `tag` that is not on the list is 422 at `query.tag`.
+  - Pages use #110's cursor encoding, bound to the list and its filters.
+  - Ratings of a `blocked_by_erasure` story are left out of both lists and of exports, but they are kept in unfiltered aggregates, which hold no text.
+  **Why:** The pass-1 lines. Reusing the context model keeps one context shape. A restored, unerased story's text must not be served (#125). Cost if wrong: a renamed field.
+  **Issue:** #126, #110, #112, #125
+- **Decision (drift):** The export surface is five routes under `/admin/feedback`, all tagged `feedback` through `ROUTE_TAGS`:
+  - `POST /export`, 201 `{export_id, content_url, case_count, config_revision}`: a `DeploymentMutationResponse`, idempotent per deployment, codec `export_feedback`;
+  - `GET /exports` (pages), `GET /exports/{id}` and `GET /exports/{id}/content` (`application/x-ndjson`);
+  - `DELETE /exports/{id}`, 204 and `mutating=False`. It removes the file and keeps the row with `deleted_at`/`deleted_by`.
+
+  Each route has its own Engine method: `export_feedback`, `list_feedback_exports`, `get_feedback_export`, `get_feedback_export_content`, `delete_feedback_export`.
+
+  The disabled check comes after the body checks (422 first) and before `_keyed`, so a refusal leaves no row, file or key. Downloading the content marks `downloaded_at`, which is how "delivered" is defined. `content_url` is absolute under `public_base_url`, else the path.
+  **Why:** The drift notes on C-02/C-03 parity and on response bases, plus the pass-1 lines. "Every export is recorded" means the row must outlive the file. Cost if wrong: route names change for #128.
+  **Issue:** #126, #128
+- **Decision:** The log table is `feedback_export_log`: `id, principal, at, window_from, window_to, filters, case_count, blob_key, bytes, sha256, downloaded_at, deleted_at, deleted_by, redacted_at`. This extends pass 1's columns with the window, the file's lifecycle and redaction. It is deployment-level, with no `story_id`, so a story's deletion keeps it (tested). There is one case per current rating, and the filters are `story_id`, `tags` (any of them), `min_rating`/`max_rating`, `config_fingerprint` and `profile_version`. Ratings of dormant variants and of archived stories are included.
+  **Why:** The pass-1 lines. The window is the "what" FR-FB-4 records. Cost if wrong: one migration.
+  **Issue:** #126
+- **Decision:** The `BlobStore` port gained `put_object`/`open_object`/`delete_object` for keys matching `OBJECT_KEY_PATTERN` (`exports/<ULID>.jsonl` only), on the local store and the S3 store. Locally a write goes to a temporary file and is renamed into place. Objects are never listed as blobs. Both stores are tested, S3 against MinIO.
+  **Why:** #107's hand-off. Cost if wrong: none to blobs.
+  **Issue:** #126, #107
+- **Decision:** The 7-day expiry runs in `core.media.sweep` (`expire_exports`, `EXPORT_TTL`). It reads `feedback_export_log` through `core.tables.feedback` and never imports a feedback module, so the Orchestrator's `media_sweep` handler keeps the flag-only contract. The sweep's result gains `exports_expired`. The exact-dict assertions in `test_media_assets.py` (a `NO_EXPORTS` constant) and `test_i_17.py` were extended with that key, and no assertion was loosened.
+  **Why:** The pass-1 line "swept by media_sweep". A registered hook would make the result depend on import order. Cost if wrong: one key.
+  **Issue:** #126, #105
+- **Decision:** Erasure (#124's `ERASURE_TARGETS`). `core.feedback_export.ExportErasureTarget` (name `feedback_export_cases`) rewrites the files of exports that were neither downloaded nor deleted. It redacts the texts of each in-scope case (`message_text`, `text`, `player_input.say`/`.do`) and updates `bytes`, `sha256` and `redacted_at`; a dry run counts without writing or locking. The Engine binds its blob store (`feedback_export.bind`; the last Engine built in a process wins). The boundary's `IN_SCOPE` gains "feedback exports not yet downloaded (the subject is redacted in their cases)". `docs/OPERATIONS.md`'s marked block and `info.description` follow. `DELIVERED_EXPORTS` stays out of scope and is quoted by the export routes (`BOUNDARY_NOTE`) and by a new "Feedback exports" section in `docs/OPERATIONS.md`.
+  **Why:** The coverage line (#124/#125). Only a downloaded copy is outside the deployment's reach. Cost if wrong: an extra rewrite of an export file.
+  **Issue:** #126, #124, #125
+- **Decision (drift):** The contract `feedback-is-flag-only` has these sources: `epistrel.orchestrator` (which covers `orchestrator.lite` and `orchestrator.policies`), `core.genesis`, `core.policies` (in place of the missing `core.guardrails`), `core.ratings`, `core.profiles` and `core.projections`. Its forbidden modules are `core.feedback`, `core.feedback_reporting` and `core.feedback_export`. It ignores exactly two edges, `core.erasure.records -> core.feedback` and `core.erasure.erase -> core.feedback`; without them every guarded package reaches `core.feedback` through erasure's subject index. `tests/gates/test_feedback_contract.py` checks the contract as written, that it is kept and that it bites, and adds the grep tests for imports and table names, which allow only the retention sweep.
+  **Why:** The AC, the planner and #121's drift note. Erasure reads a rating's text to redact it, which changes no turn. Cost if wrong: one more ignored edge.
+  **Issue:** #126, #121, #112
+- **Decision (drift):** The tests:
+  - `test_c_26__aggregates` and `test_c_26__review` (`part("M3", "FR-FB-3")`) are in `tests/conformance/test_c_26.py`.
+  - `test_c_27__export` (`part("M3", "FR-FB-4; FR-ADMIN-8")`) is in the new `tests/conformance/test_c_27.py`.
+  - `test_c_09__exports` (`part("M3", "NFR-SEC-3")`) is in `tests/conformance/test_c_09.py`. It plants an API key stored for `generation`, a service credential, the config key and a password in the database URL.
+  - The details are in `tests/integration/test_feedback_reporting.py`.
+  - C-03 gained ten steps (`REPORT_ANSWERS`). The export step filters to ratings of 5, so both surfaces write the same empty file (their cases differ in ids, so their checksums would too).
+  - `test_feedback.ALLOWED` adds the two new modules.
+
+  The planner's `test_feedback_reporting`/`test_feedback_export` part names map to no docs/04 ID.
+  **Why:** The drift note on the traceability rules. Cost if wrong: renames.
+  **Issue:** #126, #112
+- **Decision:** The library exports the new request and result models, with feedback-specific names (`FeedbackGroupBy`, `FeedbackReviewList`, `FeedbackReviewPage`, `FeedbackReviewItem`, `FeedbackAggregates`, `FeedbackExportRequest`, `FeedbackExportFilters`, `FeedbackExportWritten`, `FeedbackExport`, `FeedbackExportPage`), and the errors `FeedbackExportDisabled` (403 `feedback_export_disabled`) and `FeedbackExportNotFound` (404, `reason: deleted` once the file is gone). Exports increment the label-free counter `epistrel_feedback_exports_total`, and log INFO lines with ids and counts only.
+  **Why:** Generic names (`GroupBy`, `ExportRequest`) would collide with M7's story export. Cost if wrong: renames.
+  **Issue:** #126
+- **Decision:** docs/02 §4.14's Reporting and Export bullets are amended with what was built: the dimensions, the regeneration marker, the review routes, the contract, `feedback_export_log`, the blob-store key, the 7-day expiry and the delivered-exports boundary.
+  **Why:** The design doc is authoritative, and earlier M3 stories amended it when a shape landed. Cost if wrong: one paragraph.
+  **Issue:** #126
+- **Decision (Rule 1):** The window bounds accept only RFC 3339 date-times: the reports' `from`/`to` queries through `api.config_changes.IsoDateTime`, and the export body's through `core.feedback_export.RfcDateTime`, which parses with `datetime.fromisoformat`. C-01's schemathesis run found `GET /feedback/review/*?to=0.5` accepted, because pydantic takes a number as epoch seconds. Regression tests in `test_report_requests_are_checked`: `to=0.5` is 422 at `query.to`, and `{"to": 0.5}` is 422. The same run found `FeedbackExportWindow` missing its description (C-01's schema check), and it now has a docstring.
+  **Why:** FR-API-4. The schema says `date-time`. Cost if wrong: none.
+  **Issue:** #126
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #126 built feedback reporting and export. Some of the shapes it settled are ones later stories build on:
+  - **Routes.** `GET /feedback/aggregates` (`feedback_aggregates`), `GET /feedback/review/{guardrail|memory}` (`feedback_review_guardrail`/`_memory`, Engine `feedback_review`), and under `/admin/feedback`: `POST /export` (`export_feedback`, 201), `GET /exports`, `GET /exports/{id}`, `GET /exports/{id}/content` and `DELETE /exports/{id}` (`mutating=False`, 204), all tagged `feedback`. New error codes: 403 `feedback_export_disabled`, and 404 `not_found` with `reason: deleted`. The deployment settings gain `feedback_export` and `feedback_regen_window_s`. `docs/openapi.json` is regenerated.
+  - **Regenerate marker.** A regenerate's operation records `turn_report.regenerated_variant` (`core.tables.operations.REGENERATED_VARIANT`). Any pipeline that regenerates must write it, or its regenerations are not counted.
+  - **Blob store.** The `BlobStore` port has `put_object`/`open_object`/`delete_object` for `exports/<id>.jsonl` (`OBJECT_KEY_PATTERN`). The media sweep's result gains `exports_expired`.
+  - **Erasure.** `ERASURE_TARGETS` now holds `feedback_export_cases`. The boundary's in-scope list gains "feedback exports not yet downloaded".
+  - **Contract.** `feedback-is-flag-only` forbids `epistrel.orchestrator`, `core.genesis`, `core.policies`, `core.ratings`, `core.profiles` and `core.projections` from importing `core.feedback`, `core.feedback_reporting` and `core.feedback_export`.
+  **Why:** #126's AC and its pass-1 lines, corrected by its drift notes. The decision entries above give the details.
+  **Affects:**
+  - **M3 #128 (API surface).** Seven new operations and their routes, flags (`delete_feedback_export` is `mutating=False`) and error codes. C-03 has their steps. The deployment settings gain two fields.
+  - **M4 #154 and M7 #241 (regeneration).** A regeneration path they add, or a Structured pipeline's regenerate, must write `turn_report.regenerated_variant` for FR-FB-3's signals. A new module under the guarded packages must not import the feedback modules.
+  - **M7 #249, #250, #251 (story bundles).** Bundles may reuse the `BlobStore` object API, but only after widening `OBJECT_KEY_PATTERN`. The deployment-level `feedback_export_log` is never exported, as docs/03 says of "the record of feedback exports".
+  - **M4 #158 (prose-quality signals).** It can correlate judge scores with ratings through `feedback_aggregates` (`group_by=fingerprint`).
+  - **The Console (nathanpond/Epistrel-Console).** It needs:
+    - a feedback report view (`group_by` picker, window, story filter, groups with histograms and the four signals);
+    - guardrail and memory review queues (paged, with message, input and context);
+    - an operator export screen (the `feedback_export` switch, an export form with window and filters, the export log with download and delete, and the delivered-exports boundary note);
+    - `feedback_regen_window_s` in the settings screen.
+  - **Next step:** #127 and #128 are later group C stories in this run: their drift checks should apply this. Run `/n8-replan` for M4 and M7 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #126's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #126

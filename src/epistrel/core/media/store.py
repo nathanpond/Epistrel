@@ -32,6 +32,13 @@ the store keeps the **sweep cursor**: the checksum where the media sweep's last 
 stopped, so each run goes on where the previous one stopped instead of starting over at the first
 blob.
 
+**Objects** (#126) are the store's few named, replaceable files beside the blobs: the feedback
+exports, ``exports/<export id>.jsonl`` (``OBJECT_KEY_PATTERN``; no other key reaches the store).
+``put_object`` writes one whole (replacing it: an erasure may rewrite an export nobody has
+downloaded yet), ``open_object`` reads it and ``delete_object`` removes it. Locally an object is
+the file at its key under the media root, written to a temporary file and renamed into place;
+on S3 it is the object at its key in the bucket.
+
 Every method is synchronous I/O: async callers run them with ``asyncio.to_thread``.
 """
 
@@ -66,6 +73,11 @@ its workers, start on one media root at once)."""
 SWEEP_CURSOR = ".sweep-cursor"
 """The file (local) or object (S3) that holds the sweep cursor (one checksum), shared by every
 process on the store."""
+EXPORTS_DIR = "exports"
+"""The key prefix (and local directory) of the feedback exports (#126)."""
+OBJECT_KEY_PATTERN = re.compile(r"^exports/[0-9A-HJKMNP-TV-Z]{26}\.jsonl$")
+"""An object's key: a feedback export, named after its id (a ULID)."""
+OBJECT_MODE = 0o640
 CACHE_CONTROL = "private, max-age=31536000, immutable"
 """A blob never changes: what the content route and the S3 objects answer."""
 COPY_CHUNK = 1024 * 1024
@@ -82,6 +94,14 @@ def check_checksum(sha256: str) -> str:
     if not CHECKSUM_PATTERN.fullmatch(sha256):
         raise ValueError("not a SHA-256 hex digest")
     return sha256
+
+
+def check_object_key(key: str) -> str:
+    """``key`` if it is an object's key (``OBJECT_KEY_PATTERN``); ``ValueError`` otherwise (it
+    becomes a path or a key, so nothing else may reach the store)."""
+    if not OBJECT_KEY_PATTERN.fullmatch(key):
+        raise ValueError("not an object key")
+    return key
 
 
 def blob_key(sha256: str) -> str:
@@ -194,6 +214,20 @@ class BlobStore(Protocol):
         ...
 
     def size(self, sha256: str) -> int: ...
+
+    # -- objects (#126) ------------------------------------------------------------------------
+
+    def put_object(self, key: str, data: bytes, *, content_type: str) -> None:
+        """Write the object ``key`` whole (``OBJECT_KEY_PATTERN``), replacing any it held."""
+        ...
+
+    def open_object(self, key: str) -> ByteStream:
+        """The object's bytes, opened for reading; ``FileNotFoundError`` when it is missing."""
+        ...
+
+    def delete_object(self, key: str) -> bool:
+        """Remove the object; ``False`` when it was already gone."""
+        ...
 
     def list_checksums(self, after: str | None = None) -> Iterator[str]:
         """Every stored blob's checksum in ascending order: those after ``after``, or all of
@@ -442,6 +476,38 @@ class LocalFilesystemStore(LocalStaging):
 
     def presign(self, sha256: str, ttl_s: int) -> str | None:
         return None
+
+    # -- objects (#126) ----------------------------------------------------------------------
+
+    def object_path(self, key: str) -> Path:
+        return self.root / check_object_key(key)
+
+    def put_object(self, key: str, data: bytes, *, content_type: str) -> None:
+        target = self.object_path(key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        written = target.parent / f".{target.name}.{os.getpid()}-{secrets.token_hex(4)}"
+        try:
+            with written.open("wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(written, OBJECT_MODE)
+            os.replace(written, target)
+        finally:
+            written.unlink(missing_ok=True)
+        _fsync_directory(target.parent)
+
+    def open_object(self, key: str) -> BinaryIO:
+        return self.object_path(key).open("rb")
+
+    def delete_object(self, key: str) -> bool:
+        target = self.object_path(key)
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            return False
+        _fsync_directory(target.parent)
+        return True
 
     # -- the sweep cursor ----------------------------------------------------------------------
 

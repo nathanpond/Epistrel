@@ -32,6 +32,7 @@ from pydantic import BaseModel, SecretStr
 
 from epistrel.api import create_app
 from epistrel.api.config_changes import ConfigChangesBody
+from epistrel.api.routes.admin.feedback_export import FeedbackExportWrittenBody
 from epistrel.api.routes.admin.model_config import (
     ModelConfigBody,
     ModelConfigEntry,
@@ -134,6 +135,8 @@ from epistrel.core.db import make_engine
 from epistrel.core.deployment import SettingsPatch
 from epistrel.core.errors import EpistrelError
 from epistrel.core.feedback import FeedbackRequest
+from epistrel.core.feedback_export import FeedbackExportRequest
+from epistrel.core.feedback_reporting import FeedbackGroupBy, FeedbackReviewList
 from epistrel.core.fork import Forked, ForkRequest
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.media.assets import MediaUpload
@@ -510,6 +513,28 @@ RATING_ANSWERS = [("rate_message", 201), ("get_feedback", 200), ("retract_feedba
 """What the message-rating steps (#112) answer on both surfaces: the first turn's reply rated
 (the principal's first rating), the rating read back, and retracted."""
 RATING_GROUP = "ratings"
+EXPORT_ON = {"feedback_export": True}
+"""A deployment settings write that switches the feedback export on (#126)."""
+EXPORT_FIVES = {"filters": {"min_rating": 5}}
+"""An export of the ratings of 5: none (the reply is rated 4), so both surfaces write the same
+empty file; the cases themselves are compared in ``test_feedback_reporting``."""
+REPORT_ANSWERS = [
+    ("feedback_aggregates", 200),
+    ("feedback_review", 200),
+    ("feedback_review", 200),
+    ("export_feedback", 403),
+    ("update_deployment_settings", 200),
+    ("export_feedback", 201),
+    ("get_feedback_export", 200),
+    ("get_feedback_export_content", 200),
+    ("list_feedback_exports", 200),
+    ("delete_feedback_export", 204),
+]
+"""What the feedback report and export steps (#126) answer on both surfaces: the aggregates by
+tag and both review lists while the first reply is rated, the export refused while off, then
+switched on, written (the ratings of 5: none), read, downloaded, listed and its file deleted."""
+REPORT_GROUP = "reports"
+"""The ``Step.group`` of the feedback report and export steps (#126)."""
 """The ``Step.group`` of the message-rating steps (#112)."""
 DRIVER = {"name": "Dale", "definition": "A delivery driver in a hurry.", "true_age": 52}
 """A character added to the running story, then promoted (#114)."""
@@ -688,6 +713,71 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", f"{s}/messages/{{reply}}/feedback"),
             lambda e, ids: _message_rating(e, ids),
             group=RATING_GROUP,
+        ),
+        # -- feedback reports and export (#126), while the rating stands: the aggregates and
+        # both review lists; the export refused while off, switched on, written, read, listed,
+        # downloaded and deleted
+        Step(
+            "feedback_aggregates",
+            lambda ids: Rest("GET", "/feedback/aggregates", params={"group_by": "tag"}),
+            lambda e, ids: _feedback_aggregates(e),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "feedback_review",
+            lambda ids: Rest("GET", "/feedback/review/guardrail"),
+            lambda e, ids: _feedback_review(e, FeedbackReviewList.GUARDRAIL),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "feedback_review",
+            lambda ids: Rest("GET", "/feedback/review/memory", params={"limit": 5}),
+            lambda e, ids: _feedback_review(e, FeedbackReviewList.MEMORY, limit=5),
+            group=REPORT_GROUP,
+        ),
+        Step(  # off by default: 403 feedback_export_disabled on both
+            "export_feedback",
+            lambda ids: Rest("POST", "/admin/feedback/export", {}),
+            lambda e, ids: _feedback_exported(e),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "update_deployment_settings",
+            lambda ids: Rest("PUT", "/admin/settings", EXPORT_ON),
+            lambda e, ids: _deployment_write(e, EXPORT_ON),
+            group=REPORT_GROUP,
+        ),
+        Step(  # no rating of 5: an empty file, the same bytes on both surfaces
+            "export_feedback",
+            lambda ids: Rest("POST", "/admin/feedback/export", EXPORT_FIVES),
+            lambda e, ids: _feedback_exported(e, EXPORT_FIVES),
+            _keep("feedback_export", "export_id"),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "get_feedback_export",
+            lambda ids: Rest("GET", "/admin/feedback/exports/{feedback_export}"),
+            lambda e, ids: _feedback_export(e, ids["feedback_export"]),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "get_feedback_export_content",
+            lambda ids: Rest("GET", "/admin/feedback/exports/{feedback_export}/content"),
+            lambda e, ids: _feedback_export_content(e, ids["feedback_export"]),
+            group=REPORT_GROUP,
+            status=lambda body: 200,
+        ),
+        Step(
+            "list_feedback_exports",
+            lambda ids: Rest("GET", "/admin/feedback/exports"),
+            lambda e, ids: _feedback_exports(e),
+            group=REPORT_GROUP,
+        ),
+        Step(
+            "delete_feedback_export",
+            lambda ids: Rest("DELETE", "/admin/feedback/exports/{feedback_export}"),
+            lambda e, ids: _no_content(e.delete_feedback_export(CTX, ids["feedback_export"])),
+            group=REPORT_GROUP,
         ),
         Step(
             "retract_feedback",
@@ -1762,6 +1852,36 @@ async def _message_rating(engine: Engine, ids: Ids) -> dict[str, Any]:
     return dump(await engine.get_feedback(CTX, ids["story"], ids["reply"]))
 
 
+async def _feedback_aggregates(engine: Engine) -> dict[str, Any]:
+    return dump(await engine.feedback_aggregates(CTX, FeedbackGroupBy.TAG))
+
+
+async def _feedback_review(
+    engine: Engine, which: FeedbackReviewList, **params: Any
+) -> dict[str, Any]:
+    return dump(await engine.feedback_review(CTX, which, **params))
+
+
+async def _feedback_exported(engine: Engine, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    request = FeedbackExportRequest.model_validate(body or {})
+    written = await engine.export_feedback(CTX, request)
+    return dump(FeedbackExportWrittenBody.of(written))
+
+
+async def _feedback_export(engine: Engine, export_id: str) -> dict[str, Any]:
+    return dump(await engine.get_feedback_export(CTX, export_id))
+
+
+async def _feedback_export_content(engine: Engine, export_id: str) -> dict[str, Any]:
+    found = await engine.get_feedback_export_content(CTX, export_id)
+    # An empty file reads as REST reads an empty body (``{}``), with the route's 200.
+    return _bytes(found.data, found.media_type) if found.data else {}
+
+
+async def _feedback_exports(engine: Engine) -> dict[str, Any]:
+    return dump(await engine.list_feedback_exports(CTX))
+
+
 async def _regenerate(engine: Engine, story_id: str) -> dict[str, Any]:
     request = RegenerateRequest.model_validate({"prompt_params": {"length": "short"}})
     result = await engine.regenerate(CTX, story_id, request)
@@ -2418,6 +2538,16 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         first_turn["beats"][0]["operation_id"],
     )
     assert read == rated
+    reports = [
+        (step.operation, status, body)
+        for step, (status, body) in zip(steps, rest, strict=True)
+        if step.group == REPORT_GROUP
+    ]
+    assert [(operation, status) for operation, status, _ in reports] == REPORT_ANSWERS
+    by_tag = reports[0][2]
+    assert [(g["key"], g["count"]) for g in by_tag["groups"]] == [("too_long", 1)]
+    assert reports[5][2]["case_count"] == 0
+    assert reports[7][2] == {}, "the empty file reads back empty"
 
 
 def test_c_03_bites_on_a_method_without_a_route_or_step(dummy_dsn: str) -> None:

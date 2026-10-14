@@ -13,8 +13,9 @@ text caps (#60), the idempotency result window (#61), the default ``turn_queue_m
 structured-result settings (#53), the safe fallback (#68), the media settings (#105), the
 catalog validation's model-call budget ``validation_model_calls`` (#111) and its
 ``require_primary_image`` (#115), and message feedback's
-text cap and retention (``feedback_text_max_chars``, ``feedback_retention``; #112), and what a
-catalog erasure does with media others still reference (``erasure_shared_media``, #124).
+text cap and retention (``feedback_text_max_chars``, ``feedback_retention``; #112) and its
+export switch and aggregate window (``feedback_export``, ``feedback_regen_window_s``; #126),
+and what a catalog erasure does with media others still reference (``erasure_shared_media``, #124).
 ``media_sweep_interval`` also moves its recurring task's ``recurring_tasks`` row
 (``RECURRING_INTERVAL_SETTINGS``).
 
@@ -178,6 +179,8 @@ class SettingsPatch(BaseModel):
     feedback_tags: list[str] | None = None
     feedback_text_max_chars: StrictInt | None = None
     feedback_retention: FeedbackRetention | None = None
+    feedback_export: StrictBool | None = None
+    feedback_regen_window_s: StrictInt | None = None
     erasure_shared_media: ErasureSharedMedia | None = None
     profile_defaults: SettingsDocument | None = None
 

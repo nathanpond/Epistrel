@@ -974,9 +974,11 @@ ALLOWED: dict[str, str] = {
     "orchestrator/jobs/handlers/retention.py": "the retention sweep expires them (#71's sweep)",
     "testing/determinism.py": "the determinism comparator orders every story table (#75)",
     "core/erasure/index.py": "the subject-index registry lists the indexed tables (#123)",
+    "core/feedback_reporting.py": "the aggregates and review lists read ratings (#126)",
+    "core/feedback_export.py": "the export reads ratings into labelled cases (#126)",
 }
-"""The modules that may name the feedback tables, and why. Later stories add theirs: #126's
-reporting and export, #124's erasure, #128's route table."""
+"""The modules that may name the feedback tables, and why. Later stories add theirs: #128's
+route table. (#124's erasure redacts through ``core.feedback`` and names none.)"""
 
 
 def naming(root: Path) -> set[str]:

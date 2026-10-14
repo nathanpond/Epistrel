@@ -214,6 +214,7 @@ async def test_i_17__media_sweep(pg_url: str, tmp_path: Path) -> None:
             "sessions_expired": 0,
             "sessions_purged": 0,
             "parts_removed": 0,
+            "exports_expired": 0,
         }
         assert await assets() == {referenced, candidate, twin_b, kept, held}
         assert not blob_path(space.root, unreferenced_sum).exists()

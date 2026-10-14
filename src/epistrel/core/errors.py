@@ -886,6 +886,24 @@ class FeedbackTagInUse(EpistrelError):
     http_status = 409
 
 
+class FeedbackExportDisabled(EpistrelError):
+    """A feedback export asked for while the deployment's ``feedback_export`` setting is off
+    (FR-FB-4; #126; the default). Nothing is written: no export, no log row, no idempotency
+    key. ``details``: ``setting`` (``feedback_export``)."""
+
+    code = "feedback_export_disabled"
+    http_status = 403
+
+
+class FeedbackExportNotFound(EpistrelError):
+    """The feedback export a call names does not exist, or (``reason`` ``deleted``) its file was
+    deleted, by an operator or by the media sweep after seven days; the log row stays.
+    ``details``: ``export_id`` and, for a deleted file, ``reason``."""
+
+    code = "not_found"
+    http_status = 404
+
+
 # -- personas and story characters (#114) -------------------------------------------------------
 
 

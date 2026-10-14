@@ -69,6 +69,7 @@ Audit views show the same markers: `GET /stories/{id}/history?viewpoint=omniscie
 - media metadata and bytes (declared subjects, captions, alt text and prompts)
 - media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata
 - message feedback and its history
+- feedback exports not yet downloaded (the subject is redacted in their cases)
 - story snapshots (scenario, characters, persona) and deferred genesis items
 - the subject-reference index
 - a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied
@@ -85,3 +86,11 @@ Audit views show the same markers: `GET /stories/{id}/history?viewpoint=omniscie
 <!-- erasure-boundary:end -->
 
 The same statement is served by `GET /admin/erasure/boundary` as data, and it ends the API description (`/openapi.json`, `info.description`). A test keeps the three equal.
+
+## Feedback exports
+
+`POST /admin/feedback/export` (FR-FB-4) writes rated messages as labelled cases, one JSON Lines file per export, only while the deployment setting `feedback_export` is on (it is off by default; `PUT /admin/settings {"feedback_export": true}`). The file is kept in the blob store at `exports/<export id>.jsonl` (the media root, or the S3 bucket) for seven days, then the media sweep deletes it; `DELETE /admin/feedback/exports/{id}` deletes it sooner. It is served by `GET /admin/feedback/exports/{id}/content` behind the service credential only. Every export stays recorded in `feedback_export_log` (who, when, the window and filters, the case count), also after its file and its stories are deleted; `GET /admin/feedback/exports` lists them. A case holds the message, the player input, its position, the configuration it was produced under, and the rating with its tags and text: never a principal, a credential or a setting.
+
+<!-- feedback-export-boundary:start -->
+Delivered exports are outside the erasure boundary (FR-ADMIN-8: exports already delivered): an export's file counts as delivered once it has been downloaded, and an erasure cannot reach a copy outside the deployment. Until its first download, an erasure redacts the subject in the file's cases.
+<!-- feedback-export-boundary:end -->

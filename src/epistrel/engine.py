@@ -29,6 +29,8 @@ from epistrel.core import control as control_ops
 from epistrel.core import (
     deployment,
     feedback,
+    feedback_export,
+    feedback_reporting,
     fork,
     idempotency,
     ingest,
@@ -302,6 +304,10 @@ CODECS: dict[str, ResultCodec[Any]] = {
     # Erasure (#124): deployment-scoped (its key and its ``config_revision``), whichever scope
     # it erases in; a dry run is never stored.
     "erase": ResultCodec.of(erasure.ErasureResult, revision_field=_CONFIG),
+    # Feedback export (#126): deployment-scoped; a retry returns the stored answer, no file.
+    "export_feedback": ResultCodec.of(
+        feedback_export.FeedbackExportWritten, status=201, revision_field=_CONFIG
+    ),
     # Engine profiles (#106): deployment-scoped like the catalog's writes.
     "create_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
     # Two-stage (#109): stored only once applied; a report alone releases its key.
@@ -515,6 +521,9 @@ class Engine:
         self.media: BlobStore = make_store(settings)
         self.signer = Signer(settings.config_key)
         self.posters: PosterExtractor = FfmpegTools(settings.ffmpeg_path)
+        # The feedback exports not yet downloaded are rewritten by an erasure in this store
+        # (#126; the last Engine constructed in a process binds it).
+        feedback_export.bind(self.media)
         # Each story's resolved engine configuration, kept while it holds (#113).
         effective.configure_cache(settings.effective_config_cache)
         # The erasure ledger's file outside the database (FR-ADMIN-7; #125). Until a ``mark``
@@ -3568,6 +3577,107 @@ class Engine:
         if ctx.principal is None or not ctx.principal.strip():
             raise PrincipalRequired("reading a rating needs the requesting principal: it is theirs")
         return await feedback.read(self.db, story_id, message_id, principal=ctx.principal)
+
+    # -- feedback reporting and export (FR-FB-3,4, FR-ADMIN-8; #126) -------------------------------
+    # Flag-only: these read feedback for people to look at; nothing in a turn, a profile or a
+    # guardrail reads them (the import-linter contract ``feedback-is-flag-only``).
+
+    async def feedback_aggregates(
+        self,
+        ctx: RequestContext,
+        group_by: feedback_reporting.FeedbackGroupBy,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        story_id: str | None = None,
+    ) -> feedback_reporting.FeedbackAggregates:
+        """The current ratings grouped by one dimension (FR-FB-3), each group with its counts,
+        mean, histogram, tags and implicit signals (regenerations, regenerations soon after a
+        low rating, swaps back, rewinds), and the totals. ``start``/``end`` bound when a rating
+        was first given (inclusive, exclusive); ``story_id`` narrows to one story. 422 for a
+        window that ends before it starts; 404 for an unknown story."""
+        return await feedback_reporting.aggregates(
+            self.db, group_by, start=start, end=end, story_id=story_id
+        )
+
+    async def feedback_review(
+        self,
+        ctx: RequestContext,
+        review: feedback_reporting.FeedbackReviewList,
+        *,
+        story_id: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        tag: str | None = None,
+        limit: int = feedback_reporting.DEFAULT_PAGE,
+        cursor: str | None = None,
+    ) -> feedback_reporting.FeedbackReviewPage:
+        """A page of the ``guardrail`` or ``memory`` review list (FR-FB-3): the current ratings
+        carrying the list's tags, newest first, with the message, the input it answered and its
+        context. 422 for a window that ends before it starts, a tag not on the list or a cursor
+        another listing gave; 404 for an unknown story."""
+        return await feedback_reporting.review(
+            self.db,
+            review,
+            story_id=story_id,
+            start=start,
+            end=end,
+            tag=tag,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    async def export_feedback(
+        self, ctx: RequestContext, request: feedback_export.FeedbackExportRequest
+    ) -> feedback_export.FeedbackExportWritten:
+        """Export the current ratings as labelled cases (FR-FB-4): one JSON Lines file in the
+        blob store, recorded in the export log with the principal. 403
+        ``feedback_export_disabled`` while the deployment's ``feedback_export`` is off (checked
+        after the request and before its ``Idempotency-Key``, so a refusal writes nothing); 422
+        for a window that ends before it starts or ``min_rating`` above ``max_rating``. Keyed per
+        deployment: a retry returns the stored answer and writes no second file."""
+        principal = self.require_principal(ctx)
+        feedback_export.check_request(request)
+        await feedback_export.require_enabled(self.db)
+        return await self._keyed(
+            ctx,
+            "export_feedback",
+            lambda _: feedback_export.export(self.db, self.media, request, principal=principal),
+            material={"body": request.model_dump(mode="json", by_alias=True)},
+        )
+
+    async def list_feedback_exports(
+        self,
+        ctx: RequestContext,
+        *,
+        limit: int = feedback_export.DEFAULT_PAGE,
+        cursor: str | None = None,
+    ) -> feedback_export.FeedbackExportPage:
+        """The export log (FR-FB-4), newest first: who exported what, and when."""
+        return await feedback_export.list_exports(self.db, limit=limit, cursor=cursor)
+
+    async def get_feedback_export(
+        self, ctx: RequestContext, export_id: str
+    ) -> feedback_export.FeedbackExport:
+        """One export's record; 404 for an unknown export."""
+        return await feedback_export.read(self.db, export_id)
+
+    async def get_feedback_export_content(
+        self, ctx: RequestContext, export_id: str
+    ) -> feedback_export.FeedbackExportContent:
+        """The export's file (``application/x-ndjson``), delivered: the first download marks the
+        export ``downloaded_at``, and from then on it is outside the erasure boundary
+        (FR-ADMIN-8). 404 for an unknown export or one whose file was deleted."""
+        return await feedback_export.content(self.db, self.media, export_id)
+
+    async def delete_feedback_export(
+        self, ctx: RequestContext, export_id: str
+    ) -> feedback_export.FeedbackExportDeleted:
+        """Delete the export's file; its record stays, marked with who deleted it and when.
+        Deleting it again changes nothing (REST 204 either way); 404 for an unknown export. The
+        delete is idempotent by itself and takes no ``Idempotency-Key``."""
+        principal = self.require_principal(ctx)
+        return await feedback_export.delete(self.db, self.media, export_id, principal=principal)
 
 
 ERASURE_GATE_EXEMPT = frozenset({"delete_story"})

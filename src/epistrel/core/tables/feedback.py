@@ -31,6 +31,7 @@ from enum import StrEnum
 
 from sqlalchemy import (
     TIMESTAMP,
+    BigInteger,
     CheckConstraint,
     Column,
     ForeignKey,
@@ -85,8 +86,13 @@ message_feedback = Table(
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False),
     CheckConstraint(RATING_CHECK, name="rating"),
     UniqueConstraint("story_id", "message_id", "principal"),
-    # The retention sweep's cut-off (``feedback_retention`` in days).
+    # The retention sweep's cut-off (``feedback_retention`` in days), and the aggregates'
+    # window (#126).
     Index("ix_message_feedback_created_at", "created_at"),
+    # The aggregates' dimensions (FR-FB-3; #126).
+    Index("ix_message_feedback_config_fingerprint", "config_fingerprint"),
+    Index("ix_message_feedback_profile_version", "profile_version"),
+    Index("ix_message_feedback_tags", "tags", postgresql_using="gin"),
 )
 
 feedback_history = Table(
@@ -112,12 +118,42 @@ feedback_history = Table(
     Index("ix_feedback_history_replaced_at", "replaced_at"),
 )
 
+feedback_export_log = Table(
+    "feedback_export_log",
+    metadata,
+    Column("id", ulid_type(), primary_key=True),
+    Column("principal", Text, nullable=False),
+    Column("at", TIMESTAMP(timezone=True), nullable=False),
+    Column("window_from", TIMESTAMP(timezone=True), nullable=True),
+    Column("window_to", TIMESTAMP(timezone=True), nullable=True),
+    Column("filters", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("case_count", Integer, nullable=False),
+    Column("blob_key", Text, nullable=False),
+    Column("bytes", BigInteger, nullable=False),
+    Column("sha256", Text, nullable=False),
+    Column("downloaded_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("deleted_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("deleted_by", Text, nullable=True),
+    Column("redacted_at", TIMESTAMP(timezone=True), nullable=True),
+    # The list, newest first, and the media sweep's expiry.
+    Index("ix_feedback_export_log_at", "at"),
+)
+"""Every feedback export (FR-FB-4; #126): who exported (``principal``), when (``at``), what
+(the ``window_from``/``window_to`` window on rating time and the ``filters``), how many cases,
+and the file (``blob_key`` ``exports/<id>.jsonl`` in the blob store, its ``bytes`` and
+``sha256``). Deployment-level (no ``story_id``), so deleting a story keeps the record that an
+export happened. ``downloaded_at`` is the file's first download (from then on it is delivered:
+outside the erasure boundary, FR-ADMIN-8); ``deleted_at``/``deleted_by`` when the file was
+deleted (by an operator, or ``system`` when the media sweep expired it after seven days); the row
+stays. ``redacted_at`` when an erasure rewrote the file before anyone downloaded it."""
+
 __all__ = [
     "HISTORY_KIND_CHECK",
     "RATING_CHECK",
     "RATING_MAX",
     "RATING_MIN",
     "HistoryKind",
+    "feedback_export_log",
     "feedback_history",
     "message_feedback",
 ]

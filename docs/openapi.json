@@ -5272,6 +5272,204 @@
         "title": "Feedback",
         "type": "object"
       },
+      "FeedbackAggregateGroup": {
+        "description": "One group: its ``key`` (null for ratings without a value in that dimension) and its\ncounts.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "histogram": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Histogram",
+            "type": "object"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "mean_rating": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Rating"
+          },
+          "messages": {
+            "title": "Messages",
+            "type": "integer"
+          },
+          "signals": {
+            "$ref": "#/components/schemas/FeedbackSignals"
+          },
+          "tags": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Tags",
+            "type": "object"
+          }
+        },
+        "required": [
+          "count",
+          "messages",
+          "mean_rating",
+          "histogram",
+          "tags",
+          "signals",
+          "key"
+        ],
+        "title": "FeedbackAggregateGroup",
+        "type": "object"
+      },
+      "FeedbackAggregateTotals": {
+        "description": "Counts over a set of ratings: how many (``count``), of how many distinct messages\n(``messages``), their mean (``mean_rating``, two decimals; null with none), their\n``histogram`` (keys ``1`` to ``5``), the ``tags`` they carry (present tags only) and the\n``signals`` of their messages.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "histogram": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Histogram",
+            "type": "object"
+          },
+          "mean_rating": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Rating"
+          },
+          "messages": {
+            "title": "Messages",
+            "type": "integer"
+          },
+          "signals": {
+            "$ref": "#/components/schemas/FeedbackSignals"
+          },
+          "tags": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Tags",
+            "type": "object"
+          }
+        },
+        "required": [
+          "count",
+          "messages",
+          "mean_rating",
+          "histogram",
+          "tags",
+          "signals"
+        ],
+        "title": "FeedbackAggregateTotals",
+        "type": "object"
+      },
+      "FeedbackAggregateWindow": {
+        "description": "What the aggregate covers: ratings first given from ``from`` (inclusive) to ``to``\n(exclusive; null: unbounded), and the regeneration window it used, in seconds.",
+        "properties": {
+          "from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From"
+          },
+          "regen_window_s": {
+            "title": "Regen Window S",
+            "type": "integer"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          }
+        },
+        "required": [
+          "regen_window_s"
+        ],
+        "title": "FeedbackAggregateWindow",
+        "type": "object"
+      },
+      "FeedbackAggregates": {
+        "description": "``GET /feedback/aggregates`` (FR-FB-3): the groups by one dimension, with the totals.",
+        "properties": {
+          "group_by": {
+            "$ref": "#/components/schemas/FeedbackGroupBy"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackAggregateGroup"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/FeedbackAggregateTotals"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "window": {
+            "$ref": "#/components/schemas/FeedbackAggregateWindow"
+          }
+        },
+        "required": [
+          "group_by",
+          "story_id",
+          "window",
+          "groups",
+          "truncated",
+          "totals"
+        ],
+        "title": "FeedbackAggregates",
+        "type": "object"
+      },
       "FeedbackContext": {
         "description": "The configuration a rated message was produced under, copied from its operation's\nrecord when the rating was first written (FR-FB-1, FR-PROF-16): the operation, its\nconfiguration fingerprint, the engine profile version (``<profile id>@<version>``), each\nmodel purpose's model and reported version, the story's content-rating version and the\nquality status. A field the operation did not record is null.",
         "properties": {
@@ -5342,6 +5540,369 @@
         ],
         "title": "FeedbackContext",
         "type": "object"
+      },
+      "FeedbackExport": {
+        "description": "One export's record (FR-FB-4): who exported (``principal``), when (``at``), what (the\n``window``, the ``filters``, ``case_count``), its file (``bytes``, ``sha256``,\n``content_url``) and its state: ``downloaded_at`` (the first download: from then on it is\ndelivered, outside the erasure boundary), ``expires_at`` (when the media sweep deletes the\nfile), ``deleted_at``/``deleted_by`` (when and by whom it was deleted; ``system`` for the\nsweep) and ``redacted_at`` (when an erasure rewrote it before its download).",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "case_count": {
+            "title": "Case Count",
+            "type": "integer"
+          },
+          "content_url": {
+            "title": "Content Url",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted By"
+          },
+          "downloaded_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloaded At"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "export_id": {
+            "title": "Export Id",
+            "type": "string"
+          },
+          "filters": {
+            "additionalProperties": true,
+            "title": "Filters",
+            "type": "object"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "redacted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redacted At"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/FeedbackExportWindow"
+          }
+        },
+        "required": [
+          "export_id",
+          "principal",
+          "at",
+          "window",
+          "filters",
+          "case_count",
+          "bytes",
+          "sha256",
+          "content_url",
+          "downloaded_at",
+          "expires_at",
+          "deleted_at",
+          "deleted_by",
+          "redacted_at"
+        ],
+        "title": "FeedbackExport",
+        "type": "object"
+      },
+      "FeedbackExportFilters": {
+        "additionalProperties": false,
+        "description": "Which current ratings an export takes (every one by default): of one ``story_id``,\ncarrying any of ``tags``, rated from ``min_rating`` to ``max_rating``, of one\n``config_fingerprint`` or ``profile_version`` (``<profile id>@<version>``).",
+        "properties": {
+          "config_fingerprint": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Fingerprint"
+          },
+          "max_rating": {
+            "anyOf": [
+              {
+                "maximum": 5.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Rating"
+          },
+          "min_rating": {
+            "anyOf": [
+              {
+                "maximum": 5.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Rating"
+          },
+          "profile_version": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Version"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          }
+        },
+        "title": "FeedbackExportFilters",
+        "type": "object"
+      },
+      "FeedbackExportPage": {
+        "description": "A page of the export log, newest first, and the cursor of the next page (null: the\nlast).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackExport"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "FeedbackExportPage",
+        "type": "object"
+      },
+      "FeedbackExportRequest": {
+        "additionalProperties": false,
+        "description": "``POST /admin/feedback/export``: the window on when a rating was first given (``from``\ninclusive, ``to`` exclusive; none: all time) and the ``filters``.",
+        "examples": [
+          {
+            "filters": {
+              "max_rating": 2,
+              "tags": [
+                "factual_error"
+              ]
+            },
+            "from": "2026-10-01T00:00:00Z",
+            "to": "2026-10-08T00:00:00Z"
+          }
+        ],
+        "properties": {
+          "filters": {
+            "$ref": "#/components/schemas/FeedbackExportFilters"
+          },
+          "from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          }
+        },
+        "title": "FeedbackExportRequest",
+        "type": "object"
+      },
+      "FeedbackExportWindow": {
+        "description": "The window an export was asked for: ratings first given from ``from`` (inclusive) to\n``to`` (exclusive); null is unbounded.",
+        "properties": {
+          "from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          }
+        },
+        "title": "FeedbackExportWindow",
+        "type": "object"
+      },
+      "FeedbackExportWrittenBody": {
+        "description": "What the export wrote: its id, where its file is served and how many cases it holds.",
+        "properties": {
+          "case_count": {
+            "title": "Case Count",
+            "type": "integer"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "content_url": {
+            "description": "`GET /admin/feedback/exports/{id}/content`: absolute under `public_base_url` when that is set, else the path. It needs the service credential.",
+            "title": "Content Url",
+            "type": "string"
+          },
+          "export_id": {
+            "title": "Export Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          }
+        },
+        "required": [
+          "config_revision",
+          "export_id",
+          "content_url",
+          "case_count"
+        ],
+        "title": "FeedbackExportWrittenBody",
+        "type": "object"
+      },
+      "FeedbackGroupBy": {
+        "description": "The one dimension an aggregate groups by (see the module docstring).",
+        "enum": [
+          "profile_version",
+          "fingerprint",
+          "model",
+          "content_rating",
+          "scenario",
+          "tag",
+          "day"
+        ],
+        "title": "FeedbackGroupBy",
+        "type": "string"
       },
       "FeedbackHistoryEntry": {
         "description": "An earlier value of a principal's rating of a message: the ``rating``, ``tags`` and\n``text`` it held, when it was given (``rated_at``) and when it stopped being current\n(``replaced_at``), because a new rating ``replaced`` it or it was ``retracted``.",
@@ -5440,6 +6001,175 @@
           "rating"
         ],
         "title": "FeedbackRequest",
+        "type": "object"
+      },
+      "FeedbackReviewItem": {
+        "description": "One rating on a review list: the message (``story_id``, ``turn``, ``variant``,\n``message_id``), the rating with its tags and text and when it was given (its latest value),\nthe principal who rated, the message's text and the player input it answered (null for an\nopening narration), and the context the message was produced under.",
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/FeedbackContext"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "message_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Text"
+          },
+          "player_input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewedPlayerInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "rated_at": {
+            "format": "date-time",
+            "title": "Rated At",
+            "type": "string"
+          },
+          "rating": {
+            "title": "Rating",
+            "type": "integer"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "turn": {
+            "title": "Turn",
+            "type": "integer"
+          },
+          "variant": {
+            "title": "Variant",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "story_id",
+          "turn",
+          "variant",
+          "message_id",
+          "principal",
+          "rating",
+          "tags",
+          "text",
+          "rated_at",
+          "message_text",
+          "player_input",
+          "context"
+        ],
+        "title": "FeedbackReviewItem",
+        "type": "object"
+      },
+      "FeedbackReviewList": {
+        "description": "A review list: ``guardrail`` (``should_have_been_blocked``) or ``memory``\n(``forgot_something``, ``factual_error``).",
+        "enum": [
+          "guardrail",
+          "memory"
+        ],
+        "title": "FeedbackReviewList",
+        "type": "string"
+      },
+      "FeedbackReviewPage": {
+        "description": "A page of a review list, newest rating first, and the cursor of the next page (null: the\nlast).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackReviewItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "review": {
+            "$ref": "#/components/schemas/FeedbackReviewList"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "review",
+          "tags",
+          "items",
+          "next_cursor"
+        ],
+        "title": "FeedbackReviewPage",
+        "type": "object"
+      },
+      "FeedbackSignals": {
+        "description": "The implicit signals of a group's rated messages (see the module docstring).",
+        "properties": {
+          "regen_after_low_rating": {
+            "default": 0,
+            "title": "Regen After Low Rating",
+            "type": "integer"
+          },
+          "regenerations": {
+            "default": 0,
+            "title": "Regenerations",
+            "type": "integer"
+          },
+          "rewinds": {
+            "default": 0,
+            "title": "Rewinds",
+            "type": "integer"
+          },
+          "swaps_back": {
+            "default": 0,
+            "title": "Swaps Back",
+            "type": "integer"
+          }
+        },
+        "title": "FeedbackSignals",
         "type": "object"
       },
       "FieldClass": {
@@ -15501,6 +16231,39 @@
         "title": "RespondResponse",
         "type": "object"
       },
+      "ReviewedPlayerInput": {
+        "description": "The player input a message answered: what the acting character said and did.",
+        "properties": {
+          "do": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Do"
+          },
+          "say": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Say"
+          }
+        },
+        "required": [
+          "say",
+          "do"
+        ],
+        "title": "ReviewedPlayerInput",
+        "type": "object"
+      },
       "RoleCharacter": {
         "additionalProperties": false,
         "description": "The catalog character a ``default`` or ``locked`` role is filled with: its id and,\noptionally, a version (omitted: the latest published when a story is created).",
@@ -17762,6 +18525,18 @@
             "title": "Erasure Shared Media",
             "type": "string"
           },
+          "feedback_export": {
+            "default": false,
+            "title": "Feedback Export",
+            "type": "boolean"
+          },
+          "feedback_regen_window_s": {
+            "default": 300,
+            "maximum": 86400.0,
+            "minimum": 1.0,
+            "title": "Feedback Regen Window S",
+            "type": "integer"
+          },
           "feedback_retention": {
             "anyOf": [
               {
@@ -18388,6 +19163,28 @@
               }
             ],
             "title": "Erasure Shared Media"
+          },
+          "feedback_export": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback Export"
+          },
+          "feedback_regen_window_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback Regen Window S"
           },
           "feedback_retention": {
             "anyOf": [
@@ -22031,7 +22828,7 @@
     }
   },
   "info": {
-    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
+    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
     "title": "Epistrel Engine",
     "version": "m2"
   },
@@ -22058,6 +22855,8 @@
                           "default_engine_profile_id",
                           "default_safe_fallback",
                           "erasure_shared_media",
+                          "feedback_export",
+                          "feedback_regen_window_s",
                           "feedback_retention",
                           "feedback_tags",
                           "feedback_text_max_chars",
@@ -23214,7 +24013,7 @@
     },
     "/admin/erasure/boundary": {
       "get": {
-        "description": "What an erasure covers and what it cannot reach (FR-ADMIN-8), as data. The same text is in `docs/OPERATIONS.md` and at the end of this API's description:\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
+        "description": "What an erasure covers and what it cannot reach (FR-ADMIN-8), as data. The same text is in `docs/OPERATIONS.md` and at the end of this API's description:\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
         "operationId": "erasure_boundary",
         "responses": {
           "200": {
@@ -23451,6 +24250,577 @@
         "summary": "Read the erasure ledger's reconciliation",
         "tags": [
           "admin"
+        ]
+      }
+    },
+    "/admin/feedback/export": {
+      "post": {
+        "description": "Export the current ratings for the eval harness (FR-FB-4) as one JSON Lines file (`application/x-ndjson`; keys sorted, one case per line, no cases: an empty file) with one case per current rating: `position` (`{story_id, turn, variant}`), `message_id`, `player_input` (`{say, do}`, null for an opening narration), `message_text`, `rating`, `tags`, `text`, `config_fingerprint`, `profile_version`, `models` and `quality_status`. Only while the deployment's `feedback_export` setting is on (off by default): otherwise 403 `feedback_export_disabled` and nothing is written. `from` (inclusive) and `to` (exclusive) bound when a rating was first given; `filters` narrow to a `story_id`, any of `tags`, `min_rating`..`max_rating`, a `config_fingerprint` or a `profile_version`. Every variant's ratings and archived stories' are exported; a story blocked by a pending erasure is left out. The file is kept in the blob store for seven days, and every export is recorded with the exporting principal (`GET /admin/feedback/exports`). A case holds no principal, credential or setting. **Erasure boundary** (exports already delivered): Delivered exports are outside the erasure boundary (FR-ADMIN-8: exports already delivered): an export's file counts as delivered once it has been downloaded, and an erasure cannot reach a copy outside the deployment. Until its first download, an erasure redacts the subject in the file's cases.",
+        "operationId": "export_feedback",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackExportWrittenBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `feedback_export_disabled`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `media_store_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Export rated messages as labelled cases",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
+    "/admin/feedback/exports": {
+      "get": {
+        "description": "The export log (FR-FB-4), newest first, `limit` at a time; `cursor` (a page's `next_cursor`) continues (422 `cursor_invalid` for one no list gave). Each record says who exported, when, what (window, filters, case count) and the file's state (downloaded, expires, deleted, redacted). A record outlives its file and its stories.",
+        "operationId": "list_feedback_exports",
+        "parameters": [
+          {
+            "description": "Records per page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "Records per page.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's `next_cursor`.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackExportPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `cursor_invalid`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List the feedback exports",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
+    "/admin/feedback/exports/{export_id}": {
+      "delete": {
+        "description": "Delete the export's file now (it would go seven days after it was written). Its record stays, with who deleted it and when: every export stays recorded. 204 also when the file was already deleted; 404 for an unknown export. The call takes no `Idempotency-Key`. A copy already downloaded is outside the erasure boundary and outside this deletion.",
+        "operationId": "delete_feedback_export",
+        "parameters": [
+          {
+            "description": "The export's id (a ULID).",
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "description": "The export's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2E7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Export Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `media_store_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete a feedback export's file",
+        "tags": [
+          "feedback"
+        ],
+        "x-epistrel-mutating": false
+      },
+      "get": {
+        "description": "One export's record: who exported, when, what, and its file's state and `content_url`. 404 for an unknown export.",
+        "operationId": "get_feedback_export",
+        "parameters": [
+          {
+            "description": "The export's id (a ULID).",
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "description": "The export's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2E7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Export Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackExport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a feedback export's record",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
+    "/admin/feedback/exports/{export_id}/content": {
+      "get": {
+        "description": "The export's JSON Lines file (`application/x-ndjson`), behind the service credential only: there is no signed URL for it. The first download marks the export delivered (`downloaded_at`). Delivered exports are outside the erasure boundary (FR-ADMIN-8: exports already delivered): an export's file counts as delivered once it has been downloaded, and an erasure cannot reach a copy outside the deployment. Until its first download, an erasure redacts the subject in the file's cases. 404 for an unknown export, or `reason: deleted` once its file was deleted (by an operator, or seven days after it was written).",
+        "operationId": "get_feedback_export_content",
+        "parameters": [
+          {
+            "description": "The export's id (a ULID).",
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "description": "The export's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2E7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Export Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The export's cases, one JSON object per line."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `media_store_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Download a feedback export",
+        "tags": [
+          "feedback"
         ]
       }
     },
@@ -32538,6 +33908,546 @@
         "summary": "List an engine profile's versions",
         "tags": [
           "profiles"
+        ]
+      }
+    },
+    "/feedback/aggregates": {
+      "get": {
+        "description": "Feedback aggregates (FR-FB-3) over the current ratings, grouped by one dimension (`group_by`): `profile_version` (`<profile id>@<version>`), `fingerprint` (the configuration fingerprint), `model` (the `generation` purpose's model id), `content_rating` (the story's content rating id), `scenario` (the story's scenario id), `tag` (each reason tag; a rating counts under each of its tags, an untagged one under `null`) or `day` (UTC, `YYYY-MM-DD`, when the rating was first given). All but `day` are the context the rating recorded when it was first given; a missing value is the `null` key. Each group has `count` (ratings), `messages` (distinct rated messages, the signals' denominator: the regeneration rate is `signals.regenerations / messages`), `mean_rating` (two decimals), `histogram` (keys `1` to `5`), `tags` (present tags only) and `signals`: `regenerations` of the rated messages, `regen_after_low_rating` (ratings of 1 or 2 followed by a regeneration of the message within the deployment's `feedback_regen_window_s`, 300 s by default), `swaps_back` (swaps at the message's turn back to an older variant, untruncates included) and `rewinds` (truncates whose first discarded turn is the message). Every variant's ratings count, dormant and discarded ones too. `from` (inclusive) and `to` (exclusive) bound when a rating was first given (`from` after `to` is 422); `story_id` narrows to one story. Groups are ordered by `count`, highest first, then `key` (`null` last), at most 500 (`truncated` says when there were more); `totals` counts every rating once. Feedback is flag-only: nothing in the engine reads these reports to change a turn, a profile or a guardrail.",
+        "operationId": "feedback_aggregates",
+        "parameters": [
+          {
+            "description": "The one dimension to group by.",
+            "in": "query",
+            "name": "group_by",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/FeedbackGroupBy",
+              "description": "The one dimension to group by."
+            }
+          },
+          {
+            "description": "Ratings first given at or after this time (inclusive); none: all time.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Ratings first given at or after this time (inclusive); none: all time.",
+              "title": "From"
+            }
+          },
+          {
+            "description": "Ratings first given before this time (exclusive); none: up to now.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Ratings first given before this time (exclusive); none: up to now.",
+              "title": "To"
+            }
+          },
+          {
+            "description": "Only this story's ratings (404 when unknown).",
+            "in": "query",
+            "name": "story_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this story's ratings (404 when unknown).",
+              "title": "Story Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackAggregates"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Aggregate the feedback",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
+    "/feedback/review/guardrail": {
+      "get": {
+        "description": "The guardrail review list (FR-FB-3): the current ratings tagged `should_have_been_blocked` (candidate guardrail misses), newest rating first, one item per rating (a rating carrying both lists' tags is on both), `limit` at a time; `cursor` (a page's `next_cursor`) continues with the same filters (422 `cursor_invalid` otherwise). Each item has the message's position and id, the rating with its tags, text and time, the principal who rated, the message's text and the player input it answered as stored (an erased span reads `[erased]`), and the context the message was produced under. Filters: `story_id`, `from` (inclusive) and `to` (exclusive) on when the rating was first given, and `tag` (one of the list's tags; another is 422). Ratings of a story blocked by a pending erasure are left out until it is reconciled. Feedback is flag-only: nothing in the engine reads these reports to change a turn, a profile or a guardrail.",
+        "operationId": "feedback_review_guardrail",
+        "parameters": [
+          {
+            "description": "Only this story's ratings (404 when unknown).",
+            "in": "query",
+            "name": "story_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this story's ratings (404 when unknown).",
+              "title": "Story Id"
+            }
+          },
+          {
+            "description": "Ratings first given at or after this time (inclusive); none: all time.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Ratings first given at or after this time (inclusive); none: all time.",
+              "title": "From"
+            }
+          },
+          {
+            "description": "Ratings first given before this time (exclusive); none: up to now.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Ratings first given before this time (exclusive); none: up to now.",
+              "title": "To"
+            }
+          },
+          {
+            "description": "Only the ratings carrying this list tag.",
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the ratings carrying this list tag.",
+              "title": "Tag"
+            }
+          },
+          {
+            "description": "Items per page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "Items per page.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's `next_cursor`.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackReviewPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `cursor_invalid`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List candidate guardrail misses",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
+    "/feedback/review/memory": {
+      "get": {
+        "description": "The memory review list (FR-FB-3): the current ratings tagged `forgot_something` or `factual_error` (candidate memory or verification misses), newest rating first, one item per rating (a rating carrying both lists' tags is on both), `limit` at a time; `cursor` (a page's `next_cursor`) continues with the same filters (422 `cursor_invalid` otherwise). Each item has the message's position and id, the rating with its tags, text and time, the principal who rated, the message's text and the player input it answered as stored (an erased span reads `[erased]`), and the context the message was produced under. Filters: `story_id`, `from` (inclusive) and `to` (exclusive) on when the rating was first given, and `tag` (one of the list's tags; another is 422). Ratings of a story blocked by a pending erasure are left out until it is reconciled. Feedback is flag-only: nothing in the engine reads these reports to change a turn, a profile or a guardrail.",
+        "operationId": "feedback_review_memory",
+        "parameters": [
+          {
+            "description": "Only this story's ratings (404 when unknown).",
+            "in": "query",
+            "name": "story_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this story's ratings (404 when unknown).",
+              "title": "Story Id"
+            }
+          },
+          {
+            "description": "Ratings first given at or after this time (inclusive); none: all time.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Ratings first given at or after this time (inclusive); none: all time.",
+              "title": "From"
+            }
+          },
+          {
+            "description": "Ratings first given before this time (exclusive); none: up to now.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Ratings first given before this time (exclusive); none: up to now.",
+              "title": "To"
+            }
+          },
+          {
+            "description": "Only the ratings carrying this list tag.",
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the ratings carrying this list tag.",
+              "title": "Tag"
+            }
+          },
+          {
+            "description": "Items per page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "Items per page.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's `next_cursor`.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackReviewPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `cursor_invalid`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List candidate memory misses",
+        "tags": [
+          "feedback"
         ]
       }
     },
@@ -43178,7 +45088,7 @@
       "name": "ownership"
     },
     {
-      "description": "Message feedback: each principal's rating (1 to 5) of a generated message, with reason tags and free text, recorded with the configuration the message was produced under (FR-FB-1). Feedback is an audit record: nothing in the story reads it, and it changes no engine behavior (FR-FB-2).",
+      "description": "Message feedback: each principal's rating (1 to 5) of a generated message, with reason tags and free text, recorded with the configuration the message was produced under (FR-FB-1). Feedback is an audit record: nothing in the story reads it, and it changes no engine behavior (FR-FB-2). Its aggregates with the implicit signals, the guardrail and memory review lists (FR-FB-3), and the operator's opt-in export of labelled cases under `/admin/feedback` (FR-FB-4) are flag-only reports.",
       "name": "feedback"
     },
     {

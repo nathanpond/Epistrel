@@ -121,7 +121,9 @@ TAGS: list[dict[str, str]] = [
         "description": "Message feedback: each principal's rating (1 to 5) of a generated message, "
         "with reason tags and free text, recorded with the configuration the message was "
         "produced under (FR-FB-1). Feedback is an audit record: nothing in the story reads it, "
-        "and it changes no engine behavior (FR-FB-2).",
+        "and it changes no engine behavior (FR-FB-2). Its aggregates with the implicit signals, "
+        "the guardrail and memory review lists (FR-FB-3), and the operator's opt-in export of "
+        "labelled cases under `/admin/feedback` (FR-FB-4) are flag-only reports.",
     },
     {"name": "admin", "description": "Operator endpoints, all under `/admin` (FR-AUTH-1)."},
     {"name": "ops", "description": "Unauthenticated operational probes."},
@@ -134,6 +136,12 @@ ROUTE_TAGS: dict[str, str] = {
     "update_story_settings": "settings",
     "config_changes_story": "settings",
     "promote_character": "catalog",
+    # The feedback export (#126) is an operator endpoint under ``/admin``, filed under feedback.
+    "export_feedback": "feedback",
+    "list_feedback_exports": "feedback",
+    "get_feedback_export": "feedback",
+    "get_feedback_export_content": "feedback",
+    "delete_feedback_export": "feedback",
     **{
         operation_id: OWNERSHIP_TAG
         for entity_type in REGISTRY
@@ -204,6 +212,7 @@ ERROR_STATUS: dict[str, int] = {
     "omniscient_required": 403,
     "signature_invalid": 403,
     "url_expired": 403,
+    "feedback_export_disabled": 403,
     "not_found": 404,
     "client_event_conflict": 409,
     "idempotency_conflict": 409,
@@ -523,6 +532,16 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # needs the principal.
     "rate_message": ("unknown_feedback_tag",),
     "get_feedback": ("principal_required",),
+    # Feedback reports and export (#126): a cursor another listing gave; the export while it is
+    # off; a file since deleted (404, documented by the path rule).
+    # ``story_id`` is a query parameter there: an unknown story is 404, a blocked one 503.
+    "feedback_aggregates": ("not_found", "erasure_pending"),
+    "feedback_review_guardrail": ("cursor_invalid", "not_found", "erasure_pending"),
+    "feedback_review_memory": ("cursor_invalid", "not_found", "erasure_pending"),
+    "export_feedback": ("feedback_export_disabled", "media_store_unavailable"),
+    "list_feedback_exports": ("cursor_invalid",),
+    "get_feedback_export_content": ("media_store_unavailable",),
+    "delete_feedback_export": ("media_store_unavailable",),
     # A companion scenario's owner and relations follow its character (#104, #116).
     **{
         operation_id: ("companion_follows_character",)

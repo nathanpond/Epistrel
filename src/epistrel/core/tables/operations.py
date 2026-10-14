@@ -50,6 +50,11 @@ ORIGIN_CHECK = "origin IN ('generated', 'ingested')"
 """``generated``: the Engine produced the operation's records; ``ingested``: a consumer recorded
 them through ``ingest`` (#58). Written once at ``begin()``."""
 
+REGENERATED_VARIANT = "regenerated_variant"
+"""The ``turn_report`` key of a regenerate's operation that names the variant of the turn it
+replaced (#126; the Lite pipeline writes it, the feedback aggregates read it). A turn written over
+a rewound tail also has ``turn_variant > 1`` but is no regeneration, so it has none."""
+
 ACTIVE_TURN_PREDICATE = "kind = 'turn' AND membership = 'active' AND status = 'committed'"
 """The rows ``uq_operations_active_turn`` covers: a story's active committed turn variants."""
 

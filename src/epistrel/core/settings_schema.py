@@ -42,6 +42,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainValidator,
+    StrictBool,
     StrictInt,
     WithJsonSchema,
     field_validator,
@@ -652,6 +653,11 @@ FeedbackRetention = Annotated[
 validator decides, so a refusal is reported at the setting itself."""
 
 
+DEFAULT_FEEDBACK_REGEN_WINDOW_S = 300
+FEEDBACK_REGEN_WINDOW_MIN_S = 1
+FEEDBACK_REGEN_WINDOW_MAX_S = 86_400
+
+
 class FeedbackSettings(BaseModel):
     """Message feedback (FR-FB-1,2; #112), stored under ``deployment_state.settings``:
     ``feedback_text_max_chars``, the most characters a rating's free text may hold once trimmed
@@ -660,7 +666,10 @@ class FeedbackSettings(BaseModel):
     days, after which the ``retention_sweep`` deletes a rating by when it was first given and a
     history entry by when it was replaced. Feedback has its own retention, never the audit
     records' (FR-STORE-30). Both are prospective: a rating uses the cap in force when it is
-    written, and each sweep the retention in force when it runs."""
+    written, and each sweep the retention in force when it runs. ``feedback_export`` (#126)
+    switches the operator's export of labelled cases on (off by default), and
+    ``feedback_regen_window_s`` (#126) is the window of the aggregates' ``regen_after_low_rating``
+    signal."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -668,6 +677,17 @@ class FeedbackSettings(BaseModel):
         default=DEFAULT_FEEDBACK_TEXT_MAX_CHARS, ge=1, le=FEEDBACK_TEXT_MAX_CHARS_LIMIT
     )
     feedback_retention: Annotated[FeedbackRetention, PROSPECTIVE] = STORY_LIFETIME
+    feedback_export: Annotated[StrictBool, PROSPECTIVE] = False
+    """Whether ``POST /admin/feedback/export`` may export rated messages as labelled cases
+    (FR-FB-4; #126). Off by default: the route answers 403 ``feedback_export_disabled``."""
+    feedback_regen_window_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_FEEDBACK_REGEN_WINDOW_S,
+        ge=FEEDBACK_REGEN_WINDOW_MIN_S,
+        le=FEEDBACK_REGEN_WINDOW_MAX_S,
+    )
+    """How soon after a rating of 1 or 2 a regeneration of the rated message counts as
+    ``regen_after_low_rating`` in the feedback aggregates (FR-FB-3; #126), in seconds (default
+    300). Each report uses the value in force when it is read."""
 
 
 # -- erasure (FR-ADMIN-6, FR-MEDIA-2; #124) ----------------------------------------------------

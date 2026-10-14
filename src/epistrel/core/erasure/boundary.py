@@ -42,6 +42,7 @@ IN_SCOPE: tuple[str, ...] = (
     "media metadata and bytes (declared subjects, captions, alt text and prompts)",
     SHARED_MEDIA,
     "message feedback and its history",
+    "feedback exports not yet downloaded (the subject is redacted in their cases)",
     "story snapshots (scenario, characters, persona) and deferred genesis items",
     "the subject-reference index",
     "a backup restored after the erasure: its stories are not served until the erasure "

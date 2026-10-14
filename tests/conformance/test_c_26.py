@@ -13,13 +13,21 @@ Every C-26 (M3) part lives in this file (traceability counts a test ID per miles
     equal an unrated twin's, and a regenerated message starts unrated.
 
   The details are in ``tests/integration/test_feedback.py``.
-- #126 adds its review slice (FR-FB-3) here.
+- #126's parts (FR-FB-3):
+  - ``test_c_26__aggregates``: ratings under two profiles and two tags grouped by profile
+    version, tag, model and day, and the regeneration signals around a low rating and the
+    deployment's window.
+  - ``test_c_26__review``: the guardrail and memory review lists hold exactly their tagged
+    ratings.
+
+  The details are in ``tests/integration/test_feedback_reporting.py``.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from datetime import UTC
 from typing import Any
 
 import pytest
@@ -35,17 +43,23 @@ from tests.feedback_support import (
     OTHER_RATER,
     RATER,
     SEEDED_TAGS,
+    age_rating,
+    aggregates,
     answered,
     as_principal,
     error_of,
     feedback_rows,
+    groups_of,
     history_rows,
     play,
     played_story,
     rate,
     read,
+    regenerate,
     retract,
+    review,
     scratch_feedback,
+    set_deployment,
 )
 from tests.respond_support import new_story, respond_client
 from tests.summary_support import run_due_jobs, segment_rows
@@ -394,3 +408,232 @@ async def test_c_26__isolation(stub_settings: Settings, engine: AsyncEngine) -> 
         assert answered(await read(client, rated, regenerated["rated"]), 200)["rating"] is None
         assert answered(await read(client, rated, sixth), 200)["rating"] == 1
         assert answered(await read(client, rated, first), 200)["rating"] == 2
+
+
+# -- #126's slice: aggregates and review lists (FR-FB-3) ------------------------------------------
+
+
+async def _new_profile(client: Any, name: str) -> tuple[str, str]:
+    """A new engine profile ``name``: its id and its version 1 as a rating records it."""
+    created = answered(
+        await client.post(
+            "/engine-profiles",
+            json={"name": name, "settings": {"budgets": {"deadline_ms": 30_000}}},
+            headers=as_principal(AUTHOR),
+        ),
+        201,
+    )
+    return created["id"], f"{created['id']}@1"
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-FB-3")
+async def test_c_26__aggregates(pg_url: str) -> None:
+    """Ratings of messages produced under two engine profiles, with two reason tags, are
+    grouped by profile version, tag, model and day: each group's rating count, distinct
+    messages, mean, histogram and tag counts match the rows, and the totals count every rating
+    once. A regeneration 60 seconds after a rating of 1 counts as ``regen_after_low_rating``
+    (and as a regeneration of the rated message); one 10 minutes after a rating of 1 counts
+    only as a regeneration, until the deployment's ``feedback_regen_window_s`` is widened to
+    15 minutes.
+
+    Complements asserted: a regeneration after a rating of 3 is never ``regen_after_low_rating``;
+    a story filter narrows every count to that story; a window that ends before it starts is
+    422."""
+    async with scratch_feedback(pg_url) as (client, _, db):
+        lite = await played_story(client)
+        second = await play(client, lite.story_id, lite.actor, "And the lighthouse?")
+        profile_id, quiet = await _new_profile(client, "Quiet")
+        other = await played_story(client)
+        assigned = await client.put(
+            f"/stories/{other.story_id}/engine-profile",
+            json={"profile_id": profile_id, "ignore_warnings": True},
+            headers=as_principal(AUTHOR),
+        )
+        answered(assigned, 200)
+        quiet_reply = (await play(client, other.story_id, other.actor, "Who keeps it?"))["message"]
+
+        first, later = lite.message_id, second["message"]["message_id"]
+        answered(
+            await rate(client, lite.story_id, first, {"rating": 1, "tags": ["repetitive"]}), 201
+        )
+        answered(
+            await rate(
+                client,
+                lite.story_id,
+                first,
+                {"rating": 3, "tags": ["repetitive", "too_long"]},
+                OTHER_RATER,
+            ),
+            201,
+        )
+        answered(await rate(client, lite.story_id, later, {"rating": 5, "tags": ["too_long"]}), 201)
+        answered(await rate(client, other.story_id, quiet_reply["message_id"], {"rating": 2}), 201)
+
+        by_profile = groups_of(await aggregates(client, "profile_version"))
+        assert set(by_profile) == {f"{LITE_PRESET_ID}@1", quiet}
+        lite_group, quiet_group = by_profile[f"{LITE_PRESET_ID}@1"], by_profile[quiet]
+        assert (lite_group["count"], lite_group["messages"], lite_group["mean_rating"]) == (
+            3,
+            2,
+            3.0,
+        )
+        assert lite_group["histogram"] == {"1": 1, "2": 0, "3": 1, "4": 0, "5": 1}
+        assert lite_group["tags"] == {"repetitive": 2, "too_long": 2}
+        assert (quiet_group["count"], quiet_group["mean_rating"], quiet_group["tags"]) == (
+            1,
+            2.0,
+            {},
+        )
+
+        by_tag = await aggregates(client, "tag")
+        assert [(g["key"], g["count"], g["mean_rating"]) for g in by_tag["groups"]] == [
+            ("repetitive", 2, 2.0),
+            ("too_long", 2, 4.0),
+            (None, 1, 2.0),
+        ]
+        assert (by_tag["totals"]["count"], by_tag["totals"]["messages"]) == (4, 3)
+        assert by_tag["totals"]["mean_rating"] == 2.75
+        assert by_tag["totals"]["histogram"] == {"1": 1, "2": 1, "3": 1, "4": 0, "5": 1}
+
+        models = {r.models["generation"]["id"] for r in await feedback_rows(db, lite.story_id)}
+        by_model = await aggregates(client, "model")
+        assert [(g["key"], g["count"]) for g in by_model["groups"]] == [(models.pop(), 4)]
+        by_day = await aggregates(client, "day")
+        (day,) = by_day["groups"]
+        assert (day["key"], day["count"]) == (
+            (await feedback_rows(db, lite.story_id))[0]
+            .created_at.astimezone(UTC)
+            .date()
+            .isoformat(),
+            4,
+        )
+
+        narrowed = await aggregates(client, "tag", story_id=other.story_id)
+        assert [(g["key"], g["count"]) for g in narrowed["groups"]] == [(None, 1)]
+        refused = await client.get(
+            "/feedback/aggregates",
+            params={
+                "group_by": "day",
+                "from": "2026-10-02T00:00:00Z",
+                "to": "2026-10-01T00:00:00Z",
+            },
+            headers=as_principal(None),
+        )
+        assert error_of(refused)[:2] == (422, "validation_error")
+
+        # -- regenerations soon, and long, after a rating of 1; and after a rating of 3
+        soon = await played_story(client)
+        late = await played_story(client)
+        fair = await played_story(client)
+        for played, rating in ((soon, 1), (late, 1), (fair, 3)):
+            answered(
+                await rate(client, played.story_id, played.message_id, {"rating": rating}), 201
+            )
+        await age_rating(db, soon.story_id, soon.message_id, 60)
+        await age_rating(db, late.story_id, late.message_id, 600)
+        await age_rating(db, fair.story_id, fair.message_id, 60)
+        for played in (soon, late, fair):
+            await regenerate(client, played.story_id)
+
+        for played, expected in ((soon, 1), (late, 0), (fair, 0)):
+            found = await aggregates(client, "day", story_id=played.story_id)
+            assert found["totals"]["signals"] == {
+                "regenerations": 1,
+                "regen_after_low_rating": expected,
+                "swaps_back": 0,
+                "rewinds": 0,
+            }, played.story_id
+        everything = await aggregates(client, "profile_version")
+        assert everything["window"]["regen_window_s"] == 300
+        assert everything["totals"]["signals"]["regen_after_low_rating"] == 1
+
+        await set_deployment(client, feedback_regen_window_s=900)
+        widened = await aggregates(client, "day", story_id=late.story_id)
+        assert widened["totals"]["signals"]["regen_after_low_rating"] == 1
+        assert widened["window"]["regen_window_s"] == 900
+
+
+@pytest.mark.integration
+@pytest.mark.part("M3", "FR-FB-3")
+async def test_c_26__review(pg_url: str) -> None:
+    """A rating tagged ``should_have_been_blocked`` is on the guardrail review list, one tagged
+    ``factual_error`` or ``forgot_something`` on the memory review list, and one carrying both
+    lists' tags on both: each list holds exactly its tagged ratings, newest first, each with the
+    message's position, id and text, the player input it answered, the rating with its tags,
+    text and principal, and the context the message was produced under.
+
+    Complements asserted: a rating with other tags, or none, is on neither list; a retracted
+    rating leaves its list; a second principal's rating of the same message is its own item."""
+    async with scratch_feedback(pg_url) as (client, _, db):
+        played = await played_story(client)
+        story = played.story_id
+        replies = [played.turn]
+        for line in ("Is the ferry late?", "Where is the harbour master?", "Can I wait inside?"):
+            replies.append(await play(client, story, played.actor, line))
+        ids = [reply["message"]["message_id"] for reply in replies]
+        blocked, memory, both, plain = ids
+        rated = [
+            (blocked, {"rating": 1, "tags": ["should_have_been_blocked"], "text": "Too gory."}),
+            (memory, {"rating": 2, "tags": ["factual_error"], "text": "The ferry was cancelled."}),
+            (both, {"rating": 1, "tags": ["should_have_been_blocked", "forgot_something"]}),
+            (plain, {"rating": 2, "tags": ["too_long"]}),
+        ]
+        for message_id, value in rated:
+            answered(await rate(client, story, message_id, value), 201)
+        answered(
+            await rate(
+                client, story, memory, {"rating": 3, "tags": ["forgot_something"]}, OTHER_RATER
+            ),
+            201,
+        )
+        answered(await rate(client, story, plain, {"rating": 4}, OTHER_RATER), 201)
+
+        guardrail = answered(await review(client, "guardrail"), 200)
+        assert (guardrail["review"], guardrail["tags"]) == (
+            "guardrail",
+            ["should_have_been_blocked"],
+        )
+        assert [i["message_id"] for i in guardrail["items"]] == [both, blocked]
+        memory_list = answered(await review(client, "memory"), 200)
+        assert memory_list["tags"] == ["forgot_something", "factual_error"]
+        assert [(i["message_id"], i["principal"]) for i in memory_list["items"]] == [
+            (memory, OTHER_RATER),
+            (both, RATER),
+            (memory, RATER),
+        ]
+        assert guardrail["next_cursor"] is None
+        assert memory_list["next_cursor"] is None
+
+        item = guardrail["items"][1]
+        (row,) = [r for r in await feedback_rows(db, story) if r.message_id == blocked]
+        assert item == {
+            "story_id": story,
+            "turn": 1,
+            "variant": 1,
+            "message_id": blocked,
+            "principal": RATER,
+            "rating": 1,
+            "tags": ["should_have_been_blocked"],
+            "text": "Too gory.",
+            "rated_at": item["rated_at"],
+            "message_text": played.turn["message"]["text"],
+            "player_input": {"say": "Is the ferry running?", "do": None},
+            "context": {
+                "operation_id": row.operation_id,
+                "config_fingerprint": row.config_fingerprint,
+                "profile_version": f"{LITE_PRESET_ID}@1",
+                "models": row.models,
+                "rating_version_id": row.rating_version_id,
+                "quality_status": "uncertified",
+            },
+        }
+        assert memory_list["items"][2]["player_input"] == {
+            "say": "Is the ferry late?",
+            "do": None,
+        }
+
+        # -- a retracted rating leaves its list
+        assert (await retract(client, story, blocked)).status_code == 204
+        after = answered(await review(client, "guardrail"), 200)
+        assert [i["message_id"] for i in after["items"]] == [both]

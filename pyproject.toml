@@ -130,6 +130,34 @@ source_modules = [
 ]
 forbidden_modules = ["epistrel.core.ratings.suggest", "epistrel.orchestrator.ratings.suggest"]
 
+[[tool.importlinter.contracts]]
+# FR-FB-3 (#126): feedback is flag-only. Nothing that plays a turn (the Orchestrator, the Lite
+# pipeline and its jobs), creates a story, runs a guardrail (`core.policies`, and the
+# Orchestrator's gates), changes a rating, resolves a profile or folds a projection reads
+# feedback, its reports or its exports, directly or through another module. The two ignored
+# edges are erasure's (#123, #124): it reads a rating's text to index and redact the subjects it
+# names (FR-ADMIN-6), which changes nothing in a turn. `tests/gates/test_feedback_contract.py`
+# checks that the contract exists as written, is kept and bites.
+name = "feedback-is-flag-only"
+type = "forbidden"
+source_modules = [
+    "epistrel.orchestrator",
+    "epistrel.core.genesis",
+    "epistrel.core.policies",
+    "epistrel.core.ratings",
+    "epistrel.core.profiles",
+    "epistrel.core.projections",
+]
+forbidden_modules = [
+    "epistrel.core.feedback",
+    "epistrel.core.feedback_reporting",
+    "epistrel.core.feedback_export",
+]
+ignore_imports = [
+    "epistrel.core.erasure.records -> epistrel.core.feedback",
+    "epistrel.core.erasure.erase -> epistrel.core.feedback",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

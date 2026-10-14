@@ -25,6 +25,10 @@ The ``media_sweep`` recurring job (``orchestrator.jobs.handlers.media_sweep``, e
    since they closed; and parts a store holds for no open session are removed once they are
    ``media_upload_ttl`` old (a crash between a session's opening and its row).
 
+5. **Feedback exports** (#126). An export's file (``exports/<id>.jsonl``) is deleted
+   ``EXPORT_TTL`` (seven days) after it was written, and its ``feedback_export_log`` row is
+   marked ``deleted_at``/``deleted_by = system``; the row stays, as the record of the export.
+
 Each run handles at most ``MAX_BATCHES`` batches of ``BATCH`` rows or blobs, and the next run
 goes on from there, so the sweep eventually reaches every row and every blob however many there
 are:
@@ -50,7 +54,7 @@ from datetime import datetime, timedelta
 from itertools import islice
 from typing import Any
 
-from sqlalchemy import and_, delete, select, tuple_
+from sqlalchemy import and_, delete, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core import clock, ownership
@@ -59,6 +63,7 @@ from epistrel.core.erasure.index import drop_references
 from epistrel.core.media.assets import RECORD_TABLE, lock_checksum, referenced, unreferenced
 from epistrel.core.media.store import BlobStore
 from epistrel.core.media.uploads import sweep_sessions
+from epistrel.core.tables.feedback import feedback_export_log
 from epistrel.core.tables.media import MediaState, media_assets
 from epistrel.core.tables.ownership import EntityType
 from epistrel.testing import pauses
@@ -72,6 +77,8 @@ LIVE_GRACE = timedelta(hours=24)
 ORPHAN_AGE_S = 3_600.0
 """A blob nothing names, or a staged upload, this old is removed."""
 _SWEPT = (MediaState.LIVE.value, MediaState.RETIRED.value)
+EXPORT_TTL = timedelta(days=7)
+"""A feedback export's file is deleted this long after it was written (#126)."""
 
 
 def _eligible(now: datetime) -> Any:
@@ -165,6 +172,39 @@ async def _collect_orphans(db: AsyncEngine, store: BlobStore) -> int:
     return deleted
 
 
+async def expire_exports(db: AsyncEngine, store: BlobStore, now: datetime) -> int:
+    """Delete the files of the feedback exports written ``EXPORT_TTL`` ago or earlier, each
+    under its row's lock (an export another transaction holds, a download marking it or an
+    erasure rewriting it, waits for the next run), marking the row; how many."""
+    expired = 0
+    for _ in range(MAX_BATCHES):
+        async with db.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(feedback_export_log.c.id, feedback_export_log.c.blob_key)
+                    .where(
+                        feedback_export_log.c.deleted_at.is_(None),
+                        feedback_export_log.c.at <= now - EXPORT_TTL,
+                    )
+                    .order_by(feedback_export_log.c.at, feedback_export_log.c.id)
+                    .limit(BATCH)
+                    .with_for_update(skip_locked=True)
+                )
+            ).all()
+            for row in rows:
+                await asyncio.to_thread(store.delete_object, str(row.blob_key))
+            if rows:
+                await conn.execute(
+                    update(feedback_export_log)
+                    .where(feedback_export_log.c.id.in_([str(r.id) for r in rows]))
+                    .values(deleted_at=now, deleted_by=SYSTEM_PRINCIPAL)
+                )
+        expired += len(rows)
+        if len(rows) < BATCH:
+            break
+    return expired
+
+
 def _clear_staging(store: BlobStore) -> int:
     removed = 0
     for path, age in list(store.staged_files()):
@@ -183,23 +223,35 @@ async def sweep(
     blobs += await _collect_orphans(db, store)
     staged = await asyncio.to_thread(_clear_staging, store)
     sessions = await sweep_sessions(db, store, now=moment)
+    exports = await expire_exports(db, store, moment)
     logger.info(
         "media sweep: %d asset(s) purged, %d blob(s) deleted, %d staged upload(s) removed, "
         "%d upload session(s) expired, %d closed session(s) deleted, %d stray part upload(s) "
-        "removed",
+        "removed, %d feedback export(s) expired",
         purged,
         blobs,
         staged,
         sessions["sessions_expired"],
         sessions["sessions_purged"],
         sessions["parts_removed"],
+        exports,
     )
     return {
         "assets_purged": purged,
         "blobs_deleted": blobs,
         "staged_removed": staged,
         **sessions,
+        "exports_expired": exports,
     }
 
 
-__all__ = ["BATCH", "LIVE_GRACE", "MAX_BATCHES", "ORPHAN_AGE_S", "collect_blob", "sweep"]
+__all__ = [
+    "BATCH",
+    "EXPORT_TTL",
+    "LIVE_GRACE",
+    "MAX_BATCHES",
+    "ORPHAN_AGE_S",
+    "collect_blob",
+    "expire_exports",
+    "sweep",
+]

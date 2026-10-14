@@ -107,6 +107,7 @@ from epistrel.core.settings_schema import (
     resolve_generation,
 )
 from epistrel.core.tables import operations
+from epistrel.core.tables.operations import REGENERATED_VARIANT
 from epistrel.core.turn_gate import Concurrency
 from epistrel.core.turns import (
     REPLY_BEAT,
@@ -638,6 +639,11 @@ async def _play(
             queued_ms=timing.queued_ms,
             first_call_offset_ms=timing.first_call_offset_ms(calls),
         )
+        if regenerating is not None:
+            # The variant this regenerate replaced (#126): the feedback aggregates count a
+            # regeneration of that variant's message from it. A turn written over a rewound
+            # tail also has ``turn_variant > 1``, and is no regeneration.
+            report[REGENERATED_VARIANT] = regenerating.variant
         await conn.execute(
             update(operations)
             .where(operations.c.operation_id == op.operation_id)
@@ -794,7 +800,8 @@ def turn_report(
 ) -> dict[str, Any]:
     """What ``operations.turn_report`` stores for a committed turn (#69): its model calls,
     their counts by purpose, the degradation steps with their causes, the budget, the elapsed
-    time, and (#76) its wait in the queue and the delay to its first model call. Ids, purposes
+    time, and (#76) its wait in the queue and the delay to its first model call. A regenerate's
+    report also names the variant it replaced (``regenerated_variant``, #126). Ids, purposes
     and counts only: never story text (invariant 3)."""
     return {
         "model_calls": [call.model_dump(mode="json") for call in calls.calls],

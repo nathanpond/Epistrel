@@ -18,6 +18,7 @@ from epistrel.core.tables.catalog import (
 from epistrel.core.tables.characters import character_snapshots, characters
 from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.deployment import config_changes, deployment_state
+from epistrel.core.tables.erasure import erasure_ledger
 from epistrel.core.tables.events import events
 from epistrel.core.tables.genesis import genesis_deferred
 from epistrel.core.tables.idempotency import idempotency_keys
@@ -61,6 +62,7 @@ __all__ = [
     "engine_profile_versions",
     "engine_profiles",
     "entity_relations",
+    "erasure_ledger",
     "events",
     "genesis_deferred",
     "guardrail_check_results",

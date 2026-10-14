@@ -62,6 +62,7 @@ from epistrel.core.events.types import (
 from epistrel.core.ids import new_ulid
 from epistrel.core.input_versions import input_key
 from epistrel.core.policies.model import ModelAssistedRule, Policy
+from epistrel.core.ports import RegeneratedText, Regeneration, SummaryWindow
 from epistrel.core.summary import Chunk, Segment
 from epistrel.core.tables import characters, lite_summary_segments, operations, stories
 from epistrel.core.tables import transcript_messages as transcript
@@ -476,6 +477,75 @@ async def _run(ctx: JobContext) -> JobOutput:
     return output
 
 
+# -- erasure's regeneration (#124) ---------------------------------------------------------------
+
+
+class ErasureCompressor:
+    """The ``SummaryCompressor`` port (``core.ports``) over this module's compression: an
+    erasure's redacted windows (#124) summarised from their transcript rows as they are now,
+    with the story's names, the deterministic output policies and one run's budget
+    (``MAX_CALLS_PER_RUN``), exactly as a job run compresses a chunk. A failed or unaffordable
+    call stops the run; what was made so far is returned."""
+
+    def __init__(self, models: ModelAccessLayer) -> None:
+        self.models = models
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    async def regenerate(
+        self, db: AsyncEngine, story_id: str, windows: Sequence[SummaryWindow]
+    ) -> Regeneration:
+        async with db.connect() as conn:
+            names = await _story_names(conn, story_id)
+            chunks: list[tuple[SummaryWindow, list[Any]]] = []
+            for window in windows:
+                rows = await transcript_rows(
+                    conn,
+                    story_id,
+                    after_turn=window.covers_from - 1,
+                    through_turn=window.covers_to,
+                )
+                chunks.append((window, [transcript_line(row, names) for row in rows]))
+        context = await guard_context(db, story_id)
+        deterministic = tuple(
+            p for p in output_policies(context) if not isinstance(p.rule, ModelAssistedRule)
+        )
+        run = _Run(
+            models=self.models,
+            policies=deterministic,
+            names=list(names.values()),
+            budget=TurnBudget(max_calls=summary.MAX_CALLS_PER_RUN),
+            cap=0,
+        )
+        texts: dict[str, RegeneratedText] = {}
+        capped = failed = False
+        for window, lines in chunks:
+            inputs = LiteSummaryInputs(
+                mode="compress",
+                messages=list(lines),
+                prior_segments=[window.prior] if window.prior else [],
+                character_names=run.names,
+                covers=_covers(window.covers_from, window.covers_to),
+                target_tokens=summary.TARGET_TOKENS,
+            )
+            try:
+                made = await _write(run, inputs)
+            except BudgetExhausted:
+                capped = True
+                break
+            except ModelError as exc:
+                logger.info("erasure summary call failed: %s", type(exc).__name__)
+                failed = True
+                break
+            if made is None:
+                failed = True
+                continue
+            texts[window.segment_id] = RegeneratedText(made.text, made.model, made.prompt_hash)
+        return Regeneration(texts=texts, capped=capped, failed=failed)
+
+
 LITE_SUMMARY_HANDLER = JobHandler(
     kind=LITE_SUMMARY,
     payload=NoPayload,
@@ -493,6 +563,7 @@ __all__ = [
     "LITE_SUMMARY",
     "LITE_SUMMARY_HANDLER",
     "LITE_SUMMARY_TASK",
+    "ErasureCompressor",
     "NoModels",
     "bind",
     "bound",

@@ -102,6 +102,7 @@ async def fold(
             provenance=Provenance(row.provenance),
             type=row.type,
             payload=validate(row.type, row.payload),
+            redacted_at=row.redacted_at,
         )
         for row in found
     ]

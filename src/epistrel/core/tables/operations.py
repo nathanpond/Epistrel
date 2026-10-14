@@ -42,6 +42,7 @@ MUTABLE_OPERATION_COLUMNS: tuple[str, ...] = (
     "error",
     "parent_variant",
     "checked_guardrails",
+    "stage_log",
 )
 """The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list)."""
 
@@ -105,6 +106,10 @@ operations = Table(
     # Stamped when the turn commits and restamped when a tightening of the story's rating
     # applies; #120's reactivation check reads it.
     Column("checked_guardrails", JSONB, nullable=True),
+    # The stages an erasure's operations record (#124; ``Operation.stage``), in order:
+    # ``[{stage, status}]`` (``redacted``, ``ledger_written``, ``regenerated``, ``rebuilt``;
+    # status ``done``, ``partial``, ``skipped`` or ``failed``). Identifiers and outcomes only.
+    Column("stage_log", JSONB, nullable=True),
     CheckConstraint(ORIGIN_CHECK, name="origin"),
     CheckConstraint(
         "kind <> 'turn' OR status <> 'committed' OR narrative_turn IS NOT NULL",

@@ -4,7 +4,9 @@
 narrative position is ``(narrative_turn, turn_variant, beat, step, slot_k)``, copied from the
 operation. ``tx_time`` is the commit transaction's time; ``valid_time`` equals it until the
 world clock arrives (M6). A trigger refuses every UPDATE, DELETE and TRUNCATE except the two
-exemptions in ``0002_event_store`` (SQLSTATE ``EPI01``).
+exemptions in ``0002_event_store`` and erasure's in-place rewrite (``0039_erasure``: under
+``epistrel.erasure = on`` an UPDATE may change ``payload``, ``character_id`` and ``redacted_at``
+only; SQLSTATE ``EPI01``).
 """
 
 from __future__ import annotations
@@ -35,6 +37,10 @@ OPERATION_IMMUTABLE_SQLSTATE = "EPI02"
 
 ALLOW_STORY_DELETE_GUC = "epistrel.allow_story_delete"
 """Set (transaction-local) to a story id to let that story's events be deleted."""
+
+ERASURE_GUC = "epistrel.erasure"
+"""Set (transaction-local) to ``on`` to let erasure rewrite events in place (#124; the catalog
+versions' triggers honour the same setting)."""
 
 ALLOW_AUDIT_EXPIRY_GUC = "epistrel.allow_audit_expiry"
 """Set (transaction-local) to ``on`` to let audit-category events be deleted (retention, #71)."""
@@ -75,6 +81,9 @@ events = Table(
     ),
     Column("provenance", pg_enum(Provenance, "provenance"), nullable=False),
     Column("authority", pg_enum(Authority, "authority"), nullable=False),
+    # When erasure (#124) rewrote the event in place: its payload's matched spans (or a beat the
+    # subject authored, whole) became ``[erased]``. Position, kind and operation are kept.
+    Column("redacted_at", TIMESTAMP(timezone=True), nullable=True),
     UniqueConstraint("story_id", "seq", name="uq_events_story_id_seq"),
     Index("ix_events_story_position", "story_id", "narrative_turn", "turn_variant"),
     Index("ix_events_story_category", "story_id", "category"),

@@ -321,3 +321,20 @@ class LiteSummarySegment(EventPayload):
     source_versions: tuple[SummarySource, ...] = ()
     model: str | None = None
     prompt_hash: str | None = None
+
+
+@register("erasure_marker", category=EventCategory.CONTROL)
+class ErasureMarker(EventPayload):
+    """Where erasure (FR-ADMIN-2,6; #124) deleted a structured record of the story: the
+    ledger entry (``erasure_id``), the subject (``subject_kind``, ``subject_id``), the
+    ``scope`` (``story``), and the record it removed (``record_table``, ``record_id``).
+    Identifiers only, never content. Written by the erasure's ``control`` operation, which has
+    no turn position, so a truncation never discards it; the audit view shows it as
+    ``[erasure marker: <subject id>, <scope>]``."""
+
+    erasure_id: str
+    subject_kind: str
+    subject_id: str
+    scope: str
+    record_table: str
+    record_id: str

@@ -5310,3 +5310,122 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   `test_subject_index` passes in the shared database after the earlier tests' plantings. That is the regression check for the first fix. S-DELETE and the determinism test are the regression checks for the other two.
   **Why:** Rule 1, inside the story's scope. Cost if wrong: none.
   **Issue:** #123
+
+- **Decision (deviation):** Summary regeneration rewrites each redacted level-0 segment's text **in place**, in the segment's own `lite_summary_segment` event, under `epistrel.erasure`. One `consolidation` operation does it, and its `stage_log` records the run. The planned approach was a new segment event plus "old segments flip to `superseded`".
+  - The windows are the level-0 segments still in the summary whose event was redacted and whose text still holds `[erased]`. So a later erasure of the story tries again any window an earlier one could not regenerate.
+  - The new text is post-checked with the subject's terms and redacted on a hit. It is reached through a new `Ports.summary_compressor` port; the Orchestrator's `lite_summary.ErasureCompressor` wraps #72's `_write` with one `MAX_CALLS_PER_RUN` budget.
+  - Without a compressor (`Ports()` default) or after a failed call, the redaction stands with `summary_regeneration_failed`. Running out of calls gives `summary_regeneration_capped`.
+  - Drafts the deterministic output check rejects during regeneration are dropped. They are not written as `guardrail_output_rejected` audit events, as #72's job writes them.
+  **Why:** The drift notes show that #72's coverage, the non-partial unique index `uq_lite_summary_segments_position`, `_not_written_yet` and `settle()` all refuse a second segment at the same position. Rewriting in place keeps coverage, the index and fold == incremental untouched, at the cost of one more in-place event rewrite, which only erasure may do (invariant 6 names erasure). Cost if wrong: a later story that wants the regenerated text as a separate event adds one; the migration needs nothing.
+  **Issue:** #124, #72
+- **Decision:** A story-scope erasure is the planned three operations.
+  - **The `control` operation** (`Operation(erasure=True)` skips the archived and paused refusals; it bumps the revision as a control action) does all of step 1 in one commit step:
+    - the deletions (the subject's `characters` rows, their `character_snapshots`, the `genesis_deferred` items whose `payload.characters` are only the subject, and the character-scoped `policies` of the subject), each with one position-less `erasure_marker` event (inserted directly with the next `seq`);
+    - span redaction of every string leaf (id-like keys skipped) of every record the index names, and of a beat the subject authored, whole, to `[erased]`;
+    - the subject's ids taken out of `render_character_ids` and the events' `character_id`;
+    - the default viewpoint cleared;
+    - stored results purged;
+    - `replace_with_fold`, `reindex_story` and the residue scan, which fills the ledger's `counts.residue`;
+    - the ledger and `audit_log` rows.
+  - **The `consolidation` operation** regenerates the summary.
+  - **The `maintenance` rebuild** runs (`projections.rebuild`, synchronous) even when regeneration failed.
+  Projections are refolded inside step 1 as well, so a failure after step 1 still leaves nothing naming the subject.
+  **Why:** The pass-1 line ("redaction is always applied in step 1 so a failed step 2 or 3 leaves a complete erasure"). Cost if wrong: one extra fold per erasure.
+  **Issue:** #124
+- **Decision (deviation):** Discovery is the index plus two lookups the index cannot give.
+  - In the story scope: the deployment-scoped stored results bound to the story's operations, matched against the terms (the index scans them for catalog subjects only); and the transient `turn_queue.request` and `jobs.payload`, which are redacted, not deleted (deleting a queued turn's row would orphan its `queued` operation).
+  - In the catalog scope: every catalog record (`records_of(conn, None)`) is also matched against the subject's own terms, because #123's hand-off says records written before the subject existed have no index row. This scans for one subject only, not a full catalog rebuild.
+  **Why:** The drift note on deployment-scoped keys, and #123's Affects line. Cost if wrong: a catalog erasure reads every catalog record once.
+  **Issue:** #124, #123
+- **Decision:** A dry run uses the real code path.
+  - A story dry run runs the story pass with `write` false in one read-only REPEATABLE READ snapshot.
+  - A catalog dry run runs the catalog pass with `write` true inside a transaction it always rolls back: no operation, key, ledger row or blob delete is ever committed. What the subject's own deletion removes decides whether a medium is still referenced, so only this gives the real run's counts.
+  - `records` counts rows deleted or rewritten. `prose_segments` counts text fields changed. `media` counts, in the story scope, the images the subject's characters show; in the catalog scope, the assets purged, retired or rewritten. Catalog keys are schema-qualified. Markers and index rows are not counted.
+  `test_i_09` and `test_s_erasure_boundary__catalog` assert that the dry-run counts equal the real ones, and that every `public` and `catalog` table is unchanged after the dry run.
+  **Why:** AC1 ("changes nothing (asserted)", counts equal what the real run touched). Cost if wrong: a catalog dry run briefly holds the entry's row lock.
+  **Issue:** #124
+- **Decision (drift):** The response and its replay.
+  - **Response.** One model, `ErasureBody(DeploymentMutationResponse)`, serves both runs. It carries `config_revision`, plus `timeline_revision` for the story scope, the four counts at top level, `regeneration`, `degradation`, `referencing_stories`, `erasure_id`, `operation_id`, `ledger_entry {erasure_id, at, scope, story_id, counts}` and `residue`.
+  - **Replay.** The codec `erase` replays the reference with `config_revision` (one `revision_field` per codec). The key is deployment-scoped, and `dry_run` is in the request hash (a dry run never claims a key).
+  - **Errors.** An unknown story is 404 for both runs. An unknown subject is zeros on a dry run and 404 `not_found` (`SubjectNotFound`) on a real run. A subject the ledger already records in that scope is known: a re-run answers 200 with zero counts.
+  - **Configuration.** The catalog scope does not bump `config_revision`, as catalog writes do not; the planner said "bumped".
+  - **New error codes.** `invalid_erasure_scope` (422) is new. `config_key_missing` (503) is a new class, `ErasureKeyMissing`, with the existing code. `erase`'s documented errors add `not_found`, which C-01 found undocumented.
+  **Why:** The drift notes (the response base, one codec), and the catalog convention (#103: catalog writes leave `config_revision` as it is). Cost if wrong: the planner's bump is one `record_config_change` call.
+  **Issue:** #124
+- **Decision (drift):** Pieces that changed shape.
+  - Stored results are purged by nulling `result` (and dropping their index rows); there is no `purged_at`, so a replay answers the reference.
+  - `operations.turn_report` is redacted as JSON, which covers `creation_report`; `attempts` and `read_set` are content-free and left alone.
+  - The audit view is #59's `include_audit=1` read, extended with `erasure_marker` items reading `[erasure marker: <subject id>, <scope>]`.
+  - `redacted: true` comes from `transcript_messages.redacted` and `events.redacted_at`. It appears on corrected-history and audit items only when true (`exclude_if`), and a respond beat never has it.
+  - The cleared default viewpoint is asserted through `GET /history` (422 `viewpoint_unresolved`).
+  - `erasure_shared_media` is an `INTERPRETIVE` field of `DeploymentSettings` (`ErasureSettings`, in `SettingsPatch`), default `purge`, with its leaf in `test_u_18.EXPECTED`.
+  - The router is `api/routes/admin/erasure.py`.
+  - The migration is 0039: `erasure_ledger` with `story_ref`; `events.redacted_at` and the events trigger's UPDATE exemption (only `payload`, `character_id` and `redacted_at`, under `epistrel.erasure = on`); `operations.stage_log` on the allow-list; `transcript_messages.redacted`; `lite_summary_segments.redacted_at`; `catalog.scenario_versions.redacted_at`; and the `erasure` audit kind.
+  - `message_feedback`/`feedback_history` already had `redacted_at` (#112). They are redacted through a new `feedback.redact_for_erasure`, so the erasure module never names the feedback tables (`test_feedback`'s allow-list is unchanged).
+  **Why:** The drift notes' corrections. Cost if wrong: renames only.
+  **Issue:** #124, #59, #61, #112
+- **Decision:** In the catalog scope, a catalog character is deleted through the catalog's own delete, now also callable inside a caller's transaction (`CatalogService.delete_in`, `personas.delete_in`; `delete` calls them, behaviour unchanged). Under the GUC that removes every version, the draft, the companion and its relations, with their `catalog_entry_deleted` audit rows on the erasure's one control operation.
+  - Other catalog drafts are redacted with `draft_revision` + 1, so a stale editor's PATCH is refused rather than re-adding the name. Versions are redacted under the GUC (`scenario_versions.redacted_at`). Each record is re-indexed.
+  - A role filled with the subject loses its `character`, so creating a story from that version fails `slot_required`, as the planner accepts. The version's `report` is redacted (#111's hand-off).
+  - **Media.** An asset with other declared subjects stays, without the subject in `depicted_subjects`, and its caption, alt text and prompts are redacted. An asset depicting or naming only the subject is purged (the row, its relations and index rows, then its bytes after commit through `media.sweep.collect_blob` when no other row shares the checksum). If a record the erasure leaves untouched still references it and the setting is `retire`, it is kept `retired` and redacted instead. The stories referencing it are listed in `referencing_stories`.
+  - **Not done.** The planner line "under `purge` the dangling media id is removed from that version" was not built. A purged id left in another catalog entry's document dangles, as the story's does: the document shapes (`{media_id, alt_text}`, `{media_id, audience}`) make a generic removal unsafe.
+  - Deployment-scoped stored results naming the subject are purged, so a story's own creation result naming her is purged too. That is the catalog scope's record; the story's own rows are asserted unchanged.
+  **Why:** AC3 and the pass-1/pass-2 lines. Cost if wrong: the dangling id is a follow-up for #266 (images through depicted subjects).
+  **Issue:** #124, #103, #111, #116, #266
+- **Decision:** `ERASURE_TARGETS`/`register_target` (`core.erasure.erase`) is the registry #126's export store joins: a target has a `name` and `erase(conn, story_id=, redactor=, write=) -> int`, called in both scopes, its count added to `records`. It is empty in M3.
+  **Why:** The pass-2 line. Cost if wrong: #126 adapts one signature.
+  **Issue:** #124, #126
+- **Decision:** The residue scan (`core.erasure.verify`) runs in production after every erasure, as `residue` in the response and in the ledger's counts.
+  - It reads every `text`/`varchar`/`jsonb`/array column enumerated from `information_schema`. In the story scope, that is the `story_id` tables plus the `stories` row, story `config_changes` and the story's keys. In the catalog scope, it is the `catalog` schema, `personas`, `media_assets` and the deployment-scoped records.
+  - It skips `subject_references`, `erasure_ledger`, and columns named `*hash*`/`*checksum*`/`*fingerprint*` or `read_set`.
+  - It counts any value naming the terms, so another subject sharing a name, or a client's idempotency key spelled with the name, counts. The tests use unique names for that reason, and `test_i_09`'s key was renamed after it caught exactly that.
+  The tests have their own independent scan (`tests/erasure_support.py`).
+  **Why:** The pass-2 line. Cost if wrong: a false-positive residue is reported, never acted on.
+  **Issue:** #124
+- **Decision (drift):** The tests.
+  - `test_i_09` (`part("M3", "FR-ADMIN-2; NFR-PRIV-2")`) and the dry-run, refusal and no-model tests live in `tests/integration/test_erasure.py`. The no-model test runs on an archived story, which an erasure reaches.
+  - `test_s_erasure_boundary__catalog` (`part("M3", "FR-ADMIN-6; FR-MEDIA-2")`) lives in the shared `tests/erasure/test_s_erasure_boundary.py`, marked `integration` by `pytestmark` since conftest marks only `tests/integration`. It covers both `purge` (Thessaly) and `retire` (Corvin) and restores `purge` in a `finally`.
+  - `test_s_delete__erasure` is `part("M3", "FR-ADMIN-2; FR-STORE-14")`, as the drift note says. It sits in `tests/integration/test_s_delete.py` beside S-DELETE's M2 part: I read the planner's "beside test_s_erasure_boundary__catalog" as "in addition to", and it reuses `_rows_of`.
+  - The AC's "parametrised over every story-scoped table" is one test that enumerates the tables at run time and asserts per table, because the enumeration needs the database, which pytest's collection-time parametrisation does not have.
+  - C-03 gained a dry-run step for `erase`.
+  **Why:** The drift notes, the lexicon (no `import` in an M3 part body: the helper imports moved to module level after the gate caught one), and the traceability rule (one file per test ID and milestone). Cost if wrong: file moves only.
+  **Issue:** #124, #125, #127
+- **Decision (Rule 1):** I changed two existing tests because the story changes the shapes they pin. No assertion was loosened.
+  - `test_scenario_tables_have_the_planned_shape` lists the new `scenario_versions.redacted_at`.
+  - `test_u_18.EXPECTED` adds `erasure_shared_media` (interpretive).
+  **Why:** Both pin the exact schema or settings set, and the story adds to them. Cost if wrong: none.
+  **Issue:** #124
+- **Decision:** docs/02 §4.10's erasure bullet is amended with M3's request shape, the three operations, the in-place regeneration, `erasure_shared_media` and the `erasure_ledger` table (#125 adds its copy outside the database).
+  **Why:** The design doc is authoritative and earlier M3 stories amended it when a shape landed. Cost if wrong: one paragraph.
+  **Issue:** #124
+
+## Ad-hoc — 2026-10-14
+
+- **Change:** #124 built erasure, with shapes later stories build on.
+  - **Route.** `POST /admin/erasure {subject: {kind, id}, scope: {story: <id>} | {catalog: true}, dry_run?}` (`Engine.erase`, tag `admin`; errors `invalid_erasure_scope` 422, `not_found` 404, `revision_conflict` 409, `config_key_missing` 503). One response model: the counts, `regeneration`, `degradation`, `referencing_stories`, `erasure_id`, `operation_id`, `ledger_entry`, `residue`, `config_revision` and, for the story scope, `timeline_revision`.
+  - **Library.** `core.erasure.erase.erase(db, request, *, principal, config_key, compressor, collect=None, erasure_id=None, write_ledger=True)` and `dry_run(...)`. `Operation(erasure=True)` runs on archived and paused stories. `Operation.stage(name, status)` writes `operations.stage_log` (`[{stage, status}]`: `redacted`, `ledger_written`, `regenerated`, `rebuilt`), and `erase.append_stage` appends to a committed operation's log. `ERASURE_TARGETS`/`register_target` is for other stores. `Ports.summary_compressor` (`core.ports.SummaryCompressor`; the Orchestrator's `ErasureCompressor`).
+  - **Storage (migration 0039).**
+    - `erasure_ledger (id, subject_kind, subject_id, scope, story_ref, principal, operation_id, counts, scan_term_hashes, ledger_hash_prev, ledger_hash, applied_at, at)`; the hashes are HMAC-SHA256 under `EPISTREL_CONFIG_KEY`, and the hash chain columns stay null.
+    - `events.redacted_at`, with the events trigger allowing an UPDATE of `payload`, `character_id` and `redacted_at` under `epistrel.erasure = on`.
+    - `operations.stage_log`, `transcript_messages.redacted`, `lite_summary_segments.redacted_at`, `catalog.scenario_versions.redacted_at`, and the `erasure` audit kind.
+    - The event type `erasure_marker {erasure_id, subject_kind, subject_id, scope, record_table, record_id}` (control, position-less).
+    - The deployment setting `erasure_shared_media` (`purge`|`retire`, interpretive).
+  - **Summary regeneration is in place.** A regenerated segment's text replaces the redacted text in its own event, so no second segment is written and nothing flips to `superseded`.
+  - **Not done.** A purged media id left in another catalog entry's document is not removed (it dangles, like a story's). A catalog-scope erasure does not bump `config_revision`.
+  **Why:** #124's AC and its pass-1/pass-2 lines, corrected by the drift notes and the group B hand-offs. The decision entries above give the details.
+  **Affects:**
+  - **M3 #125 (ledger outside backups).** It builds on the `erasure_ledger` table and `erase(..., erasure_id=, principal="system", write_ledger=False)` for its reapply. Its migration adds `applied_note`, `copied_from`, the append-only trigger and the hash chain (both hash columns exist and are null). The ledger's `counts` already holds `residue`. `erasure_boundary` can reuse the route description's out-of-scope sentence.
+  - **M3 #127 (resurrection guard).** The erasure bumps the revision as a control action (`last_control_revision`). The markers are `erasure_marker` events. Its slices join `tests/erasure/test_s_erasure_boundary.py`.
+  - **M3 #126 (feedback reporting and export).** Register the export store with `core.erasure.erase.register_target`.
+  - **M3 #128 (API surface).** New route `erase` and its errors (above). History items gain `redacted` (present only when true), and the deployment settings gain `erasure_shared_media`. `operations.stage_log` exists for erasure; an offboarding's stages stay on its job row (#117). `docs/openapi.json` is regenerated.
+  - **M8 #266 (images through depicted subjects).** Media erasure uses `depicted_subjects` and the caption, alt text and prompts. A dangling id in another catalog document is the open item.
+  - **M4 #135 and M5 #178 (memories, beliefs).** New content tables are picked up by the residue scan automatically (`information_schema`). Their redaction and regeneration plug into `_story_pass` the way `lite_summary` does.
+  - **M7 #249 and #251 (export, import).** Bundles carry `erasure_marker` events and `redacted_at`; an import applies the ledger.
+  - **The Console (nathanpond/Epistrel-Console).** An operator erasure screen: subject and scope pickers, a dry-run preview of the counts, confirm, the result with `degradation`/`residue`, and `referencing_stories` for the catalog scope. The settings screen gains `erasure_shared_media`, and history views can mark `redacted` items.
+  - **Next step:** #125, #126, #127 and #128 are later group C stories in this run: their drift check should apply this. `/n8-replan` for M4, M5, M7 and M8 after M3.
+
+## /n8-exec M3 — 2026-10-14 (continued)
+
+- **Decision:** The M3 section continues here, after #124's `## Ad-hoc` entry. Later stories append below.
+  **Why:** This keeps the drift-ledger entry and leaves the run's section last, as earlier stories did. Cost if wrong: one heading.
+  **Issue:** #124

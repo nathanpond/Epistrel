@@ -151,6 +151,8 @@ async def test_scenario_tables_have_the_planned_shape(engine: AsyncEngine) -> No
             "published_by",
             "search",
             "report",
+            # When an erasure rewrote the version in place (#124).
+            "redacted_at",
         ],
     }
     types = {(r.table_name, r.column_name): (r.udt_name, r.is_nullable) for r in found}

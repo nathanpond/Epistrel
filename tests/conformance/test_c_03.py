@@ -1310,6 +1310,12 @@ def _steps() -> list[Step]:
             lambda e, ids: _offboarding(e, ids["offboarding"]),
             group=PRINCIPAL_GROUP,
         ),
+        # -- erasure (#124): a dry run of the story's second character (it writes nothing)
+        Step(
+            "erase",
+            lambda ids: Rest("POST", "/admin/erasure", _erasure_request(ids)),
+            lambda e, ids: _erase(e, _erasure_request(ids)),
+        ),
         # -- media assets (#105)
         Step(
             "upload_media",
@@ -1941,6 +1947,21 @@ async def _offboard(engine: Engine, body: dict[str, Any]) -> dict[str, Any]:
     if isinstance(result, OffboardingPlan):
         return dump(OffboardingPlanBody.of(result))
     return dump(OffboardingQueuedBody.of(result))
+
+
+def _erasure_request(ids: Ids) -> dict[str, Any]:
+    return {
+        "subject": {"kind": "character", "id": ids["ada"]},
+        "scope": {"story": ids["story"]},
+        "dry_run": True,
+    }
+
+
+async def _erase(engine: Engine, body: dict[str, Any]) -> dict[str, Any]:
+    from epistrel.api.routes.admin.erasure import ErasureBody
+    from epistrel.core.erasure.erase import ErasureRequest
+
+    return dump(ErasureBody.of(await engine.erase(CTX, ErasureRequest.model_validate(body))))
 
 
 async def _offboarding(engine: Engine, job_id: str) -> dict[str, Any]:

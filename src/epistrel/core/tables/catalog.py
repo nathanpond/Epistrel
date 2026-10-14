@@ -192,6 +192,8 @@ scenario_versions = Table(
     Column("published_by", Text, nullable=False),
     Column("search", TSVECTOR, Computed(SCENARIO_SEARCH, persisted=True)),
     Column("report", JSONB, nullable=True),
+    # When erasure (#124) rewrote the version in place (its seeds, roles and report).
+    Column("redacted_at", TIMESTAMP(timezone=True), nullable=True),
     ForeignKeyConstraint(
         ["pinned_character_id", "pinned_character_version"],
         [character_versions.c.catalog_id, character_versions.c.version],

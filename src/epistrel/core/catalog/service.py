@@ -867,25 +867,40 @@ class CatalogService(ABC):
         Stories created from it keep their snapshot and provenance (FR-CAT-9). Answers how
         many versions went with it."""
         async with db.begin() as conn:
-            entry = await self.entry(conn, entry_id, lock=True)
-            self.refuse_follower(entry, entry_id, "its deletion")
-            # The one exemption the versions' immutability trigger knows (shared with #124).
-            await conn.execute(select(func.set_config(ERASURE_GUC, "on", True)))
-            followers = await self.dropped(conn, entry_id, principal=principal)
-            versions = await self.remove(conn, entry_id, principal=principal)
-            operation_id = await control.record_control_operation(conn, actor=principal)
-            for entity_type, removed_id in [(self.entity_type, entry_id), *followers]:
-                await audit.record(
-                    conn,
-                    AuditKind.CATALOG_ENTRY_DELETED,
-                    principal=principal,
-                    details={
-                        "entity_type": entity_type.value,
-                        "entity_id": removed_id,
-                        "operation_id": operation_id,
-                    },
-                )
+            versions, _ = await self.delete_in(conn, entry_id, principal=principal)
         return versions
+
+    async def delete_in(
+        self,
+        conn: AsyncConnection,
+        entry_id: str,
+        *,
+        principal: str,
+        operation_id: str | None = None,
+    ) -> tuple[int, list[tuple[EntityType, str]]]:
+        """``delete`` inside the caller's transaction (#124's catalog erasure runs it with the
+        rest of its work): the versions removed and the followers that went with the entry.
+        ``operation_id`` names the operation that records it (else a new ``control`` one)."""
+        entry = await self.entry(conn, entry_id, lock=True)
+        self.refuse_follower(entry, entry_id, "its deletion")
+        # The one exemption the versions' immutability trigger knows (shared with #124).
+        await conn.execute(select(func.set_config(ERASURE_GUC, "on", True)))
+        followers = await self.dropped(conn, entry_id, principal=principal)
+        versions = await self.remove(conn, entry_id, principal=principal)
+        if operation_id is None:
+            operation_id = await control.record_control_operation(conn, actor=principal)
+        for entity_type, removed_id in [(self.entity_type, entry_id), *followers]:
+            await audit.record(
+                conn,
+                AuditKind.CATALOG_ENTRY_DELETED,
+                principal=principal,
+                details={
+                    "entity_type": entity_type.value,
+                    "entity_id": removed_id,
+                    "operation_id": operation_id,
+                },
+            )
+        return versions, followers
 
     async def remove(self, conn: AsyncConnection, entry_id: str, *, principal: str) -> int:
         """Delete the entry's row (its versions cascade) inside a delete's transaction, which

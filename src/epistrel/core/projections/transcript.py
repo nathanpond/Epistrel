@@ -71,6 +71,7 @@ def message_row(event: LogEvent, beat: Beat) -> Row:
         ),
         "text": beat.text,
         "membership": event.membership.value,
+        "redacted": event.redacted_at is not None,
     }
 
 

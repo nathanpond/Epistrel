@@ -65,10 +65,10 @@ outcome only, never a rating, a tag or text (invariant 3).
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints
 from sqlalchemy import delete, false, func, insert, select, update
@@ -680,12 +680,98 @@ async def mark_compacted(conn: AsyncConnection, story_id: str, message_ids: Sequ
     return int(marked.rowcount or 0)
 
 
+RATING_RECORDS = message_feedback.name
+"""``subject_references.record_table`` of a rating (an erasure reads it from here, so only the
+listed modules name the feedback tables)."""
+HISTORY_RECORDS = feedback_history.name
+"""``subject_references.record_table`` of a rating's history entry."""
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class FeedbackRedaction:
+    """What an erasure's redaction of a story's feedback changed (or, in a dry run, would):
+    the ratings and history entries whose text named the subject, and their texts."""
+
+    ratings: int = 0
+    history: int = 0
+
+    @property
+    def records(self) -> int:
+        return self.ratings + self.history
+
+
+class TextRedactor(Protocol):
+    def text(self, value: str) -> str: ...
+
+
+async def redact_for_erasure(
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    rating_ids: Collection[str],
+    history_ids: Collection[str],
+    redactor: TextRedactor,
+    write: bool,
+) -> FeedbackRedaction:
+    """Erasure (FR-ADMIN-6; #124): redact the text of the story's ratings (by their index
+    ``record_id``) and history entries (by id) that name the subject, in place, marking each
+    ``redacted_at``; the rating, its tags and its history stay. With ``write`` false nothing
+    is written (a dry run's count)."""
+    now = clock.now()
+    ratings = 0
+    if rating_ids:
+        found = await conn.execute(
+            select(
+                message_feedback.c.id,
+                message_feedback.c.message_id,
+                message_feedback.c.principal,
+                message_feedback.c.text,
+            ).where(message_feedback.c.story_id == story_id)
+        )
+        for row in found:
+            if record_id(str(row.message_id), str(row.principal)) not in rating_ids:
+                continue
+            new = redactor.text(row.text) if row.text else row.text
+            if new == row.text:
+                continue
+            ratings += 1
+            if write:
+                await conn.execute(
+                    update(message_feedback)
+                    .where(message_feedback.c.id == row.id)
+                    .values(text=new, redacted_at=now)
+                )
+    history = 0
+    if history_ids:
+        found = await conn.execute(
+            select(feedback_history.c.id, feedback_history.c.text).where(
+                feedback_history.c.story_id == story_id,
+                feedback_history.c.id.in_(sorted(history_ids)),
+            )
+        )
+        for row in found:
+            new = redactor.text(row.text) if row.text else row.text
+            if new == row.text:
+                continue
+            history += 1
+            if write:
+                await conn.execute(
+                    update(feedback_history)
+                    .where(feedback_history.c.id == row.id)
+                    .values(text=new, redacted_at=now)
+                )
+    return FeedbackRedaction(ratings=ratings, history=history)
+
+
 __all__ = [
+    "HISTORY_RECORDS",
     "RATED_EVENT",
+    "RATING_RECORDS",
     "TAGS_PER_RATING",
     "Feedback",
     "FeedbackContext",
     "FeedbackHistoryEntry",
+    "FeedbackRedaction",
     "FeedbackRequest",
     "FeedbackRetraction",
     "FeedbackWrite",
@@ -696,6 +782,7 @@ __all__ = [
     "rate",
     "read",
     "record_id",
+    "redact_for_erasure",
     "refuse_tag_removal",
     "retract",
 ]

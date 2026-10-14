@@ -182,6 +182,7 @@ class Operation:
         operation_id: str | None = None,
         queued: bool = False,
         source_window: dict[str, Any] | None = None,
+        erasure: bool = False,
     ) -> None:
         if principal is None or not principal.strip():
             raise PrincipalRequired("an operation needs a requesting principal")
@@ -233,6 +234,10 @@ class Operation:
         ``{from_turn, to_turn}``), written with the row at ``begin()``."""
         self.provenance = provenance
         self.authority = authority
+        self.erasure = erasure
+        """An erasure's operation (#124): it runs on an archived or paused story too, since an
+        erasure must reach every story the subject appears in (FR-ADMIN-2)."""
+        self._stages: list[dict[str, Any]] = []
         self.status: OperationStatus | None = None
         self.narrative_turn: int | None = None
         self.turn_variant: int | None = None
@@ -435,9 +440,9 @@ class Operation:
         ).one_or_none()
         if found is not None:
             self._refuse_archived(found.status)
-            if self.bumps_revision:
+            if self.bumps_revision and not self.erasure:
                 # A paused story (#118) refuses new truth-changing work; work that began before
-                # the pause still commits (no check at commit).
+                # the pause still commits (no check at commit). Erasure is never refused.
                 await pause.refuse(conn, self.story_id, found.status)
             self.base_revision = int(found.timeline_revision)
             self.story_settings = StorySettings.from_row(found.settings)
@@ -498,6 +503,13 @@ class Operation:
             )
         )
         return model
+
+    def stage(self, name: str, status: str = "done") -> None:
+        """Record one stage of the operation's work (``stage_log``, #124: an erasure's
+        ``redacted``, ``ledger_written``, …), written with the commit. Identifiers and outcomes
+        only."""
+        self._require_in_flight("record a stage of")
+        self._stages.append({"stage": name, "status": status})
 
     def add_commit_step(self, step: CommitStep) -> None:
         """Run ``step(conn)`` inside the commit transaction, after the events and projections
@@ -949,6 +961,7 @@ class Operation:
                 committed_at=now,
                 attempts=self.attempts,
                 timeline_revision=self.timeline_revision,
+                **({"stage_log": list(self._stages)} if self._stages else {}),
             )
             .returning(operations.c.membership_tx)
         )
@@ -982,9 +995,9 @@ class Operation:
     def _refuse_archived(self, status: str) -> None:
         """An archived story is read-only: work that changes story truth (bumps the revision)
         is refused with ``story_archived``; archive, unarchive, maintenance and derived work
-        still run (#50). Checked at ``begin()``, before the operations row is written, and again
-        under the story lock at commit."""
-        if self.bumps_revision and status == StoryStatus.ARCHIVED.value:
+        still run (#50), and so does an erasure (#124). Checked at ``begin()``, before the
+        operations row is written, and again under the story lock at commit."""
+        if self.bumps_revision and not self.erasure and status == StoryStatus.ARCHIVED.value:
             raise StoryArchived(
                 f"story {self.story_id} is archived; unarchive it to change it",
                 {"story_id": self.story_id},

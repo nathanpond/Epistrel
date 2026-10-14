@@ -7,8 +7,9 @@ supplies them at construction (``Ports``), and the Orchestrator implements them.
 
 Until the story that first needs a port wires the Orchestrator's implementation into ``Engine``
 (#118, #119, #120, #121, #122, #124), the defaults do nothing: the input gate passes every
-text, the model caller answers ``None`` (no model) and the job starter starts nothing
-(``None``). The policy evaluator is the first port wired (#111: the catalog validation's input
+text, the model caller answers ``None`` (no model), the job starter starts nothing (``None``)
+and the summary compressor (#124) asks no model, so an erasure redacts instead of
+regenerating. The policy evaluator is the first port wired (#111: the catalog validation's input
 policies; the Orchestrator's ``CatalogPolicyCheck``); its default evaluates nothing and says so
 (``unavailable``), so a validation run without the Engine lists the check rather than passing
 it silently.
@@ -116,6 +117,56 @@ class JobStarter(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class SummaryWindow:
+    """One Lite rolling-summary segment erasure regenerates (#124): its event (``segment_id``)
+    and the turns it covers, with the label of the included segment just before it (context
+    only)."""
+
+    segment_id: str
+    covers_from: int
+    covers_to: int
+    prior: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RegeneratedText:
+    """A window's new summary text, the model that wrote it and its prompt's hash."""
+
+    text: str
+    model: str | None
+    prompt_hash: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class Regeneration:
+    """What a regeneration run made: the new text of each window it could summarise (by
+    ``segment_id``), whether it ran out of calls (``capped``) and whether a call failed or no
+    model could answer (``failed``)."""
+
+    texts: Mapping[str, RegeneratedText] = field(default_factory=dict)
+    capped: bool = False
+    failed: bool = False
+
+
+class SummaryCompressor(Protocol):
+    """#72's compression over a given window (#124's summary regeneration): each window's
+    transcript rows, read as they are now, summarised through the ``lite_summary`` purpose under
+    one run's budget (``core.summary.MAX_CALLS_PER_RUN``), each text checked against the
+    story's deterministic output policies."""
+
+    @property
+    def available(self) -> bool:
+        """Whether a model can be asked at all (``False``: erasure redacts instead)."""
+        ...
+
+    async def regenerate(
+        self, db: AsyncEngine, story_id: str, windows: Sequence[SummaryWindow]
+    ) -> Regeneration:
+        """The new texts, oldest window first; never raises for a model failure."""
+        ...
+
+
 class PassingGate:
     """The default input gate: no policy is evaluated, every text passes."""
 
@@ -152,6 +203,19 @@ class NoModel:
         return None
 
 
+class NoCompressor:
+    """The default summary compressor: no model is asked (erasure's redaction stands)."""
+
+    @property
+    def available(self) -> bool:
+        return False
+
+    async def regenerate(
+        self, db: AsyncEngine, story_id: str, windows: Sequence[SummaryWindow]
+    ) -> Regeneration:
+        return Regeneration(failed=bool(windows))
+
+
 class NoJobs:
     """The default job starter: nothing is started."""
 
@@ -168,12 +232,14 @@ class NoJobs:
 
 @dataclass(frozen=True, slots=True)
 class Ports:
-    """The four ports an ``Engine`` hands to Core (each defaults to its no-op)."""
+    """The ports an ``Engine`` hands to Core (each defaults to its no-op): the four #103 named
+    and #124's summary compressor."""
 
     input_gate: InputGate = field(default_factory=PassingGate)
     policy_evaluator: PolicyEvaluator = field(default_factory=NoPolicies)
     model_caller: ModelCaller = field(default_factory=NoModel)
     job_starter: JobStarter = field(default_factory=NoJobs)
+    summary_compressor: SummaryCompressor = field(default_factory=NoCompressor)
 
 
 __all__ = [
@@ -181,6 +247,7 @@ __all__ = [
     "InputGate",
     "JobStarter",
     "ModelCaller",
+    "NoCompressor",
     "NoJobs",
     "NoModel",
     "NoPolicies",
@@ -190,4 +257,8 @@ __all__ = [
     "PolicyHit",
     "PortText",
     "Ports",
+    "RegeneratedText",
+    "Regeneration",
+    "SummaryCompressor",
+    "SummaryWindow",
 ]

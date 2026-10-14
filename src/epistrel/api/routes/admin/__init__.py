@@ -12,6 +12,7 @@ import re
 from fastapi import APIRouter
 
 from epistrel.api.routes.admin import (
+    erasure,
     model_config,
     offboarding,
     policies,
@@ -29,6 +30,7 @@ router.include_router(settings.router)
 router.include_router(policies.router)
 router.include_router(model_config.router)
 router.include_router(offboarding.router)
+router.include_router(erasure.router)
 
 _SEGMENT = r"(?:^|/){}(?:/|$)"
 

@@ -555,6 +555,22 @@
         "title": "CatalogCastCard",
         "type": "object"
       },
+      "CatalogScope": {
+        "additionalProperties": false,
+        "description": "Erase from the catalog (its characters, scenarios, personas and media).",
+        "properties": {
+          "catalog": {
+            "const": true,
+            "title": "Catalog",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "catalog"
+        ],
+        "title": "CatalogScope",
+        "type": "object"
+      },
       "CatalogSourceBody": {
         "description": "The catalog version a story character was created from (``catalog_id@version``).",
         "properties": {
@@ -4744,6 +4760,214 @@
         "title": "EntryStatus",
         "type": "string"
       },
+      "ErasureBody": {
+        "description": "What the erasure did, or (``dry_run``) would do.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "degradation": {
+            "description": "What did not complete, the erasure itself being complete: `summary_regeneration_failed`, `summary_regeneration_capped`, `rebuild_failed`. Run the erasure again to retry.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Degradation",
+            "type": "array"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "erasure_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Erasure Id"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "idempotency_results": {
+            "description": "Stored idempotency results purged.",
+            "title": "Idempotency Results",
+            "type": "integer"
+          },
+          "ledger_entry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LedgerEntryBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "media": {
+            "description": "Story scope: the images the subject's characters show (they stay). Catalog scope: the media assets purged, retired or rewritten.",
+            "title": "Media",
+            "type": "integer"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "prose_segments": {
+            "description": "Text fields redacted (fields, not spans).",
+            "title": "Prose Segments",
+            "type": "integer"
+          },
+          "records": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Structured rows deleted or rewritten, by table (catalog tables schema-qualified). Erasure markers and index rows are not counted.",
+            "title": "Records",
+            "type": "object"
+          },
+          "referencing_stories": {
+            "description": "Catalog scope: the stories that reference the subject, untouched.",
+            "items": {
+              "$ref": "#/components/schemas/ReferencingStoryBody"
+            },
+            "title": "Referencing Stories",
+            "type": "array"
+          },
+          "regeneration": {
+            "description": "`model`: rolling-summary segments that named the subject are summarised again from the redacted window; `redaction`: no model can be asked, the redacted text stands.",
+            "title": "Regeneration",
+            "type": "string"
+          },
+          "residue": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Values in the scope that still name the subject after the erasure (the residue scan; 0 when nothing does).",
+            "title": "Residue"
+          },
+          "scope": {
+            "description": "`story` or `catalog`.",
+            "title": "Scope",
+            "type": "string"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
+          },
+          "subject": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "`{kind, id}`: the subject erased.",
+            "title": "Subject",
+            "type": "object"
+          },
+          "timeline_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Story scope: the story's revision after the erasure.",
+            "title": "Timeline Revision"
+          }
+        },
+        "required": [
+          "config_revision",
+          "dry_run",
+          "subject",
+          "scope",
+          "story_id",
+          "records",
+          "prose_segments",
+          "media",
+          "idempotency_results",
+          "regeneration",
+          "degradation",
+          "referencing_stories"
+        ],
+        "title": "ErasureBody",
+        "type": "object"
+      },
+      "ErasureRequest": {
+        "additionalProperties": false,
+        "description": "``POST /admin/erasure``'s body (see the module docstring).",
+        "examples": [
+          {
+            "dry_run": true,
+            "scope": {
+              "story": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"
+            },
+            "subject": {
+              "id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3",
+              "kind": "character"
+            }
+          }
+        ],
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "description": "Report what would be erased and change nothing (no operation, no key).",
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StoryScope"
+              },
+              {
+                "$ref": "#/components/schemas/CatalogScope"
+              }
+            ],
+            "title": "Scope"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/SubjectRef"
+          }
+        },
+        "required": [
+          "subject",
+          "scope"
+        ],
+        "title": "ErasureRequest",
+        "type": "object"
+      },
       "Error": {
         "description": "The one error envelope every surface uses (docs/02 §9): REST answers it with the error's\nstatus; the library raises the matching ``EpistrelError``.",
         "examples": [
@@ -5702,6 +5926,12 @@
             ],
             "title": "Origin",
             "type": "string"
+          },
+          "redacted": {
+            "default": false,
+            "description": "Present (`true`) when an erasure rewrote the item in place: each span that named the erased subject reads `[erased]` (#124).",
+            "title": "Redacted",
+            "type": "boolean"
           },
           "render_character_ids": {
             "anyOf": [
@@ -6868,6 +7098,50 @@
           }
         },
         "title": "InteractionStylePatch",
+        "type": "object"
+      },
+      "LedgerEntryBody": {
+        "additionalProperties": false,
+        "description": "The erasure ledger's row: identifiers, the scope and the counts; never a name.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "counts": {
+            "additionalProperties": true,
+            "title": "Counts",
+            "type": "object"
+          },
+          "erasure_id": {
+            "title": "Erasure Id",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
+          }
+        },
+        "required": [
+          "erasure_id",
+          "at",
+          "scope",
+          "story_id",
+          "counts"
+        ],
+        "title": "LedgerEntryBody",
         "type": "object"
       },
       "LikesDislikes": {
@@ -8708,6 +8982,12 @@
             ],
             "title": "Origin",
             "type": "string"
+          },
+          "redacted": {
+            "default": false,
+            "description": "Present (`true`) when an erasure rewrote the item in place: each span that named the erased subject reads `[erased]` (#124).",
+            "title": "Redacted",
+            "type": "boolean"
           },
           "render_character_ids": {
             "anyOf": [
@@ -14157,6 +14437,29 @@
         "title": "ReferenceImageDetail",
         "type": "object"
       },
+      "ReferencingStoryBody": {
+        "additionalProperties": false,
+        "description": "A story that references the erased catalog subject, left untouched (FR-STORE-14): erase\nthe subject there separately (``scope: {story: <id>}``).",
+        "properties": {
+          "character_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Character Ids",
+            "type": "array"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "story_id",
+          "character_ids"
+        ],
+        "title": "ReferencingStoryBody",
+        "type": "object"
+      },
       "RegenerateRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/regenerate`` and ``Engine.regenerate`` (#66, FR-STORE-12).\n\nThe recorded ``player_input`` of the head turn is reused, never re-sent. ``turn``, when\ngiven, must be the head turn (422 otherwise). ``render_character_ids``,\n``output_viewpoint`` and ``prompt_params`` override the values the turn was played with;\nomitted, the recorded (resolved) ones are reused. ``budget`` is this call's own (#69).",
@@ -17274,6 +17577,15 @@
             "title": "Default Safe Fallback",
             "type": "string"
           },
+          "erasure_shared_media": {
+            "default": "purge",
+            "enum": [
+              "purge",
+              "retire"
+            ],
+            "title": "Erasure Shared Media",
+            "type": "string"
+          },
           "feedback_retention": {
             "anyOf": [
               {
@@ -17885,6 +18197,21 @@
               }
             ],
             "title": "Default Safe Fallback"
+          },
+          "erasure_shared_media": {
+            "anyOf": [
+              {
+                "enum": [
+                  "purge",
+                  "retire"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Erasure Shared Media"
           },
           "feedback_retention": {
             "anyOf": [
@@ -19494,6 +19821,22 @@
         "title": "StoryRelationBody",
         "type": "object"
       },
+      "StoryScope": {
+        "additionalProperties": false,
+        "description": "Erase within one story.",
+        "properties": {
+          "story": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Story",
+            "type": "string"
+          }
+        },
+        "required": [
+          "story"
+        ],
+        "title": "StoryScope",
+        "type": "object"
+      },
       "StorySettingsBody": {
         "description": "The story's settings with defaults filled in, its guardrails (effective and inactive\npolicies, the model calls they add) and the turn budget its next turn plans with.",
         "properties": {
@@ -20010,6 +20353,27 @@
         ],
         "title": "SubjectKind",
         "type": "string"
+      },
+      "SubjectRef": {
+        "additionalProperties": false,
+        "description": "Who is erased: a story ``character``, a ``catalog_character`` or a ``persona``, by id.",
+        "properties": {
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SubjectKind"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "SubjectRef",
+        "type": "object"
       },
       "SuggestionRequest": {
         "additionalProperties": false,
@@ -21516,6 +21880,7 @@
                           "default_content_rating_id",
                           "default_engine_profile_id",
                           "default_safe_fallback",
+                          "erasure_shared_media",
                           "feedback_retention",
                           "feedback_tags",
                           "feedback_text_max_chars",
@@ -22514,6 +22879,157 @@
           }
         ],
         "summary": "List a content rating's versions",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/erasure": {
+      "post": {
+        "description": "Right-to-be-forgotten erasure (FR-ADMIN-2, FR-ADMIN-6). `subject` is `{kind, id}` (`character`, `catalog_character` or `persona`) and `scope` `{story: <id>}` or `{catalog: true}`; a story `character` scoped to the catalog is 422 `invalid_erasure_scope`. **Story scope**: the subject's character rows, snapshots and deferred items are deleted (each leaves an erasure marker in the audit view, `include_audit=1`), every text in the story that names the subject reads `[erased]` where it did (a beat the subject said becomes `[erased]` whole, keeping its place), stored results that name it are purged, the rolling-summary segments that named it are summarised again from the redacted window (or stay redacted without a model), and the projections are rebuilt. It bumps the story's revision, so a turn in flight starts over, and runs on archived and paused stories too. **Catalog scope**: the catalog character (every version, its draft and companion) or the persona is deleted, the scenarios and other catalog records that name it are redacted, media depicting or naming only the subject are purged (or kept retired when another record still references them and `erasure_shared_media` is `retire`), and stories are never touched: `referencing_stories` lists those to erase separately. `dry_run: true` answers the counts and changes nothing (zero counts for an unknown subject). The ledger records identifiers, scope, story and counts, never content. 404 for an unknown story, or on a real run an unknown subject; 503 `config_key_missing` without `EPISTREL_CONFIG_KEY`. Out of scope: delivered exports, data a model provider holds, and backups taken before the erasure.",
+        "operationId": "erase",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ErasureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_erasure_scope`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Erase a subject from a story or from the catalog",
         "tags": [
           "admin"
         ]

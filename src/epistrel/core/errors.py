@@ -954,3 +954,34 @@ class OffboardingInProgress(EpistrelError):
 
     code = "offboarding_in_progress"
     http_status = 409
+
+
+# -- erasure (#124) -----------------------------------------------------------------------------
+
+
+class InvalidErasureScope(EpistrelError):
+    """An erasure pairs a subject kind with a scope it cannot have (FR-ADMIN-2; #124): a story
+    ``character`` exists only in its story, so its erasure is story-scoped. Nothing is written.
+    ``details``: ``field``, ``subject_kind`` and ``scope``."""
+
+    code = "invalid_erasure_scope"
+    http_status = 422
+
+
+class SubjectNotFound(EpistrelError):
+    """The subject an erasure names is unknown in its scope (no such character in the story, no
+    catalog character or persona by that id, and no earlier erasure of it there): nothing to
+    erase or to ledger (#124). A dry run answers zero counts instead. ``details``:
+    ``subject_kind``, ``subject_id`` and, for the story scope, ``story_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class ErasureKeyMissing(EpistrelError):
+    """``EPISTREL_CONFIG_KEY`` is unset, so the erasure ledger's keyed hashes of the scanned
+    terms cannot be made (an unkeyed hash of a name could be reversed by guessing): the erasure
+    is refused and nothing is written (#124). ``details``: ``setting``."""
+
+    code = "config_key_missing"
+    http_status = 503

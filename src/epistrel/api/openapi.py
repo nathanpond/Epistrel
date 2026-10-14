@@ -239,6 +239,7 @@ ERROR_STATUS: dict[str, int] = {
     "entry_archived": 422,
     "guardrail_violation": 422,
     "inheritance_cycle": 422,
+    "invalid_erasure_scope": 422,
     "invalid_listing_status": 422,
     "invalid_profile": 422,
     "locked_slot_reassigned": 422,
@@ -500,6 +501,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # Principal lookup and offboarding (#117): a page's cursor another page gave; a request
     # that cannot run, or a principal already being offboarded.
     "lookup_principal": ("cursor_invalid",),
+    # Erasure (#124): a story character scoped to the catalog; no config key for the ledger.
+    "erase": ("invalid_erasure_scope", "not_found", "revision_conflict", "config_key_missing"),
     "offboard_principal": (
         "principal_reserved",
         "transfer_target_required",

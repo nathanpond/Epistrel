@@ -4,8 +4,9 @@ One row per audited act that has no operation of its own: an input rejected by a
 (``guardrail_input_rejected``, FR-GUARD-10), a story deletion (``story_deleted``, #50), a
 catalog entry deletion (``catalog_entry_deleted``, #103), a persona deletion
 (``persona_deleted``, #114) and a refused tightening of a story's rating
-(``rating_change_refused``, #118: the job id, the target rating and the violation count). A
-row holds policy ids, the story, the principal and small
+(``rating_change_refused``, #118: the job id, the target rating and the violation count) and an
+erasure (``erasure``, #124: the ledger entry's id, the subject's kind and id, the scope and the
+counts). A row holds policy ids, the story, the principal and small
 structured details, and **never** the text that was rejected (NFR-SEC-4).
 
 The table is append-only (trigger ``audit_log_append_only``). Two changes are allowed:
@@ -31,6 +32,7 @@ class AuditKind(StrEnum):
     CATALOG_ENTRY_DELETED = "catalog_entry_deleted"
     PERSONA_DELETED = "persona_deleted"
     RATING_CHANGE_REFUSED = "rating_change_refused"
+    ERASURE = "erasure"
 
 
 KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in AuditKind) + ")"

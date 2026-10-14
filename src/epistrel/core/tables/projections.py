@@ -21,7 +21,18 @@ timestamps of their own: every value is a function of the log and the ``operatio
 
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Column, Index, Integer, SmallInteger, Table, Text
+from sqlalchemy import (
+    TIMESTAMP,
+    BigInteger,
+    Boolean,
+    Column,
+    Index,
+    Integer,
+    SmallInteger,
+    Table,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 
 from epistrel.core.enums import Membership
@@ -44,6 +55,8 @@ transcript_messages = Table(
     Column("render_character_ids", JSONB, nullable=True),
     Column("text", Text, nullable=False),
     Column("membership", pg_enum(Membership, "membership"), nullable=False),
+    # The beat's event was redacted by erasure (#124; ``events.redacted_at``).
+    Column("redacted", Boolean, nullable=False, server_default=text("false")),
     Index("ix_transcript_messages_story_position", "story_id", "narrative_turn", "turn_variant"),
     Index("ix_transcript_messages_story_membership", "story_id", "membership"),
 )
@@ -80,6 +93,8 @@ lite_summary_segments = Table(
     Column("source_versions", JSONB, nullable=False),
     Column("model", Text, nullable=True),
     Column("prompt_hash", Text, nullable=True),
+    # When erasure (#124) redacted or regenerated the segment's event (``events.redacted_at``).
+    Column("redacted_at", TIMESTAMP(timezone=True), nullable=True),
     Index("ix_lite_summary_segments_story_covers", "story_id", "covers_to"),
     Index(
         "uq_lite_summary_segments_position",

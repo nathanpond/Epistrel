@@ -24,8 +24,11 @@ from epistrel.orchestrator.jobs import timers
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
+from tests import erasure_support as erasure
+from tests import genesis_support as g
 from tests.event_support import interleave, play_turn, rows
 from tests.policy_support import unique, words
+from tests.respond_support import respond_client
 from tests.story_support import WRITE, create, dump, public_tables, rest, story_body
 
 AUTHOR = RequestContext(principal="p-author")
@@ -386,3 +389,52 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
         )
         assert crossed == 0
     assert "stories" in await public_tables(engine)
+
+
+@pytest.mark.part("M3", "FR-ADMIN-2; FR-STORE-14")
+async def test_s_delete__erasure(pg_url: str, engine: AsyncEngine) -> None:
+    """Right-to-be-forgotten reaches each story the subject appears in, and no other: catalog
+    character Halvard (alias "Hal") is in two stories created from one scenario; a third story
+    never had him. Erasing him in the first leaves the other two byte-identical (every row of
+    theirs, by ``story_id``, ``scope_id`` and their operations' keys) while the first names him
+    nowhere and no longer has his character (his reconstruction fails there); erasing him in
+    the second reaches it too, and the third is still byte-identical."""
+    settings = erasure.erasure_settings(pg_url)
+    terms = ("Halvard Quist", "Hal")
+    async with respond_client(settings, engine) as (client, _):
+        halvard = await erasure.linda(client, "Halvard Quist", "Hal")
+        scenario = g.scenario_body(
+            g.role("uncle", fill="default", character={"catalog_id": halvard}),
+            g.role("player", kind="player", label="The eldest"),
+        )
+        scenario["starting_state"]["seeded_memories"] = [
+            {
+                "text": "Hal buried the boat keys.",
+                "holder": "world",
+                "audience": ["self"],
+                "disclosure": "secret",
+            }
+        ]
+        scenario_id, _ = await g.published_scenario(client, scenario)
+        first, second = [
+            await g.create_from(client, g.from_scenario(scenario_id, ignore_warnings=True))
+            for _ in range(2)
+        ]
+        third = await create(client, story_body("Ada", "Brann"))
+        stories = [first["story_id"], second["story_id"], third["story_id"]]
+        for story in stories[:2]:
+            assert sum((await erasure.residue(engine, story, terms)).values()) > 0
+
+        untouched = {s: await _rows_of(engine, s) for s in stories[1:]}
+        await erasure.erase(client, "catalog_character", halvard, stories[0])
+        assert {s: await _rows_of(engine, s) for s in stories[1:]} == untouched
+        assert sum((await erasure.residue(engine, stories[0], terms)).values()) == 0
+        assert sum((await erasure.residue(engine, stories[1], terms)).values()) > 0
+        read = await client.get(f"/stories/{stories[0]}", headers=WRITE)
+        assert read.status_code == 200, read.text
+        assert [c["role_id"] for c in read.json()["characters"]] == ["player"]
+
+        unrelated = await _rows_of(engine, stories[2])
+        await erasure.erase(client, "catalog_character", halvard, stories[1])
+        assert sum((await erasure.residue(engine, stories[1], terms)).values()) == 0
+        assert await _rows_of(engine, stories[2]) == unrelated

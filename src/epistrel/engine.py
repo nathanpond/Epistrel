@@ -57,6 +57,7 @@ from epistrel.core.catalog.report import ValidationResult
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import EntryStatus, StoryStatus
+from epistrel.core.erasure import erase as erasure
 from epistrel.core.errors import InvalidRequest, PrincipalRequired, refuse_nul
 from epistrel.core.genesis import create as genesis
 from epistrel.core.genesis.models import StoryFromScenario
@@ -72,6 +73,7 @@ from epistrel.core.idempotency import (
 from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
 from epistrel.core.media import assets as media
+from epistrel.core.media import sweep as media_sweep
 from epistrel.core.media import uploads as media_uploads
 from epistrel.core.media.poster import FfmpegTools, PosterExtractor
 from epistrel.core.media.signing import Signer
@@ -286,6 +288,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
         status=lambda result: 202 if offboarding.stored(result) else 200,
         revision_field=_CONFIG,
     ),
+    # Erasure (#124): deployment-scoped (its key and its ``config_revision``), whichever scope
+    # it erases in; a dry run is never stored.
+    "erase": ResultCodec.of(erasure.ErasureResult, revision_field=_CONFIG),
     # Engine profiles (#106): deployment-scoped like the catalog's writes.
     "create_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
     # Two-stage (#109): stored only once applied; a report alone releases its key.
@@ -478,7 +483,11 @@ class Engine:
         # calls and background jobs. The policy evaluation is the Orchestrator's (#111: the
         # catalog validation's input policies); the other no-op defaults stand until a story
         # wires a real one.
-        self.ports = ports or Ports(policy_evaluator=CatalogPolicyCheck(self.models))
+        self.ports = ports or Ports(
+            policy_evaluator=CatalogPolicyCheck(self.models),
+            # An erasure regenerates the summary it redacted through #72's compression (#124).
+            summary_compressor=lite_summary_job.ErasureCompressor(self.models),
+        )
         # Queued turns (FR-CONC-5, #63) are drained in this process: kicked when queued here, and
         # by the worker's ``turn_queue`` recovery hook and ``turn_queue_drain`` task (#71).
         self._recovery: asyncio.Task[None] | None = None
@@ -2761,6 +2770,54 @@ class Engine:
         entity deleted, transferred, removed, kept or skipped, and what is still linked to the
         principal (FR-AUTH-7). 404 for an unknown job (or a purged report)."""
         return await offboarding.get(self.db, job_id)
+
+    # -- erasure (FR-ADMIN-2,6, NFR-PRIV-2; #124) -------------------------------------------------
+
+    async def erase(
+        self, ctx: RequestContext, request: erasure.ErasureRequest
+    ) -> erasure.ErasureResult:
+        """Erase a subject (a story ``character``, a ``catalog_character`` or a ``persona``)
+        within one story or from the catalog, so that afterwards no text in that scope names
+        it (``core.erasure.erase``). A ``dry_run`` reports what would be erased and writes
+        nothing (no operation, no key; zero counts for an unknown subject). Otherwise the
+        erasure runs under the request's ``Idempotency-Key`` (deployment-scoped; ``dry_run`` is
+        in the request hash): a story-scope erasure as one ``control`` operation that bumps the
+        story's revision (its regenerated summary and rebuilt projections follow), a
+        catalog-scope one as one deployment operation that never touches a story. 422
+        ``invalid_erasure_scope`` for a story character scoped to the catalog; 404 for an
+        unknown story or, on a real run, an unknown subject; 409 ``revision_conflict`` for a
+        stale expected revision (story scope); 503 ``config_key_missing`` without
+        ``EPISTREL_CONFIG_KEY``."""
+        principal = self.require_principal(ctx)
+        erasure.check_request(request)
+        key = erasure.require_key(
+            None
+            if self.settings.config_key is None
+            else self.settings.config_key.get_secret_value()
+        )
+        story_id = request.story_id
+        if story_id is not None:
+            await check_expected_revision(self.db, story_id, ctx.expected_revision)
+        compressor = self.ports.summary_compressor
+        if request.dry_run:
+            return await erasure.dry_run(
+                self.db, request, compressor=compressor, principal=principal
+            )
+
+        async def collect(checksum: str) -> bool:
+            return await media_sweep.collect_blob(self.db, self.media, checksum)
+
+        async def run(_: RequestContext) -> erasure.ErasureResult:
+            return await erasure.erase(
+                self.db,
+                request,
+                principal=principal,
+                config_key=key,
+                compressor=compressor,
+                collect=collect,
+            )
+
+        return await self._keyed(ctx, "erase", run, material={"body": _body(request)})
 
     # -- media assets (FR-MEDIA-1,2; FR-API-6; #105) --------------------------------------------
     # Deployment-scoped: an upload or a delete records a story-less ``control`` operation, keyed

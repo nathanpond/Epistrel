@@ -381,22 +381,35 @@ async def delete(db: AsyncEngine, persona_id: str, *, principal: str) -> Deleted
     ownership event and a ``persona_deleted`` audit row; 404 for an unknown persona. Stories
     created with it keep their snapshot (FR-CAT-6)."""
     async with db.begin() as conn:
-        await _row(conn, persona_id, lock=True)
-        await ownership.drop_entity(conn, EntityType.PERSONA, persona_id, principal=principal)
-        await conn.execute(sql_delete(personas).where(personas.c.id == persona_id))
-        await drop_references(conn, personas.name, persona_id)
-        operation_id = await control.record_control_operation(conn, actor=principal)
-        await audit.record(
-            conn,
-            AuditKind.PERSONA_DELETED,
-            principal=principal,
-            details={
-                "entity_type": EntityType.PERSONA.value,
-                "entity_id": persona_id,
-                "operation_id": operation_id,
-            },
-        )
+        await delete_in(conn, persona_id, principal=principal)
     return DeletedPersona(id=persona_id)
+
+
+async def delete_in(
+    conn: AsyncConnection,
+    persona_id: str,
+    *,
+    principal: str,
+    operation_id: str | None = None,
+) -> None:
+    """``delete`` inside the caller's transaction (#124's catalog erasure): ``operation_id``
+    names the operation that records it (else a new ``control`` one)."""
+    await _row(conn, persona_id, lock=True)
+    await ownership.drop_entity(conn, EntityType.PERSONA, persona_id, principal=principal)
+    await conn.execute(sql_delete(personas).where(personas.c.id == persona_id))
+    await drop_references(conn, personas.name, persona_id)
+    if operation_id is None:
+        operation_id = await control.record_control_operation(conn, actor=principal)
+    await audit.record(
+        conn,
+        AuditKind.PERSONA_DELETED,
+        principal=principal,
+        details={
+            "entity_type": EntityType.PERSONA.value,
+            "entity_id": persona_id,
+            "operation_id": operation_id,
+        },
+    )
 
 
 # -- reads ---------------------------------------------------------------------------------------
@@ -515,6 +528,7 @@ __all__ = [
     "PersonaWrite",
     "create",
     "delete",
+    "delete_in",
     "fingerprint",
     "get",
     "is_name_conflict",

@@ -29,7 +29,11 @@ Reads the ``transcript_messages`` projection (joined to each beat's event for a 
   ``items`` (segments are derived, not beats). Read along the active chain only.
 - **Audit** (``include_audit``): ``omniscient`` only (403 ``omniscient_required`` otherwise,
   after every 422); the ``audit`` category events of the page's turns from active, committed
-  operations, as items on the ``audit`` channel whose text is the payload's canonical JSON.
+  operations, as items on the ``audit`` channel whose text is the payload's canonical JSON, and
+  the erasure markers (#124: a position-less ``erasure_marker`` per record an erasure deleted,
+  turn 0, so on the last page) as ``[erasure marker: <subject id>, <scope>]``.
+- **Redaction** (#124): an item whose event an erasure rewrote carries ``redacted: true``; its
+  text reads ``[erased]`` where it named the subject.
 """
 
 from __future__ import annotations
@@ -40,7 +44,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import and_, case, func, literal_column, select
+from sqlalchemy import and_, case, func, literal_column, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import EventCategory, Membership, OperationStatus
@@ -63,6 +67,7 @@ DEFAULT_LIMIT = 200
 MAX_LIMIT = 1_000
 AUDIT_CHANNEL = "audit"
 REPLY_KIND = "message_rendered"
+ERASURE_MARKER = "erasure_marker"
 INPUT_KIND = "player_input"
 
 
@@ -82,6 +87,9 @@ class HistoryItem:
     """``ingested`` when a consumer recorded the beat through ``ingest`` (#58)."""
     true_ages: dict[str, int] | None = None
     """Omniscient reads only: the true age of each character the item names (FR-CAT-12)."""
+    redacted: bool = False
+    """Erasure (#124) rewrote the item's event in place: its spans naming the erased subject
+    read ``[erased]``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,7 +352,10 @@ async def _audit(
         .join(operations, operations.c.operation_id == events.c.operation_id)
         .where(
             events.c.story_id == story_id,
-            events.c.category == EventCategory.AUDIT.value,
+            or_(
+                events.c.category == EventCategory.AUDIT.value,
+                events.c.type == ERASURE_MARKER,
+            ),
             on_chain,
             operations.c.status == OperationStatus.COMMITTED.value,
             bucket.between(lower, upper),
@@ -360,14 +371,24 @@ async def _audit(
             actor_character_id=row.character_id,
             render_character_ids=None,
             channel=AUDIT_CHANNEL,
-            text=json.dumps(row.payload, sort_keys=True, separators=(",", ":")),
+            text=_audit_text(row),
             operation_id=row.operation_id,
             message_id=row.id,
             origin=row.origin,
             true_ages=_named_ages(ages, row.character_id, None),
+            redacted=row.redacted_at is not None,
         )
         for row in found
     ]
+
+
+def _audit_text(row: Any) -> str:
+    """An audit item's text: the payload's canonical JSON, or for an erasure marker (#124)
+    ``[erasure marker: <subject id>, <scope>]``: identifiers and scope only."""
+    if row.type == ERASURE_MARKER:
+        payload = row.payload or {}
+        return f"[erasure marker: {payload.get('subject_id')}, {payload.get('scope')}]"
+    return json.dumps(row.payload, sort_keys=True, separators=(",", ":"))
 
 
 # -- shaping ----------------------------------------------------------------------------------
@@ -416,6 +437,7 @@ def _items(rows: Sequence[Any], viewpoint: str, ages: Mapping[str, int]) -> list
                         if omniscient
                         else None
                     ),
+                    redacted=bool(row.redacted),
                 )
             )
     return items

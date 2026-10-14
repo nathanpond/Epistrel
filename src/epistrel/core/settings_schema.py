@@ -670,6 +670,27 @@ class FeedbackSettings(BaseModel):
     feedback_retention: Annotated[FeedbackRetention, PROSPECTIVE] = STORY_LIFETIME
 
 
+# -- erasure (FR-ADMIN-6, FR-MEDIA-2; #124) ----------------------------------------------------
+
+ErasureSharedMedia = Literal["purge", "retire"]
+DEFAULT_ERASURE_SHARED_MEDIA: ErasureSharedMedia = "purge"
+
+
+class ErasureSettings(BaseModel):
+    """What a catalog-scope erasure does with a media asset that depicts or names only the
+    erased subject but that a record the erasure leaves untouched still references (a story's
+    snapshot, another catalog entry), stored under ``deployment_state.settings`` (#124; the
+    owner's decision on #124): ``purge`` (the default) deletes the row and, when no other asset
+    shares them, its bytes, so the reference dangles; ``retire`` keeps the row and its bytes
+    ``retired``, with the subject removed from ``depicted_subjects`` and its caption and alt
+    text redacted. An asset nothing else references is always purged. Interpretive: it decides
+    what an erasure removes."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    erasure_shared_media: Annotated[ErasureSharedMedia, INTERPRETIVE] = DEFAULT_ERASURE_SHARED_MEDIA
+
+
 # -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
 
 DEFAULT_MINOR_AGE_THRESHOLD = 18
@@ -760,6 +781,7 @@ class DeploymentSettings(
     MediaSettings,
     CatalogValidationSettings,
     FeedbackSettings,
+    ErasureSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

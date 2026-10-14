@@ -52,6 +52,7 @@ def segment_row(event: LogEvent, segment: LiteSummarySegment) -> Row:
         "source_versions": [s.model_dump(mode="json") for s in segment.source_versions],
         "model": segment.model,
         "prompt_hash": segment.prompt_hash,
+        "redacted_at": event.redacted_at,
     }
 
 

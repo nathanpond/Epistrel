@@ -21,6 +21,11 @@ The job's id is its ``rating_check_jobs`` row's. A run:
 Each of its transactions is fenced by its claim (``queue.hold``). A model that cannot answer
 fails the attempt, retried with #70's backoff while the story stays paused; the last failed
 attempt (``MAX_ATTEMPTS``) resumes the story on its old rating and marks the check ``failed``.
+A last attempt the framework ends without this handler seeing it (the runtime cap cancels it,
+or the commit fails) leaves the check ``checking``, and ``change.reconcile`` ends it the same
+way (at the next read of the check, the next rating change, the worker's recovery pass or the
+retention sweep). A checkpoint that finds the check gone (the story was deleted) or ended ends
+the run.
 It records no operation of its own: the change, the pause and the resume are recorded by
 ``core.ratings.change``.
 """
@@ -102,6 +107,10 @@ class _Yield(Exception):
     """The run has worked long enough: requeue, and resume from the cache."""
 
 
+class _Gone(Exception):
+    """A checkpoint found the check gone (its story was deleted) or no longer ``checking``."""
+
+
 class ModelPolicyCheck:
     """``change.ModelCheck`` over the Model Access Layer: one ``guardrail_check`` call under a
     budget of its own (one call, ``CALL_DEADLINE_S``), never a turn's."""
@@ -164,10 +173,12 @@ async def _work(ctx: JobContext, guard: _Fence) -> JobOutput:
         buffered.update(verdicts)
         reached[0] = done
         if done % CHECKPOINT == 0 or done == total:
-            await change.save_progress(
+            saved = await change.save_progress(
                 ctx.db, check, done, total, buffered, guard, revision=history.revision
             )
             buffered.clear()
+            if not saved:
+                raise _Gone
         if done < total and time.monotonic() - started > YIELD_AFTER_S:
             raise _Yield
 
@@ -185,8 +196,10 @@ async def _work(ctx: JobContext, guard: _Fence) -> JobOutput:
             total = len(history.records)
             await change.save_progress(ctx.db, check, reached[0], total, buffered, guard)
         return JobOutput(requeue_in=0.0, result={"yielded": True})
-    if not history.records:
-        await change.save_progress(ctx.db, check, 0, 0, {}, guard, revision=history.revision)
+    if not history.records and not await change.save_progress(
+        ctx.db, check, 0, 0, {}, guard, revision=history.revision
+    ):
+        raise _Gone
     outcome = await change.finish(
         ctx.db,
         check,
@@ -210,6 +223,8 @@ async def _run(ctx: JobContext) -> JobOutput:
     except queue.Fenced:
         # Another run holds the job now and finishes the check from the row and the cache.
         return JobOutput()
+    except _Gone:
+        return JobOutput(result={"status": "gone"})
     except Exception as exc:
         if ctx.job.failures + 1 >= MAX_ATTEMPTS:
             await change.fail(ctx.db, ctx.job.id, exc)

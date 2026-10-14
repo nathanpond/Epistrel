@@ -40,7 +40,12 @@ Otherwise nothing changes, the story resumes, the violations are kept on the row
 ``audit_log`` row (``rating_change_refused``) records the refusal. A history that moved since
 it was read (``timeline_revision``) or a target rating edited since (its version) runs the
 check again; a target retired meanwhile, or a job that fails its last attempt, ends
-``failed`` with the story resumed on its old rating.
+``failed`` with the story resumed on its old rating. A job the framework ends without the
+handler seeing it (the runtime cap, or a failed commit, on its last attempt) leaves the check
+``checking``; ``reconcile`` ends it the same way when it is next read or the rating is changed
+again, and in the worker's recovery pass and the retention sweep. A story deleted during its
+check takes the check and its cached verdicts with it, and a run that then saves progress finds
+the check gone and ends (``save_progress``).
 """
 
 from __future__ import annotations
@@ -53,11 +58,12 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import ColumnElement, delete, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import audit, clock, control, pause
+from epistrel.core.catalog.scenario_models import ScenarioDraft
 from epistrel.core.config_changes import ConfigScope, record_config_change, write_operation
 from epistrel.core.enums import (
     Authority,
@@ -89,6 +95,7 @@ from epistrel.core.tables import (
     content_ratings,
     events,
     guardrail_check_results,
+    jobs,
     operations,
     policies,
     rating_check_jobs,
@@ -252,6 +259,19 @@ async def change_rating(
             raise StoryArchived(
                 f"story {story_id} is archived; unarchive it to change it", {"story_id": story_id}
             )
+        if pause.is_paused(row.status) and await reconcile(
+            conn, rating_check_jobs.c.story_id == story_id
+        ):
+            row = (
+                await conn.execute(
+                    select(
+                        stories.c.status,
+                        stories.c.content_rating_id,
+                        stories.c.config_revision,
+                        stories.c.timeline_revision,
+                    ).where(stories.c.id == story_id)
+                )
+            ).one()
         await pause.refuse(conn, story_id, row.status)
         config_revision = int(row.config_revision)
         timeline_revision = int(row.timeline_revision)
@@ -518,6 +538,41 @@ async def story_image_records(conn: AsyncConnection, story_id: str) -> list[Hist
     return []
 
 
+def _dotted(loc: Sequence[str | int]) -> str:
+    parts: list[str] = []
+    for part in loc:
+        if isinstance(part, int) and parts:
+            parts[-1] = f"{parts[-1]}[{part}]"
+        else:
+            parts.append(str(part))
+    return ".".join(parts)
+
+
+def scenario_records(snapshot: Mapping[str, Any] | None) -> list[HistoryRecord]:
+    """The genesis seeds of a story created from a scenario (FR-RATE-7, FR-SCN-9): the world
+    description and every seed of its ``scenario_snapshot``, each at ``{kind: seed, id: <the
+    field>}`` and checked as ``text_output``, as #119's creation check does
+    (``genesis.create.check_rating``), so a tightening sees what a creation at the stricter
+    rating would have refused. The opening narration is the story's turn 1, an event."""
+    if not snapshot:
+        return []
+    draft = ScenarioDraft.model_validate(snapshot)
+    found: list[tuple[str, str]] = []
+    if draft.world.description:
+        found.append(("world.description", draft.world.description))
+    for loc, seed in draft.seeds():
+        found.append((_dotted(loc) + ".text", seed.text))
+    return [
+        HistoryRecord(
+            f"genesis:{locator}:{_digest(text)}",
+            {"kind": "seed", "id": locator},
+            Target.TEXT_OUTPUT,
+            text,
+        )
+        for locator, text in found
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class History:
     """A story's active history as read for a check, and the timeline revision it was read
@@ -530,13 +585,20 @@ class History:
 async def read_history(conn: AsyncConnection, story_id: str) -> History:
     """Every record of the story's active history (FR-RATE-7): each active committed
     operation's player input (``text_input``) and rendered beats (``text_output``), generated
-    or ingested, genesis included; the pinned memories and custom instructions
-    (``text_input``); and the story's images. Read in the caller's transaction."""
-    revision = await conn.scalar(
-        select(stories.c.timeline_revision).where(stories.c.id == story_id)
-    )
-    if revision is None:
+    or ingested, genesis included (a scenario's opening narration is its turn 1); the seeds and
+    the world description of the scenario it was created from (``scenario_records``); the
+    pinned memories and custom instructions (``text_input``); and the story's images. Read in
+    the caller's transaction."""
+    story = (
+        await conn.execute(
+            select(stories.c.timeline_revision, stories.c.scenario_snapshot).where(
+                stories.c.id == story_id
+            )
+        )
+    ).one_or_none()
+    if story is None:
         raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+    revision = story.timeline_revision
     found = await conn.execute(
         select(
             events.c.id,
@@ -572,6 +634,7 @@ async def read_history(conn: AsyncConnection, story_id: str) -> History:
             }
         target = Target.TEXT_INPUT if row.type == PLAYER_INPUT else Target.TEXT_OUTPUT
         records.append(HistoryRecord(row.id, position, target, text, tuple(people)))
+    records.extend(scenario_records(story.scenario_snapshot))
     texts = (
         await conn.execute(
             select(story_texts.c.pinned, story_texts.c.custom_instructions).where(
@@ -697,10 +760,23 @@ async def save_progress(
     guard: Guard,
     *,
     revision: int | None = None,
-) -> None:
-    """Record ``done``/``total`` and store ``verdicts`` in one fenced transaction."""
+) -> bool:
+    """Record ``done``/``total`` and store ``verdicts`` in one fenced transaction; ``False``,
+    storing nothing, when the check is gone or no longer ``checking`` (the run then ends).
+
+    The check's row is locked first. A story deleted meanwhile deletes it (``delete_story``
+    empties ``rating_check_jobs`` before ``guardrail_check_results``), so either the deletion
+    waits for this transaction and then removes the verdicts it stored, or this one waits for
+    the deletion and finds the row gone: no verdict outlives its story."""
     async with db.begin() as conn:
         await guard(conn)
+        status = await conn.scalar(
+            select(rating_check_jobs.c.status)
+            .where(rating_check_jobs.c.id == check.id)
+            .with_for_update()
+        )
+        if status != RatingCheckStatus.CHECKING.value:
+            return False
         values: dict[str, Any] = {"progress": {"done": done, "total": total}}
         if revision is not None:
             values["checked_revision"] = revision
@@ -731,6 +807,7 @@ async def save_progress(
                     set_={"verdict": statement.excluded.verdict, "at": func.now()},
                 )
             )
+    return True
 
 
 class Outcome(StrEnum):
@@ -882,7 +959,10 @@ async def finish(
 
 
 async def _fail_in(conn: AsyncConnection, check: Check, story: Any, error: BaseException) -> None:
-    kind = type(error).__name__
+    await _fail_as(conn, check, story, type(error).__name__)
+
+
+async def _fail_as(conn: AsyncConnection, check: Check, story: Any, kind: str) -> None:
     if story is not None and story.paused_by == check.id:
         operation_id = await control.record_control_operation(
             conn, actor=check.started_by, story_id=check.story_id
@@ -908,6 +988,74 @@ async def fail(db: AsyncEngine, job_id: str, error: BaseException) -> None:
             return
         story = await _lock_story(conn, check)
         await _fail_in(conn, check, story, error)
+
+
+JOB_ENDED = ("done", "failed")
+"""#70's terminal job statuses."""
+
+
+def _ended_class(job_status: str | None, result: Any) -> str:
+    """The error class a reconciled check reports: the job's own failure class when it recorded
+    one (an exception class name, never a message), else what happened to the job."""
+    if job_status is None:
+        return "JobMissing"
+    error = result.get("error") if isinstance(result, Mapping) else None
+    if job_status == "failed" and isinstance(error, str) and error.isidentifier():
+        return error
+    return "JobFailed" if job_status == "failed" else "JobEnded"
+
+
+async def reconcile(conn: AsyncConnection, where: ColumnElement[bool]) -> int:
+    """End as ``failed`` every ``checking`` check matching ``where`` whose #70 job has ended
+    (``done`` or ``failed``) or is gone, resuming its story on its old rating, in ``conn``'s
+    transaction; returns how many it ended.
+
+    The handler ends its check on its last failed attempt, but the job framework can also end
+    the job without the handler seeing it: the worker's runtime cap cancels the handler, or the
+    commit itself fails, on the last attempt. Without this the story would stay paused for
+    ever. It runs when the check is read (``get_check``), when the story's rating is changed
+    again (``change_rating``), in the worker's start-up recovery pass and in the retention
+    sweep. Each story is locked before its check (the order ``finish`` and ``delete_story``
+    take)."""
+    ended = (
+        await conn.execute(
+            select(
+                rating_check_jobs.c.id,
+                rating_check_jobs.c.story_id,
+                jobs.c.status.label("job_status"),
+                jobs.c.result,
+            )
+            .select_from(rating_check_jobs.outerjoin(jobs, jobs.c.id == rating_check_jobs.c.id))
+            .where(
+                where,
+                rating_check_jobs.c.status == RatingCheckStatus.CHECKING.value,
+                or_(jobs.c.id.is_(None), jobs.c.status.in_(JOB_ENDED)),
+            )
+            .order_by(rating_check_jobs.c.id)
+        )
+    ).all()
+    closed = 0
+    for row in ended:
+        story = (
+            await conn.execute(
+                select(stories.c.paused_by).where(stories.c.id == row.story_id).with_for_update()
+            )
+        ).one_or_none()
+        locked = (
+            await conn.execute(
+                select(rating_check_jobs)
+                .where(
+                    rating_check_jobs.c.id == row.id,
+                    rating_check_jobs.c.status == RatingCheckStatus.CHECKING.value,
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if locked is None:
+            continue
+        await _fail_as(conn, _check(locked), story, _ended_class(row.job_status, row.result))
+        closed += 1
+    return closed
 
 
 # -- reads --------------------------------------------------------------------------------------
@@ -939,10 +1087,13 @@ class RatingCheckView:
 async def get_check(db: AsyncEngine, story_id: str, job_id: str) -> RatingCheckView:
     """The check ``job_id`` of ``story_id``: 404 for an unknown story, or a job that is not
     one of the story's checks (another story's, or purged)."""
-    async with db.connect() as conn:
+    async with db.begin() as conn:
         exists = await conn.scalar(select(stories.c.id).where(stories.c.id == story_id))
         if exists is None:
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+        await reconcile(
+            conn, (rating_check_jobs.c.id == job_id) & (rating_check_jobs.c.story_id == story_id)
+        )
         check = await load_check(conn, job_id)
     if check is None or check.story_id != story_id:
         raise RatingCheckNotFound(
@@ -1026,7 +1177,9 @@ __all__ = [
     "position_key",
     "purge_finished",
     "read_history",
+    "reconcile",
     "save_progress",
+    "scenario_records",
     "story_image_records",
     "turn_in_flight",
 ]

@@ -19,8 +19,8 @@ from datetime import datetime
 from typing import Any, Protocol, overload
 
 from pydantic import SecretStr, TypeAdapter, ValidationError
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import func, select, true
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import ProcessMode, Settings
 from epistrel.core import config_changes as config_log
@@ -428,6 +428,13 @@ async def _metered[R: _Metered](ctx: RequestContext, run: Callable[[], Awaitable
 
 TURN_QUEUE_HOOK = "turn_queue"
 """The worker recovery hook that drains the turn queues a stopped process left (#63, #71)."""
+RATING_CHECK_HOOK = "rating_check"
+"""The worker recovery hook that ends every rating check whose job ended without ending it
+(``change.reconcile``, #118), resuming its story."""
+
+
+async def _end_rating_checks(conn: AsyncConnection) -> None:
+    await rating_change.reconcile(conn, true())
 
 
 class Engine:
@@ -506,6 +513,7 @@ class Engine:
             self._recovery = asyncio.create_task(self._recover())
             return
         register_recovery_hook(TURN_QUEUE_HOOK, self._recovery_hook)
+        register_recovery_hook(RATING_CHECK_HOOK, _end_rating_checks)
         self.worker = Worker(self.db, WorkerConfig.from_settings(self.settings, mode=mode))
         self._worker_task = asyncio.create_task(self.worker.run(), name="epistrel-worker")
 
@@ -535,6 +543,7 @@ class Engine:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
             unregister_recovery_hook(TURN_QUEUE_HOOK)
+            unregister_recovery_hook(RATING_CHECK_HOOK)
         if turn_queue_job.bound() == self.drainer.recover:
             turn_queue_job.bind(None)
         if lite_summary_job.bound() is self.models:

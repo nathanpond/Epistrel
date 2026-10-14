@@ -15,7 +15,16 @@ import pytest
 from sqlalchemy import text
 
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID, MATURE_ID, TEEN_ID
+from epistrel.engine import RATING_CHECK_HOOK, _end_rating_checks
 from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
+from epistrel.orchestrator.jobs.handlers import retention
+from epistrel.orchestrator.jobs.worker import (
+    Worker,
+    WorkerConfig,
+    recovery_pass,
+    register_recovery_hook,
+    unregister_recovery_hook,
+)
 from tests import genesis_support as g
 from tests.catalog_support import dress_companion
 from tests.rating_change_support import (
@@ -394,6 +403,240 @@ async def test_delete_during_the_check_ends_it(pg_url: str) -> None:
         assert left == 0
         failed = await scalar(s.db, "SELECT count(*) FROM jobs WHERE status = 'failed'")
         assert failed == 0
+
+
+async def _refused_positions(s: Scratch, story_id: str) -> list[dict[str, Any]]:
+    """Tighten ``story_id`` from Explicit to Teen and run the check; its violations' positions
+    (the check must refuse)."""
+    started = await change_rating(s.client, story_id, TEEN_ID)
+    assert started.status_code == 202, started.text
+    await run_jobs(s.db)
+    found = await check(s.client, story_id, started.json()["job_id"])
+    assert found["status"] == "refused", found
+    return [v["position"] for v in found["violations"]]
+
+
+async def _event_position(s: Scratch, story_id: str, kind: str) -> dict[str, Any]:
+    (row,) = await rows(
+        s.db,
+        "SELECT narrative_turn, turn_variant, beat FROM events WHERE story_id = :s AND type = :t",
+        s=story_id,
+        t=kind,
+    )
+    return {"turn": row.narrative_turn, "variant": row.turn_variant or 1, "beat": row.beat}
+
+
+async def test_every_history_source_is_checked(pg_url: str) -> None:
+    """A tightening checks every source FR-RATE-7 names, not only generated replies: on a
+    story whose replies are clean, a violating player input, ingested narration, pinned
+    memory, custom instructions or genesis seed (a scenario's seeded memory) each refuses the
+    change, at its own position (#118 verification round 1)."""
+    async with rating_db(pg_url) as s:
+        await guard_rating(s, applies_to=["text_input", "text_output"])
+        stub = s.lib.models.stub
+        base = "/stories/{}"
+
+        # (a) a player input
+        said, ids = await new_story(s.client, PLAYER, FIRST, content_rating_id=EXPLICIT_ID)
+        stub.script("generation", ["A cat purrs by the fire."])
+        await played(s.client, said, body(ids[PLAYER], "I saw a dragon."))
+        assert await _refused_positions(s, said) == [await _event_position(s, said, "player_input")]
+
+        # (b) an ingested narration event
+        ingested, _ = await new_story(s.client, PLAYER, FIRST, content_rating_id=EXPLICIT_ID)
+        sent = await s.client.post(
+            f"{base.format(ingested)}/ingest",
+            json={
+                "events": [
+                    {"client_event_id": "n-1", "kind": "narration", "text": "A dragon sleeps."}
+                ]
+            },
+            headers=WRITE,
+        )
+        assert sent.status_code in (200, 201), sent.text
+        position = await _event_position(s, ingested, "message_rendered")
+        assert position["turn"] is not None
+        assert await _refused_positions(s, ingested) == [position]
+
+        # (c) a pinned memory
+        pinned, _ = await _played_story(s, EXPLICIT_ID, "A cat purrs by the fire.")
+        put = await s.client.put(
+            f"{base.format(pinned)}/pinned-memories",
+            json={"items": [{"text": "The cat is calm."}, {"text": "The dragon is real."}]},
+            headers=WRITE,
+        )
+        assert put.status_code == 200, put.text
+        pin_id = put.json()["items"][1]["id"]
+        assert await _refused_positions(s, pinned) == [{"kind": "pin", "id": pin_id}]
+
+        # (d) the custom instructions
+        instructed, _ = await _played_story(s, EXPLICIT_ID, "A cat purrs by the fire.")
+        put = await s.client.put(
+            f"{base.format(instructed)}/custom-instructions",
+            json={"text": "Bring a dragon into every scene."},
+            headers=WRITE,
+        )
+        assert put.status_code == 200, put.text
+        assert await _refused_positions(s, instructed) == [
+            {"kind": "instruction", "id": "custom_instructions"}
+        ]
+
+        # (e) a genesis seed: the scenario's seeded memory, created at the scenario's rating
+        tom = await g.catalog_character_id(s.client, "Tom Harrow", age=44, rating=EXPLICIT_ID)
+        scenario = g.scenario_body(
+            g.role("mother"), g.role("player", kind="player"), rating=EXPLICIT_ID
+        )
+        scenario["starting_state"]["seeded_memories"] = [
+            {
+                "text": "A dragon sleeps under the barn.",
+                "holder": "world",
+                "audience": ["public"],
+                "disclosure": "open",
+            }
+        ]
+        scenario_id, _ = await g.published_scenario(s.client, scenario)
+        made = await g.create_from(
+            s.client, g.from_scenario(scenario_id, slots={"mother": g.catalog_slot(tom)})
+        )
+        assert made["content_rating"]["id"] == EXPLICIT_ID
+        assert await _refused_positions(s, made["story_id"]) == [
+            {"kind": "seed", "id": "starting_state.seeded_memories[0].text"}
+        ]
+
+
+async def test_a_story_deleted_mid_check_keeps_no_verdicts(pg_url: str) -> None:
+    """A story deleted while its check waits on a model call takes the check and its cached
+    verdicts with it: the run's next checkpoint finds the check gone, stores nothing and ends
+    (``save_progress``), and the job does not fail (#118 verification round 1)."""
+    async with rating_db(pg_url) as s:
+        await guard_rating(s, rule={"type": "model_assisted", "prompt": "Is it gory?"})
+        story_id, _ = await _played_story(s, EXPLICIT_ID, "Snow falls.")
+        stub = s.lib.models.stub
+        stub.reset()
+        stub.when("Snow falls", '{"violation": false, "confidence": 0.9}', "guardrail_check")
+        latch = stub.hold("guardrail_check")
+        started = await change_rating(s.client, story_id, TEEN_ID)
+        assert started.status_code == 202, started.text
+        job_id = started.json()["job_id"]
+        running = asyncio.ensure_future(run_jobs(s.db, runs=1))
+        await asyncio.wait_for(latch.entered.wait(), 10)
+        deleted = await s.client.delete(f"/stories/{story_id}", headers=WRITE)
+        assert deleted.status_code == 204, deleted.text
+        latch.release()
+        assert await asyncio.wait_for(running, 30) == 1
+        await run_jobs(s.db)
+        for table in ("guardrail_check_results", "rating_check_jobs"):
+            left = await scalar(
+                s.db,
+                f"SELECT count(*) FROM {table} WHERE story_id = :s",  # noqa: S608
+                s=story_id,
+            )
+            assert left == 0, table
+        assert await scalar(s.db, "SELECT status FROM jobs WHERE id = :j", j=job_id) == "done"
+
+
+def _capped_worker(s: Scratch) -> Worker:
+    return Worker(
+        s.db,
+        WorkerConfig(
+            poll_interval=0.2,
+            lease_s=30.0,
+            listen=False,
+            concurrency=1,
+            timers=False,
+            max_runtime_s=1.0,
+        ),
+    )
+
+
+async def _paused_status(s: Scratch, story_id: str, job_id: str) -> tuple[str, str]:
+    (row,) = await rows(
+        s.db,
+        "SELECT s.status, c.status AS check_status FROM stories s "
+        "JOIN rating_check_jobs c ON c.id = :j WHERE s.id = :s",
+        s=story_id,
+        j=job_id,
+    )
+    return row.status, row.check_status
+
+
+async def test_a_last_attempt_the_runtime_cap_ends_resumes_the_story(pg_url: str) -> None:
+    """The worker's runtime cap ends the check's last attempt without the handler's failure
+    path running (the handler is cancelled), so the job fails with the check still
+    ``checking`` and the story still paused. The next read of the check ends it ``failed``
+    with the job's error class and resumes the story on its old rating
+    (``change.reconcile``; #118 verification round 1)."""
+    async with rating_db(pg_url) as s:
+        await guard_rating(s, rule={"type": "model_assisted", "prompt": "Is it gory?"})
+        story_id, ids = await _played_story(s, EXPLICIT_ID, "Snow falls.")
+        stub = s.lib.models.stub
+        stub.reset()
+        latch = stub.hold("guardrail_check")
+        started = await change_rating(s.client, story_id, TEEN_ID)
+        job_id = started.json()["job_id"]
+        async with s.db.begin() as conn:
+            await conn.execute(
+                text("UPDATE jobs SET failures = :f WHERE id = :j"),
+                {"f": rating_check_job.MAX_ATTEMPTS - 1, "j": job_id},
+            )
+        assert await _capped_worker(s).run_one("rating-test:capped")
+        latch.release()
+        assert await scalar(s.db, "SELECT status FROM jobs WHERE id = :j", j=job_id) == "failed"
+        assert await _paused_status(s, story_id, job_id) == ("paused", "checking")
+        found = await check(s.client, story_id, job_id)
+        assert found["status"] == "failed"
+        assert found["error"]["class"] == "TimeoutError"
+        assert found["finished_at"] is not None
+        after = await story(s.client, story_id)
+        assert after["status"] == "active"
+        assert after["pause"] is None
+        assert after["content_rating"]["id"] == EXPLICIT_ID
+        stub.script("generation", ["Calm again."])
+        await played(s.client, story_id, body(ids[PLAYER]))
+
+
+async def test_a_check_whose_job_is_gone_is_ended(pg_url: str) -> None:
+    """A paused story whose check's job row is gone is resumed by the next rating change on it
+    (which then starts its own check, not 409 ``story_paused``), by the retention sweep and by
+    the worker's recovery pass (#118 verification round 1)."""
+    async with rating_db(pg_url) as s:
+        await guard_rating(s)
+        stories_ = [(await _played_story(s, EXPLICIT_ID, "A cat purrs."))[0] for _ in range(3)]
+        jobs_ = []
+        for story_id in stories_:
+            started = await change_rating(s.client, story_id, TEEN_ID)
+            assert started.status_code == 202, started.text
+            jobs_.append(started.json()["job_id"])
+        async with s.db.begin() as conn:
+            await conn.execute(text("DELETE FROM jobs WHERE id = ANY(:j)"), {"j": jobs_})
+
+        # The next rating change on the story ends the old check and starts its own.
+        again = await change_rating(s.client, stories_[0], TEEN_ID)
+        assert again.status_code == 202, again.text
+        assert again.json()["job_id"] != jobs_[0]
+        old = await check(s.client, stories_[0], jobs_[0])
+        assert (old["status"], old["error"]["class"]) == ("failed", "JobMissing")
+
+        # The retention sweep ends the rest.
+        swept = await retention.sweep_retention(s.db)
+        assert swept["rating_checks_ended"] == 2
+        for story_id, job_id in zip(stories_[1:], jobs_[1:], strict=True):
+            assert await _paused_status(s, story_id, job_id) == ("active", "failed")
+
+        # And so does the worker's recovery pass, through the Engine's hook.
+        fourth, _ = await _played_story(s, EXPLICIT_ID, "A cat purrs.")
+        started = await change_rating(s.client, fourth, TEEN_ID)
+        async with s.db.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM jobs WHERE id = :j"), {"j": started.json()["job_id"]}
+            )
+        register_recovery_hook(RATING_CHECK_HOOK, _end_rating_checks)
+        try:
+            report = await recovery_pass(s.db)
+        finally:
+            unregister_recovery_hook(RATING_CHECK_HOOK)
+        assert RATING_CHECK_HOOK in report.hooks
+        assert await _paused_status(s, fourth, started.json()["job_id"]) == ("active", "failed")
 
 
 async def test_model_assisted_policies_are_cached_and_never_quoted(pg_url: str) -> None:

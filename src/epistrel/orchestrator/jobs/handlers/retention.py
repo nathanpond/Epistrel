@@ -15,7 +15,9 @@ FR-CONC-6, NFR-REL-5; #71).
 - finished principal offboardings (``offboarding_jobs``, #117) that ended more than
   ``offboarding_report_retention_days`` (90) ago: their status and report;
 - finished rating checks (``rating_check_jobs``, #118) that ended more than
-  ``rating_check_retention_days`` (30) ago: their status and violations.
+  ``rating_check_retention_days`` (30) ago: their status and violations. First it ends any
+  check whose job ended without ending it (``rating_change.reconcile``), so no story stays
+  paused by a check nothing runs any more.
 - deleted engine profiles that no story uses any more (FR-PROF-1; #106): each is purged with
   its versions and its relations, its ownership ``deleted`` event recorded by ``system``
   (``core.profiles.store.purge_deleted``). A deleted profile a story still uses is kept, and
@@ -63,6 +65,7 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    true,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -202,6 +205,12 @@ async def _purge_rating_checks(db: AsyncEngine, before: datetime) -> int:
     return deleted
 
 
+async def _end_rating_checks(db: AsyncEngine) -> int:
+    """Rating checks (#118) whose job ended without ending them: ``failed``, story resumed."""
+    async with db.begin() as conn:
+        return await rating_change.reconcile(conn, true())
+
+
 async def _purge_offboarding(db: AsyncEngine, before: datetime) -> int:
     """Finished offboardings (#117) older than ``offboarding_report_retention_days``."""
     deleted = 0
@@ -234,6 +243,7 @@ async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[
         "offboarding_jobs": await _purge_offboarding(
             db, moment - timedelta(days=settings.offboarding_report_retention_days)
         ),
+        "rating_checks_ended": await _end_rating_checks(db),
         "rating_check_jobs": await _purge_rating_checks(
             db, moment - timedelta(days=settings.rating_check_retention_days)
         ),

@@ -77,21 +77,20 @@ async def guard_rating(
     *,
     name: str = "no-dragons",
     message: str = "No dragons here.",
+    applies_to: list[str] | None = None,
 ) -> Policy:
-    """A rating-scoped policy (by default: no dragons, on text output) linked into
-    ``rating_id``'s own policies."""
-    created = await s.lib.policies_create(
-        OPERATOR,
-        PolicyFields.model_validate(
-            {
-                "scope": "rating",
-                "scope_id": rating_id,
-                "name": f"{name}-{secrets.token_hex(3)}",
-                "rule": rule or {"type": "wordlist", "words": ["dragon"]},
-                "message": message,
-            }
-        ),
-    )
+    """A rating-scoped policy (by default: no dragons, on the scope's default targets, text
+    output) linked into ``rating_id``'s own policies."""
+    fields: dict[str, Any] = {
+        "scope": "rating",
+        "scope_id": rating_id,
+        "name": f"{name}-{secrets.token_hex(3)}",
+        "rule": rule or {"type": "wordlist", "words": ["dragon"]},
+        "message": message,
+    }
+    if applies_to is not None:
+        fields["applies_to"] = applies_to
+    created = await s.lib.policies_create(OPERATOR, PolicyFields.model_validate(fields))
     rating = (await get_rating(s.db, rating_id)).rating
     await update_rating(
         s.db,

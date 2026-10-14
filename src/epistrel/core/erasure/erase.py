@@ -136,6 +136,7 @@ from epistrel.core.erasure.records import (
     idempotency_id,
     media_record,
     persona_record,
+    upload_session_record,
 )
 from epistrel.core.erasure.redact import ERASED, Redactor, regenerate_summaries
 from epistrel.core.erasure.verify import Residue, verify
@@ -176,6 +177,8 @@ from epistrel.core.tables.media import (
     MediaState,
     ReferenceScope,
     SubjectKind,
+    UploadState,
+    media_upload_sessions,
     subject_references,
 )
 from epistrel.core.tables.ownership import EntityType
@@ -1176,6 +1179,7 @@ async def _catalog_pass(conn: AsyncConnection, run: _CatalogRun) -> _Tally:
             if row is not None:
                 await index_records(conn, [persona_record(row)])
     await _erase_media(conn, refs.get(media_assets.name, set()), run, tally)
+    await _erase_upload_sessions(conn, refs.get(media_upload_sessions.name, set()), run, tally)
     k = idempotency_keys.c
     indexed = refs.get(idempotency_keys.name, set())
     keys = [
@@ -1484,6 +1488,60 @@ async def _erase_media(
             await index.drop_references(conn, assets.RECORD_TABLE, media_id)
             await conn.execute(delete(media_assets).where(media_assets.c.id == media_id))
             run.checksums.append(str(row.checksum))
+
+
+async def _erase_upload_sessions(
+    conn: AsyncConnection, upload_ids: Iterable[str], run: _CatalogRun, tally: _Tally
+) -> None:
+    """Upload sessions whose stored asset metadata names or depicts the subject (#334): the
+    texts are redacted and the subject leaves ``depicted_subjects``, as for a media asset. An
+    open session that depicted only the subject is aborted too (its bytes would become an
+    asset of the erased subject); its parts are the media sweep's stray parts from then on."""
+    subject, redactor = run.subject, run.redactor
+    for upload_id in sorted(set(upload_ids)):
+        row = (
+            await conn.execute(
+                select(media_upload_sessions).where(media_upload_sessions.c.id == upload_id)
+            )
+        ).one_or_none()
+        if row is None:
+            continue
+        metadata = dict(row.metadata) if isinstance(row.metadata, Mapping) else {}
+        depicted = [d for d in (metadata.get("depicted_subjects") or []) if isinstance(d, Mapping)]
+        others = [d for d in depicted if (d.get("kind"), d.get("id")) != (subject.kind, subject.id)]
+        texts = 0
+        for key in ("caption", "alt_text"):
+            value = metadata.get(key)
+            if isinstance(value, str):
+                redacted_text = redactor.text(value)
+                texts += int(redacted_text != value)
+                metadata[key] = redacted_text
+        if isinstance(metadata.get("generation_metadata"), Mapping):
+            metadata["generation_metadata"], prompts = redactor.document(
+                metadata["generation_metadata"]
+            )
+            texts += prompts
+        if "depicted_subjects" in metadata:
+            metadata["depicted_subjects"] = others
+        abort = row.state == UploadState.OPEN.value and depicted and not others
+        tally.record(media_upload_sessions.name, texts)
+        if not run.write:
+            continue
+        values: dict[str, Any] = {"metadata": metadata}
+        if abort:
+            now = clock.now()
+            values.update(state=UploadState.ABORTED.value, updated_at=now, closed_at=now)
+        await conn.execute(
+            update(media_upload_sessions)
+            .where(media_upload_sessions.c.id == upload_id)
+            .values(**values)
+        )
+        found = (
+            await conn.execute(
+                select(media_upload_sessions).where(media_upload_sessions.c.id == upload_id)
+            )
+        ).one()
+        await index_records(conn, [upload_session_record(found)])
 
 
 async def _reindex_media(conn: AsyncConnection, media_id: str) -> None:

@@ -61,6 +61,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock, control
 from epistrel.core.config_changes import read_section
+from epistrel.core.erasure.index import drop_many, index_records
+from epistrel.core.erasure.records import upload_session_record
 from epistrel.core.errors import (
     ChecksumMismatch,
     InvalidRequest,
@@ -331,6 +333,14 @@ async def open_session(
                     closed_at=None,
                 )
             )
+            # The session holds the asset's captions, prompts and subjects until the sweep
+            # deletes it: indexed like the asset (FR-ADMIN-6, #334).
+            stored = (
+                await conn.execute(
+                    select(media_upload_sessions).where(media_upload_sessions.c.id == upload_id)
+                )
+            ).one()
+            await index_records(conn, [upload_session_record(stored)])
             await control.record_control_operation(conn, actor=principal)
             revision = await config_revision(conn)
     except BaseException:
@@ -697,11 +707,15 @@ async def sweep_sessions(
     cutoff = moment - timedelta(hours=window.idempotency_result_window)
     async with db.begin() as conn:
         purged = await conn.execute(
-            delete(media_upload_sessions).where(
+            delete(media_upload_sessions)
+            .where(
                 media_upload_sessions.c.state != UploadState.OPEN.value,
                 media_upload_sessions.c.closed_at <= cutoff,
             )
+            .returning(media_upload_sessions.c.id)
         )
+        purged_ids = [str(found) for found in purged.scalars()]
+        await drop_many(conn, media_upload_sessions.name, purged_ids)
     stray = 0
     try:
         stale = await asyncio.to_thread(store.stale_part_uploads, float(settings.media_upload_ttl))
@@ -724,7 +738,7 @@ async def sweep_sessions(
                 stray += 1
     return {
         "sessions_expired": len(expired),
-        "sessions_purged": int(purged.rowcount or 0),
+        "sessions_purged": len(purged_ids),
         "parts_removed": stray,
     }
 

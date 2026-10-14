@@ -769,6 +769,52 @@ async def reindex_story(conn: AsyncConnection, story_id: str) -> int:
     return len(rows)
 
 
+async def reindex_catalog_subject(conn: AsyncConnection, kind: SubjectKind, subject_id: str) -> int:
+    """Rewrite one catalog subject's ``mentioned`` rows from every catalog record (in
+    ``conn``'s transaction), after its terms were created or changed: a record that named it
+    before it existed, or before it took an alias, is indexed from now on, and one that named
+    only a dropped term no longer is (#335; ``reindex_story`` is the story scope's
+    counterpart). Declared and authored rows do not depend on terms and are left alone.
+    Returns how many mention rows it has now."""
+    sr = subject_references.c
+    subject = next(
+        (s for s in await catalog_subjects(conn) if (s.kind, s.id) == (kind, subject_id)), None
+    )
+    rows: list[RowKey] = []
+    if subject is not None:
+        for record in await records_of(conn, None):
+            if record.story_id is not None:
+                continue
+            for (found_kind, found_id, at), how in _scan(record, [subject]).items():
+                if how is ReferenceKind.MENTIONED and (found_kind, found_id) == (
+                    kind.value,
+                    subject_id,
+                ):
+                    rows.append(
+                        (
+                            found_kind,
+                            found_id,
+                            ReferenceScope.CATALOG.value,
+                            None,
+                            record.table,
+                            record.record_id,
+                            at,
+                            how.value,
+                        )
+                    )
+    await conn.execute(
+        delete(subject_references).where(
+            sr.subject_kind == kind.value,
+            sr.subject_id == subject_id,
+            sr.scope == ReferenceScope.CATALOG.value,
+            sr.ref_kind == ReferenceKind.MENTIONED.value,
+        )
+    )
+    await _write(conn, sorted(set(rows), key=_order))
+    log.debug("catalog subject reindexed", subject_kind=kind.value, rows=len(rows))
+    return len(rows)
+
+
 __all__ = [
     "ALIASES_PATH",
     "EXEMPT_TABLES",
@@ -797,6 +843,7 @@ __all__ = [
     "rebuild_scope",
     "recording",
     "records_of",
+    "reindex_catalog_subject",
     "reindex_story",
     "story_ids",
     "story_subjects",

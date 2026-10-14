@@ -34,6 +34,7 @@ from sqlalchemy import text
 from epistrel.api import create_app
 from epistrel.core import clock
 from epistrel.core.clock import frozen_at
+from epistrel.core.erasure.index import rebuild_scope
 from epistrel.core.media.signing import CLOCK_SKEW_S
 from epistrel.engine import Engine
 from tests import erasure_support
@@ -1311,3 +1312,45 @@ async def test_an_upload_session_is_subject_indexed_and_erased(pg_url: str, tmp_
         assert row.metadata["depicted_subjects"] == [{"kind": "persona", "id": bystander}]
         assert "Odile Fenn" in row.metadata["caption"]
         assert (bystander, "metadata.depicted_subjects") in refs
+
+
+async def test_a_catalog_subject_is_indexed_where_it_was_named_before_it_existed(
+    pg_url: str, tmp_path: Path
+) -> None:
+    """A caption written before the persona it names exists is indexed for her when she is
+    created, and a rename drops the mention of the old name (FR-ADMIN-6, #335): the catalog's
+    full rebuild equals the incremental index throughout.
+
+    Complements asserted: after the rename, no mention row of hers names the caption that
+    used only her old name; the rebuild reports nothing missing and nothing extra."""
+    async with delivery(pg_url, tmp_path / "media", "local", None) as d:
+        client, db = d.client, d.space.db
+        asset = await uploaded(client, caption="Marisol Vance at the orchard.")
+        made = await client.post(
+            "/personas",
+            json={"name": "Marisol Vance", "age": 30, "description": "A grower."},
+            headers=WRITE,
+        )
+        assert made.status_code == 201, made.text
+        persona = made.json()["id"]
+
+        async def mentions() -> set[tuple[str, str, str]]:
+            async with db.connect() as conn:
+                found = await conn.execute(
+                    text(
+                        "SELECT record_table, record_id, field FROM subject_references "
+                        "WHERE subject_id = :s AND ref_kind = 'mentioned'"
+                    ),
+                    {"s": persona},
+                )
+                return {(str(r.record_table), str(r.record_id), str(r.field)) for r in found}
+
+        assert ("media_assets", asset["id"], "caption") in await mentions()
+        assert (await rebuild_scope(db, None)).clean
+
+        renamed = await client.patch(
+            f"/personas/{persona}", json={"name": "Odile Fenn"}, headers=WRITE
+        )
+        assert renamed.status_code == 200, renamed.text
+        assert ("media_assets", asset["id"], "caption") not in await mentions()
+        assert (await rebuild_scope(db, None)).clean

@@ -54,6 +54,7 @@ from tests.conftest import DUMMY_DSN, REPO_ROOT
 from tests.determinism.test_determinism import Run
 from tests.event_support import rows, scalar
 from tests.idempotency_support import KEY
+from tests.integration.test_erasure_resurrection import resurrection_clauses
 from tests.model_support import config_key
 from tests.projection_support import snapshot
 from tests.respond_support import FIRST as ADA
@@ -732,6 +733,4 @@ async def test_s_erasure_boundary__in_flight(
     output; a worker result or model reply naming her afterwards is refused; the purged stored
     result replays as the reference only. The clauses and their complements are
     ``tests/integration/test_erasure_resurrection.resurrection_clauses``."""
-    from tests.integration.test_erasure_resurrection import resurrection_clauses
-
     await resurrection_clauses(erasure_settings, engine)

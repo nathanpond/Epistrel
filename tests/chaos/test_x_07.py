@@ -43,11 +43,13 @@ from epistrel.api.routes.health import check
 from epistrel.config import Settings
 from epistrel.core import clock
 from epistrel.core.events.operation import Operation
+from epistrel.core.media import sweep as media_sweep
 from epistrel.core.tables import audit_log, idempotency_keys, jobs, recurring_tasks, timers
 from epistrel.core.tables import worker_heartbeats as heartbeats
 from epistrel.engine import TURN_QUEUE_HOOK, Engine
 from epistrel.orchestrator.jobs import handlers, queue
 from epistrel.orchestrator.jobs import timers as timer_api
+from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import retention, turn_queue
 from epistrel.orchestrator.jobs.recurring import (
     NoPayload,
@@ -67,6 +69,8 @@ from tests.auth_support import CREDENTIAL_A, ERASURE_LEDGER_DIR, MEDIA_ROOT, aut
 from tests.conftest import REPO_ROOT
 from tests.event_support import new_story, play_turn
 from tests.integration import test_jobs as jt
+from tests.integration.test_media_assets import SWEEPER, put
+from tests.media_support import blob_path, png, scratch
 
 POLL_S = 0.3
 LEASE_S = 3.0
@@ -999,9 +1003,6 @@ def _run_entrypoint(tmp_path: Path, args: list[str], env_mode: str | None) -> st
 
 async def _retired_assets(space: Any, count: int) -> dict[str, str]:
     """``count`` retired assets nothing references (unique bytes each): id -> checksum."""
-    from tests.integration.test_media_assets import SWEEPER, put
-    from tests.media_support import png
-
     found: dict[str, str] = {}
     for n in range(count):
         media_id = await put(space, png(nonce=f"x07-media-{n}"))
@@ -1029,10 +1030,6 @@ async def test_x_07__media_sweep(
 
     Complements asserted: the killed run purged exactly one asset; the rerun deletes each
     remaining blob once; after the race exactly one ``media_sweep`` job exists."""
-    from epistrel.core.media import sweep as media_sweep
-    from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
-    from tests.media_support import blob_path, scratch
-
     async with scratch(pg_url, tmp_path / "media") as space:
         assets = await _retired_assets(space, 3)
         calls = 0

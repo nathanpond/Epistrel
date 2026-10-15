@@ -648,3 +648,23 @@ def test_the_s3_store_keeps_objects(tmp_path: Path, minio: S3Endpoint) -> None:
     )
     store.prepare()
     _objects(store)
+
+
+async def test_a_message_counts_once_however_many_low_ratings(pg_url: str) -> None:
+    """``regen_after_low_rating`` counts rated messages, like every other signal (#345): two
+    principals rate one message 1 and 2 and it is regenerated once, so the group has one
+    regeneration and one regeneration after a low rating, from two ratings of one message.
+
+    Complement asserted: the signal never exceeds ``regenerations`` (the counts are 1 and 1,
+    not 1 and 2)."""
+    async with scratch_feedback(pg_url) as (client, _, _db):
+        played = await played_story(client)
+        story, message = played.story_id, played.message_id
+        answered(await rate(client, story, message, {"rating": 1}), 201)
+        answered(await rate(client, story, message, {"rating": 2}, principal="p-second"), 201)
+        await regenerate(client, story)
+
+        totals = (await aggregates(client, "profile_version", story_id=story))["totals"]
+        assert (totals["count"], totals["messages"]) == (2, 1)
+        assert totals["signals"]["regenerations"] == 1
+        assert totals["signals"]["regen_after_low_rating"] == 1

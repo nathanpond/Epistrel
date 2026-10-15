@@ -54,6 +54,7 @@ from tests.conftest import DUMMY_DSN, REPO_ROOT
 from tests.determinism.test_determinism import Run
 from tests.event_support import rows, scalar
 from tests.idempotency_support import KEY
+from tests.integration.test_erasure_resurrection import resurrection_clauses
 from tests.model_support import config_key
 from tests.projection_support import snapshot
 from tests.respond_support import FIRST as ADA
@@ -384,9 +385,21 @@ async def test_s_erasure_boundary__restore(ledger_server: ledger.Server, tmp_pat
     assert await ledger.ledger_rows(url) == []  # the dump predates the erasure
     assert ledger.SUBJECT in " ".join(await ledger.pins(url, stories.named))
 
+    restored_operations = [
+        row.operation_id
+        for row in await ledger.sql(
+            url, "SELECT operation_id FROM operations WHERE story_id = :s", s=stories.named
+        )
+    ]
     with pauses.held(pauses.ERASURE_RECONCILE_BEFORE_REAPPLY) as hold:
         async with ledger.started(config) as (client, _):
             await hold.arrived()
+            # Nothing of the blocked story is served, its operations' stored results included
+            # (#333): a story-less read refuses like every other.
+            for operation_id in restored_operations:
+                held = await client.get(f"/operations/{operation_id}", headers=e.WRITE)
+                assert held.status_code == 503, held.text
+                assert ledger.SUBJECT not in held.text
             refused = await client.get(f"/stories/{stories.named}", headers=e.WRITE)
             assert refused.status_code == 503, refused.text
             assert refused.headers["Retry-After"] == "30"
@@ -423,6 +436,10 @@ async def test_s_erasure_boundary__restore(ledger_server: ledger.Server, tmp_pat
             hold.release()
             status = await _until_applied(client)
             assert status["applied_count"] == 1
+            for operation_id in restored_operations:
+                read = await client.get(f"/operations/{operation_id}", headers=e.WRITE)
+                assert read.status_code == 200, read.text
+                assert ledger.SUBJECT not in read.text
 
             shown = await client.get(
                 f"/stories/{stories.named}/history",
@@ -704,3 +721,16 @@ async def test_s_erasure_boundary__resurrection(
     erased_events = [r for r in first_state["events"] if r.get("type") == "erasure_marker"]
     assert erased_events
     assert not e.naming(json.dumps(first_state, default=str), (BRANN,))
+
+
+@pytest.mark.part("M3", "FR-ADMIN-9; NFR-PRIV-2")
+async def test_s_erasure_boundary__in_flight(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """S-ERASURE-BOUNDARY's Resurrection clause, its in-flight half (#344): a turn generating
+    when the subject is erased is abandoned (409 ``timeline_changed`` naming the erasure, no
+    events) and one queued behind it fails; a summary job over a window naming her drops its
+    output; a worker result or model reply naming her afterwards is refused; the purged stored
+    result replays as the reference only. The clauses and their complements are
+    ``tests/integration/test_erasure_resurrection.resurrection_clauses``."""
+    await resurrection_clauses(erasure_settings, engine)

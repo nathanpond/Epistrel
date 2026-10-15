@@ -27,6 +27,7 @@ from tests.offboarding_support import (
     OFFBOARDING,
     READ,
     actions,
+    contents,
     counts,
     lookup,
     offboard,
@@ -137,6 +138,7 @@ async def test_dry_run_warns_and_changes_nothing(pg_url: str) -> None:
         w = await world(s.client, s.db)
         body = {"principal": w.a, "actions": actions(), "transfer_to": w.curator}
         before = await counts(s.db)
+        rows_before = await contents(s.db)
         dry, response = await offboard(s.client, {**body, "dry_run": True}, status=200)
         assert dry["applied"] is False
         assert dry["counts"] == {
@@ -162,6 +164,7 @@ async def test_dry_run_warns_and_changes_nothing(pg_url: str) -> None:
         )
         assert both["applied"] is False
         assert await counts(s.db) == before
+        assert await contents(s.db) == rows_before
         # Complement: the same request with ignore_warnings is enqueued.
         queued, _ = await offboard(s.client, {**body, "ignoreWarnings": True}, status=202)
         assert queued["applied"] is True
@@ -277,10 +280,12 @@ async def test_offboarding_carries_out_every_action(pg_url: str) -> None:
         )
         # A retry under the key answers the same job and changes nothing.
         before = await counts(s.db)
+        rows_before = await contents(s.db)
         again, replay = await offboard(s.client, body, status=202, key=key)
         assert again["job_id"] == job_id
         assert replay.headers["Idempotent-Replay"] == "true"
         assert await counts(s.db) == before
+        assert await contents(s.db) == rows_before
         # Offboarding again finds nothing left to act on.
         later, _ = await offboard(s.client, body, status=202)
         assert later["counts"]["stories"] == {"delete": 0, "transfer": 0, "keep": 0}
@@ -296,6 +301,7 @@ async def test_request_rules(pg_url: str) -> None:
     async with offboarding_db(pg_url) as s:
         a = unique("p-a")
         before = await counts(s.db)
+        rows_before = await contents(s.db)
 
         async def refused(body: dict[str, Any], status: int, code: str, field: str) -> None:
             response = await s.client.post(OFFBOARDING, json=body, headers=headers("p-operator"))
@@ -343,6 +349,7 @@ async def test_request_rules(pg_url: str) -> None:
         )
         await refused({"principal": " \t"}, 422, "validation_error", "body.principal")
         assert await counts(s.db) == before
+        assert await contents(s.db) == rows_before
         queued, _ = await offboard(s.client, {"principal": f" {a} "}, status=202)
         assert queued["counts"]["stories"] == {"delete": 0, "transfer": 0, "keep": 0}
         busy = await s.client.post(
@@ -577,6 +584,7 @@ async def test_a_fenced_run_writes_nothing(pg_url: str) -> None:
                 {"j": lost.id},
             )
         before = await counts(s.db)
+        rows_before = await contents(s.db)
         output = await offboarding_job.OFFBOARDING_HANDLER.run(
             JobContext(db=s.db, job=lost, payload=offboarding_job.OffboardingPayload())
         )
@@ -584,6 +592,7 @@ async def test_a_fenced_run_writes_nothing(pg_url: str) -> None:
             s.db, lost, offboarding_job.OFFBOARDING_HANDLER, output, {}
         ) == (queue.CommitOutcome.REFUSED)
         assert await counts(s.db) == before
+        assert await contents(s.db) == rows_before
         assert (await report(s.client, queued["job_id"]))["status"] == "queued"
         assert await scalar(s.db, "SELECT count(*) FROM personas WHERE id = :p", p=w.persona) == 1
         await run_jobs(s.db)
@@ -733,3 +742,57 @@ async def test_a_principal_may_hold_a_slash(pg_url: str) -> None:
         blank = await s.client.get("/principals/%20", headers=READ)
         assert blank.status_code == 422, blank.text
         assert blank.json()["error"]["details"]["field"] == "path.principal_id"
+
+
+async def test_a_companion_follows_its_character_never_the_scenarios_action(pg_url: str) -> None:
+    """A character's companion scenario goes with its character's action, whatever the
+    ``scenarios`` action says (FR-AUTH-7, #337): the character kept and scenarios deleted keeps
+    the companion (still the principal's), the plain scenario deleted; the character deleted
+    and scenarios kept deletes the companion with it, the plain scenario kept.
+
+    Complements asserted: the companion is in neither the scenarios action's deleted list nor
+    its kept list when the character's action differs, and its row exists exactly when the
+    character's does."""
+    async with offboarding_db(pg_url) as s:
+        kept_world = await world(s.client, s.db)
+        deleted_world = await world(s.client, s.db)
+        runs = (
+            (kept_world, {"characters": "keep", "scenarios": "delete"}),
+            (deleted_world, {"characters": "delete", "scenarios": "keep"}),
+        )
+        for w, actions in runs:
+            queued, _ = await offboard(
+                s.client,
+                {"principal": w.a, "actions": actions, "ignore_warnings": True},
+                status=202,
+            )
+            await run_jobs(s.db)
+            done = await report(s.client, queued["job_id"])
+            assert done["status"] == "done"
+            found = done["report"]
+            companion_rows = await scalar(
+                s.db,
+                "SELECT count(*) FROM catalog.scenario_catalog WHERE id = :c",
+                c=w.companion,
+            )
+            scenario_rows = await scalar(
+                s.db,
+                "SELECT count(*) FROM catalog.scenario_catalog WHERE id = :c",
+                c=w.scenario,
+            )
+            if actions["characters"] == "keep":
+                assert found["kept"]["characters"] == [w.character]
+                assert found["deleted"]["scenarios"] == [w.scenario]
+                assert w.companion not in found["deleted"]["scenarios"]
+                assert (companion_rows, scenario_rows) == (1, 0)
+                owner = await scalar(
+                    s.db,
+                    "SELECT owner_principal FROM catalog.scenario_catalog WHERE id = :c",
+                    c=w.companion,
+                )
+                assert owner == w.a
+            else:
+                assert found["deleted"]["characters"] == [w.character]
+                assert found["kept"]["scenarios"] == [w.scenario]
+                assert w.companion not in found["kept"]["scenarios"]
+                assert (companion_rows, scenario_rows) == (0, 1)

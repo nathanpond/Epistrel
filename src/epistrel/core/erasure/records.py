@@ -43,7 +43,7 @@ from epistrel.core.tables import (
     scenario_versions,
     stories,
 )
-from epistrel.core.tables.media import SubjectKind
+from epistrel.core.tables.media import SubjectKind, media_upload_sessions
 
 STORY_SCOPE = "story"
 """The ``scope`` of a story's configuration change, stored result and policy."""
@@ -309,6 +309,36 @@ def media_record(row: Any) -> Record:
     )
 
 
+def upload_session_record(row: Any) -> Record:
+    """A resumable upload session (#107, #334): the asset metadata it holds until the sweep
+    deletes the closed row (captions, prompts and declared subjects, as ``media_record``)."""
+    from epistrel.core.media import assets
+
+    metadata = row.metadata if isinstance(row.metadata, Mapping) else {}
+    generation = metadata.get("generation_metadata")
+    generation = generation if isinstance(generation, Mapping) else {}
+    found = {
+        "caption": _str(metadata.get("caption")),
+        "alt_text": _str(metadata.get("alt_text")),
+        "generation_metadata.prompt": _str(generation.get("prompt")),
+        "generation_metadata.negative_prompt": _str(generation.get("negative_prompt")),
+    }
+    subjects: list[Declared] = []
+    depicted = metadata.get(assets.DECLARED_FIELD)
+    for item in depicted if isinstance(depicted, list) else []:
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str):
+            subjects.append(
+                (SubjectKind(item["kind"]), item["id"], f"metadata.{assets.DECLARED_FIELD}")
+            )
+    return Record(
+        media_upload_sessions.name,
+        str(row.id),
+        None,
+        {f"metadata.{path}": found[path] for path in assets.INDEXED_FIELDS},
+        tuple(subjects),
+    )
+
+
 # -- the readers -------------------------------------------------------------------------------
 
 
@@ -461,6 +491,13 @@ async def read_media(conn: AsyncConnection, story_id: str | None) -> list[Record
     return [media_record(r) for r in found]
 
 
+async def read_upload_sessions(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    if story_id is not None:
+        return []
+    found = await conn.execute(select(media_upload_sessions))
+    return [upload_session_record(r) for r in found]
+
+
 async def index_rows(conn: AsyncConnection, table: Any, where: Any, build: Any) -> int:
     """Index the rows of ``table`` matching ``where`` with ``build`` (a ``*_record`` function):
     for a writer that changed rows in place by a statement."""
@@ -489,4 +526,5 @@ __all__ = [
     "snapshot_record",
     "story_record",
     "text_fields",
+    "upload_session_record",
 ]

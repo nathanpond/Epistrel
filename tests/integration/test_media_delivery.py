@@ -34,8 +34,10 @@ from sqlalchemy import text
 from epistrel.api import create_app
 from epistrel.core import clock
 from epistrel.core.clock import frozen_at
+from epistrel.core.erasure.index import rebuild_scope
 from epistrel.core.media.signing import CLOCK_SKEW_S
 from epistrel.engine import Engine
+from tests import erasure_support
 from tests.auth_support import auth_settings
 from tests.catalog_support import create, publish, read, save, scratch_catalog, version_rows
 from tests.character_support import complete, require_primary_image
@@ -1231,3 +1233,146 @@ def test_the_s3_store(tmp_path: Path, minio: S3Endpoint) -> None:
         broken.open(digests[1])
     assert failed.value.details["operation"] == "get_object"
     assert failed.value.http_status == 503
+
+
+async def _session_rows(db: Any, upload_id: str) -> tuple[Any, list[tuple[str, str]]]:
+    async with db.connect() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT state, metadata FROM media_upload_sessions WHERE id = :i"),
+                {"i": upload_id},
+            )
+        ).one()
+        refs = await conn.execute(
+            text(
+                "SELECT subject_id, field FROM subject_references "
+                "WHERE record_table = 'media_upload_sessions' AND record_id = :i"
+            ),
+            {"i": upload_id},
+        )
+        return row, [(str(r.subject_id), str(r.field)) for r in refs]
+
+
+async def test_an_upload_session_is_subject_indexed_and_erased(pg_url: str, tmp_path: Path) -> None:
+    """An open upload session holds its asset's caption, alt text and declared subjects until it
+    closes, so it is indexed like the asset (FR-ADMIN-6, #334). Erasing a persona at catalog
+    scope redacts the session's texts and removes the persona from its subjects; a session
+    that depicted only her is aborted, one that also depicts another subject stays open.
+
+    Complements asserted: before erasure the session names her; after it, no session row holds
+    her name or id, no index row names her, the erasure's residue check is zero, and a new
+    session depicting her is refused (409 ``erased_subject_referenced``), opening nothing."""
+    async with delivery(pg_url, tmp_path / "media", "local", None) as d:
+        client, db = d.client, d.space.db
+        made = await client.post(
+            "/personas",
+            json={"name": "Zebulon Quarry", "age": 40, "description": "A keeper of gates."},
+            headers=WRITE,
+        )
+        assert made.status_code == 201, made.text
+        persona = made.json()["id"]
+        other = await client.post(
+            "/personas",
+            json={"name": "Odile Fenn", "age": 33, "description": "A ferry pilot."},
+            headers=WRITE,
+        )
+        assert other.status_code == 201, other.text
+        bystander = other.json()["id"]
+        data = large_png(PART + 5_000)
+        alone = await _open(
+            client,
+            data,
+            caption="Zebulon Quarry at the gate",
+            alt_text="Zebulon Quarry waving",
+            depicted_subjects=[{"kind": "persona", "id": persona}],
+        )
+        shared = await _open(
+            client,
+            data,
+            caption="Zebulon Quarry and Odile Fenn on the ferry",
+            depicted_subjects=[
+                {"kind": "persona", "id": persona},
+                {"kind": "persona", "id": bystander},
+            ],
+        )
+        _, refs = await _session_rows(db, alone["upload_id"])
+        assert (persona, "metadata.depicted_subjects") in refs
+        assert (persona, "metadata.caption") in refs
+
+        done = await erasure_support.erase(client, "persona", persona)
+        assert done["residue"] == 0
+
+        for opened, state in ((alone, "aborted"), (shared, "open")):
+            row, refs = await _session_rows(db, opened["upload_id"])
+            assert row.state == state
+            stored = json.dumps(row.metadata)
+            assert "Zebulon" not in stored
+            assert persona not in stored
+            assert all(subject != persona for subject, _ in refs)
+        row, refs = await _session_rows(db, shared["upload_id"])
+        assert row.metadata["depicted_subjects"] == [{"kind": "persona", "id": bystander}]
+        assert "Odile Fenn" in row.metadata["caption"]
+        assert (bystander, "metadata.depicted_subjects") in refs
+
+        # A new session depicting her is refused (FR-ADMIN-9), opening nothing.
+        async with db.connect() as conn:
+            sessions = await conn.scalar(text("SELECT count(*) FROM media_upload_sessions"))
+        refused = await client.post(
+            "/media/uploads",
+            json={
+                **metadata(),
+                "size": len(data),
+                "mime_type": "image/png",
+                "sha256": sha256(data),
+                "depicted_subjects": [{"kind": "persona", "id": persona}],
+            },
+            headers=WRITE,
+        )
+        assert refused.status_code == 409, refused.text
+        error = refused.json()["error"]
+        assert error["code"] == "erased_subject_referenced"
+        assert error["details"]["field"] == "body.depicted_subjects"
+        async with db.connect() as conn:
+            assert await conn.scalar(text("SELECT count(*) FROM media_upload_sessions")) == sessions
+
+
+async def test_a_catalog_subject_is_indexed_where_it_was_named_before_it_existed(
+    pg_url: str, tmp_path: Path
+) -> None:
+    """A caption written before the persona it names exists is indexed for her when she is
+    created, and a rename drops the mention of the old name (FR-ADMIN-6, #335): the catalog's
+    full rebuild equals the incremental index throughout.
+
+    Complements asserted: after the rename, no mention row of hers names the caption that
+    used only her old name; the rebuild reports nothing missing and nothing extra."""
+    async with delivery(pg_url, tmp_path / "media", "local", None) as d:
+        client, db = d.client, d.space.db
+        asset = await uploaded(client, caption="Marisol Vance at the orchard.")
+        made = await client.post(
+            "/personas",
+            json={"name": "Marisol Vance", "age": 30, "description": "A grower."},
+            headers=WRITE,
+        )
+        assert made.status_code == 201, made.text
+        persona = made.json()["id"]
+
+        async def mentions() -> set[tuple[str, str, str]]:
+            async with db.connect() as conn:
+                found = await conn.execute(
+                    text(
+                        "SELECT record_table, record_id, field FROM subject_references "
+                        "WHERE subject_id = :s AND ref_kind = 'mentioned'"
+                    ),
+                    {"s": persona},
+                )
+                return {(str(r.record_table), str(r.record_id), str(r.field)) for r in found}
+
+        assert ("media_assets", asset["id"], "caption") in await mentions()
+        assert (await rebuild_scope(db, None)).clean
+
+        renamed = await client.patch(
+            f"/personas/{persona}", json={"name": "Odile Fenn"}, headers=WRITE
+        )
+        assert renamed.status_code == 200, renamed.text
+        assert ("media_assets", asset["id"], "caption") not in await mentions()
+        assert (await rebuild_scope(db, None)).clean

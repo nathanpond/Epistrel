@@ -1046,8 +1046,13 @@ async def _story_text(engine: AsyncEngine, story_id: str) -> str:
     return "\n".join(found)
 
 
+MERGED_PERSONALITY = "She is a habitual liar."
+"""A personality the mother role's setup text gives whoever fills it, which her catalog
+definition overrides (#342): a merge warning in the creation report."""
+
+
 @pytest.mark.integration
-@pytest.mark.part("M3", "FR-SCN-10")
+@pytest.mark.part("M3", "FR-SCN-7,10")
 async def test_c_15__story_creation(settings: Settings, engine: AsyncEngine) -> None:
     """Creating a story from a scenario with the default ``card`` projection answers the story,
     its cast as cards (a catalog character's public card with its role and source version; the
@@ -1056,14 +1061,19 @@ async def test_c_15__story_creation(settings: Settings, engine: AsyncEngine) -> 
     run; with ``full`` the same counts and every report entry: the warnings with location and
     exact text, every deferred item and every inactive setting. Phrases planted in the
     scenario's and the catalog character's public descriptions and in a label are seeded
-    nowhere in the story.
+    nowhere in the story. The mother role's setup text gives her a personality her catalog
+    definition overrides: the card counts that merge warning (and, under Lite, no merge
+    conflict), and the full report carries it with its location, text and rule (#342).
 
     Complement asserted: the card answer quotes none of the scenario's private phrases, and
-    the full one carries them in its deferred items."""
+    the full one carries them in its deferred items; the card's warning count is exactly the
+    full report's."""
     async with rest(settings, engine) as client:
         locked, default = await scenarios.cast_characters(client)
         mother = await g.catalog_character_id(client, "June Harrow", age=60, labels=["warm"])
         body = lg.sunday_dinner(locked, default)
+        assert body["cast"]["roles"][0]["id"] == "mother"
+        body["cast"]["roles"][0]["setup_description"] = MERGED_PERSONALITY
         scenario_id, _ = await g.published_scenario(client, body)
         request = g.from_scenario(
             scenario_id, slots={"mother": g.catalog_slot(mother)}, ignore_warnings=True
@@ -1107,6 +1117,21 @@ async def test_c_15__story_creation(settings: Settings, engine: AsyncEngine) -> 
             assert phrase not in quoted, phrase
 
         assert full["counts"]["warnings"] == len(full["warnings"])
+        merged = [w for w in full["warnings"] if w["code"] == "personality_in_role"]
+        assert [
+            (w["location"]["role"], w["location"]["field"], w["text"], w["outcome"], w["rule"])
+            for w in merged
+        ] == [
+            (
+                "mother",
+                "cast.roles[0].setup_description",
+                MERGED_PERSONALITY,
+                "ignored",
+                "personality: character over scenario",
+            )
+        ]
+        assert card["counts"]["warnings"] >= len(merged) == 1
+        assert card["counts"]["conflicts"] == 0
         assert len(full["deferred"]) == sum(full["counts"]["deferred"]["by_class"].values())
         assert len(full["inactive"]) == sum(full["counts"]["inactive"]["by_class"].values())
         assert scenarios.ROLE_SECRET in json.dumps(full["deferred"])

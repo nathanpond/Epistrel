@@ -55,12 +55,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import audit, clock, control, ownership
 from epistrel.core.catalog.search import Position, decode_cursor, encode_cursor
 from epistrel.core.catalog.service import config_revision, merge_patch
-from epistrel.core.erasure.index import drop_references, index_records
+from epistrel.core.erasure.index import drop_references, index_records, reindex_catalog_subject
 from epistrel.core.erasure.records import persona_record
 from epistrel.core.errors import InvalidRequest, PersonaNameTaken, PersonaNotFound
 from epistrel.core.ids import new_ulid
 from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.tables.audit_log import AuditKind
+from epistrel.core.tables.media import SubjectKind
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.tables.personas import AGE_MAX, AGE_MIN, NAME_INDEX, personas
 
@@ -308,6 +309,8 @@ async def create(db: AsyncEngine, request: PersonaCreate, *, principal: str) -> 
             await control.record_control_operation(conn, actor=principal)
             row = await _row(conn, persona_id)
             await index_records(conn, [persona_record(row)])
+            # Catalog records that named her before she existed are hers from now on (#335).
+            await reindex_catalog_subject(conn, SubjectKind.PERSONA, persona_id)
             persona = persona_of(row)
             revision = await config_revision(conn)
     return PersonaWrite(persona=persona, config_revision=revision)
@@ -367,6 +370,8 @@ async def update(
             await control.record_control_operation(conn, actor=principal)
             updated = await _row(conn, persona_id)
             await index_records(conn, [persona_record(updated)])
+            if "name" in fields:
+                await reindex_catalog_subject(conn, SubjectKind.PERSONA, persona_id)
             persona = persona_of(updated)
             revision = await config_revision(conn)
     except IntegrityError as exc:

@@ -29,7 +29,8 @@ from epistrel.orchestrator.jobs.worker import (
 )
 from epistrel.orchestrator.policies.schemas import PolicyFields
 from tests import genesis_support as g
-from tests.catalog_support import dress_companion
+from tests import scenario_support as scenarios
+from tests.catalog_support import dress_companion, read_companion
 from tests.rating_change_support import (
     AUTHOR,
     OPERATOR,
@@ -773,7 +774,7 @@ async def _story_text(s: Scratch, story_id: str) -> str:
     return "\n".join(parts)
 
 
-@pytest.mark.part("M3", "FR-SCN-6; FR-RATE-3,7; FR-CAT-10")
+@pytest.mark.part("M3", "FR-SCN-5,6; FR-RATE-3,5,7; FR-CAT-10")
 async def test_i_22__creation(pg_url: str) -> None:
     """A story created from a Teen scenario is Teen. An Explicit catalog character cast in an
     Everyone scenario is a ``rating_looser`` warning and the creation succeeds; the character
@@ -1023,6 +1024,47 @@ async def _count(s: Scratch, table: str) -> int:
 async def _no_guard(*_: Any, **__: Any) -> None:
     """A test-only stand-in for ``reactivation.guard`` (no production switch exists)."""
     return None
+
+
+@pytest.mark.part("M3", "FR-RATE-5")
+async def test_i_22__companion_rating(pg_url: str) -> None:
+    """A companion rated differently from its character warns and publishes (docs/04 I-22
+    [M3], #341): an Explicit character's companion set to Everyone publishes (201) with one
+    ``rating_looser`` warning at its character's role, naming the pinned character version.
+
+    Complement asserted: the companion at its character's own rating publishes with no
+    ``rating_looser`` warning."""
+    async with rating_db(pg_url) as s:
+        c = s.client
+        # Everyone guards a policy Explicit lacks, so an Explicit character is looser.
+        await guard_rating(s, EVERYONE_ID)
+        character = await g.catalog_character_id(c, "Vera Lune", age=38, rating=EXPLICIT_ID)
+        companion = await read_companion(c, character)
+        assert companion["metadata"]["content_rating_id"] == EXPLICIT_ID
+        # A companion publishes on its own once it has an opening (a world and its narration).
+        roles = (g.role("mother"), g.role("player", kind="player"))
+        await dress_companion(
+            c, character, g.scenario_body(*roles, rating=EXPLICIT_ID), publish=False
+        )
+
+        async def publish_at(rating_id: str) -> dict[str, Any]:
+            draft = await read_companion(c, character)
+            saved = await scenarios.save(
+                c, draft["id"], draft["draft_revision"], metadata={"content_rating_id": rating_id}
+            )
+            assert saved.status_code == 200, saved.text
+            done = await scenarios.publish(c, draft["id"], saved.json()["draft_revision"])
+            assert done.status_code == 201, done.text
+            found: dict[str, Any] = done.json()
+            return found
+
+        stricter = await publish_at(EVERYONE_ID)
+        assert [
+            (w["code"], w["location"]["field"], w["source"]) for w in stricter["report"]["warnings"]
+        ] == [("rating_looser", "cast.roles[0].character", f"{character}@1")]
+
+        same = await publish_at(EXPLICIT_ID)
+        assert [w for w in same["report"]["warnings"] if w["code"] == "rating_looser"] == []
 
 
 @pytest.mark.part("M3", "FR-RATE-7")

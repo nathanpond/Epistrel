@@ -139,6 +139,19 @@ async def scalar(db: AsyncEngine, sql: str, **params: Any) -> Any:
         return await conn.scalar(text(sql), params)
 
 
+async def contents(db: AsyncEngine) -> dict[str, str | None]:
+    """An md5 of every row of each ``COUNTED`` table (#338): a request that changes nothing
+    leaves them equal, so a dry run that moved an owner, retired an image or soft-deleted a
+    profile is caught even though no count moves."""
+    async with db.connect() as conn:
+        return {
+            table: await conn.scalar(
+                text(f"SELECT md5(string_agg(t::text, '|' ORDER BY t::text)) FROM {table} t")  # noqa: S608
+            )
+            for table in COUNTED
+        }
+
+
 async def rows(db: AsyncEngine, sql: str, **params: Any) -> list[Any]:
     async with db.connect() as conn:
         return list((await conn.execute(text(sql), params)).all())
@@ -292,6 +305,7 @@ __all__ = [
     "Scratch",
     "World",
     "actions",
+    "contents",
     "counts",
     "lookup",
     "offboard",

@@ -107,7 +107,12 @@ from epistrel.core.catalog.service import (
 )
 from epistrel.core.catalog.validation import RUNNER
 from epistrel.core.enums import EntryStatus
-from epistrel.core.erasure.index import drop_prefixed, drop_references, index_records
+from epistrel.core.erasure.index import (
+    drop_prefixed,
+    drop_references,
+    index_records,
+    reindex_catalog_subject,
+)
 from epistrel.core.erasure.records import character_draft_record, character_version_record
 from epistrel.core.errors import CharacterNotFound, InvalidRequest
 from epistrel.core.media.assets import assert_referenceable, rating_version
@@ -115,6 +120,7 @@ from epistrel.core.ports import Ports
 from epistrel.core.ratings import require_assignable
 from epistrel.core.tables import media_assets
 from epistrel.core.tables.catalog import character_catalog, character_versions, scenario_catalog
+from epistrel.core.tables.media import SubjectKind
 from epistrel.core.tables.ownership import EntityType
 
 ENTITY_TYPE = EntityType.CHARACTER.value
@@ -503,6 +509,10 @@ class CharacterCatalog(CatalogService):
                 else character_version_record(entry_id, version, document)
             ],
         )
+        if version is None:
+            # A draft write may add a name or an alias: catalog records that used it before
+            # are indexed for her from now on (#335). A publish copies the draft's terms.
+            await reindex_catalog_subject(conn, SubjectKind.CATALOG_CHARACTER, entry_id)
 
     async def forgotten(self, conn: AsyncConnection, entry_id: str) -> None:
         """A delete drops the draft's and every version's index rows (#123)."""

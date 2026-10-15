@@ -953,9 +953,14 @@ class Engine:
         story's revision once it committed, attempts, origin and, within the result window,
         its stored result. A result made for a viewpoint is returned only to a read naming
         that viewpoint (``viewpoint`` or ``ctx.viewpoint``); another named viewpoint is 409
-        ``idempotency_conflict``. Unknown is 404."""
+        ``idempotency_conflict``. Unknown is 404. An operation of a story the erasure reconciler
+        holds blocked is 503 ``erasure_pending`` like every other read of that story (#333): its
+        stored result may carry what the pending erasure removes."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
-        return await operation_view.read_operation(self.db, operation_id, viewpoint=ctx.viewpoint)
+        view = await operation_view.read_operation(self.db, operation_id, viewpoint=ctx.viewpoint)
+        if view.story_id is not None:
+            await self._erasure_gate(view.story_id)
+        return view
 
     # -- story lifecycle (FR-ADMIN-1, FR-STORE-14,16, FR-CAT-12) ----------------------------
 

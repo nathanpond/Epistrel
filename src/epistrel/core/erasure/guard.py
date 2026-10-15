@@ -336,6 +336,7 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.fork", FORK_FENCE),
     WritePath("epistrel.core.catalog.scenarios", CATALOG_REFERENCES),
     WritePath("epistrel.core.media.assets", CATALOG_REFERENCES),
+    WritePath("epistrel.core.media.uploads", CATALOG_REFERENCES),
     WritePath(
         "epistrel.core.config_changes",
         EXEMPT,

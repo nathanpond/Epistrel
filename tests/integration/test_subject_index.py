@@ -63,9 +63,12 @@ pytestmark = pytest.mark.integration
 
 INDEXERS = frozenset({"index_references", "index_records", "index_rows", "reindex_story"})
 """The calls that write a record's rows (``core.erasure.index`` and ``records.index_rows``)."""
-HAND_LISTED = frozenset({"config_changes", "idempotency_keys", "personas", "media_assets"})
-"""Indexed tables the enumeration cannot find: keyed by ``scope_id`` rather than ``story_id``,
-or catalog records outside the ``catalog`` schema."""
+HAND_LISTED = frozenset(
+    {"config_changes", "idempotency_keys", "personas", "media_assets", "media_upload_sessions"}
+)
+"""Indexed tables outside the story and catalog schemas' usual shape (keyed by ``scope_id``,
+or catalog records in ``public``): the enumeration now finds them, and they stay listed so a
+dropped registration is reported by name."""
 NAME = "Linda"
 ALIAS = "Lin"
 SUMMARY_OVERRIDES = {
@@ -126,25 +129,22 @@ def test_the_coverage_check_reports_a_writer_that_never_indexes() -> None:
 
 
 async def content_tables(engine: AsyncEngine) -> set[str]:
-    """Every public table with a ``story_id`` column and every ``catalog`` table that has a text
-    or JSON column."""
+    """Every ``public`` and ``catalog`` table that has a text or JSON column (#334: a table
+    without ``story_id``, such as ``media_upload_sessions``, can hold a subject's name too)."""
     found = await rows(
         engine,
         "SELECT DISTINCT c.table_name FROM information_schema.columns c "
         "JOIN information_schema.tables t "
         "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
-        "WHERE t.table_type = 'BASE TABLE' "
-        "AND c.data_type IN ('text', 'jsonb', 'json', 'ARRAY', 'character varying') "
-        "AND (c.table_schema = 'catalog' OR (c.table_schema = 'public' AND EXISTS ("
-        "SELECT 1 FROM information_schema.columns s WHERE s.table_schema = 'public' "
-        "AND s.table_name = c.table_name AND s.column_name = 'story_id')))",
+        "WHERE t.table_type = 'BASE TABLE' AND c.table_schema IN ('public', 'catalog') "
+        "AND c.data_type IN ('text', 'jsonb', 'json', 'ARRAY', 'character varying')",
     )
-    return {str(r.table_name) for r in found} | {"stories"}
+    return {str(r.table_name) for r in found}
 
 
 async def test_every_content_table_has_a_writer(engine: AsyncEngine) -> None:
-    """Every story-scoped and catalog table with a text or JSON column is registered with a
-    writer or exempt with a reason, never both; the hand-listed tables are registered; every
+    """Every table with a text or JSON column is registered with a writer or exempt with a
+    reason, never both; the hand-listed tables are registered; every
     registered table exists; each writer module calls the indexer; each reader resolves."""
     registered = {entry.table for entry in SUBJECT_WRITERS}
     assert len(registered) == len(SUBJECT_WRITERS)

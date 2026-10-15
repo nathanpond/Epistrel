@@ -1,9 +1,9 @@
 """ERASURE-RESURRECTION: once a subject is erased, nothing in flight or cached writes them back
 (FR-ADMIN-9; #127).
 
-``test_erasure_resurrection`` erases Linda from a played Lite story while a turn is generating
-and a summary job is summarising a window that names her, then checks the three resurrection
-clauses, each with its complement:
+``resurrection_clauses`` erases Linda from a played Lite story while a turn is generating and a
+summary job is summarising a window that names her, then checks the three resurrection clauses,
+each with its complement:
 
 - the in-flight turn is abandoned (409 ``timeline_changed`` naming the erasure, no events,
   status ``abandoned``), a turn queued behind it fails ``timeline_changed`` naming the erasure
@@ -16,9 +16,9 @@ clauses, each with its complement:
 - the stored idempotency result naming her is purged: a replay answers the reference only,
   while a result stored after the erasure replays in full.
 
-It carries no part marker: docs/04 has no ERASURE-RESURRECTION row, and #127's plan folds it
-into S-ERASURE-BOUNDARY, whose ``__resurrection`` slice (``tests/erasure``) is the M3 part for
-FR-ADMIN-9. These are its detailed clauses.
+docs/04 has no ERASURE-RESURRECTION row: S-ERASURE-BOUNDARY's Resurrection clause runs these
+clauses as its ``__in_flight`` slice (``tests/erasure/test_s_erasure_boundary.py``, #344), so the
+coroutine here is a helper that slice calls, not a test of its own.
 
 The other tests: the write-path registry covers every content writer
 (``guard.CONTENT_WRITE_PATHS``), the n-gram matcher finds a name exactly where the prose matcher
@@ -112,7 +112,7 @@ async def _until(predicate: Any, timeout_s: float = 10.0) -> None:
             await asyncio.sleep(0.02)
 
 
-async def test_erasure_resurrection(erasure_settings: Settings, engine: AsyncEngine) -> None:
+async def resurrection_clauses(erasure_settings: Settings, engine: AsyncEngine) -> None:
     """The three resurrection clauses (in-flight turn abandoned; worker result refused; replay
     purged), each with its complement; see the module docstring."""
     async with respond_client(erasure_settings, engine) as (client, lib):

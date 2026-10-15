@@ -578,6 +578,11 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     ),
     SubjectWriter("personas", ("epistrel.core.catalog.personas",), f"{_RECORDS}:read_personas"),
     SubjectWriter("media_assets", ("epistrel.core.media.assets",), f"{_RECORDS}:read_media"),
+    SubjectWriter(
+        "media_upload_sessions",
+        ("epistrel.core.media.uploads",),
+        f"{_RECORDS}:read_upload_sessions",
+    ),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 
@@ -596,8 +601,25 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "story_profile_overrides": "engine-profile dial values (numbers and enums)",
     "rating_check_jobs": "a rating check's progress and verdicts by record key and policy id",
     "guardrail_check_results": "verdicts by record key and policy id",
+    # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
+    "alembic_version": "the schema migration's revision id",
+    "schema_meta": "schema bookkeeping keys and values",
+    "deployment_state": "deployment settings, tag and listing-status sets, reconcile state",
+    "content_ratings": "operator-authored rating names and the retiring principal",
+    "content_rating_versions": "operator-authored rating guidance and policy ids",
+    "engine_profiles": "an engine profile's name and owner principal (configuration)",
+    "engine_profile_versions": "engine-profile dial values (numbers and enums)",
+    "model_config": "model endpoints, model names, parameters and an encrypted key",
+    "entity_relations": "entity ids, principals and free-text relation names",
+    "ownership_events": "ownership changes: entity ids, principals, relation names",
+    "offboarding_jobs": "a principal's offboarding: ids, actions, counts and its report of ids",
+    "erasure_ledger": "the erasure ledger: identifiers, scope and hashes, never content",
+    "feedback_export_log": "an export's filters, blob key and checksum (the file is erasure's "
+    "feedback_export target)",
+    "recurring_tasks": "a recurring task's name and last status",
+    "worker_heartbeats": "worker ids and modes",
 }
-"""Story and catalog tables with text or JSON columns that are not indexed, and why."""
+"""Tables with text or JSON columns that are not indexed, and why."""
 
 
 def writer(table: str) -> SubjectWriter:
@@ -747,6 +769,52 @@ async def reindex_story(conn: AsyncConnection, story_id: str) -> int:
     return len(rows)
 
 
+async def reindex_catalog_subject(conn: AsyncConnection, kind: SubjectKind, subject_id: str) -> int:
+    """Rewrite one catalog subject's ``mentioned`` rows from every catalog record (in
+    ``conn``'s transaction), after its terms were created or changed: a record that named it
+    before it existed, or before it took an alias, is indexed from now on, and one that named
+    only a dropped term no longer is (#335; ``reindex_story`` is the story scope's
+    counterpart). Declared and authored rows do not depend on terms and are left alone.
+    Returns how many mention rows it has now."""
+    sr = subject_references.c
+    subject = next(
+        (s for s in await catalog_subjects(conn) if (s.kind, s.id) == (kind, subject_id)), None
+    )
+    rows: list[RowKey] = []
+    if subject is not None:
+        for record in await records_of(conn, None):
+            if record.story_id is not None:
+                continue
+            for (found_kind, found_id, at), how in _scan(record, [subject]).items():
+                if how is ReferenceKind.MENTIONED and (found_kind, found_id) == (
+                    kind.value,
+                    subject_id,
+                ):
+                    rows.append(
+                        (
+                            found_kind,
+                            found_id,
+                            ReferenceScope.CATALOG.value,
+                            None,
+                            record.table,
+                            record.record_id,
+                            at,
+                            how.value,
+                        )
+                    )
+    await conn.execute(
+        delete(subject_references).where(
+            sr.subject_kind == kind.value,
+            sr.subject_id == subject_id,
+            sr.scope == ReferenceScope.CATALOG.value,
+            sr.ref_kind == ReferenceKind.MENTIONED.value,
+        )
+    )
+    await _write(conn, sorted(set(rows), key=_order))
+    log.debug("catalog subject reindexed", subject_kind=kind.value, rows=len(rows))
+    return len(rows)
+
+
 __all__ = [
     "ALIASES_PATH",
     "EXEMPT_TABLES",
@@ -775,6 +843,7 @@ __all__ = [
     "rebuild_scope",
     "recording",
     "records_of",
+    "reindex_catalog_subject",
     "reindex_story",
     "story_ids",
     "story_subjects",

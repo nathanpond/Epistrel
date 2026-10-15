@@ -321,3 +321,64 @@ async def test_i_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert omniscient.json()["creation_report"] == report
         plain = await client.get(f"/operations/{genesis_op}", headers=g.READ)
         assert plain.json()["creation_report"] is None
+
+
+CARD_LABEL = "zq-label-kestrel"
+CARD_PHRASE = "Zq-card-phrase: famous for her marmalade"
+"""Planted on the cast catalog character's public card (#339): a label and a public
+description phrase, distinct from every definition field."""
+STORY_KNOWLEDGE = ("characters", "events", "transcript_messages", "story_texts")
+"""The story's own knowledge records. The genesis snapshot and the creation report keep the
+catalog entry as provenance (``character_snapshots``, ``operations``); see #340."""
+
+
+async def test_a_catalog_characters_card_never_reaches_the_story(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """A catalog character cast in a story plays from her definition only (#339): the label and
+    the public-description phrase on her card reach no captured prompt and none of the story's
+    knowledge records, while her definition does reach the prompt.
+
+    Complements asserted: the planted label and phrase are absent from everything the model
+    was sent and from every row of the story's knowledge tables; the positive control (her
+    name and definition in the prompt) shows the capture saw her."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        locked, default = await scenarios.cast_characters(client)
+        mother = await g.catalog_character_id(
+            client,
+            "June Harrow",
+            age=60,
+            labels=["warm", CARD_LABEL],
+            public_description=f"{CARD_PHRASE}, at every county fair.",
+        )
+        body = lg.sunday_dinner(locked, default)
+        scenario_id, _ = await g.published_scenario(client, body)
+        made = await g.create_from(
+            client,
+            g.from_scenario(
+                scenario_id, slots={"mother": g.catalog_slot(mother)}, ignore_warnings=True
+            ),
+        )
+        story_id = made["story_id"]
+        by_role = {c["role_id"]: c["id"] for c in made["characters"]}
+
+        stub.reset()
+        for line in ("Is dinner ready?", "Tell me about the fair."):
+            played_turn = await respond(client, story_id, body_of(by_role["player"], line))
+            assert played_turn.status_code == 200, played_turn.text
+        sent = everything_sent(stub)
+        assert "June Harrow" in sent
+        assert CARD_LABEL not in sent
+        assert CARD_PHRASE not in sent
+
+        async with engine.connect() as conn:
+            for table in STORY_KNOWLEDGE:
+                found = await conn.scalar(
+                    text(
+                        f"SELECT count(*) FROM {table} t "  # noqa: S608 (a fixed table name)
+                        "WHERE t.story_id = :s AND (t::text LIKE :label OR t::text LIKE :phrase)"
+                    ),
+                    {"s": story_id, "label": f"%{CARD_LABEL}%", "phrase": f"%{CARD_PHRASE}%"},
+                )
+                assert found == 0, table

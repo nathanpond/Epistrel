@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from tests import erasure_support as e
 from tests import genesis_support as g
 from tests import lite_genesis_support as lg
 from tests import scenario_support as scenarios
@@ -382,3 +383,53 @@ async def test_a_catalog_characters_card_never_reaches_the_story(
                     {"s": story_id, "label": f"%{CARD_LABEL}%", "phrase": f"%{CARD_PHRASE}%"},
                 )
                 assert found == 0, table
+
+
+async def test_a_story_erasure_keeps_the_public_card_in_the_creation_report(
+    pg_url: str, engine: AsyncEngine
+) -> None:
+    """docs/04 C-15 as amended for #376 (the owner's option 2): a story-scope erasure of a cast
+    catalog character deletes her genesis snapshot, and the creation report keeps her public
+    catalog card (id, labels, public description) with her name redacted, because the card is
+    public catalog data until a catalog-scope erasure.
+
+    Complements asserted: before the erasure the snapshot exists and the report names her; after
+    it the snapshot row is gone, the report holds no match for her name, and the card's label
+    and phrase are still there."""
+    report_sql = "SELECT o::text FROM operations o WHERE o.story_id = :s AND o::text LIKE :label"
+    snapshot_sql = "SELECT count(*) FROM character_snapshots WHERE character_id = :c"
+    async with respond_client(e.erasure_settings(pg_url), engine) as (client, _):
+        locked, default = await scenarios.cast_characters(client)
+        mother = await g.catalog_character_id(
+            client,
+            "June Harrow",
+            age=60,
+            labels=["warm", CARD_LABEL],
+            public_description=f"{CARD_PHRASE}, at every county fair.",
+        )
+        body = lg.sunday_dinner(locked, default)
+        scenario_id, _ = await g.published_scenario(client, body)
+        made = await g.create_from(
+            client,
+            g.from_scenario(
+                scenario_id, slots={"mother": g.catalog_slot(mother)}, ignore_warnings=True
+            ),
+        )
+        story_id = made["story_id"]
+        june = next(c["id"] for c in made["characters"] if c["name"] == "June Harrow")
+        label = f"%{CARD_LABEL}%"
+        assert await _one(engine, snapshot_sql, c=june) == 1
+        (before,) = await _rows(engine, report_sql, s=story_id, label=label)
+        assert "June Harrow" in before
+        await e.erase(client, "character", june, story_id)
+    assert await _one(engine, snapshot_sql, c=june) == 0
+    (after,) = await _rows(engine, report_sql, s=story_id, label=label)
+    # "Harrow" alone is the cast's shared surname, which the boundary keeps.
+    assert not e.naming(after, ["June Harrow", "June"]), after
+    assert CARD_PHRASE in after
+    assert mother in after
+
+
+async def _rows(engine: AsyncEngine, sql: str, **params: object) -> list[str]:
+    async with engine.connect() as conn:
+        return [str(r) for r in await conn.scalars(text(sql), params)]

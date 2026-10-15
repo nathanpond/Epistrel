@@ -151,7 +151,10 @@ async def get_feedback_export(
         f"The export's JSON Lines file (`{MEDIA_TYPE}`), behind the service credential only: "
         "there is no signed URL for it. The first download marks the export delivered "
         f"(`downloaded_at`). {BOUNDARY_NOTE} 404 for an unknown export, or `reason: deleted` "
-        "once its file was deleted (by an operator, or seven days after it was written)."
+        "once its file was deleted (by an operator, or seven days after it was written). An "
+        "export not yet delivered that holds a case of a story held `blocked_by_erasure` after "
+        "a restore is 503 `erasure_pending`, and stays undelivered, until its erasure is "
+        "reapplied (FR-ADMIN-7)."
     ),
     responses={
         http_status.HTTP_200_OK: {

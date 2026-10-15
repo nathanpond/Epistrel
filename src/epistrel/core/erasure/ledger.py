@@ -471,6 +471,9 @@ class Pending:
     subject_kind: str
     subject_id: str
     at: datetime
+    confirmed: tuple[str, ...] = ()
+    """The candidate ids the erasure confirmed (its counts' ``confirmed_candidates``,
+    ADR-154): the reapply erases them too."""
 
 
 @dataclass(slots=True)
@@ -486,7 +489,17 @@ class MarkReport:
 
 
 def _pending_of(row: Any) -> Pending:
-    return Pending(row.id, row.scope, row.story_ref, row.subject_kind, row.subject_id, row.at)
+    counts = row.counts if isinstance(row.counts, Mapping) else {}
+    confirmed = counts.get("confirmed_candidates")
+    return Pending(
+        row.id,
+        row.scope,
+        row.story_ref,
+        row.subject_kind,
+        row.subject_id,
+        row.at,
+        tuple(c for c in confirmed if isinstance(c, str)) if isinstance(confirmed, list) else (),
+    )
 
 
 async def _pending(conn: AsyncConnection) -> list[Pending]:

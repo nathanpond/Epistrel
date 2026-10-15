@@ -19,11 +19,17 @@ subject's terms (a catalog record written before the subject existed holds its n
 index row, #123's hand-off). The subject's **terms** are its names and aliases as the index
 collects them (``index.story_subjects``; a catalog character's draft and versions; a persona's
 name; ``index.catalog_subjects``), with the words of a multi-word name that no other subject of
-the scope uses (``index.with_name_parts``, #364), read before anything is deleted.
+the scope uses (``index.with_name_parts``, #364), read before anything is deleted. The erasure
+matcher (``core.erasure.matcher``, ADR-154) decides which occurrences are the subject: certain
+mentions are redacted; a **candidate** (a common word of the name capitalised at the start of a
+sentence) only when ``confirm_candidates`` names its id. An id the run does not meet is 422
+``unknown_erasure_candidate`` (nothing written; a reapply skips it instead).
 
 **A dry run** computes exactly what the real run would touch and writes nothing (no operation,
 no idempotency key): ``{records: {table: n}, prose_segments, media, idempotency_results}`` with
-``regeneration`` and the expected ``degradation``. An unknown subject's dry run answers zeros.
+``regeneration`` and the expected ``degradation``, and ``candidates`` (each with its id,
+location, rule and a snippet, returned only and never stored) and ``candidates_remaining``.
+An unknown subject's dry run answers zeros.
 ``records`` counts the structured rows deleted or rewritten, ``prose_segments`` the text fields
 redacted (records' fields, not spans), ``media`` the assets (story scope: the images the
 subject's characters show, which stay; catalog scope: those purged, retired or rewritten), and
@@ -95,9 +101,9 @@ import hmac
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StringConstraints
 from sqlalchemy import Text, and_, cast, delete, func, insert, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -132,6 +138,7 @@ from epistrel.core.erasure.index import (
     story_subjects,
 )
 from epistrel.core.erasure.ledger import LedgerFile
+from epistrel.core.erasure.matcher import matcher
 from epistrel.core.erasure.records import (
     character_draft_record,
     character_version_record,
@@ -140,13 +147,14 @@ from epistrel.core.erasure.records import (
     persona_record,
     upload_session_record,
 )
-from epistrel.core.erasure.redact import ERASED, Redactor, regenerate_summaries
+from epistrel.core.erasure.redact import ERASED, Candidate, Redactor, regenerate_summaries
 from epistrel.core.erasure.verify import Residue, verify
 from epistrel.core.errors import (
     ErasureKeyMissing,
     InvalidErasureScope,
     SubjectNotFound,
     TimelineChanged,
+    UnknownErasureCandidate,
 )
 from epistrel.core.events.registry import validate
 from epistrel.core.ids import Ulid, new_ulid
@@ -210,6 +218,11 @@ DEGRADED_REBUILD = "rebuild_failed"
 # -- the request ---------------------------------------------------------------------------------
 
 
+MAX_CONFIRMED = 1000
+CandidateId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
+"""A candidate's id (``redact.candidate_id``)."""
+
+
 class SubjectRef(BaseModel):
     """Who is erased: a story ``character``, a ``catalog_character`` or a ``persona``, by id."""
 
@@ -258,6 +271,16 @@ class ErasureRequest(BaseModel):
         default=False,
         description="Report what would be erased and change nothing (no operation, no key).",
     )
+    confirm_candidates: list[CandidateId] = Field(
+        default_factory=list,
+        max_length=MAX_CONFIRMED,
+        description=(
+            "Candidate mentions to erase too, by the `candidate_id` a dry run listed (ADR-154): "
+            "a common word of the subject's name capitalised at the start of a sentence is "
+            "erased only when confirmed here. An id the erasure does not meet is 422 "
+            "`unknown_erasure_candidate`."
+        ),
+    )
 
     @property
     def story_id(self) -> str | None:
@@ -278,6 +301,18 @@ def check_request(request: ErasureRequest) -> None:
         )
 
 
+def check_confirmed(redactor: Redactor) -> None:
+    """422 ``unknown_erasure_candidate`` when a confirmed id names no candidate the erasure
+    met (nothing is written: it runs inside the erasure's transaction)."""
+    unknown = sorted(redactor.unknown)
+    if unknown:
+        raise UnknownErasureCandidate(
+            f"{len(unknown)} confirmed candidate(s) are not among this erasure's candidates; "
+            "run a dry run for the current ids",
+            {"field": "body.confirm_candidates", "candidate_ids": unknown},
+        )
+
+
 def require_key(config_key: str | None) -> str:
     """The configuration key the ledger's term hashes are keyed with; 503
     ``config_key_missing`` without one."""
@@ -290,13 +325,15 @@ def require_key(config_key: str | None) -> str:
     return config_key
 
 
-def term_hashes(terms: Iterable[str], key: str) -> list[str]:
-    """HMAC-SHA256 under ``key`` of each normalised term (``index.normalized``), sorted."""
+def term_hashes(terms: Iterable[str], key: str, parts: Iterable[str] = ()) -> list[str]:
+    """HMAC-SHA256 under ``key`` of each certain term the matcher guards (``Matcher.guard_terms``:
+    each normalised, a common word in its capitalised mid-sentence form only; ADR-154),
+    sorted."""
     secret = key.encode()
     return sorted(
         {
-            hmac.new(secret, index.normalized(term).encode(), hashlib.sha256).hexdigest()
-            for term in terms
+            hmac.new(secret, term.encode(), hashlib.sha256).hexdigest()
+            for term in matcher(terms, parts).guard_terms()
         }
     )
 
@@ -346,6 +383,10 @@ class ErasureResult:
     operation_id: str | None = None
     ledger_entry: LedgerEntry | None = None
     residue: int | None = None
+    candidates_remaining: int = 0
+    """The candidate mentions met and not confirmed (ADR-154): left in place."""
+    candidates: tuple[Candidate, ...] = ()
+    """A dry run's candidates, each with its id, location, rule and snippet (never stored)."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
@@ -473,6 +514,11 @@ class _Subject:
     """The story characters that are the subject (story scope)."""
     terms: tuple[str, ...]
     known: bool
+    parts: tuple[str, ...] = ()
+    """The parts of its names the matcher also finds (``index.with_name_parts``)."""
+
+    def redactor(self, confirmed: Iterable[str] = ()) -> Redactor:
+        return Redactor(self.terms, self.parts, confirmed=confirmed)
 
     @property
     def keys(self) -> list[tuple[str, str]]:
@@ -526,12 +572,20 @@ async def _subject(conn: AsyncConnection, request: ErasureRequest) -> _Subject:
     catalog_terms, in_catalog = await _catalog_terms(conn, subject)
     if story_id is None:
         known = in_catalog or await _erased_before(conn, subject, None)
-        # The words of its names the catalog's other subjects do not use (#364).
+        # The parts of its names the catalog's other subjects do not use (#364).
+        parts: list[str] = []
         for candidate in await catalog_subjects(conn):
             if (candidate.kind, candidate.id) == (subject.kind, subject.id):
                 catalog_terms += candidate.terms
+                parts += candidate.parts
         return _Subject(
-            subject.kind, subject.id, None, (), tuple(dict.fromkeys(catalog_terms)), known
+            subject.kind,
+            subject.id,
+            None,
+            (),
+            tuple(dict.fromkeys(catalog_terms)),
+            known,
+            tuple(dict.fromkeys(parts)),
         )
     c = characters.c
     linked = {
@@ -546,15 +600,25 @@ async def _subject(conn: AsyncConnection, request: ErasureRequest) -> _Subject:
         )
     )
     terms: list[str] = []
+    story_parts: list[str] = []
     for candidate in await story_subjects(conn, story_id):
         if candidate.id in found:
             terms += candidate.terms
+            story_parts += candidate.parts
     if subject.kind is not SubjectKind.CHARACTER:
         terms += catalog_terms
     known = bool(found) or in_catalog or await _erased_before(conn, subject, story_id)
     if subject.kind is SubjectKind.CHARACTER:
         known = bool(found) or await _erased_before(conn, subject, story_id)
-    return _Subject(subject.kind, subject.id, story_id, found, tuple(dict.fromkeys(terms)), known)
+    return _Subject(
+        subject.kind,
+        subject.id,
+        story_id,
+        found,
+        tuple(dict.fromkeys(terms)),
+        known,
+        tuple(dict.fromkeys(story_parts)),
+    )
 
 
 async def _referenced_records(
@@ -605,7 +669,7 @@ async def _redact_events(
         )
         for row in rows:
             payload = dict(row.payload or {})
-            new, changed = redactor.document(payload)
+            new, changed = redactor.document(payload, (events.name, str(row.id)), "payload")
             authored = row.character_id is not None and str(row.character_id) in removed
             if (authored or _voiced_only_by(row, payload, removed)) and row.type in BEATS:
                 new, whole = _erase_beat(new)
@@ -755,11 +819,12 @@ async def _redact_story_row(
         )
     ).one()
     changed = 0
-    name = redactor.text(row.name) if row.name else row.name
+    at = (stories.name, story_id)
+    name = redactor.text(row.name, (*at, "name")) if row.name else row.name
     changed += int(name != row.name)
-    snapshot, count = redactor.document(row.scenario_snapshot)
+    snapshot, count = redactor.document(row.scenario_snapshot, at, "scenario_snapshot")
     changed += count
-    settings, count = redactor.document(row.settings or {})
+    settings, count = redactor.document(row.settings or {}, at, "settings")
     changed += count
     viewpoint = settings.get("default_output_viewpoint") if isinstance(settings, dict) else None
     cleared = isinstance(viewpoint, str) and any(
@@ -801,12 +866,14 @@ async def _redact_characters(
         for column in ("name", "definition", "safe_fallback_text", "deflection_style"):
             value = getattr(row, column)
             if isinstance(value, str):
-                new = redactor.text(value)
+                new = redactor.text(value, (characters.name, str(row.id), column))
                 if new != value:
                     values[column] = new
                     changed += 1
         if row.persona_snapshot is not None:
-            snapshot, count = redactor.document(row.persona_snapshot)
+            snapshot, count = redactor.document(
+                row.persona_snapshot, (characters.name, str(row.id)), "persona_snapshot"
+            )
             if count:
                 values["persona_snapshot"] = snapshot
                 changed += count
@@ -849,7 +916,9 @@ async def _redact_snapshots(
                 delete(character_snapshots).where(where),
             )
             continue
-        content, changed = redactor.document(row.content)
+        content, changed = redactor.document(
+            row.content, (character_snapshots.name, f"{story_id}:{character_id}"), "content"
+        )
         if changed:
             tally.record(character_snapshots.name, changed)
             if run.write:
@@ -888,7 +957,9 @@ async def _redact_deferred(
                 delete(genesis_deferred).where(genesis_deferred.c.id == row.id),
             )
             continue
-        value, changed = redactor.document(payload.get("value"))
+        value, changed = redactor.document(
+            payload.get("value"), (genesis_deferred.name, str(row.id)), "payload.value"
+        )
         new = {**payload, "value": value}
         if isinstance(held, Mapping):
             new["characters"] = {r: c for r, c in resolved.items() if c not in removed}
@@ -928,10 +999,10 @@ async def _redact_json_rows(
             if value is None:
                 continue
             if isinstance(value, str):
-                new: Any = redactor.text(value)
+                new: Any = redactor.text(value, (table.name, str(row[0]), column))
                 count = int(new != value)
             else:
-                new, count = redactor.document(value)
+                new, count = redactor.document(value, (table.name, str(row[0])), column)
             if count:
                 values[column] = new
                 changed += count
@@ -1031,6 +1102,8 @@ async def _purge_story_results(
             ),
         )
     )
+    # A result the index names for the subject (any mention, a candidate included) is purged
+    # whole, so its candidates are not listed: the record they copy lists them.
     keys = [
         row
         for row in found
@@ -1054,7 +1127,7 @@ async def _redact_transient(
             for row in await conn.execute(
                 select(key, table.c[column]).where(table.c.story_id == story_id)
             )
-            if redactor.count(row[1])
+            if redactor.count(row[1], (table.name, str(row[0])), column)
         ]
         await _redact_json_rows(conn, table, key, ids, (column,), redactor, tally, write=write)
 
@@ -1132,7 +1205,7 @@ def _names_subject(record: Record, subject: _Subject, redactor: Redactor) -> boo
     key = (subject.kind, subject.id)
     if key in {(k, i) for k, i, _ in record.subjects} or key in set(record.defines):
         return True
-    return any(redactor.hits(value) for value in record.fields.values() if value)
+    return any(redactor.finds(value) for value in record.fields.values() if value)
 
 
 async def _catalog_records(
@@ -1289,7 +1362,7 @@ async def _redact_character_documents(
         ).one_or_none()
         if row is None:
             continue  # the subject's own draft, gone with it
-        draft, changed = redactor.document(row.draft)
+        draft, changed = redactor.document(row.draft, (character_catalog.name, entry_id))
         if not changed:
             continue
         tally.record(_catalog(character_catalog.name), changed)
@@ -1315,7 +1388,7 @@ async def _redact_character_documents(
         row = (await conn.execute(select(character_versions.c.content).where(where))).one_or_none()
         if row is None:
             continue
-        content, changed = redactor.document(row.content)
+        content, changed = redactor.document(row.content, (character_versions.name, record_id))
         if not changed:
             continue
         tally.record(_catalog(character_versions.name), changed)
@@ -1364,7 +1437,7 @@ async def _redact_scenarios(
         ).one_or_none()
         if row is None:
             continue  # the subject's companion, gone with it
-        draft, changed = redactor.document(row.draft)
+        draft, changed = redactor.document(row.draft, (scenario_catalog.name, entry_id))
         draft, unfilled = _unfill(draft, subject)
         if not changed and not unfilled:
             continue
@@ -1395,9 +1468,11 @@ async def _redact_scenarios(
         ).one_or_none()
         if row is None:
             continue
-        content, changed = redactor.document(row.content)
+        content, changed = redactor.document(row.content, (scenario_versions.name, record_id))
         content, unfilled = _unfill(content, subject)
-        report, reported = redactor.document(row.report)
+        report, reported = redactor.document(
+            row.report, (scenario_versions.name, record_id), "report"
+        )
         if not changed and not unfilled and not reported:
             continue
         tally.record(_catalog(scenario_versions.name), changed + reported)
@@ -1459,9 +1534,10 @@ async def _erase_media(
             continue
         depicted = [d for d in (row.depicted_subjects or []) if isinstance(d, Mapping)]
         others = [d for d in depicted if (d.get("kind"), d.get("id")) != (subject.kind, subject.id)]
-        caption = redactor.text(row.caption) if row.caption else row.caption
-        alt_text = redactor.text(row.alt_text) if row.alt_text else row.alt_text
-        generation, prompts = redactor.document(row.generation_metadata)
+        at = (media_assets.name, str(row.id))
+        caption = redactor.text(row.caption, (*at, "caption")) if row.caption else row.caption
+        alt_text = redactor.text(row.alt_text, (*at, "alt_text")) if row.alt_text else row.alt_text
+        generation, prompts = redactor.document(row.generation_metadata, at, "generation_metadata")
         texts = int(caption != row.caption) + int(alt_text != row.alt_text) + prompts
         redacted = {
             "caption": caption,
@@ -1522,12 +1598,16 @@ async def _erase_upload_sessions(
         for key in ("caption", "alt_text"):
             value = metadata.get(key)
             if isinstance(value, str):
-                redacted_text = redactor.text(value)
+                redacted_text = redactor.text(
+                    value, (media_upload_sessions.name, upload_id, f"metadata.{key}")
+                )
                 texts += int(redacted_text != value)
                 metadata[key] = redacted_text
         if isinstance(metadata.get("generation_metadata"), Mapping):
             metadata["generation_metadata"], prompts = redactor.document(
-                metadata["generation_metadata"]
+                metadata["generation_metadata"],
+                (media_upload_sessions.name, upload_id),
+                "metadata.generation_metadata",
             )
             texts += prompts
         if "depicted_subjects" in metadata:
@@ -1616,7 +1696,7 @@ async def dry_run(
         if request.story_id is not None:
             await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
         subject = await _subject(conn, request)
-        redactor = Redactor(subject.terms)
+        redactor = subject.redactor(request.confirm_candidates)
         revision = await config_revision(conn)
         timeline_revision: int | None = None
         windows = 0
@@ -1635,6 +1715,7 @@ async def dry_run(
             )
             tally = await _catalog_pass(conn, catalog_run)
             referencing = _merged(referencing, catalog_run.media_stories)
+        check_confirmed(redactor)
         if subject.story_id is not None:
             timeline_revision = await conn.scalar(
                 select(stories.c.timeline_revision).where(stories.c.id == subject.story_id)
@@ -1652,6 +1733,13 @@ async def dry_run(
         referencing_stories=tuple(referencing),
         config_revision=revision,
         timeline_revision=None if timeline_revision is None else int(timeline_revision),
+        candidates_remaining=redactor.remaining,
+        candidates=tuple(
+            sorted(
+                redactor.candidates.values(),
+                key=lambda c: (c.record_table, c.record_id, c.field, c.candidate_id),
+            )
+        ),
     )
     _log("erasure dry run", result)
     return result
@@ -1665,13 +1753,25 @@ async def _summary_events(conn: AsyncConnection, run: _StoryRun) -> int:
     if not ids:
         return 0
     found = await conn.execute(
-        select(events.c.payload).where(events.c.id.in_(ids), events.c.type == SUMMARY_EVENT)
+        select(events.c.id, events.c.payload).where(
+            events.c.id.in_(ids), events.c.type == SUMMARY_EVENT
+        )
     )
     return sum(
         1
         for row in found
-        if int((row.payload or {}).get("level", 0)) == 0 and run.redactor.count(row.payload) > 0
+        if int((row.payload or {}).get("level", 0)) == 0
+        and run.redactor.count(row.payload, (events.name, str(row.id)), "payload") > 0
     )
+
+
+def _candidate_counts(redactor: Redactor) -> dict[str, Any]:
+    """What the ledger's counts keep of the candidates (ADR-154): how many were left, and the
+    ids the operator confirmed, so #125's reapply erases them too. Ids, never snippets."""
+    return {
+        "candidates_remaining": redactor.remaining,
+        "confirmed_candidates": sorted(redactor.confirmed & redactor.candidates.keys()),
+    }
 
 
 def _counts(tally: _Tally) -> dict[str, Any]:
@@ -1697,6 +1797,7 @@ def _log(event: str, result: ErasureResult) -> None:
         media=result.media,
         idempotency_results=result.idempotency_results,
         residue=result.residue,
+        candidates_remaining=result.candidates_remaining,
         degradation=",".join(result.degradation) or None,
     )
 
@@ -1787,11 +1888,13 @@ async def erase(
     erasure_id: str | None = None,
     write_ledger: bool = True,
     ledger: LedgerFile | None = None,
+    confirmed: Iterable[str] | None = None,
 ) -> ErasureResult:
     """Erase ``request.subject`` in its scope (see the module docstring). ``erasure_id`` and
-    ``write_ledger`` let #125's reapply run an erasure the ledger already records; ``ledger``
-    is the ledger file the entry is appended to first (the Engine's; ``None`` writes the table
-    only)."""
+    ``write_ledger`` let #125's reapply run an erasure the ledger already records, with the
+    candidates the original confirmed (``confirmed``: an id the restored database no longer
+    holds is skipped, not refused); ``ledger`` is the ledger file the entry is appended to
+    first (the Engine's; ``None`` writes the table only)."""
     async with db.connect() as conn:
         subject = await _subject(conn, request)
     if not subject.known:
@@ -1804,8 +1907,9 @@ async def erase(
             },
         )
     erasure_id = erasure_id or new_ulid()
-    hashes = term_hashes(subject.terms, config_key)
-    redactor = Redactor(subject.terms)
+    hashes = term_hashes(subject.terms, config_key, subject.parts)
+    strict = confirmed is None
+    redactor = subject.redactor(request.confirm_candidates if confirmed is None else confirmed)
     if subject.story_id is not None:
         result = await _erase_story(
             db,
@@ -1818,6 +1922,7 @@ async def erase(
             hashes,
             write_ledger=write_ledger,
             ledger=ledger,
+            strict=strict,
         )
     else:
         result = await _erase_catalog(
@@ -1831,6 +1936,7 @@ async def erase(
             collect,
             write_ledger=write_ledger,
             ledger=ledger,
+            strict=strict,
         )
     _log("erasure applied", result)
     return result
@@ -1848,6 +1954,7 @@ async def _erase_story(
     *,
     write_ledger: bool,
     ledger: LedgerFile | None,
+    strict: bool,
 ) -> ErasureResult:
     from epistrel.core.events.operation import Operation
 
@@ -1869,12 +1976,14 @@ async def _erase_story(
 
         async def step(conn: AsyncConnection) -> None:
             tally = await _story_pass(conn, run)
+            if strict:
+                check_confirmed(redactor)
             await _insert_markers(conn, run)
             found["failed_queue"] = await _stop_in_flight(conn, story_id, run)
             await projections.replace_with_fold(conn, story_id)
             await reindex_story(conn, story_id)
             residue = await verify(conn, story_id, redactor)
-            counts = {**tally.counts(), "residue": residue.count}
+            counts = {**tally.counts(), "residue": residue.count, **_candidate_counts(redactor)}
             found["tally"], found["counts"] = tally, counts
             if write_ledger:
                 found["at"] = await _write_ledger(
@@ -1939,6 +2048,7 @@ async def _erase_story(
         if write_ledger
         else None,
         residue=residue.count,
+        candidates_remaining=redactor.remaining,
     )
 
 
@@ -1995,6 +2105,7 @@ async def _erase_catalog(
     *,
     write_ledger: bool,
     ledger: LedgerFile | None,
+    strict: bool,
 ) -> ErasureResult:
     async with db.begin() as conn:
         settings = await _settings(conn)
@@ -2004,9 +2115,11 @@ async def _erase_catalog(
             subject, redactor, True, principal, operation_id, settings.erasure_shared_media
         )
         tally = await _catalog_pass(conn, run)
+        if strict:
+            check_confirmed(redactor)
         referencing = _merged(referencing, run.media_stories)
         residue = await verify(conn, None, redactor)
-        counts = {**tally.counts(), "residue": residue.count}
+        counts = {**tally.counts(), "residue": residue.count, **_candidate_counts(redactor)}
         at = clock.now()
         if write_ledger:
             at = await _write_ledger(
@@ -2046,6 +2159,7 @@ async def _erase_catalog(
         operation_id=operation_id,
         ledger_entry=LedgerEntry(erasure_id, at, CATALOG, None, counts) if write_ledger else None,
         residue=residue.count,
+        candidates_remaining=redactor.remaining,
     )
 
 

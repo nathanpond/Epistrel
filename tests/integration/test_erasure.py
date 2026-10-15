@@ -88,9 +88,22 @@ async def test_i_09(erasure_settings: Settings, engine: AsyncEngine) -> None:
         }
 
         before = await dump(engine)
-        preview = await e.erase(client, "character", story.mother, sid, dry_run=True)
+        listed = await e.erase(client, "character", story.mother, sid, dry_run=True)
+        # ADR-154: "Mum" is a common word, so "Mum's patience..." at the start of a sentence is
+        # a candidate: listed with its snippet, erased only once confirmed.
+        candidates = listed["candidates"]
+        assert candidates
+        assert all(c["rule"] == "candidate" and "Mum" in c["snippet"] for c in candidates)
+        assert {c["record_table"] for c in candidates} >= {"events"}
+        assert listed["candidates_remaining"] == len(candidates)
+        confirm = [c["candidate_id"] for c in candidates]
+        preview = await e.erase(
+            client, "character", story.mother, sid, dry_run=True, confirm=confirm
+        )
         assert await dump(engine) == before  # a dry run writes nothing anywhere
         assert preview["dry_run"] is True
+        assert preview["candidates_remaining"] == 0
+        assert [c["candidate_id"] for c in preview["candidates"]] == confirm
         # Her row (deleted) and the player's (its persona copy names her: redacted).
         assert preview["records"]["characters"] == 2
         assert preview["records"]["character_snapshots"] == 1
@@ -100,7 +113,14 @@ async def test_i_09(erasure_settings: Settings, engine: AsyncEngine) -> None:
         assert (preview["regeneration"], preview["degradation"]) == ("model", [])
 
         lib.models.stub.script("lite_summary", [e.REGENERATED] * 10)
-        done = await e.erase(client, "character", story.mother, sid, key="erasure-of-subject-1")
+        done = await e.erase(
+            client,
+            "character",
+            story.mother,
+            sid,
+            key="erasure-of-subject-1",
+            confirm=confirm,
+        )
         assert done["dry_run"] is False
         assert {k: done[k] for k in COUNTS} == {k: preview[k] for k in COUNTS}
         assert (done["residue"], done["regeneration"], done["degradation"]) == (0, "model", [])
@@ -161,7 +181,7 @@ async def test_i_09(erasure_settings: Settings, engine: AsyncEngine) -> None:
         # Idempotent under its key: the same erasure, no second ledger row.
         again = await client.post(
             e.PATH,
-            json=e.request("character", story.mother, sid),
+            json=e.request("character", story.mother, sid, confirm=confirm),
             headers={**e.WRITE, "Idempotency-Key": "erasure-of-subject-1"},
         )
         assert again.status_code == 200, again.text
@@ -539,8 +559,9 @@ async def test_a_turn_key_replayed_after_an_erasure_answers_the_reference(
     """#365: a turn's key replayed with the identical body answers the stored result before an
     erasure, and after it (the erasure changed the cast the request hash resolved) answers the
     reference to the original operation, for a key whose result named the subject (purged) and
-    one whose did not. Complement: a key first used after the erasure still conflicts on a
-    different body."""
+    one whose did not. Complements: a pre-erasure key reused with a different body conflicts
+    (#375: the hash of the request as sent still differs), and so does a key first used after
+    the erasure."""
     async with respond_client(erasure_settings, engine) as (client, lib):
         story, ids = await new_story(client, "Wren", "Marisol Quenby", "Ty")
         wren = ids["Wren"]
@@ -573,6 +594,17 @@ async def test_a_turn_key_replayed_after_an_erasure_answers_the_reference(
             assert answer["operation_id"] == originals[key], key
             assert answer["reference"] == f"/operations/{answer['operation_id']}"
             assert "Marisol" not in replay.text
+        # #375: a pre-erasure key reused with a different request is still a conflict.
+        for key in turns:
+            changed = await respond(
+                client,
+                story,
+                body(wren, "Something else entirely."),
+                headers={"Idempotency-Key": key},
+            )
+            assert changed.status_code == 409, (key, changed.text)
+            assert changed.json()["error"]["code"] == "idempotency_conflict"
+            assert changed.json()["error"]["details"]["reason"] == "request_hash"
         await played(client, story, body(wren, "Evening."), headers={"Idempotency-Key": "late"})
         other = await respond(
             client, story, body(wren, "Morning."), headers={"Idempotency-Key": "late"}

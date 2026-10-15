@@ -1,14 +1,22 @@
-"""Span redaction and summary regeneration (FR-ADMIN-6; #124): every span of a text that names
-the erased subject becomes ``[erased]``, in place, and nothing else of the text changes; the Lite
-rolling-summary segments that lost a span are then summarised again from the redacted window.
+"""Span redaction and summary regeneration (FR-ADMIN-6; #124): every span of a text that refers
+to the erased subject becomes ``[erased]``, in place, and nothing else of the text changes; the
+Lite rolling-summary segments that lost a span are then summarised again from the redacted
+window.
 
-A ``Redactor`` matches the subject's terms (its names and aliases, as ``core.erasure.index``
-collects them) the way the subject-reference index finds them: as whole words or phrases
-(Unicode word boundaries, so a possessive ``'s`` stays behind: ``Linda's`` becomes
-``[erased]'s``), ignoring case, with any run of whitespace matching the term's spaces, on the
-NFC form of the text; terms shorter than ``index.MIN_TERM_CHARS`` are never matched. Longer
-terms win over their prefixes (``Lin`` never splits ``Linda``). No attempt is made to rewrite the
-grammar around a span (M4's reflections are regenerated instead).
+A ``Redactor`` finds the subject's mentions with the erasure matcher (``core.erasure.matcher``,
+ADR-154), the one the subject-reference index records them with: its names, aliases and parts as
+whole words or phrases on the NFC form of the text (Unicode word boundaries, so a possessive
+``'s`` stays behind: ``Linda's`` becomes ``[erased]'s``). It redacts exactly the **certain**
+mentions, plus the **candidates** (a common word of the name, capitalised at the start of a
+sentence) the operator confirmed by id. No attempt is made to rewrite the grammar around a span
+(M4's reflections are regenerated instead).
+
+**Candidates.** A text redacted at a location (``at``: its record table, record id and field
+path) records each candidate it holds (``candidates``): a ``Candidate`` with its
+``candidate_id`` (``candidate_id``: a hash of the table, record, field, start and rule, so the
+dry run's ids are the real run's), and a short snippet of the text around it for the operator,
+which is returned and never stored. ``remaining`` is how many it met that were not confirmed;
+``unknown`` the confirmed ids it never met.
 
 ``document`` redacts a JSON document the way the index walks one (``records.text_fields``):
 every string leaf except the values of id-like keys (``id``, ``*_id``, ``*_ids``), which name
@@ -32,8 +40,7 @@ them again.
 
 from __future__ import annotations
 
-import re
-import unicodedata
+import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -42,7 +49,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import Membership, OperationKind
-from epistrel.core.erasure.index import MIN_TERM_CHARS, index_records
+from epistrel.core.erasure.index import index_records
+from epistrel.core.erasure.matcher import Mention, matcher, nfc, snippet
 from epistrel.core.erasure.records import event_record
 from epistrel.core.events.registry import validate
 from epistrel.core.ports import SummaryCompressor, SummaryWindow
@@ -52,77 +60,146 @@ from epistrel.core.tables.catalog import ERASURE_GUC
 
 ERASED = "[erased]"
 """What a redacted span (or a redacted beat, whole) reads as."""
+CANDIDATE_ID_CHARS = 32
+
+Where = tuple[str, str, str]
+"""Where a text is: its record table, record id and field path."""
+Located = tuple[str, str]
+"""Where a document is: its record table and record id."""
 
 
 def _id_like(key: str) -> bool:
     return key == "id" or key.endswith(("_id", "_ids"))
 
 
-class Redactor:
-    """Finds and redacts one subject's terms (see the module docstring)."""
+def _join(prefix: str, key: str) -> str:
+    return f"{prefix}.{key}" if prefix else key
 
-    def __init__(self, terms: Iterable[str]) -> None:
-        cleaned = sorted(
-            {
-                " ".join(unicodedata.normalize("NFC", t).split())
-                for t in terms
-                if isinstance(t, str)
-            },
-            key=lambda t: (-len(t), t),
-        )
-        self.terms: tuple[str, ...] = tuple(t for t in cleaned if len(t) >= MIN_TERM_CHARS)
-        if self.terms:
-            alternatives = "|".join(
-                r"\s+".join(re.escape(part) for part in term.split()) for term in self.terms
-            )
-            self._pattern: re.Pattern[str] | None = re.compile(
-                rf"(?<!\w)(?:{alternatives})(?!\w)", re.IGNORECASE
-            )
-        else:
-            self._pattern = None
+
+def candidate_id(table: str, record_id: str, field: str, start: int, rule: str) -> str:
+    """A candidate's stable id (see the module docstring)."""
+    material = "\x1f".join((table, record_id, field, str(start), rule))
+    return hashlib.sha256(material.encode()).hexdigest()[:CANDIDATE_ID_CHARS]
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate:
+    """A mention an erasure redacts only when confirmed: its id, where it is, the rule and a
+    snippet of the text around it (returned only, never stored)."""
+
+    candidate_id: str
+    record_table: str
+    record_id: str
+    field: str
+    snippet: str
+    rule: str
+
+
+class Redactor:
+    """Finds and redacts one subject's mentions (see the module docstring)."""
+
+    def __init__(
+        self,
+        names: Iterable[str],
+        parts: Iterable[str] = (),
+        *,
+        confirmed: Iterable[str] = (),
+    ) -> None:
+        self.matcher = matcher(names, parts)
+        self.terms: tuple[str, ...] = self.matcher.terms
+        self.confirmed: frozenset[str] = frozenset(confirmed)
+        self.candidates: dict[str, Candidate] = {}
 
     def hits(self, value: str | None) -> bool:
-        """Whether ``value`` names the subject."""
-        if not value or self._pattern is None:
-            return False
-        return self._pattern.search(unicodedata.normalize("NFC", value)) is not None
+        """Whether ``value`` certainly names the subject."""
+        return self.matcher.hits(value)
 
-    def text(self, value: str) -> str:
-        """``value`` with every span naming the subject replaced by ``[erased]`` (``value``
-        itself when nothing matched)."""
-        if not value or self._pattern is None:
+    def finds(self, value: str | None) -> bool:
+        """Whether ``value`` holds a mention of the subject, a candidate included."""
+        return self.matcher.finds(value)
+
+    def _spans(self, value: str, at: Where | None) -> list[Mention]:
+        spans: list[Mention] = []
+        for mention in self.matcher.mentions(value):
+            if mention.certain:
+                spans.append(mention)
+                continue
+            if at is None:
+                continue
+            found = candidate_id(*at, mention.start, mention.rule.value)
+            self.candidates.setdefault(
+                found,
+                Candidate(
+                    found,
+                    *at,
+                    snippet(value, mention.start, mention.end),
+                    mention.rule.value,
+                ),
+            )
+            if found in self.confirmed:
+                spans.append(mention)
+        return spans
+
+    def text(self, value: str, at: Where | None = None) -> str:
+        """``value`` with every certain span, and every confirmed candidate (``at`` given),
+        replaced by ``[erased]`` (``value`` itself when nothing matched)."""
+        if not value:
             return value
-        normal = unicodedata.normalize("NFC", value)
-        redacted = self._pattern.sub(ERASED, normal)
+        spans = self._spans(value, at)
+        if not spans:
+            return value
+        normal = nfc(value)
+        pieces: list[str] = []
+        cursor = 0
+        for span in spans:
+            pieces += [normal[cursor : span.start], ERASED]
+            cursor = span.end
+        pieces.append(normal[cursor:])
+        redacted = "".join(pieces)
         return value if redacted == normal else redacted
 
-    def document(self, value: Any) -> tuple[Any, int]:
-        """A redacted copy of the JSON document ``value`` and how many strings changed."""
+    def document(self, value: Any, at: Located | None = None, prefix: str = "") -> tuple[Any, int]:
+        """A redacted copy of the JSON document ``value`` and how many strings changed; ``at``
+        (and the leaves' paths under ``prefix``) locates its candidates."""
         changed = 0
 
-        def walk(node: Any) -> Any:
+        def walk(node: Any, path: str) -> Any:
             nonlocal changed
             if isinstance(node, str):
-                new = self.text(node)
+                new = self.text(node, None if at is None else (*at, path))
                 if new != node:
                     changed += 1
                 return new
             if isinstance(node, Mapping):
                 return {
-                    key: child if isinstance(key, str) and _id_like(key) else walk(child)
+                    key: child
+                    if isinstance(key, str) and _id_like(key)
+                    else walk(child, _join(path, str(key)))
                     for key, child in node.items()
                 }
             if isinstance(node, list | tuple):
-                return [walk(child) for child in node]
+                return [walk(child, f"{path}[{index}]") for index, child in enumerate(node)]
             return node
 
-        return walk(value), changed
+        return walk(value, prefix), changed
 
-    def count(self, value: Any) -> int:
-        """How many strings of ``value`` (a text or a JSON document) name the subject."""
+    def count(self, value: Any, at: Located | None = None, prefix: str = "") -> int:
+        """How many strings of ``value`` (a text or a JSON document) a redaction at ``at``
+        would change: those certainly naming the subject, and with ``at``, those holding a
+        confirmed candidate."""
         if isinstance(value, str):
-            return 1 if self.hits(value) else 0
-        return self.document(value)[1]
+            return int(self.text(value, None if at is None else (*at, prefix)) != value)
+        return self.document(value, at, prefix)[1]
+
+    @property
+    def remaining(self) -> int:
+        """The candidates met that were not confirmed."""
+        return sum(1 for found in self.candidates if found not in self.confirmed)
+
+    @property
+    def unknown(self) -> frozenset[str]:
+        """The confirmed ids no text met."""
+        return self.confirmed - self.candidates.keys()
 
 
 # -- summary regeneration ------------------------------------------------------------------------
@@ -194,7 +271,11 @@ async def regenerate_summaries(
         return RegenerationOutcome("failed", 0, len(windows), (REGENERATION_FAILED,))
     made = await compressor.regenerate(db, story_id, windows)
     texts = {
-        segment_id: (redactor.text(found.text), found.model, found.prompt_hash)
+        segment_id: (
+            redactor.text(found.text, (events.name, segment_id, "payload.text")),
+            found.model,
+            found.prompt_hash,
+        )
         for segment_id, found in made.texts.items()
         if found.text.strip()
     }
@@ -263,8 +344,10 @@ __all__ = [
     "ERASED",
     "REGENERATION_CAPPED",
     "REGENERATION_FAILED",
+    "Candidate",
     "Redactor",
     "RegenerationOutcome",
+    "candidate_id",
     "redacted_windows",
     "regenerate_summaries",
 ]

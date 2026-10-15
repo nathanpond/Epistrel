@@ -63,6 +63,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import clock
 from epistrel.core.catalog.search import Position, decode_cursor, encode_cursor
 from epistrel.core.config_changes import read_section
+from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.erasure.boundary import DELIVERED_EXPORTS
 from epistrel.core.erasure.erase import register_target
 from epistrel.core.erasure.redact import Redactor
@@ -84,7 +85,7 @@ from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.media.store import EXPORTS_DIR, BlobStore
 from epistrel.core.media.sweep import EXPORT_TTL
 from epistrel.core.settings_schema import MediaSettings
-from epistrel.core.tables import deployment_state
+from epistrel.core.tables import deployment_state, stories
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.feedback import (
     RATING_MAX,
@@ -494,10 +495,31 @@ def _gone(export_id: str) -> FeedbackExportNotFound:
     )
 
 
+async def _refuse_blocked_cases(conn: AsyncConnection, data: bytes) -> None:
+    """503 ``erasure_pending`` when a case belongs to a story the erasure reconciler holds
+    blocked (#370): its cases may still name the subject, and delivering the file would put it
+    outside the reapply's reach for good."""
+    named = {
+        position["story_id"]
+        for case in decode_cases(data)
+        if isinstance(position := case.get("position"), dict)
+        and isinstance(position.get("story_id"), str)
+    }
+    if not named:
+        return
+    found = await conn.execute(
+        select(stories.c.id, stories.c.status).where(stories.c.id.in_(sorted(named)))
+    )
+    for story_id, status in found:
+        await erasure_ledger.refuse_blocked(conn, str(story_id), status)
+
+
 async def content(db: AsyncEngine, store: BlobStore, export_id: str) -> FeedbackExportContent:
     """The export's file, delivered: the first download marks ``downloaded_at``, after which it
     is outside the erasure boundary. 404 for an unknown export, or one whose file was deleted
-    (``reason`` ``deleted``)."""
+    (``reason`` ``deleted``). An export not yet delivered with a case of a story the erasure
+    reconciler holds blocked is 503 ``erasure_pending`` and stays undelivered (#370); the
+    caller compares the ledger first."""
     async with db.begin() as conn:
         row = await _row(conn, export_id, lock=True)
         if row.deleted_at is not None:
@@ -507,6 +529,7 @@ async def content(db: AsyncEngine, store: BlobStore, export_id: str) -> Feedback
         except FileNotFoundError:
             raise _gone(export_id) from None
         if row.downloaded_at is None:
+            await _refuse_blocked_cases(conn, data)
             await conn.execute(
                 update(feedback_export_log)
                 .where(feedback_export_log.c.id == export_id)
@@ -540,12 +563,13 @@ async def delete(
 # -- erasure (#124's ERASURE_TARGETS) -------------------------------------------------------------
 
 
-def _redact_case(case: dict[str, Any], redactor: Redactor) -> bool:
+def _redact_case(case: dict[str, Any], redactor: Redactor, export_id: str, index: int) -> bool:
     changed = False
+    at = f"cases[{index}]"
     for name in CASE_TEXTS:
         value = case.get(name)
         if isinstance(value, str) and value:
-            new = redactor.text(value)
+            new = redactor.text(value, (feedback_export_log.name, export_id, f"{at}.{name}"))
             if new != value:
                 case[name] = new
                 changed = True
@@ -554,7 +578,9 @@ def _redact_case(case: dict[str, Any], redactor: Redactor) -> bool:
         for name in ("say", "do"):
             value = said.get(name)
             if isinstance(value, str) and value:
-                new = redactor.text(value)
+                new = redactor.text(
+                    value, (feedback_export_log.name, export_id, f"{at}.player_input.{name}")
+                )
                 if new != value:
                     said[name] = new
                     changed = True
@@ -600,12 +626,12 @@ class ExportErasureTarget:
                 continue
             cases = decode_cases(data)
             touched = 0
-            for case in cases:
+            for index, case in enumerate(cases):
                 position = case.get("position")
                 in_scope = story_id is None or (
                     isinstance(position, dict) and position.get("story_id") == story_id
                 )
-                if in_scope and _redact_case(case, redactor):
+                if in_scope and _redact_case(case, redactor, str(row.id), index):
                     touched += 1
             if not touched:
                 continue

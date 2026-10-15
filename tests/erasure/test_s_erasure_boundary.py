@@ -636,7 +636,7 @@ async def test_s_erasure_boundary__resurrection(
         sid = story.story_id
         assert sum((await e.residue(engine, sid, e.TERMS)).values()) > 0
         stub.script("lite_summary", [e.REGENERATED] * 10)
-        done = await e.erase(client, "character", story.mother, sid)
+        done = await e.erase(client, "character", story.mother, sid, confirm_all=True)
         assert (done["residue"], done["degradation"]) == (0, [])
         assert (
             await scalar(engine, "SELECT count(*) FROM characters WHERE id = :c", c=story.mother)

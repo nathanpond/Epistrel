@@ -10,7 +10,10 @@ caller's, or a server-generated ULID: the key is optional everywhere). The call:
 
    - a different request hash is 409 ``idempotency_conflict`` (nothing written), unless a
      story-scope erasure of the key's story committed after the original: it changed what the
-     hash resolved (a turn's cast), so the retry gets the reference (``ReferenceReplay``, #365);
+     hash resolved (a turn's cast), so a retry of the same request gets the reference
+     (``ReferenceReplay``, #365). "The same request" is judged by ``sent_hash``, the hash of the
+     request as sent, before anything was resolved (#375): a different one is still 409. A key
+     written before ``sent_hash`` existed (null) gets the reference;
    - ``done`` within the result window replays the stored result (``Replayed``), never
      re-executing; after it (or once #71's sweep purged the result) the retry gets a reference
      to the original operation (``ReferenceReplay``), never a re-execution;
@@ -318,6 +321,7 @@ class IdempotentCall:
         self.codec = codec
         self.wait_s = wait_s
         self.request_hash: str | None = None
+        self.sent_hash: str | None = None
         self.token = new_ulid()
         self.claimed = False
         self.window = IdempotencySettings()
@@ -335,12 +339,17 @@ class IdempotentCall:
             & (idempotency_keys.c.key == self.key)
         )
 
-    async def claim(self, material: Mapping[str, Any]) -> None:
+    async def claim(
+        self, material: Mapping[str, Any], *, sent: Mapping[str, Any] | None = None
+    ) -> None:
         """Take the key for this request, or answer from it (``Replayed``/``ReferenceReplay``),
-        or refuse (409), or wait for the original (then 503); see the module docstring."""
+        or refuse (409), or wait for the original (then 503); see the module docstring.
+        ``sent`` is the request as the client sent it, when ``material`` holds what was
+        resolved from it (respond's cast and viewpoint); otherwise the two are the same."""
         if self.claimed:
             raise RuntimeError(f"key {self.key} is already claimed by this call")
         self.request_hash = request_hash(self.operation, material)
+        self.sent_hash = self.request_hash if sent is None else request_hash(self.operation, sent)
         deadline = time.monotonic() + self.wait_s
         delay = POLL_FIRST_S
         while True:
@@ -352,7 +361,11 @@ class IdempotentCall:
             if row is None:  # released between the insert and the read: try again
                 continue
             if row.request_hash != self.request_hash:
-                if row.status == KeyStatus.DONE.value and await self._erased_since(row):
+                if (
+                    row.status == KeyStatus.DONE.value
+                    and row.sent_hash in (None, self.sent_hash)
+                    and await self._erased_since(row)
+                ):
                     self._answer_reference(row)
                 raise IdempotencyConflict(
                     "this Idempotency-Key was used for a different request",
@@ -393,6 +406,7 @@ class IdempotentCall:
                     scope_id=self.scope_id,
                     key=self.key,
                     request_hash=self.request_hash,
+                    sent_hash=self.sent_hash,
                     status=KeyStatus.IN_FLIGHT.value,
                     owner_token=self.token,
                     lease_until=now + timedelta(seconds=LEASE_S),
@@ -408,8 +422,8 @@ class IdempotentCall:
     async def _erased_since(self, row: Any) -> bool:
         """Whether a story-scope erasure of this key's story committed after its original
         (#365). The hash covers the *resolved* request (a turn's cast and viewpoint), which the
-        erasure changed, so a replay can no longer be compared: it gets the reference, as a
-        purged result does (#124), never a re-execution."""
+        erasure changed, so a replay of the same request as sent (``sent_hash``, #375) gets the
+        reference, as a purged result does (#124), never a re-execution."""
         if self.scope is not Scope.STORY:
             return False
         el, op = erasure_ledger.c, operations.c

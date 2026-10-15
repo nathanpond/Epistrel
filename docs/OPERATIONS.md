@@ -41,6 +41,14 @@ The keyed hashes also stop an erasure being undone by work that was already in f
 
 **Rotating `EPISTREL_CONFIG_KEY` disables the guard for earlier erasures.** Their hashes were made with the old key, and the names are gone by design, so they cannot be hashed again. The erasures themselves stand: nothing is un-erased. Only text written afterwards that names the subject is no longer refused.
 
+A name word that is also a common word (`Will`, `Rose`) is guarded only capitalised in the middle of a sentence, so a later reply saying "it will rain" is not refused (ADR-154).
+
+### Candidates and the subject index
+
+An erasure removes the mentions that certainly refer to the subject: its names and aliases, and the words of its names. A name word that is also a common word, capitalised at the start of a sentence ("Will you come?"), is a **candidate**. A dry run (`dry_run: true`) lists every candidate with its `candidate_id`, where it is and a snippet of the text around it, and the erasure removes only the candidates its `confirm_candidates` names. The snippet is returned by the dry run and never stored. `candidates_remaining` in the response, and in the ledger's counts, says how many were left in place. The ledger keeps the confirmed ids, never text, so a reapply after a restore removes them too.
+
+The subject-reference index records where each mention is (field, offsets and rule), never its text. **After upgrading to schema 0044, run the one-time re-index once:** `python -m epistrel.tools.reindex_subjects --write`. It rebuilds the rows written before mentions had positions. An erasure re-indexes its own story first in any case.
+
 ## Verify
 
 `epistrel backup verify <dump>` checks a dump without restoring it. It reads the dump's `erasure_ledger` and `events` data through `pg_restore` (`--pg-restore` names the executable) and reports:
@@ -87,7 +95,7 @@ Audit views show the same markers: `GET /stories/{id}/history?viewpoint=omniscie
 - subjects appearing in images only visually with no declared or named reference
 - backups taken before the erasure, until restored and reconciled
 - logs, which never carry story content
-- a word of the subject's name on its own when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`), and nicknames never declared as aliases (the full name, the declared aliases and every other word of the name are matched)
+- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised (ADR-154)
 
 **Logs.** Operational logs contain no story content by default (NFR-SEC-4).
 <!-- erasure-boundary:end -->

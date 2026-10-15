@@ -521,7 +521,9 @@ async def test_a_fork_retries_when_an_erasure_commits_under_it(
         )
         await asyncio.wait_for(paused.wait(), 10)
         # The first attempt's copy is taken and still names her; the erasure commits now.
-        done = await asyncio.wait_for(e.erase(client, "character", story.mother, sid), 30)
+        done = await asyncio.wait_for(
+            e.erase(client, "character", story.mother, sid, confirm_all=True), 30
+        )
         resume.set()
         forked = await asyncio.wait_for(forking, 30)
         assert forked.status_code == 201, forked.text

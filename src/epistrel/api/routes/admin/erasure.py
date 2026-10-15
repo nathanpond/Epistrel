@@ -39,6 +39,21 @@ class ReferencingStoryBody(BaseModel):
     character_ids: list[str]
 
 
+class CandidateBody(BaseModel):
+    """A mention the erasure redacts only when confirmed (ADR-154): a common word of the
+    subject's name capitalised at the start of a sentence. The snippet is returned by the dry
+    run only and never stored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str = Field(description="Pass it in `confirm_candidates` to erase it too.")
+    record_table: str
+    record_id: str
+    field: str = Field(description="The text's path in the record (dotted, list items `[n]`).")
+    snippet: str = Field(description="The text around the mention, for the operator.")
+    rule: str = Field(description="`candidate`.")
+
+
 class LedgerEntryBody(BaseModel):
     """The erasure ledger's row: identifiers, the scope and the counts; never a name."""
 
@@ -89,8 +104,18 @@ class ErasureBody(DeploymentMutationResponse):
     ledger_entry: LedgerEntryBody | None = None
     residue: int | None = Field(
         default=None,
-        description="Values in the scope that still name the subject after the erasure (the "
-        "residue scan; 0 when nothing does).",
+        description="Values in the scope that still certainly name the subject after the "
+        "erasure (the residue scan; 0 when nothing does). Unconfirmed candidates are not "
+        "residue: `candidates_remaining` counts them.",
+    )
+    candidates_remaining: int = Field(
+        default=0,
+        description="Candidate mentions met and not confirmed, left in place (ADR-154).",
+    )
+    candidates: list[CandidateBody] = Field(
+        default_factory=list,
+        description="Dry run only: every candidate mention, with its id, location and a "
+        "snippet. A real run lists none.",
     )
 
     @classmethod
@@ -124,6 +149,18 @@ class ErasureBody(DeploymentMutationResponse):
                 counts=entry.counts,
             ),
             residue=result.residue,
+            candidates_remaining=result.candidates_remaining,
+            candidates=[
+                CandidateBody(
+                    candidate_id=c.candidate_id,
+                    record_table=c.record_table,
+                    record_id=c.record_id,
+                    field=c.field,
+                    snippet=c.snippet,
+                    rule=c.rule,
+                )
+                for c in result.candidates
+            ],
             config_revision=result.config_revision,
         )
 
@@ -151,7 +188,14 @@ class ErasureBody(DeploymentMutationResponse):
         "record still references them and `erasure_shared_media` is `retire`), and stories "
         "are never touched: `referencing_stories` lists those to erase separately. "
         "`dry_run: true` answers the counts and changes nothing (zero counts for an unknown "
-        "subject). The ledger records identifiers, scope, story and counts, never content. "
+        "subject). **Mentions** (ADR-154): the subject's names, aliases and name words are "
+        "erased where they certainly refer to it; a name word that is also a common word "
+        "(`Will`, `Rose`) only when capitalised, and at the start of a sentence it is a "
+        "*candidate*: the dry run lists each one (`candidates`, with an id and a snippet "
+        "returned only, never stored), and an erasure removes it only when "
+        "`confirm_candidates` names its id (422 `unknown_erasure_candidate` for an id it does "
+        "not meet). `candidates_remaining` counts those left. The ledger records identifiers, "
+        "scope, story and counts (with the confirmed candidate ids), never content. "
         "404 for an unknown story, or on a real run an unknown subject; 503 "
         "`config_key_missing` without `EPISTREL_CONFIG_KEY`; 503 `ledger_unavailable` when the "
         "erasure ledger's file cannot be written (nothing is erased). The erasure boundary, "

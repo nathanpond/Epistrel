@@ -60,7 +60,7 @@ from tests.projection_support import snapshot
 from tests.respond_support import FIRST as ADA
 from tests.respond_support import SECOND as BRANN
 from tests.respond_support import body, respond, respond_client
-from tests.summary_support import run_due_jobs, segment_rows
+from tests.summary_support import run_due_jobs, segment_rows, summary_jobs
 
 pytestmark = pytest.mark.integration
 
@@ -696,6 +696,8 @@ async def test_s_erasure_boundary__resurrection(
         stub.script("lite_summary", [LATE])
         (refused,) = await run_due_jobs(engine, lib.models, sid, limit=1)
         assert refused == "failed"
+        # Refused for the erasure, not any failure (#352).
+        assert (await summary_jobs(engine, sid))[-1].result == {"error": "ErasedSubjectReferenced"}
         assert await segment_rows(engine, sid) == before
         late = await rows(
             engine,

@@ -5980,3 +5980,56 @@ Fix pass on the four bugs the M3 re-verify at `c26993c` filed (#363, #364, #365,
   - M8: #266 (image captions and alt text indexed by position).
 
   The plans for M4, M5, M7 and M8 may assume field-level indexing and need `/n8-replan`.
+
+## /n8-exec M3 (verify fixes, pass 5) — 2026-10-15
+
+Fix pass on the bugs the M3 re-verify at `b5c5d67` filed (#369–#376). It runs on `milestone/m3-verify-fixes-5` from `b5c5d67`. The two owner calls (#372: ADR-154; #376: narrow C-15) were made before the run.
+
+- **Decision:** #369: `Engine._keyed` gates a replayed result that names a story at the top level (`story_id` in its stored body): while the story is `blocked_by_erasure`, the replay is 503 `erasure_pending` (the ledger is compared first). This is not specific to `create_story`; it covers every deployment-scoped keyed call whose result names a story.
+  **Why:** `create_story` takes no `story_id`, so the method gate never sees it. A generic check on the stored body closes the class, not one route. Cost if wrong: a replay of such a key waits for the reapply, typically seconds.
+  **Issue:** #369
+- **Decision:** #370: `feedback_export.content` refuses an undelivered export (503 `erasure_pending`) when any of its cases belongs to a blocked story, and leaves it undelivered. A delivered export is served as before.
+  **Why:** Leaving the blocked story's cases out would still mark the whole file delivered, which takes it outside the boundary on an incomplete read. A delivered file is already outside the boundary (FR-ADMIN-8), so serving it again leaks nothing new. Cost if wrong: an operator waits for the reapply before downloading.
+  **Issue:** #370
+- **Decision:** #375: new nullable column `idempotency_keys.sent_hash` (migration 0043), the hash of the request as sent. Respond passes its body, path ids, requested viewpoint and expected revision; every other call's sent material is its material. After an erasure, a hash mismatch gets the reference only when `sent_hash` matches (or is null on an old row); otherwise it is 409 `request_hash`.
+  **Why:** This is the fix the issue named. Fix pass 4 rejected it because it needed a new column; a new column is Rule 1/2 territory, not Rule 4, and it is the only way to tell "the same request" from "a different request" once the resolved hash has changed. Cost if wrong: none expected; the contract is unchanged.
+  **Issue:** #375
+- **Decision (owner):** #376 takes option 2: docs/04 C-15 now says a story-scope erasure deletes the genesis snapshot and the creation report keeps the public card (id, labels, public description) with the name redacted. The pinning test asserts "June Harrow" and "June" are gone, but not "Harrow", which is the cast's shared surname and stays by the boundary.
+  **Issue:** #376
+- **Decision (deviation from the owner's choice):** #372's common-word list is **SCOWL 2020.12.07, size levels 10 and 20** (english-words and american-words, possessives dropped: 10,905 words), not a ranked "10,000 most common words" frequency list. The first candidate, first20hours/google-10000-english, is derived from LDC's Google Web Trillion Word Corpus, and its licence permits only "educational and personal/research use", advising against commercial use, so it fails invariant 2. SCOWL's notice is permissive (MIT-style: "Permission to use, copy, modify, distribute and sell…"). Its levels 10 and 20 come from Moby Words II and Brian Kelk's frequency-classified list, both public domain, with WordNet 1.6's permissive notice for inflections. The full notice and the tarball's SHA-256 (`5587667c…b859cc`) are in the file's header. `check-licenses` does not see data files; this entry and the header are the record.
+  **Why:** It is the closest permissive substitute, and it is graded by how common a word is. Unlike a web frequency list, it holds no proper names, so "Mary", "John" and "Marisol" are never common words and match as names in any case. Cost if wrong: a word missing from the list (rare English) matches in any case, as before ADR-154.
+  **Issue:** #372
+- **Decision:** #372: interpretation of ADR-154 where its text is silent. All of these are recorded as ADR-154's "Implementation notes".
+  - A **one-word name or alias** on the common list follows the common-word rule (a character "Rose" never erases "rose").
+  - A **whole value** that is only the name, punctuation aside (a role's `canonical: "Mum"`), is certain, not a candidate.
+  - **Start of a sentence** means: the start of the text or a line, after a quotation mark, or after `.`, `!`, `?`, `…` or `:`, with only whitespace and brackets between. A title's dot (`Mr.`) does not end a sentence.
+  **Why:** Without the first, ADR-154's consequence ("never damaged by a name that is also a word") would not hold for one-word names. Without the second, every structured name field of a common-named subject would need confirming. Without the quotation rule, dialogue ("He said, "Will you come?"") would be certain. Cost if wrong: an over- or under-classified edge case, reported through `candidates_remaining`, never silently.
+  **Issue:** #372
+- **Decision:** #372: redaction recomputes spans with the shared matcher over the same text, rather than reading offsets back from the index. The index is rebuilt from that text in the same transaction, and a test asserts a rebuild equals incremental indexing, before and after an erasure.
+  **Why:** Erasure rewrites strings the index does not hold as separate records (feedback export files, transient queue rows), and one deterministic matcher gives the same spans by construction. Cost if wrong: none expected; the matcher is the single source either way.
+  **Issue:** #372
+- **Decision:** #372: candidate ids are recorded by every redaction site that has a location `(table, record id, field path)`. Stored idempotency results are purged whole when the index names them, so their candidates are not listed separately. The confirmed ids that the run met go into the ledger's `counts.confirmed_candidates` (ids, never text), and #125's reapply passes them back non-strictly: an id it does not meet is skipped, not refused. The dry run also validates `confirm_candidates` (422 for an unknown id).
+  **Why:** Without the ledger copy, a restore followed by a reapply would bring back the confirmed mentions. Using `counts` avoids a ledger schema and hash-chain format change. Cost if wrong: none expected.
+  **Issue:** #372
+- **Decision:** #372: no automatic one-time re-index at start-up. Migration 0044 allows position-less legacy mention rows (a check constraint), and OPERATIONS.md tells operators to run `python -m epistrel.tools.reindex_subjects --write` once after upgrading. Every erasure re-indexes its own story first.
+  **Why:** M3 is unreleased (v0.1.1 predates it), as fix pass 4 noted, and the erasure's own re-index covers correctness. Cost if wrong: catalog-scope mention rows lack positions until the command runs. Erasure finds them anyway by rescanning catalog records.
+  **Issue:** #372
+- **Decision:** #372: `verify()` now reads JSON and array columns as JSON and matches each string (keys and leaves), rather than casting to text.
+  **Why:** Sentence-start classification on JSON-escaped text (`\n`, quotes) would disagree with the erasure's own classification of the real string and report false residue. Cost if wrong: none expected; it is stricter about escapes and the same otherwise.
+  **Issue:** #372
+- **Decision (process):** Commits:
+  - #369, #370 and #371 share one commit (one test file);
+  - #375 has its own;
+  - #376 has its own;
+  - #372 carries #373 and #374.
+
+  Every plan comment was posted before code. Every new guard was shown to fail without its fix:
+  - #371: the issue's own mutation;
+  - #369: no replay gate;
+  - #370: no export refusal;
+  - #375: no sent-hash comparison;
+  - #376: snapshot kept;
+  - #372: 8 mutants, all killed by the integration tests alone: lowercase common words matching, no candidates, the guard hashing common words plainly, confirmations ignored, unknown ids accepted, case-folded parts, no hyphen halves, and an index without positions.
+
+  The owner's batched gate applies: area tests per fix (269 passed in the erasure area), then one full suite on the branch.
+  **Issue:** #369–#376

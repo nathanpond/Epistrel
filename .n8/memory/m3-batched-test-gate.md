@@ -93,3 +93,5 @@ Time saved in group C (9 items): 9 × 550 s = 4950 s of per-story full runs, aga
 **Summary to compute at the end:** time saved = (30 × the baseline full-run time) − (the actual group full runs + bisect runs). Weigh that against the rework cost of failures caught late. The key number is failures that per-story tests missed but a per-story full run would have caught.
 
 **Fix pass 2 (#348–#352, 2026-10-15):** five fixes, each gated on its own and area tests (the #350 area run: 23 files, 486 passed in 10.4 min), then one full run at `34dac7e`: 1449 s, 1895 passed, 14 deselected, 0 failed, 1 attempt. No failure was caught late. Against 5 × 550 s of per-story full runs (more at today's 24-minute suite: about 120 min), the single run saved about 96 minutes at the current suite size.
+
+**Fix pass 5 (#369–#376, 2026-10-15):** six fixes (#372 with #373/#374), each gated on its own tests, its mutation checks and its area tests (the erasure area: 22 files, 269 passed in 2.1 min), then one full run at `b546466`: 1537.5 s, 1939 passed, 14 deselected, 0 failed, core coverage 96.28 %, 1 attempt. No failure was caught late.

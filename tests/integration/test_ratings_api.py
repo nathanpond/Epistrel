@@ -239,6 +239,12 @@ def test_validation_refusals(client: TestClient) -> None:
         long = client.post(BASE, json={"name": "n", field: "x" * size}, headers=WRITE)
         assert long.status_code == 422, field
     assert client.post(BASE, json={"name": "  "}, headers=WRITE).status_code == 422
+    # #366: the length is checked as sent, as the schema's maxLength says (C-01 found it).
+    padded = client.post(BASE, json={"name": " " + "*" * 80}, headers=WRITE)
+    assert padded.status_code == 422, padded.text
+    assert padded.json()["error"]["details"]["field"] == "body.name"
+    assert client.get(BASE, headers=WRITE).text.count("*" * 80) == 0
+    _create(client, name="*" * 80)
     assert client.post(BASE, json={"name": "n", "extra": 1}, headers=WRITE).status_code == 422
 
 

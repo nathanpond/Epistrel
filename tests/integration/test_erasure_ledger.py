@@ -571,6 +571,66 @@ async def test_a_blocked_story_is_looked_up_without_its_name(
     assert _owned_stories(settled.json())[stories.named]["name"] == "[erased]'s tale"
 
 
+async def test_a_blocked_story_hides_its_policies(
+    ledger_server: ledger.Server, tmp_path: Path
+) -> None:
+    """#363: a story policy naming the subject. While the reapply is held, ``GET
+    /admin/policies`` (also ``?scope=story``) leaves it out, ``GET /admin/policies/{id}`` is 503
+    ``erasure_pending``, and a fresh library Engine agrees (its first ``policies_list`` marks the
+    block); the deployment's policies are still served. Once the reapply settles the story, the
+    policy is served, redacted."""
+    url = ledger_server.fresh()
+    ledger_dir = tmp_path / "ledger"
+    policy = {
+        "name": f"Keep {ledger.SUBJECT} offstage",
+        "scope": "story",
+        "rule": {"type": "wordlist", "words": [f"{ledger.SUBJECT} cursed"]},
+        "message": f"{ledger.SUBJECT} is not cursed.",
+    }
+
+    async def with_policy(client: httpx.AsyncClient, stories: ledger.Stories) -> None:
+        done = await client.patch(
+            f"/stories/{stories.named}/settings", json={"policies": [policy]}, headers=WRITE
+        )
+        assert done.status_code == 200, done.text
+
+    stories = await _pending_story(url, ledger_dir, prepare=with_policy)
+    (row,) = await ledger.sql(url, "SELECT id FROM policies WHERE story_id = :s", s=stories.named)
+    config = ledger.settings(url, ledger_dir)
+    db = make_engine(config)
+    try:
+        lib = Engine(config)
+        lib.bind(db)
+        listed = await lib.policies_list(CTX)
+        assert row.id not in {p.id for p in listed}
+        assert ledger.SUBJECT not in repr(listed)
+        with pytest.raises(ErasurePending):
+            await lib.policies_get(CTX, row.id)
+    finally:
+        await db.dispose()
+    with pauses.held(pauses.ERASURE_RECONCILE_BEFORE_REAPPLY) as hold:
+        async with ledger.started(config) as (client, lib):
+            await hold.arrived()
+            for params in ({}, {"scope": "story"}, {"include_retired": "true"}):
+                found = await client.get("/admin/policies", params=params, headers=e.WRITE)
+                assert found.status_code == 200, found.text
+                assert ledger.SUBJECT not in found.text, params
+                assert row.id not in {p["id"] for p in found.json()["items"]}
+            refused = await client.get(f"/admin/policies/{row.id}", headers=e.WRITE)
+            assert refused.status_code == 503, refused.text
+            assert refused.json()["error"]["code"] == "erasure_pending"
+            assert ledger.SUBJECT not in refused.text
+            hold.release()
+            assert lib._reconcile_task is not None
+            await lib._reconcile_task
+            served = await client.get(f"/admin/policies/{row.id}", headers=e.WRITE)
+            listed_after = await client.get("/admin/policies", headers=e.WRITE)
+    assert served.status_code == 200, served.text
+    assert served.json()["name"] == "Keep [erased] offstage"
+    assert row.id in {p["id"] for p in listed_after.json()["items"]}
+    assert ledger.SUBJECT not in listed_after.text
+
+
 async def test_library_reads_mark_before_they_serve(
     ledger_server: ledger.Server, tmp_path: Path
 ) -> None:

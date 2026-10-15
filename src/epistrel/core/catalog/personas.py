@@ -45,7 +45,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints, ValidationError
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StringConstraints,
+    ValidationError,
+)
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import insert, select, tuple_
 from sqlalchemy import update as sql_update
@@ -69,6 +77,7 @@ from epistrel.core.tables.audit_log import AuditKind
 from epistrel.core.tables.media import SubjectKind
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.tables.personas import AGE_MAX, AGE_MIN, NAME_INDEX, personas
+from epistrel.core.trimmed import trim_as_sent
 
 NAME_MAX = 120
 GENDER_MAX = 40
@@ -81,13 +90,19 @@ REQUIRED = ("name", "age", "description")
 """The fields an edit cannot remove."""
 
 PersonaName = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX)
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX),
+    BeforeValidator(trim_as_sent(NAME_MAX)),
 ]
 Gender = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=GENDER_MAX)
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=GENDER_MAX),
+    BeforeValidator(trim_as_sent(GENDER_MAX)),
 ]
 Description = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=DESCRIPTION_MAX)
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=DESCRIPTION_MAX),
+    BeforeValidator(trim_as_sent(DESCRIPTION_MAX)),
 ]
 
 _EXAMPLE: dict[str, Any] = {

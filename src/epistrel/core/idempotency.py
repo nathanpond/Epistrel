@@ -8,7 +8,9 @@ caller's, or a server-generated ULID: the key is optional everywhere). The call:
    ``idempotency_keys`` written in its own short transaction, with the request hash, an
    ``owner_token`` and a lease the running call renews. When the key already exists:
 
-   - a different request hash is 409 ``idempotency_conflict`` (nothing written);
+   - a different request hash is 409 ``idempotency_conflict`` (nothing written), unless a
+     story-scope erasure of the key's story committed after the original: it changed what the
+     hash resolved (a turn's cast), so the retry gets the reference (``ReferenceReplay``, #365);
    - ``done`` within the result window replays the stored result (``Replayed``), never
      re-executing; after it (or once #71's sweep purged the result) the retry gets a reference
      to the original operation (``ReferenceReplay``), never a re-execution;
@@ -64,7 +66,12 @@ from epistrel.core.erasure.records import idempotency_id, idempotency_record
 from epistrel.core.errors import IdempotencyConflict, InvalidRequest, OriginalInFlightTimeout
 from epistrel.core.ids import new_ulid
 from epistrel.core.settings_schema import IdempotencySettings
-from epistrel.core.tables import deployment_state, idempotency_keys, operations
+from epistrel.core.tables import (
+    deployment_state,
+    erasure_ledger,
+    idempotency_keys,
+    operations,
+)
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
 logger = logging.getLogger(__name__)
@@ -345,6 +352,8 @@ class IdempotentCall:
             if row is None:  # released between the insert and the read: try again
                 continue
             if row.request_hash != self.request_hash:
+                if row.status == KeyStatus.DONE.value and await self._erased_since(row):
+                    self._answer_reference(row)
                 raise IdempotencyConflict(
                     "this Idempotency-Key was used for a different request",
                     {"reason": "request_hash"},
@@ -395,6 +404,26 @@ class IdempotentCall:
                 return True, None
             found = await conn.execute(select(idempotency_keys).where(self._where()))
             return False, found.one_or_none()
+
+    async def _erased_since(self, row: Any) -> bool:
+        """Whether a story-scope erasure of this key's story committed after its original
+        (#365). The hash covers the *resolved* request (a turn's cast and viewpoint), which the
+        erasure changed, so a replay can no longer be compared: it gets the reference, as a
+        purged result does (#124), never a re-execution."""
+        if self.scope is not Scope.STORY:
+            return False
+        el, op = erasure_ledger.c, operations.c
+        query = (
+            select(el.id)
+            .join(operations, op.operation_id == el.operation_id)
+            .where(el.scope == Scope.STORY.value, el.story_ref == self.scope_id)
+            .where(op.story_id == self.scope_id)
+            .limit(1)
+        )
+        if row.revision is not None:
+            query = query.where(op.timeline_revision > row.revision)
+        async with self.db.connect() as conn:
+            return await conn.scalar(query) is not None
 
     def _answer(self, row: Any) -> None:
         if row.result is not None and row.expires_at is not None and row.expires_at > clock.now():

@@ -103,7 +103,18 @@ async def create_policy(
     return answered(answer, ctx, response, replayed=write.replayed)
 
 
-@router.get("", response_model=PolicyList, operation_id="policies_list", summary="List policies")
+@router.get(
+    "",
+    response_model=PolicyList,
+    operation_id="policies_list",
+    summary="List policies",
+    description=(
+        "Policies ordered by scope (global first), scope id and name; retired ones with "
+        "`include_retired`. The story and character policies of a story held "
+        "`blocked_by_erasure` after a restore are left out until its erasure is reapplied "
+        "(FR-ADMIN-7); naming that story in `story_id` is 503 `erasure_pending`."
+    ),
+)
 async def list_policies(
     ctx: ContextDep,
     engine: EngineDep,
@@ -118,7 +129,14 @@ async def list_policies(
 
 
 @router.get(
-    "/{policy_id}", response_model=PolicyBody, operation_id="policies_get", summary="Read a policy"
+    "/{policy_id}",
+    response_model=PolicyBody,
+    operation_id="policies_get",
+    summary="Read a policy",
+    description=(
+        "One policy, retired or not. A policy of a story held `blocked_by_erasure` after a "
+        "restore is 503 `erasure_pending` until its erasure is reapplied (FR-ADMIN-7)."
+    ),
 )
 async def get_policy(policy_id: PolicyIdPath, ctx: ContextDep, engine: EngineDep) -> PolicyBody:
     return PolicyBody.of(await engine.policies_get(ctx, policy_id))

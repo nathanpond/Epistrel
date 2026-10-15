@@ -17,7 +17,17 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    field_validator,
+)
+
+from epistrel.core.trimmed import trim_as_sent
 
 NAME_MAX = 80
 MESSAGE_MAX = 500
@@ -78,7 +88,11 @@ AgeCondition = Literal["minor_involved_or_present"]
 policy applies only when a character younger than ``minor_age_threshold`` is involved in or
 present for the content. M2 accepts this one value; narrower conditions need presence (M5)."""
 
-Word = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=WORD_MAX)]
+Word = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=WORD_MAX),
+    BeforeValidator(trim_as_sent(WORD_MAX)),
+]
 Pattern = Annotated[str, StringConstraints(min_length=1, max_length=REGEX_MAX)]
 
 

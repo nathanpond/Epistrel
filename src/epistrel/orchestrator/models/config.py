@@ -30,11 +30,19 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet, InvalidToken
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+)
 from sqlalchemy import RowMapping, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
@@ -50,6 +58,7 @@ from epistrel.core.errors import ConfigConflict, InvalidRequest
 from epistrel.core.settings_schema import ConfigClass, StructuredSettings
 from epistrel.core.tables import deployment_state, model_config
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.trimmed import trim_as_sent
 from epistrel.orchestrator.models.adapter import ModelParams, ModelUnavailable
 from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, DELIVERED
 
@@ -418,8 +427,13 @@ class ConfigReplacement(BaseModel):
         },
     )
 
-    base_url: str | None = Field(default=None, max_length=MAX_BASE_URL_CHARS)
-    model: str | None = Field(default=None, min_length=1, max_length=MAX_MODEL_CHARS)
+    # Checked as sent before the model strips it, as the schema's maxLength says (#366).
+    base_url: Annotated[str | None, BeforeValidator(trim_as_sent(MAX_BASE_URL_CHARS))] = Field(
+        default=None, max_length=MAX_BASE_URL_CHARS
+    )
+    model: Annotated[str | None, BeforeValidator(trim_as_sent(MAX_MODEL_CHARS))] = Field(
+        default=None, min_length=1, max_length=MAX_MODEL_CHARS
+    )
     params: ModelParams | None = None
 
     @field_validator("base_url")
@@ -437,7 +451,9 @@ class ApiKeyBody(BaseModel):
         json_schema_extra={"examples": [{"api_key": "sk-example-not-a-real-key"}]},
     )
 
-    api_key: SecretStr = Field(min_length=1, max_length=MAX_API_KEY_CHARS)
+    api_key: Annotated[SecretStr, BeforeValidator(trim_as_sent(MAX_API_KEY_CHARS))] = Field(
+        min_length=1, max_length=MAX_API_KEY_CHARS
+    )
 
 
 # -- writes ----------------------------------------------------------------------------------

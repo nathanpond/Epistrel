@@ -61,6 +61,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StrictBool,
@@ -145,6 +146,7 @@ from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.core.tables.media import MediaKind
 from epistrel.core.tables.ownership import EntityType
+from epistrel.core.trimmed import trim_as_sent
 
 Database = AsyncEngine | AsyncConnection
 
@@ -223,7 +225,9 @@ CONFIG_SCOPE_STORY = "story"
 # -- request models -------------------------------------------------------------------------
 
 CharacterName = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=CHARACTER_NAME_MAX)
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=CHARACTER_NAME_MAX),
+    BeforeValidator(trim_as_sent(CHARACTER_NAME_MAX)),
 ]
 
 

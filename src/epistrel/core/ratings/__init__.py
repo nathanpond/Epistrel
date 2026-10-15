@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -46,6 +46,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.ids import new_ulid
 from epistrel.core.tables import content_rating_versions, content_ratings, policies, stories
+from epistrel.core.trimmed import trim_as_sent
 
 NAME_MAX = 80
 DESCRIPTION_MAX = 4_000
@@ -59,9 +60,15 @@ DISPLAY_ORDER_MAX = 2**31 - 1
 """The ``display_order`` column is ``INTEGER``: a value outside int32 is a 422, never a 500 (#280).
 An assigned order stops at the maximum, where ties sort by name, then id."""
 
-Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX)]
+Name = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX),
+    BeforeValidator(trim_as_sent(NAME_MAX)),
+]
 Reference = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=REFERENCE_MAX)
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=REFERENCE_MAX),
+    BeforeValidator(trim_as_sent(REFERENCE_MAX)),
 ]
 DisplayOrder = Annotated[int, Field(ge=DISPLAY_ORDER_MIN, le=DISPLAY_ORDER_MAX)]
 

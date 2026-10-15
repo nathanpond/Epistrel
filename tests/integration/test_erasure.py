@@ -495,3 +495,87 @@ async def respond_or_none(settings: Settings, engine: AsyncEngine, story: str, a
     """The status of a turn on the (still archived) story."""
     async with respond_client(settings, engine) as (client, _):
         return (await respond(client, story, body(actor, "Still there?"))).status_code
+
+
+async def test_a_multi_word_name_is_erased_by_its_words(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#364 (the owner's option (a)): a player writes "Marisol" for "Marisol Quenby". The
+    erasure redacts the bare first name in the input event and the transcript too, and the
+    residue scan finds nothing, the first name included. Complement: "Quenby" is also Ada
+    Quenby's, so the surname alone is left (the boundary says so), and Ada keeps her name."""
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story, ids = await new_story(client, "Wren", "Marisol Quenby", "Ada Quenby", "Ty")
+        lib.models.stub.script("generation", ["Marisol Quenby waves at Ty and Ada Quenby."])
+        await played(
+            client,
+            story,
+            body(ids["Wren"], "Hi Marisol. Have you seen Quenby?"),
+            headers={"Idempotency-Key": "turn-1"},
+        )
+        assert sum((await e.residue(engine, story, ["Marisol"])).values()) > 0
+        done = await e.erase(client, "character", ids["Marisol Quenby"], story)
+        assert done["residue"] == 0
+    found = await e.residue(engine, story, ["Marisol"])
+    assert {t: n for t, n in found.items() if n} == {}
+    inputs = await rows(
+        engine,
+        "SELECT payload FROM events WHERE story_id = :s AND type = 'player_input'",
+        s=story,
+    )
+    assert [i.payload["say"] for i in inputs] == ["Hi [erased]. Have you seen Quenby?"]
+    replies = await rows(
+        engine,
+        "SELECT payload FROM events WHERE story_id = :s AND type = 'message_rendered'",
+        s=story,
+    )
+    assert [r.payload["text"] for r in replies] == ["[erased] waves at Ty and Ada Quenby."]
+    assert sum((await e.residue(engine, story, ["Ada Quenby"])).values()) > 0
+
+
+async def test_a_turn_key_replayed_after_an_erasure_answers_the_reference(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#365: a turn's key replayed with the identical body answers the stored result before an
+    erasure, and after it (the erasure changed the cast the request hash resolved) answers the
+    reference to the original operation, for a key whose result named the subject (purged) and
+    one whose did not. Complement: a key first used after the erasure still conflicts on a
+    different body."""
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story, ids = await new_story(client, "Wren", "Marisol Quenby", "Ty")
+        wren = ids["Wren"]
+        lib.models.stub.script(
+            "generation", ["Marisol Quenby waves at Ty.", "Ty shrugs.", "Rain again."]
+        )
+        turns = {
+            "turn-names-her": body(wren, "Hello, Marisol Quenby."),
+            "turn-does-not": body(wren, "Hello, Ty."),
+        }
+        originals: dict[str, str] = {}
+        for key, payload in turns.items():
+            await played(client, story, payload, headers={"Idempotency-Key": key})
+            originals[key] = await scalar(
+                engine,
+                "SELECT operation_id FROM idempotency_keys "
+                "WHERE scope = 'story' AND scope_id = :s AND key = :k",
+                s=story,
+                k=key,
+            )
+            again = await respond(client, story, payload, headers={"Idempotency-Key": key})
+            assert again.status_code == 200, again.text
+            assert again.headers["Idempotent-Replay"] == "true"
+        await e.erase(client, "character", ids["Marisol Quenby"], story)
+        for key, payload in turns.items():
+            replay = await respond(client, story, payload, headers={"Idempotency-Key": key})
+            assert replay.status_code == 200, (key, replay.text)
+            assert replay.headers["Idempotent-Replay"] == "true"
+            answer = replay.json()
+            assert answer["operation_id"] == originals[key], key
+            assert answer["reference"] == f"/operations/{answer['operation_id']}"
+            assert "Marisol" not in replay.text
+        await played(client, story, body(wren, "Evening."), headers={"Idempotency-Key": "late"})
+        other = await respond(
+            client, story, body(wren, "Morning."), headers={"Idempotency-Key": "late"}
+        )
+        assert other.status_code == 409, other.text
+        assert other.json()["error"]["code"] == "idempotency_conflict"

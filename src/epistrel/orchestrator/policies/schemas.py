@@ -9,16 +9,23 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 
 from epistrel.core.policies.model import MESSAGE_MAX, NAME_MAX, AgeCondition, Effect, Rule, Target
+from epistrel.core.trimmed import trim_as_sent
 
 POLICY_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$"
 
 PolicyId = Annotated[str, StringConstraints(pattern=POLICY_ID_PATTERN)]
-Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX)]
+Name = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX),
+    BeforeValidator(trim_as_sent(NAME_MAX)),
+]
 Message = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MESSAGE_MAX)
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MESSAGE_MAX),
+    BeforeValidator(trim_as_sent(MESSAGE_MAX)),
 ]
 Targets = Annotated[list[Target], Field(min_length=1)]
 

@@ -14,10 +14,11 @@ import inspect
 import io
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
+import httpx2 as httpx
 import pytest
 
 from epistrel import Engine
@@ -29,13 +30,17 @@ from epistrel.core.db import make_engine
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.erasure.ledger import GENESIS_HASH, Entry, LedgerFile, canonical, parse
 from epistrel.core.errors import ErasurePending
+from epistrel.core.feedback_export import FeedbackExportRequest
+from epistrel.core.feedback_reporting import FeedbackReviewList
 from epistrel.core.ids import new_ulid
 from epistrel.engine import ERASURE_GATE_EXEMPT, ERASURE_GATED_ATTRIBUTE
 from epistrel.observability import logging as telemetry_logging
 from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.testing import pauses
 from epistrel.tools import backup
 from tests import erasure_support as e
 from tests import ledger_support as ledger
+from tests.feedback_support import answered, play, rate, set_deployment
 from tests.respond_support import respond_client
 from tests.story_support import WRITE
 
@@ -345,14 +350,23 @@ async def test_an_empty_ledger_reconciles_to_nothing(
 # -- the block ---------------------------------------------------------------------------------
 
 
-async def _pending_story(url: str, ledger_dir: Path, **fields: Any) -> ledger.Stories:
-    """Two stories (``fields`` for hers), and a ledger line erasing the subject from hers that
-    the database lacks (as after a restore), the reconciler not started."""
+async def _pending_story(
+    url: str,
+    ledger_dir: Path,
+    *,
+    prepare: Callable[[httpx.AsyncClient, ledger.Stories], Awaitable[None]] | None = None,
+    **fields: Any,
+) -> ledger.Stories:
+    """Two stories (``fields`` for hers, then ``prepare`` run on them), and a ledger line
+    erasing the subject from hers that the database lacks (as after a restore), the reconciler
+    not started."""
     config = ledger.settings(url, ledger_dir)
     db = make_engine(config)
     try:
         async with respond_client(config, db) as (client, _):
             stories = await ledger.two_stories(client, **fields)
+            if prepare is not None:
+                await prepare(client, stories)
     finally:
         await db.dispose()
     LedgerFile(ledger_dir).append(
@@ -523,6 +537,88 @@ async def test_a_blocked_story_is_listed_without_its_name(
         s=stories.named,
     )
     assert row.sql_null
+
+
+def _owned_stories(lookup: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {item["id"]: item for item in lookup["owned"]["stories"]["items"]}
+
+
+async def test_a_blocked_story_is_looked_up_without_its_name(
+    ledger_server: ledger.Server, tmp_path: Path
+) -> None:
+    """#359: while the reapply is held, ``GET /principals/{id}`` lists the owner's blocked
+    story with its status and a null name, as ``GET /stories`` does (#348), and the other story
+    keeps its name; once the reapply settles it, the lookup names it, redacted."""
+    url = ledger_server.fresh()
+    ledger_dir = tmp_path / "ledger"
+    stories = await _pending_story(url, ledger_dir, name=f"{ledger.SUBJECT}'s tale")
+    config = ledger.settings(url, ledger_dir)
+    with pauses.held(pauses.ERASURE_RECONCILE_BEFORE_REAPPLY) as hold:
+        async with ledger.started(config) as (client, lib):
+            await hold.arrived()
+            found = await client.get("/principals/p-author", headers=WRITE)
+            assert found.status_code == 200, found.text
+            assert ledger.SUBJECT not in found.text
+            owned = _owned_stories(found.json())
+            held = owned[stories.named]
+            assert (held["status"], held["name"]) == ("blocked_by_erasure", None)
+            assert owned[stories.other]["name"] == "A story"
+            hold.release()
+            assert lib._reconcile_task is not None
+            await lib._reconcile_task
+            settled = await client.get("/principals/p-author", headers=WRITE)
+    assert settled.status_code == 200, settled.text
+    assert _owned_stories(settled.json())[stories.named]["name"] == "[erased]'s tale"
+
+
+async def test_library_reads_mark_before_they_serve(
+    ledger_server: ledger.Server, tmp_path: Path
+) -> None:
+    """#360: a fresh library Engine, never reconciled, marks the ledger on its first lookup,
+    review or export as it does on ``list_stories``: the principal lookup lists the restored
+    story without its name, and the memory review list and the export leave out its rating of a
+    message whose input names the subject."""
+    url = ledger_server.fresh()
+    ledger_dir = tmp_path / "ledger"
+
+    async def rated(client: httpx.AsyncClient, stories: ledger.Stories) -> None:
+        (player,) = await ledger.sql(
+            url, "SELECT id FROM characters WHERE story_id = :s AND is_player", s=stories.named
+        )
+        turn = await play(client, stories.named, player.id, f"Where is {ledger.SUBJECT}?")
+        message_id = turn["message"]["message_id"]
+        payload = {"rating": 2, "tags": ["forgot_something"]}
+        answered(await rate(client, stories.named, message_id, payload), 201)
+        await set_deployment(client, feedback_export=True)
+
+    stories = await _pending_story(url, ledger_dir, prepare=rated, name=f"{ledger.SUBJECT}'s tale")
+    config = ledger.settings(url, ledger_dir)
+    for read in ("lookup", "review", "export"):
+        await ledger.sql(
+            url,
+            "UPDATE stories SET status = status_before_block, status_before_block = NULL "
+            "WHERE status = 'blocked_by_erasure'",
+        )
+        db = make_engine(config)
+        try:
+            lib = Engine(config)
+            lib.bind(db)
+            if read == "lookup":
+                found = await lib.lookup_principal(CTX, "p-author")
+                assert ledger.SUBJECT not in found.model_dump_json()
+                (item,) = [s for s in found.owned.stories.items if s.id == stories.named]
+                assert (item.status, item.name) == ("blocked_by_erasure", None)
+            elif read == "review":
+                page = await lib.feedback_review(CTX, FeedbackReviewList.MEMORY)
+                assert [i.story_id for i in page.items if i.story_id == stories.named] == []
+                assert ledger.SUBJECT not in page.model_dump_json()
+            else:
+                written = await lib.export_feedback(
+                    RequestContext(principal="p-op"), FeedbackExportRequest.model_validate({})
+                )
+                assert written.case_count == 0
+        finally:
+            await db.dispose()
 
 
 def test_every_story_method_is_gated() -> None:

@@ -11,7 +11,8 @@ it owns the presets.
   character's item also names its companion (``companion: {id}``). Companions are left out of
   ``scenarios``, items and count alike, because a companion follows its character (#116).
   Archived stories and entries, retired media and deleted profiles are listed with their
-  status. A media ``candidate`` is private (FR-IMG-7) and is not listed.
+  status. A media ``candidate`` is private (FR-IMG-7) and is not listed. A story the erasure
+  reconciler holds ``blocked_by_erasure`` is listed with a ``null`` name (#359).
 - **Related** (``entity_relations``): for each type, the entities with at least one relation
   naming the principal, ``{id, relations: [names]}``, newest relation first. An entity both
   owned and related is listed in both.
@@ -40,6 +41,7 @@ from sqlalchemy.sql.expression import ColumnElement, Select
 
 from epistrel.core.catalog.search import Position, decode_cursor, encode_cursor
 from epistrel.core.context import principal_problem
+from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import CursorInvalid, InvalidRequest
 from epistrel.core.tables import (
     character_catalog,
@@ -94,7 +96,8 @@ class OwnedItem(BaseModel):
     id: str
     name: str | None = Field(
         description="The story's or profile's name, a catalog entry's draft card name, a "
-        "persona's name, or a media asset's caption (else its alt text)."
+        "persona's name, or a media asset's caption (else its alt text). `null` for a story "
+        "that is `blocked_by_erasure` after a restore, until its erasure is reapplied."
     )
     status: str | None = Field(
         description="A story's or catalog entry's status, a media asset's state (`live`, "
@@ -210,11 +213,17 @@ def _companion_of(character_id: ColumnElement[Any]) -> ColumnElement[Any]:
 
 _NONE: ColumnElement[Any] = null()
 
+_STORY_NAME: ColumnElement[Any] = case(
+    (stories.c.status == StoryStatus.BLOCKED_BY_ERASURE.value, null()), else_=stories.c.name
+)
+"""A story's name, ``null`` while the erasure reconciler holds it blocked (#359): the
+erasure may remove it, so it is not served until the reapply settles the story."""
+
 OWNED: dict[EntityType, _Owned] = {
     EntityType.STORY: _Owned(
         stories,
         stories.c.created_at,
-        stories.c.name,
+        _STORY_NAME,
         stories.c.status,
         _NONE,
         _NONE,

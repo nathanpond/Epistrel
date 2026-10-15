@@ -112,7 +112,7 @@ from epistrel.core.tables import (
 )
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.ownership import EntityType
-from epistrel.core.trimmed import raw_max_length
+from epistrel.core.trimmed import trim_as_sent
 from epistrel.testing import pauses
 
 NAME_MAX = 120
@@ -128,7 +128,7 @@ PURGE_BATCH = 1_000
 Name = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX),
-    BeforeValidator(raw_max_length(NAME_MAX)),
+    BeforeValidator(trim_as_sent(NAME_MAX)),
 ]
 
 

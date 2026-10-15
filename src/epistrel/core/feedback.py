@@ -100,7 +100,7 @@ from epistrel.core.tables.feedback import (
     feedback_history,
     message_feedback,
 )
-from epistrel.core.trimmed import raw_max_length
+from epistrel.core.trimmed import trim_as_sent
 from epistrel.observability.logging import get_logger
 from epistrel.testing import pauses
 
@@ -123,7 +123,7 @@ RatingTag = Annotated[
     StringConstraints(
         strip_whitespace=True, to_lower=True, min_length=1, max_length=TAG_INPUT_MAX_CHARS
     ),
-    BeforeValidator(raw_max_length(TAG_INPUT_MAX_CHARS)),
+    BeforeValidator(trim_as_sent(TAG_INPUT_MAX_CHARS)),
 ]
 """A reason tag as sent: trimmed and lower-cased before it is compared with the deployment's."""
 

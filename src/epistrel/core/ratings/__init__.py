@@ -46,7 +46,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.ids import new_ulid
 from epistrel.core.tables import content_rating_versions, content_ratings, policies, stories
-from epistrel.core.trimmed import raw_max_length
+from epistrel.core.trimmed import trim_as_sent
 
 NAME_MAX = 80
 DESCRIPTION_MAX = 4_000
@@ -63,12 +63,12 @@ An assigned order stops at the maximum, where ties sort by name, then id."""
 Name = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX),
-    BeforeValidator(raw_max_length(NAME_MAX)),
+    BeforeValidator(trim_as_sent(NAME_MAX)),
 ]
 Reference = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=REFERENCE_MAX),
-    BeforeValidator(raw_max_length(REFERENCE_MAX)),
+    BeforeValidator(trim_as_sent(REFERENCE_MAX)),
 ]
 DisplayOrder = Annotated[int, Field(ge=DISPLAY_ORDER_MIN, le=DISPLAY_ORDER_MAX)]
 

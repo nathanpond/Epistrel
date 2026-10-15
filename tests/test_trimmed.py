@@ -1,7 +1,9 @@
 """Trimmed request strings are length-checked as sent (#366; FR-API-1, FR-API-4).
 
 C-01's negative-data check found that ``" " + 80 * "*"`` passed an 80-character name: the
-published ``maxLength`` held the raw string, the validator the stripped one. Every trimmed type
+published ``maxLength`` held the raw string, the validator the stripped one. It also sent
+``"\x1f"`` to promote: pydantic's strip kept it, the catalog's ``str.strip`` blank check did not,
+and the request was a 500. Every trimmed type
 and every field of a stripping model now refuses a raw string over its ``maxLength``, keeps
 accepting one at it, and still strips. A source check keeps a new trimmed type from missing it.
 """
@@ -58,6 +60,10 @@ def test_a_trimmed_type_checks_the_length_as_sent(name: str) -> None:
     assert caught.value.errors()[0]["type"] == "string_too_long"
     assert adapter.validate_python("x" * limit) == "x" * limit
     assert adapter.validate_python(" xy ") == "xy"
+    # Blank as the server judges blank (``str.strip``): C-01 sent "\x1f" to promote, a 500.
+    with pytest.raises(ValidationError) as caught:
+        adapter.validate_python("\x1f")
+    assert caught.value.errors()[0]["type"] == "string_too_short"
 
 
 @pytest.mark.parametrize(
@@ -83,7 +89,7 @@ def test_a_stripping_model_checks_the_length_as_sent(
 
 def test_every_trimmed_type_carries_the_raw_check() -> None:
     """Each ``StringConstraints(strip_whitespace=True, ...)`` in the source is followed, in its
-    ``Annotated``, by ``BeforeValidator(raw_max_length(...))``; each model stripping with
+    ``Annotated``, by ``BeforeValidator(trim_as_sent(...))``; each model stripping with
     ``str_strip_whitespace`` is one this file tests."""
     missing = []
     stripping = []
@@ -95,7 +101,7 @@ def test_every_trimmed_type_carries_the_raw_check() -> None:
             if "strip_whitespace=True" not in match.group(0):
                 continue
             after = source[match.end() : match.end() + 120]
-            if not re.match(r"\s*,\s*BeforeValidator\(raw_max_length\(", after):
+            if not re.match(r"\s*,\s*BeforeValidator\(trim_as_sent\(", after):
                 missing.append(
                     f"{path.relative_to(SRC)}:{source[: match.start()].count(chr(10)) + 1}"
                 )

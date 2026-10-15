@@ -27,7 +27,7 @@ from pydantic import (
     field_validator,
 )
 
-from epistrel.core.trimmed import raw_max_length
+from epistrel.core.trimmed import trim_as_sent
 
 NAME_MAX = 80
 MESSAGE_MAX = 500
@@ -91,7 +91,7 @@ present for the content. M2 accepts this one value; narrower conditions need pre
 Word = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=WORD_MAX),
-    BeforeValidator(raw_max_length(WORD_MAX)),
+    BeforeValidator(trim_as_sent(WORD_MAX)),
 ]
 Pattern = Annotated[str, StringConstraints(min_length=1, max_length=REGEX_MAX)]
 

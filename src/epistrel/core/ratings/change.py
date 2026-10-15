@@ -107,7 +107,7 @@ from epistrel.core.tables import (
 )
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.core.tables.rating_checks import RatingCheckKind, RatingCheckStatus
-from epistrel.core.trimmed import raw_max_length
+from epistrel.core.trimmed import trim_as_sent
 
 RATING_SETTING = "content_rating_id"
 """The story-scope ``config_changes`` setting of a rating change; old and new are rating ids."""
@@ -123,7 +123,7 @@ NON_TURN_ORDER = {"seed": 0, "pin": 1, "instruction": 2, "image": 3}
 Reference = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
-    BeforeValidator(raw_max_length(64)),
+    BeforeValidator(trim_as_sent(64)),
 ]
 
 

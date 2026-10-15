@@ -255,6 +255,8 @@ async def resurrection_clauses(erasure_settings: Settings, engine: AsyncEngine) 
         before = await segment_rows(engine, sid)
         (outcome,) = await run_due_jobs(engine, lib.models, sid, limit=1)
         assert outcome == "failed"  # a counted failure; the next trigger re-enqueues
+        # Refused for the erasure, not any failure (#352).
+        assert (await summary_jobs(engine, sid))[-1].result == {"error": "ErasedSubjectReferenced"}
         assert await segment_rows(engine, sid) == before
         late = await rows(
             engine,

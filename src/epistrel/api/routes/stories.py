@@ -744,7 +744,9 @@ an object's pairs) would read as a principal over the wire."""
         "Every story, newest first, unless the request filters: by `status`, by `owner` (the "
         "owner principal, `system` included), or by `relation` (`name:principal`, or `name:` "
         "for any principal; repeat it and every one must hold). Owners and relations narrow a "
-        "list only when a request asks: they gate nothing (FR-AUTH-8)."
+        "list only when a request asks: they gate nothing (FR-AUTH-8). A story held "
+        "`blocked_by_erasure` after a restore is listed with a `null` `name` until its erasure "
+        "is reapplied (FR-ADMIN-7)."
     ),
 )
 async def list_stories(

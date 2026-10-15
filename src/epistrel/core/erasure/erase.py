@@ -763,11 +763,12 @@ async def _redact_story_row(
         return
     tally.record(stories.name, changed)
     if write:
-        await conn.execute(
-            update(stories)
-            .where(stories.c.id == story_id)
-            .values(name=name, settings=settings, scenario_snapshot=snapshot)
-        )
+        values: dict[str, Any] = {"name": name, "settings": settings}
+        # A blank story has no snapshot: writing Python None to the JSONB column stores
+        # JSON null, which ck_stories_scenario_snapshot refuses (#349).
+        if snapshot is not None:
+            values["scenario_snapshot"] = snapshot
+        await conn.execute(update(stories).where(stories.c.id == story_id).values(**values))
 
 
 async def _redact_characters(

@@ -345,14 +345,14 @@ async def test_an_empty_ledger_reconciles_to_nothing(
 # -- the block ---------------------------------------------------------------------------------
 
 
-async def _pending_story(url: str, ledger_dir: Path) -> ledger.Stories:
-    """Two stories, and a ledger line erasing the subject from hers that the database lacks
-    (as after a restore), the reconciler not started."""
+async def _pending_story(url: str, ledger_dir: Path, **fields: Any) -> ledger.Stories:
+    """Two stories (``fields`` for hers), and a ledger line erasing the subject from hers that
+    the database lacks (as after a restore), the reconciler not started."""
     config = ledger.settings(url, ledger_dir)
     db = make_engine(config)
     try:
         async with respond_client(config, db) as (client, _):
-            stories = await ledger.two_stories(client)
+            stories = await ledger.two_stories(client, **fields)
     finally:
         await db.dispose()
     LedgerFile(ledger_dir).append(
@@ -473,6 +473,56 @@ async def test_a_failed_reapply_keeps_the_story_blocked(
         status = (await client.get("/admin/erasure/status", headers=e.WRITE)).json()
     assert story.status_code == 200, story.text
     assert (status["pending_count"], status["attempts"], status["last_error"]) == (0, {}, None)
+
+
+async def test_a_blocked_story_is_listed_without_its_name(
+    ledger_server: ledger.Server, tmp_path: Path
+) -> None:
+    """#348: a blank story named after the subject, blocked after a restore. ``GET /stories``
+    (also filtered by ``blocked_by_erasure``) and the library's ``list_stories`` list it with
+    its status but no name and no settings, the first call to an Engine marking the block, while
+    the other story keeps its name. #349: the reapply of the erasure (the story has no scenario
+    snapshot) succeeds, the story is served with its name redacted, and the snapshot stays SQL
+    NULL."""
+    url = ledger_server.fresh()
+    ledger_dir = tmp_path / "ledger"
+    tale = f"{ledger.SUBJECT}'s tale"
+    stories = await _pending_story(url, ledger_dir, name=tale)
+    config = ledger.settings(url, ledger_dir)
+    db = make_engine(config)
+    try:
+        lib = Engine(config)
+        lib.bind(db)
+        listed = {s.id: s for s in await lib.list_stories(CTX)}
+        held = listed[stories.named]
+        assert (held.status.value, held.name, held.settings) == ("blocked_by_erasure", None, {})
+        assert listed[stories.other].name == "A story"
+        async with respond_client(config, db) as (client, _):
+            for params in ({}, {"status": "blocked_by_erasure"}):
+                response = await client.get("/stories", params=params, headers=WRITE)
+                assert response.status_code == 200, response.text
+                assert ledger.SUBJECT not in response.text
+                names = {s["id"]: s["name"] for s in response.json()["items"]}
+                assert names[stories.named] is None
+    finally:
+        await db.dispose()
+    async with ledger.started(config) as (client, lib):
+        assert lib._reconcile_task is not None
+        await lib._reconcile_task
+        status = (await client.get("/admin/erasure/status", headers=e.WRITE)).json()
+        story = await client.get(f"/stories/{stories.named}", headers=WRITE)
+        response = await client.get("/stories", headers=WRITE)
+    assert (status["pending_count"], status["applied_count"], status["last_error"]) == (0, 1, None)
+    assert story.status_code == 200, story.text
+    assert story.json()["name"] == "[erased]'s tale"
+    names = {s["id"]: s["name"] for s in response.json()["items"]}
+    assert names[stories.named] == "[erased]'s tale"
+    (row,) = await ledger.sql(
+        url,
+        "SELECT scenario_snapshot IS NULL AS sql_null FROM stories WHERE id = :s",
+        s=stories.named,
+    )
+    assert row.sql_null
 
 
 def test_every_story_method_is_gated() -> None:

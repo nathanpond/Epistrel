@@ -55,7 +55,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import audit, clock, control, ownership
 from epistrel.core.catalog.search import Position, decode_cursor, encode_cursor
 from epistrel.core.catalog.service import config_revision, merge_patch
-from epistrel.core.erasure.index import drop_references, index_records, reindex_catalog_subject
+from epistrel.core.erasure.index import (
+    drop_catalog_mentions,
+    drop_references,
+    index_records,
+    reindex_catalog_subject,
+)
 from epistrel.core.erasure.records import persona_record
 from epistrel.core.errors import InvalidRequest, PersonaNameTaken, PersonaNotFound
 from epistrel.core.ids import new_ulid
@@ -403,6 +408,7 @@ async def delete_in(
     await ownership.drop_entity(conn, EntityType.PERSONA, persona_id, principal=principal)
     await conn.execute(sql_delete(personas).where(personas.c.id == persona_id))
     await drop_references(conn, personas.name, persona_id)
+    await drop_catalog_mentions(conn, SubjectKind.PERSONA, persona_id)  # #350
     if operation_id is None:
         operation_id = await control.record_control_operation(conn, actor=principal)
     await audit.record(

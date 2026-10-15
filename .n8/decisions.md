@@ -5874,3 +5874,32 @@ Fix pass on the 13 bugs `/n8-verify M3` filed (#333–#345), on `milestone/m3-ve
 - **Decision:** `current_milestone = 3` (the M3 Definition of Done). Every gate passes at M3: assignment, parts (250 parts), lexicon (0 violations, after moving two M3 parts' helper imports to module level, since a body-level `import` reads as the M7 term), traceability (160 rows at ≤ M3), deps and licenses.
   **Why:** This is the DoD item, and it is the step that verify showed failing. Cost if wrong: none; the gate is green.
   **Issue:** #341, #342, #343
+
+## /n8-exec M3 (verify fixes, pass 2) — 2026-10-15
+
+Fix pass on the five bugs the M3 re-verify at `9b713bf` filed (#348–#352), on `milestone/m3-verify-fixes-2` from `9b713bf`. #340 stays blocked on the owner.
+
+- **Decision:** Fix all five, the three lows (#350, #351, #352) included, not only the two highs that block closure.
+  **Why:** The first fix pass fixed its lows too. All five are confirmed and small. Leaving the lows open would leave M3 carrying known defects into M4. Cost if wrong: none; each fix is separate and guarded.
+  **Issue:** #348, #349, #350, #351, #352
+- **Decision:** The owner's M3 batched test gate still applies: each fix ran its own tests plus its area's tests and the static checks, and the branch ran one full suite before the PR.
+  **Why:** This is still M3 (as in the first fix pass). Cost if wrong: a cross-fix regression is found at the branch run and bisected.
+  **Issue:** #348–#352
+- **Decision:** #348: `Engine.list_stories` **redacts** a `blocked_by_erasure` story (`name=None`, `settings={}`) instead of leaving it out of the list. Before listing, it runs the ledger mark when the Engine has not marked yet, as the per-story gate does. The `GET /stories` description documents the null name (`docs/openapi.json` regenerated).
+  **Why:** The issue allowed either. Redacting keeps the `blocked_by_erasure` status visible, which S-ERASURE-BOUNDARY pins and an operator needs. The mark matters because, without it, a fresh Engine's list saw the restored story as `active`, with its name. The new test caught this red before the fix. Cost if wrong: a client must handle a null name, which the schema already allowed.
+  **Issue:** #348
+- **Decision:** #349: `_redact_story_row` leaves `scenario_snapshot` out of the UPDATE when the story has none, rather than writing `sql.null()` or setting `none_as_null` on the column.
+  **Why:** That is the smallest change. A column-level `none_as_null` would change every writer of the column. Cost if wrong: none; a blank story's snapshot is never anything but SQL NULL.
+  **Issue:** #349
+- **Decision:** #350: a new `index.drop_catalog_mentions(kind, id)` runs from the persona delete and the catalog character's `forgotten`. `reindex_catalog_subject` was not reused, because the character's `forgotten` runs before its row is deleted, while the subject still has terms.
+  **Why:** It is explicit and independent of ordering. Catalog-scope erasure reads its refs before the delete, so it is unaffected. Cost if wrong: none expected; the rows it drops name a subject that no longer exists.
+  **Issue:** #350
+- **Decision:** #351: `create_from_scenario` now calls `impact.two_stage` instead of its own hold check. Confirmed creations log the line too (`applied: true`), as the other two-stage paths do.
+  **Why:** The issue's expectation is "as on the other two-stage paths", and sharing the step keeps the paths aligned. Cost if wrong: one more INFO line per scenario creation.
+  **Issue:** #351
+- **Decision:** #352: the refusal reason is read from the last `lite_summary` job's `jobs.result` (`summary_jobs(...)[-1]`) at both resurrection sites.
+  **Why:** That is where the queue stores a failed job's error class, and the verifier observed the value there. Cost if wrong: none.
+  **Issue:** #352
+- **Decision (process):** For every bug in this pass, the plan comment was posted after the fix was drafted locally, though still before that fix's commit and push. Each comment says so.
+  **Why:** An ordering slip against the skill's "plan before code", recorded honestly. Cost: none to the code.
+  **Issue:** #348–#352

@@ -12,6 +12,7 @@ in ``test_i_27.py``, I-21 in ``test_i_21.py``, U-26 in ``tests/test_u_26.py``, C
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -429,6 +430,46 @@ async def test_a_catalog_cast_character_promotes_from_its_snapshot(
     assert definition["personality"] == "Mara Venn is patient, private and slow to trust."
     assert definition["background_flavor"] is None
     assert definition["true_age"] == 41
+
+
+def _impact_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    return [
+        record.msg
+        for record in caplog.records
+        if isinstance(record.msg, dict) and record.msg.get("event") == "impact report"
+    ]
+
+
+async def test_creation_logs_its_impact_report(
+    settings: Settings, engine: AsyncEngine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Creation from a scenario runs through the shared two stages (``impact.two_stage``, #351)
+    like the other two-stage mutations: a held creation logs one INFO ``impact report`` line,
+    ``applied: false`` with its warning codes, and the confirmed one logs one line, ``applied:
+    true``. The lines carry counts and codes only: no character name is in them (invariant 3)."""
+    caplog.set_level(logging.INFO, logger="epistrel.core.profiles.impact")
+    async with rest(settings, engine) as client:
+        locked, default = await scenarios.cast_characters(client)
+        warm = await g.catalog_character_id(client, "June Harrow", age=60, labels=["warm"])
+        scenario_id, _ = await g.published_scenario(
+            client, scenarios.complete_with(locked, default)
+        )
+        request = g.from_scenario(scenario_id, slots={"mother": g.catalog_slot(warm)})
+
+        caplog.clear()
+        held = await g.create_from(client, request, status=200)
+        assert held["applied"] is False
+        (line,) = _impact_lines(caplog)
+        assert line["applied"] is False
+        assert line["warnings"]
+        assert "June Harrow" not in repr(line)
+
+        caplog.clear()
+        made = await g.create_from(client, {**request, "ignore_warnings": True})
+        assert made["applied"] is True
+        assert [(x["applied"], x["warnings"]) for x in _impact_lines(caplog)] == [
+            (True, line["warnings"])
+        ]
 
 
 async def test_creation_takes_either_spelling_of_the_confirm_flag(

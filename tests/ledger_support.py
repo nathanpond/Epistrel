@@ -174,8 +174,9 @@ class Stories:
     other: str
 
 
-async def two_stories(client: httpx.AsyncClient) -> Stories:
-    named, ids = await new_story(client, PLAYER_NAME, SUBJECT, BYSTANDER)
+async def two_stories(client: httpx.AsyncClient, **fields: Any) -> Stories:
+    """``fields`` (a ``name``, say) go to the subject's story."""
+    named, ids = await new_story(client, PLAYER_NAME, SUBJECT, BYSTANDER, **fields)
     other, _ = await new_story(client, PLAYER_NAME, BYSTANDER)
     for story, pin in ((named, PIN), (other, OTHER_PIN)):
         done = await client.put(

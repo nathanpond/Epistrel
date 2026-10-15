@@ -108,6 +108,7 @@ from epistrel.core.catalog.service import (
 from epistrel.core.catalog.validation import RUNNER
 from epistrel.core.enums import EntryStatus
 from epistrel.core.erasure.index import (
+    drop_catalog_mentions,
     drop_prefixed,
     drop_references,
     index_records,
@@ -515,9 +516,11 @@ class CharacterCatalog(CatalogService):
             await reindex_catalog_subject(conn, SubjectKind.CATALOG_CHARACTER, entry_id)
 
     async def forgotten(self, conn: AsyncConnection, entry_id: str) -> None:
-        """A delete drops the draft's and every version's index rows (#123)."""
+        """A delete drops the draft's and every version's index rows (#123), and the rows of
+        other catalog records that mention her (#350)."""
         await drop_references(conn, character_catalog.name, entry_id)
         await drop_prefixed(conn, character_versions.name, f"{entry_id}@")
+        await drop_catalog_mentions(conn, SubjectKind.CATALOG_CHARACTER, entry_id)
 
     async def project(self, conn: AsyncConnection, shown: Shown, projection: Projection) -> Any:
         return await _project(

@@ -2758,10 +2758,14 @@ class Engine:
         character with its companion; companions are not listed as scenarios) and what names it
         in a relation (with the relations' names), each type a page of up to ``limit`` with its
         count, newest first. ``cursors`` maps a page (``stories``, ``related.stories``, …) to its
-        previous page's ``next_cursor``. An unknown principal answers empty pages."""
+        previous page's ``next_cursor``. An unknown principal answers empty pages. A story the
+        erasure reconciler holds blocked is listed without its name (#359); the ledger is
+        compared first, as for ``list_stories`` (#360)."""
         found = principals.lookup_principal_id(principal_id)
         given = dict(cursors or {})
         refuse_nul({"principal": found, "cursors": given}, ("query",))
+        if not self._erasure_marked:
+            await self._mark_erasures()
         return await principals.lookup(self.db, found, limit=limit, cursors=given)
 
     async def offboard_principal(
@@ -3636,7 +3640,10 @@ class Engine:
         """A page of the ``guardrail`` or ``memory`` review list (FR-FB-3): the current ratings
         carrying the list's tags, newest first, with the message, the input it answered and its
         context. 422 for a window that ends before it starts, a tag not on the list or a cursor
-        another listing gave; 404 for an unknown story."""
+        another listing gave; 404 for an unknown story. Ratings of a story the erasure
+        reconciler holds blocked are left out; the ledger is compared first (#360)."""
+        if not self._erasure_marked:
+            await self._mark_erasures()
         return await feedback_reporting.review(
             self.db,
             review,
@@ -3656,10 +3663,14 @@ class Engine:
         ``feedback_export_disabled`` while the deployment's ``feedback_export`` is off (checked
         after the request and before its ``Idempotency-Key``, so a refusal writes nothing); 422
         for a window that ends before it starts or ``min_rating`` above ``max_rating``. Keyed per
-        deployment: a retry returns the stored answer and writes no second file."""
+        deployment: a retry returns the stored answer and writes no second file. Ratings of a
+        story the erasure reconciler holds blocked are left out; the ledger is compared first
+        (#360)."""
         principal = self.require_principal(ctx)
         feedback_export.check_request(request)
         await feedback_export.require_enabled(self.db)
+        if not self._erasure_marked:
+            await self._mark_erasures()
         return await self._keyed(
             ctx,
             "export_feedback",

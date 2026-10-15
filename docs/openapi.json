@@ -10518,7 +10518,7 @@
                 "type": "null"
               }
             ],
-            "description": "The story's or profile's name, a catalog entry's draft card name, a persona's name, or a media asset's caption (else its alt text).",
+            "description": "The story's or profile's name, a catalog entry's draft card name, a persona's name, or a media asset's caption (else its alt text). `null` for a story that is `blocked_by_erasure` after a restore, until its erasure is reapplied.",
             "title": "Name"
           },
           "status": {
@@ -38493,7 +38493,7 @@
     },
     "/principals/{principal_id}": {
       "get": {
-        "description": "Every entity linked to the principal (FR-AUTH-7), by type: `owned` (its `owner_principal`) and `related` (the entities with a relation naming it, with the relations' names). Stories, catalog characters, scenarios, personas, media assets and engine profiles each answer `{count, items, next_cursor}`, newest first. An owned item is `{id, name, status, version, listing_status}` (`null` where the type has none), and a character's names its companion scenario (`companion`), which follows it and is not listed under scenarios. Archived stories and entries, retired media and deleted profiles are listed with their status. `limit` (1 to 200) applies to every page; each page continues with its own cursor, `cursor[<type>]` or `cursor[related.<type>]` (422 `cursor_invalid` for one another page gave). A principal nothing names answers empty pages: principals are opaque and never resolved. Ownership and relations gate nothing (FR-AUTH-8).",
+        "description": "Every entity linked to the principal (FR-AUTH-7), by type: `owned` (its `owner_principal`) and `related` (the entities with a relation naming it, with the relations' names). Stories, catalog characters, scenarios, personas, media assets and engine profiles each answer `{count, items, next_cursor}`, newest first. An owned item is `{id, name, status, version, listing_status}` (`null` where the type has none), and a character's names its companion scenario (`companion`), which follows it and is not listed under scenarios. Archived stories and entries, retired media and deleted profiles are listed with their status. A story held `blocked_by_erasure` after a restore is listed with a `null` `name` until its erasure is reapplied (FR-ADMIN-7). `limit` (1 to 200) applies to every page; each page continues with its own cursor, `cursor[<type>]` or `cursor[related.<type>]` (422 `cursor_invalid` for one another page gave). A principal nothing names answers empty pages: principals are opaque and never resolved. Ownership and relations gate nothing (FR-AUTH-8).",
         "operationId": "lookup_principal",
         "parameters": [
           {

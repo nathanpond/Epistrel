@@ -5903,3 +5903,25 @@ Fix pass on the five bugs the M3 re-verify at `9b713bf` filed (#348–#352), on 
 - **Decision (process):** For every bug in this pass, the plan comment was posted after the fix was drafted locally, though still before that fix's commit and push. Each comment says so.
   **Why:** An ordering slip against the skill's "plan before code", recorded honestly. Cost: none to the code.
   **Issue:** #348–#352
+
+## /n8-exec M3 (verify fixes, pass 3) — 2026-10-15
+
+Fix pass on the three bugs that the M3 re-verify at `8868c9d` filed (#359, #360, #361). It runs on `milestone/m3-verify-fixes-3` from `8868c9d`. #340 stays blocked on the owner.
+
+- **Decision:** Fix all three, the medium (#360) and the low (#361) included.
+  **Why:** This is the same rule as passes 1 and 2. All three are confirmed and small. #360 shares #359's change to `lookup_principal`. Cost if wrong: none; each fix has its own guard.
+  **Issue:** #359, #360, #361
+- **Decision:** The owner's M3 batched test gate still applies. Each fix ran its own tests, its area's tests and the static checks. The branch ran one full suite before the PR.
+  **Why:** This is still M3, as in passes 1 and 2. Cost if wrong: a regression between the fixes would surface at the branch run and be bisected there.
+  **Issue:** #359–#361
+- **Decision:** #359: the principal lookup's owned `stories` page selects the name as `CASE WHEN status = 'blocked_by_erasure' THEN NULL ELSE name END`. It **redacts** the story rather than leaving it out, the same contract `GET /stories` follows (#348). The `related.*` pages were checked and left unchanged: they carry only ids and relation names, never a story's name. The `OwnedItem.name` field and the route description document the null, and `docs/openapi.json` is regenerated.
+  **Why:** One list contract across both reads. Operators keep seeing that the story exists and is blocked. Cost if wrong: a client must handle a null name, which the schema already allowed.
+  **Issue:** #359
+- **Decision:** #360: `Engine.lookup_principal`, `feedback_review` **and** `export_feedback` run the ledger mark first when the Engine has not marked yet. Export was not named in the issue. It is included because it filters on the same `feedback_reporting.unblocked()`, so a fresh library Engine would otherwise export a restored story's ratings. The test confirmed this: with export's mark removed, the case count was 1. `feedback_aggregates` returns counts with no content, and story-scoped aggregates are already gated, so it is left alone.
+  **Why:** FR-API-6 parity. The mark is the step that makes `unblocked()` correct, and every read that relies on it needs it. Cost if wrong: one ledger compare on an Engine's first such call, which the gate already does.
+  **Issue:** #360
+- **Decision:** Rule 1 (#361): the fix is column-level, `JSONB(none_as_null=True)` on `idempotency_keys.result`, rather than per-site `sql.null()`. It also covers a third writer of the same shape, the stale-key settle in `retention.py:296`, which the issue did not name. Migration `0042` is data-only: it sets JSON-null rows to SQL NULL, and its downgrade is a no-op. This differs from #349's per-site choice for `scenario_snapshot`. A stored result is always `{status, body}` and never deliberately JSON null, so the column-level switch changes no legitimate write. It also stops a future purge site from bringing the bug back.
+  **Why:** With three writers, a per-site fix would leave the next one to rediscover the bug. Cost if wrong: none expected; the DDL is unchanged.
+  **Issue:** #361
+- **Decision (process):** This pass posted every plan comment before any code was written. That corrects pass 2's ordering slip. Every new guard was shown to fail before its fix: the #360 review and export halves by removing each mark, and the 0042 test by emptying the migration.
+  **Issue:** #359–#361

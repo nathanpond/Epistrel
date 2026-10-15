@@ -46,6 +46,7 @@ from epistrel.core.erasure.index import (
     records_of,
 )
 from epistrel.core.ids import new_ulid
+from epistrel.core.tables.media import SubjectKind
 from epistrel.observability import logging as telemetry_logging
 from epistrel.tools import reindex_subjects
 from tests import character_support as characters
@@ -571,3 +572,28 @@ async def test_indexing_logs_counts_only(engine: AsyncEngine, captured: io.Strin
         "trace_id",
         "span_id",
     }
+
+
+def test_a_multi_word_name_is_matched_by_its_words() -> None:
+    """#364: the words of a multi-word name match on their own, less titles, particles and
+    short words; a one-word name adds nothing; a word another subject of the scope uses (a
+    shared surname, a word of another's alias) is left out; aliases are never split."""
+    assert index.name_parts("Marisol Quenby") == ["marisol", "quenby"]
+    assert index.name_parts("Dr. Ada van der Berg Jr") == ["ada", "berg"]
+    assert index.name_parts("(Marisol, the Bold)") == ["marisol", "bold"]
+    assert index.name_parts("Ty") == []
+    assert index.name_parts("Jo X") == ["jo"]
+    marisol, ada, witch = index.with_name_parts(
+        [
+            (["Marisol Quenby"], ["Marisol Quenby", "Mari"]),
+            (["Ada Quenby"], ["Ada Quenby"]),
+            (["Wren"], ["Wren", "the Red Witch", "Ada's Shadow"]),
+        ]
+    )
+    assert marisol == ("Marisol Quenby", "Mari", "marisol")
+    assert ada == ("Ada Quenby",)  # "ada" is in the witch's alias, "quenby" is shared
+    assert witch == ("Wren", "the Red Witch", "Ada's Shadow")
+    pattern = index.Subject(SubjectKind.CHARACTER, "m", marisol).pattern()
+    assert pattern is not None
+    assert pattern.search(index.normalized("Hi Marisol."))
+    assert not pattern.search(index.normalized("Hi Quenby."))

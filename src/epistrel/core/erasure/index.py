@@ -18,6 +18,13 @@ structured data and in prose. ``subject_references`` is the only lookup erasure 
 - a persona (``persona``, ``personas.id``), whose term is its ``name``. It links the player
   characters made from it (``characters.persona_id``); an ad-hoc persona has none.
 
+Each subject is also matched by the **words of its multi-word names** (``name_parts``, #364: a
+player writes "Marisol" for "Marisol Quenby"): the names above, never the aliases (an epithet's
+words, "the Red Witch", are not the person), less articles, particles and titles
+(``NAME_PARTICLES``) and words shorter than ``MIN_TERM_CHARS``. A word another subject of the
+same scope also uses (a shared surname, a word of another's name or alias) is left out
+(``with_name_parts``): it would name a living character too. The erasure boundary says so.
+
 A story record (``scope = story``) is scanned for its story's characters, and every row that
 names a linked story character gets its ``catalog_character`` or ``persona`` row too, in the
 same field (so a story record naming catalog-sourced Linda has a ``character`` and a
@@ -104,6 +111,20 @@ of strings (#115). Anything else at this path (a value that is not a list, an en
 a string) is skipped."""
 CHUNK = 500
 """Records written per statement batch."""
+NAME_PARTICLES = frozenset(
+    {
+        # articles, conjunctions and name particles
+        *("a", "an", "the", "and", "of", "or", "y", "e", "al", "el", "bin", "ibn", "bint"),
+        *("da", "das", "de", "del", "della", "dei", "den", "der", "des", "di", "do", "dos"),
+        *("du", "la", "le", "les", "lo", "ter", "van", "von", "zu"),
+        # titles, honorifics and generational suffixes
+        *("mr", "mrs", "ms", "mx", "miss", "dr", "doctor", "prof", "professor", "sir", "dame"),
+        *("lady", "lord", "st", "saint", "jr", "sr", "ii", "iii", "iv", "captain", "capt"),
+        *("king", "queen", "prince", "princess", "father", "mother", "brother", "sister"),
+        *("aunt", "uncle", "master", "mistress", "madam", "madame", "señor", "señora"),
+    }
+)
+"""Words of a multi-word name that never match on their own (``name_parts``), case-folded."""
 
 Declared = tuple[SubjectKind, str, str | None]
 """A declared subject: its kind, its id and the field that declared it."""
@@ -162,6 +183,49 @@ def mentions(value: str, names: Iterable[str]) -> bool:
 
 # -- terms -------------------------------------------------------------------------------------
 
+_WORD_EDGES = re.compile(r"^\W+|\W+$")
+
+
+def _words(value: str) -> list[str]:
+    """``value``'s whitespace-separated words, normalised, without leading or trailing
+    punctuation (``"(Marisol,"`` is ``marisol``)."""
+    return [w for w in (_WORD_EDGES.sub("", word) for word in normalized(value).split()) if w]
+
+
+def name_parts(name: str) -> list[str]:
+    """The words of a multi-word ``name`` a subject is also matched by (see the module
+    docstring): none for a one-word name."""
+    words = _words(name)
+    if len(words) < 2:
+        return []
+    return [w for w in words if len(w) >= MIN_TERM_CHARS and w not in NAME_PARTICLES]
+
+
+def with_name_parts(
+    named: Sequence[tuple[Sequence[str], Sequence[str]]],
+) -> list[tuple[str, ...]]:
+    """For each subject of one scope, given as ``(names, terms)`` (``terms`` holds the names),
+    its terms followed by the words of its names no other subject of the scope uses."""
+    # A word counts as used wherever the matcher would find it: "Ada's Shadow" uses "ada".
+    owned = [
+        {w for term in terms for w in (*_words(term), *re.findall(r"\w+", normalized(term)))}
+        for _, terms in named
+    ]
+    users: dict[str, int] = {}
+    for words in owned:
+        for word in words:
+            users[word] = users.get(word, 0) + 1
+    found: list[tuple[str, ...]] = []
+    for (names, terms), words in zip(named, owned, strict=True):
+        parts = [
+            part
+            for name in names
+            for part in name_parts(name)
+            if users.get(part, 0) - (part in words) == 0
+        ]
+        found.append(tuple(dict.fromkeys([*terms, *parts])))
+    return found
+
 
 def _strings(value: Any) -> list[str]:
     if isinstance(value, str):
@@ -182,6 +246,7 @@ async def catalog_subjects(conn: AsyncConnection) -> list[Subject]:
     """Every catalog character (names and aliases of its draft and every version) and every
     persona (its name)."""
     names: dict[str, set[str]] = {}
+    terms: dict[str, set[str]] = {}
     draft, content = character_catalog.c.draft, character_versions.c.content
     drafts = select(character_catalog.c.id, draft[NAME_PATH].astext, draft[ALIASES_PATH])
     versions = select(
@@ -189,28 +254,38 @@ async def catalog_subjects(conn: AsyncConnection) -> list[Subject]:
     )
     for query in (drafts, versions):
         for subject_id, name, aliases in await conn.execute(query):
-            terms = names.setdefault(str(subject_id), set())
-            terms.update(_strings(name))
-            terms.update(_strings(aliases))
-    found = [Subject(SubjectKind.CATALOG_CHARACTER, i, tuple(sorted(n))) for i, n in names.items()]
+            names.setdefault(str(subject_id), set()).update(_strings(name))
+            held = terms.setdefault(str(subject_id), set())
+            held.update(_strings(name))
+            held.update(_strings(aliases))
+    keys: list[tuple[SubjectKind, str]] = []
+    named: list[tuple[list[str], list[str]]] = []
+    for subject_id, held in terms.items():
+        keys.append((SubjectKind.CATALOG_CHARACTER, subject_id))
+        named.append((sorted(names.get(subject_id, ())), sorted(held)))
     for subject_id, name in await conn.execute(select(personas.c.id, personas.c.name)):
-        found.append(Subject(SubjectKind.PERSONA, str(subject_id), tuple(_strings(name))))
-    return found
+        keys.append((SubjectKind.PERSONA, str(subject_id)))
+        named.append((_strings(name), _strings(name)))
+    return [
+        Subject(kind, subject_id, found)
+        for (kind, subject_id), found in zip(keys, with_name_parts(named), strict=True)
+    ]
 
 
-def _overrides(snapshot: Any) -> dict[str, list[str]]:
-    """The scenario snapshot's ``name_overrides`` terms by role id."""
+def _overrides(snapshot: Any) -> dict[str, tuple[list[str], list[str]]]:
+    """The scenario snapshot's ``name_overrides`` by role id: its names (``canonical``) and its
+    aliases."""
     roles = _at(snapshot, ("cast", "roles"))
-    found: dict[str, list[str]] = {}
+    found: dict[str, tuple[list[str], list[str]]] = {}
     for role in roles if isinstance(roles, list) else []:
         if not isinstance(role, Mapping) or not isinstance(role.get("id"), str):
             continue
         overrides = role.get("name_overrides")
         if isinstance(overrides, Mapping):
-            found[role["id"]] = [
-                *_strings(overrides.get("canonical")),
-                *_strings(overrides.get("aliases")),
-            ]
+            found[role["id"]] = (
+                _strings(overrides.get("canonical")),
+                _strings(overrides.get("aliases")),
+            )
     return found
 
 
@@ -220,17 +295,18 @@ async def story_subjects(conn: AsyncConnection, story_id: str) -> list[Subject]:
         select(stories.c.scenario_snapshot).where(stories.c.id == story_id)
     )
     overrides = _overrides(snapshot)
-    snapshotted: dict[str, list[str]] = {}
+    snapshotted: dict[str, tuple[list[str], list[str]]] = {}
     for character_id, content in await conn.execute(
         select(character_snapshots.c.character_id, character_snapshots.c.content).where(
             character_snapshots.c.story_id == story_id
         )
     ):
-        snapshotted[str(character_id)] = [
-            *_strings(_at(content, NAME_PATH)),
-            *_strings(_at(content, ALIASES_PATH)),
-        ]
-    found: list[Subject] = []
+        snapshotted[str(character_id)] = (
+            _strings(_at(content, NAME_PATH)),
+            _strings(_at(content, ALIASES_PATH)),
+        )
+    keys: list[tuple[str, tuple[Defined, ...]]] = []
+    named: list[tuple[list[str], list[str]]] = []
     rows = await conn.execute(
         select(
             characters.c.id,
@@ -243,10 +319,22 @@ async def story_subjects(conn: AsyncConnection, story_id: str) -> list[Subject]:
     )
     for row in rows:
         character_id = str(row.id)
+        snapshot_names, snapshot_aliases = snapshotted.get(character_id, ([], []))
+        role_names, role_aliases = (
+            overrides.get(row.role_id, ([], [])) if row.role_id is not None else ([], [])
+        )
+        names = [
+            *_strings(row.name),
+            *snapshot_names,
+            *role_names,
+            *_strings(_at(row.persona_snapshot, ("name",))),
+        ]
         terms = [
             *_strings(row.name),
-            *snapshotted.get(character_id, ()),
-            *(overrides.get(row.role_id, ()) if row.role_id is not None else ()),
+            *snapshot_names,
+            *snapshot_aliases,
+            *role_names,
+            *role_aliases,
             *_strings(_at(row.persona_snapshot, ("name",))),
         ]
         links: list[Defined] = []
@@ -254,15 +342,12 @@ async def story_subjects(conn: AsyncConnection, story_id: str) -> list[Subject]:
             links.append((SubjectKind.CATALOG_CHARACTER, str(row.source_catalog_id)))
         if row.persona_id is not None:
             links.append((SubjectKind.PERSONA, str(row.persona_id)))
-        found.append(
-            Subject(
-                SubjectKind.CHARACTER,
-                character_id,
-                tuple(dict.fromkeys(terms)),
-                tuple(links),
-            )
-        )
-    return found
+        keys.append((character_id, tuple(links)))
+        named.append((names, list(dict.fromkeys(terms))))
+    return [
+        Subject(SubjectKind.CHARACTER, character_id, found, links)
+        for (character_id, links), found in zip(keys, with_name_parts(named), strict=True)
+    ]
 
 
 # -- computing a record's rows -----------------------------------------------------------------
@@ -835,6 +920,7 @@ __all__ = [
     "ALIASES_PATH",
     "EXEMPT_TABLES",
     "MIN_TERM_CHARS",
+    "NAME_PARTICLES",
     "NAME_PATH",
     "SUBJECT_WRITERS",
     "Declared",
@@ -855,6 +941,7 @@ __all__ = [
     "index_records",
     "index_references",
     "mentions",
+    "name_parts",
     "normalized",
     "rebuild",
     "rebuild_scope",
@@ -864,5 +951,6 @@ __all__ = [
     "reindex_story",
     "story_ids",
     "story_subjects",
+    "with_name_parts",
     "writer",
 ]

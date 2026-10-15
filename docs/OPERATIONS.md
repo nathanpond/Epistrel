@@ -87,6 +87,7 @@ Audit views show the same markers: `GET /stories/{id}/history?viewpoint=omniscie
 - subjects appearing in images only visually with no declared or named reference
 - backups taken before the erasure, until restored and reconciled
 - logs, which never carry story content
+- a word of the subject's name on its own when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`), and nicknames never declared as aliases (the full name, the declared aliases and every other word of the name are matched)
 
 **Logs.** Operational logs contain no story content by default (NFR-SEC-4).
 <!-- erasure-boundary:end -->

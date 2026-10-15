@@ -23,10 +23,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.config_changes import read_settings
+from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import PolicyNotFound, StoryNotFound
 from epistrel.core.policies.model import SCOPE_RANK, ModelAssistedRule, Policy, Scope, Target
 from epistrel.core.policies.rows import policy_of, select_policies
@@ -55,9 +56,24 @@ async def list_policies(
     scope: Scope | None = None,
     story_id: str | None = None,
     include_retired: bool = False,
+    exclude_blocked: bool = False,
 ) -> list[Policy]:
-    """Policies ordered by scope (global first), scope id, name; retired ones on request."""
+    """Policies ordered by scope (global first), scope id, name; retired ones on request.
+    ``exclude_blocked`` leaves out the story and character policies of a story the erasure
+    reconciler holds ``blocked_by_erasure`` (#363)."""
     query = select_policies()
+    if exclude_blocked:
+        query = query.where(
+            or_(
+                policies.c.story_id.is_(None),
+                exists(
+                    select(stories.c.id).where(
+                        stories.c.id == policies.c.story_id,
+                        stories.c.status != StoryStatus.BLOCKED_BY_ERASURE.value,
+                    )
+                ),
+            )
+        )
     if scope is not None:
         query = query.where(policies.c.scope == scope.value)
     if story_id is not None:

@@ -23,6 +23,12 @@ PROVIDER_RETENTION = (
 VISUAL_ONLY = "subjects appearing in images only visually with no declared or named reference"
 OLD_BACKUPS = "backups taken before the erasure, until restored and reconciled"
 LOGS_ITEM = "logs, which never carry story content"
+SHARED_NAME_WORDS = (
+    "a word of the subject's name on its own when another character in the same scope also "
+    "uses it (a shared surname) or when it is a title or particle (`Dr`, `de`), and nicknames "
+    "never declared as aliases (the full name, the declared aliases and every other word of "
+    "the name are matched)"
+)
 LOGS = "operational logs contain no story content by default (NFR-SEC-4)"
 
 SHARED_MEDIA = (
@@ -54,6 +60,7 @@ OUT_OF_SCOPE: tuple[str, ...] = (
     VISUAL_ONLY,
     OLD_BACKUPS,
     LOGS_ITEM,
+    SHARED_NAME_WORDS,
 )
 
 
@@ -106,6 +113,7 @@ __all__ = [
     "OUT_OF_SCOPE",
     "PROVIDER_RETENTION",
     "SHARED_MEDIA",
+    "SHARED_NAME_WORDS",
     "VISUAL_ONLY",
     "ErasureBoundary",
     "normalised",

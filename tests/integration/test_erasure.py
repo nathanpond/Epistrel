@@ -495,3 +495,39 @@ async def respond_or_none(settings: Settings, engine: AsyncEngine, story: str, a
     """The status of a turn on the (still archived) story."""
     async with respond_client(settings, engine) as (client, _):
         return (await respond(client, story, body(actor, "Still there?"))).status_code
+
+async def test_a_multi_word_name_is_erased_by_its_words(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#364 (the owner's option (a)): a player writes "Marisol" for "Marisol Quenby". The
+    erasure redacts the bare first name in the input event and the transcript too, and the
+    residue scan finds nothing, the first name included. Complement: "Quenby" is also Ada
+    Quenby's, so the surname alone is left (the boundary says so), and Ada keeps her name."""
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story, ids = await new_story(client, "Wren", "Marisol Quenby", "Ada Quenby", "Ty")
+        lib.models.stub.script("generation", ["Marisol Quenby waves at Ty and Ada Quenby."])
+        await played(
+            client,
+            story,
+            body(ids["Wren"], "Hi Marisol. Have you seen Quenby?"),
+            headers={"Idempotency-Key": "turn-1"},
+        )
+        assert sum((await e.residue(engine, story, ["Marisol"])).values()) > 0
+        done = await e.erase(client, "character", ids["Marisol Quenby"], story)
+        assert done["residue"] == 0
+    found = await e.residue(engine, story, ["Marisol"])
+    assert {t: n for t, n in found.items() if n} == {}
+    inputs = await rows(
+        engine,
+        "SELECT payload FROM events WHERE story_id = :s AND type = 'player_input'",
+        s=story,
+    )
+    assert [i.payload["say"] for i in inputs] == ["Hi [erased]. Have you seen Quenby?"]
+    replies = await rows(
+        engine,
+        "SELECT payload FROM events WHERE story_id = :s AND type = 'message_rendered'",
+        s=story,
+    )
+    assert [r.payload["text"] for r in replies] == ["[erased] waves at Ty and Ada Quenby."]
+    assert sum((await e.residue(engine, story, ["Ada Quenby"])).values()) > 0
+

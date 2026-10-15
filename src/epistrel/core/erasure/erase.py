@@ -18,7 +18,8 @@ subjects only), and in the catalog scope, every catalog record is also matched a
 subject's terms (a catalog record written before the subject existed holds its name without an
 index row, #123's hand-off). The subject's **terms** are its names and aliases as the index
 collects them (``index.story_subjects``; a catalog character's draft and versions; a persona's
-name), read before anything is deleted.
+name; ``index.catalog_subjects``), with the words of a multi-word name that no other subject of
+the scope uses (``index.with_name_parts``, #364), read before anything is deleted.
 
 **A dry run** computes exactly what the real run would touch and writes nothing (no operation,
 no idempotency key): ``{records: {table: n}, prose_segments, media, idempotency_results}`` with
@@ -124,6 +125,7 @@ from epistrel.core.erasure.index import (
     ALIASES_PATH,
     NAME_PATH,
     Record,
+    catalog_subjects,
     index_records,
     records_of,
     reindex_story,
@@ -524,7 +526,13 @@ async def _subject(conn: AsyncConnection, request: ErasureRequest) -> _Subject:
     catalog_terms, in_catalog = await _catalog_terms(conn, subject)
     if story_id is None:
         known = in_catalog or await _erased_before(conn, subject, None)
-        return _Subject(subject.kind, subject.id, None, (), tuple(catalog_terms), known)
+        # The words of its names the catalog's other subjects do not use (#364).
+        for candidate in await catalog_subjects(conn):
+            if (candidate.kind, candidate.id) == (subject.kind, subject.id):
+                catalog_terms += candidate.terms
+        return _Subject(
+            subject.kind, subject.id, None, (), tuple(dict.fromkeys(catalog_terms)), known
+        )
     c = characters.c
     linked = {
         SubjectKind.CHARACTER: c.id,

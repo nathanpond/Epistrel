@@ -1991,12 +1991,28 @@ class Engine:
         story_id: str | None = None,
         include_retired: bool = False,
     ) -> list[Policy]:
+        """Policies ordered by scope, scope id and name. The story and character policies of a
+        story the erasure reconciler holds blocked are left out (they may still name the
+        subject); the ledger is compared first, as for ``list_stories`` (#363)."""
+        if not self._erasure_marked:
+            await self._mark_erasures()
         return await policy_store.list_policies(
-            self.db, scope=scope, story_id=story_id, include_retired=include_retired
+            self.db,
+            scope=scope,
+            story_id=story_id,
+            include_retired=include_retired,
+            exclude_blocked=True,
         )
 
     async def policies_get(self, ctx: RequestContext, policy_id: str) -> Policy:
-        return await policy_store.get_policy(self.db, policy_id)
+        """One policy, retired or not. A policy of a blocked story is 503 ``erasure_pending``,
+        as every call naming the story is (#363)."""
+        if not self._erasure_marked:
+            await self._mark_erasures()
+        policy = await policy_store.get_policy(self.db, policy_id)
+        if policy.story_id is not None:
+            await erasure_ledger.check_story(self.db, policy.story_id)
+        return policy
 
     @library_only("served as `effective_policies` in `GET /stories/{id}/settings`")
     async def policies_effective(self, ctx: RequestContext, story_id: str) -> tuple[Policy, ...]:

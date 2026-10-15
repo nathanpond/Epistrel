@@ -181,7 +181,12 @@ from epistrel.core.ports import Ports
 from epistrel.core.profiles import effective
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.fingerprint import RuntimeFacts, stamp
-from epistrel.core.profiles.impact import ImpactReport, Recommendation, creation_report
+from epistrel.core.profiles.impact import (
+    ImpactReport,
+    Recommendation,
+    creation_report,
+    two_stage,
+)
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.ratings import load_graph
 from epistrel.core.ratings.change import (
@@ -1600,30 +1605,38 @@ async def create_from_scenario(
     await gate(genesis_texts(found), found.rating_id, [m.true_age for m in found.members])
     profile_id, version, document_, warnings = await choose_profile(db, found)
     found.entries.extend(warnings)
-    impact = await impact_of(db, found, profile_id, version, document_, facts)
-    if impact.warnings and not request.ignore_warnings:
-        return CreationHeld(impact=impact, report=creation_report_of(found))
-    created_id, revision, rating = await genesis(
-        db,
-        found,
-        principal=principal,
-        profile=(profile_id, version),
-        write_policies=write_policies,
-        story_id=story_id,
-    )
-    report = creation_report_of(found, story_id=created_id)
-    return CreatedStory(
-        story_id=created_id,
-        characters=tuple(
-            CharacterRef(id=m.id, name=m.name, role_id=m.role.id) for m in found.members
-        ),
-        timeline_revision=revision,
-        content_rating=rating,
-        scenario=ScenarioOrigin(id=found.scenario_id, version=found.version),
-        engine_profile=effective.ProfileVersionRef(id=profile_id, version=version),
-        report=report,
-        impact=impact,
-    )
+
+    async def report() -> ImpactReport:
+        return await impact_of(db, found, profile_id, version, document_, facts)
+
+    async def apply(impact: ImpactReport) -> CreatedStory:
+        created_id, revision, rating = await genesis(
+            db,
+            found,
+            principal=principal,
+            profile=(profile_id, version),
+            write_policies=write_policies,
+            story_id=story_id,
+        )
+        return CreatedStory(
+            story_id=created_id,
+            characters=tuple(
+                CharacterRef(id=m.id, name=m.name, role_id=m.role.id) for m in found.members
+            ),
+            timeline_revision=revision,
+            content_rating=rating,
+            scenario=ScenarioOrigin(id=found.scenario_id, version=found.version),
+            engine_profile=effective.ProfileVersionRef(id=profile_id, version=version),
+            report=creation_report_of(found, story_id=created_id),
+            impact=impact,
+        )
+
+    # The shared two-stage step, so a held creation logs its impact report like every other
+    # two-stage mutation (#351).
+    staged = await two_stage(report, apply, ignore_warnings=request.ignore_warnings)
+    if staged.result is None:
+        return CreationHeld(impact=staged.impact, report=creation_report_of(found))
+    return staged.result
 
 
 __all__ = [

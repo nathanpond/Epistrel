@@ -5961,3 +5961,22 @@ Fix pass on the four bugs the M3 re-verify at `c26993c` filed (#363, #364, #365,
 - **Decision (owner):** #340 takes option 1: docs/04 C-15 is amended to read that a phrase planted in a catalog character's public description appears in **no prompt and no story knowledge record** (the `characters` row, events, transcript and story texts). The genesis snapshot (`character_snapshots`) and the creation report keep the catalog entry as provenance (FR-SCN-9), and erasure reaches both. The behaviour is unchanged.
   **Why:** The snapshot is the provenance FR-SCN-9 asks for. Dropping the card fields would break the snapshot-equals-published-version guarantee that `test_i_17`/`test_i_27` assert. #339's test already asserts the amended wording.
   **Issue:** #340
+
+## Ad-hoc — 2026-10-15
+
+- **Change:** Erasure redacts only mentions attributed to the subject (ADR-154, implemented under #372):
+  - a positional subject index (offsets and rule per prose mention, never the text);
+  - one deterministic certain/candidate matcher, shared by the indexer, erasure, `verify()` and the FR-ADMIN-9 guard, using a bundled common-word list: a common word matches only when capitalised mid-sentence, and is a candidate when capitalised at the start of a sentence;
+  - candidates erased only when an operator confirms them, with `candidates_remaining` reported;
+  - docs/03 FR-ADMIN-6 and FR-ADMIN-8 amended.
+
+  This replaces #364's option (a), "match every name word", and the option 1 decision on #372.
+  **Why:** Matching every word of a name redacted ordinary English ("will", "black") from other characters' prose and refused later turns that used them (#372). Owner decision 2026-10-15, at the M3 re-verify 4.
+  **Affects:**
+  - M3: #124, #372, #373, #374, and the FR-ADMIN-6/8 boundary.
+  - M4: #135 (memory source references).
+  - M5: #178 (erasing beliefs about a subject).
+  - M7: #237 (rewrites revalidated) and #251 (imports apply erasures).
+  - M8: #266 (image captions and alt text indexed by position).
+
+  The plans for M4, M5, M7 and M8 may assume field-level indexing and need `/n8-replan`.

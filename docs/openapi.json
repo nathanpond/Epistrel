@@ -381,6 +381,50 @@
         "title": "BudgetOverride",
         "type": "object"
       },
+      "CandidateBody": {
+        "additionalProperties": false,
+        "description": "A mention the erasure redacts only when confirmed (ADR-154): a common word of the\nsubject's name capitalised at the start of a sentence. The snippet is returned by the dry\nrun only and never stored.",
+        "properties": {
+          "candidate_id": {
+            "description": "Pass it in `confirm_candidates` to erase it too.",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "field": {
+            "description": "The text's path in the record (dotted, list items `[n]`).",
+            "title": "Field",
+            "type": "string"
+          },
+          "record_id": {
+            "title": "Record Id",
+            "type": "string"
+          },
+          "record_table": {
+            "title": "Record Table",
+            "type": "string"
+          },
+          "rule": {
+            "description": "`candidate`.",
+            "title": "Rule",
+            "type": "string"
+          },
+          "snippet": {
+            "description": "The text around the mention, for the operator.",
+            "title": "Snippet",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "record_table",
+          "record_id",
+          "field",
+          "snippet",
+          "rule"
+        ],
+        "title": "CandidateBody",
+        "type": "object"
+      },
       "CardImage": {
         "additionalProperties": false,
         "description": "An image on a public card (FR-CAT-4): the media asset and its alt text, nothing else.",
@@ -4763,6 +4807,20 @@
       "ErasureBody": {
         "description": "What the erasure did, or (``dry_run``) would do.",
         "properties": {
+          "candidates": {
+            "description": "Dry run only: every candidate mention, with its id, location and a snippet. A real run lists none.",
+            "items": {
+              "$ref": "#/components/schemas/CandidateBody"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "candidates_remaining": {
+            "default": 0,
+            "description": "Candidate mentions met and not confirmed, left in place (ADR-154).",
+            "title": "Candidates Remaining",
+            "type": "integer"
+          },
           "config_revision": {
             "title": "Config Revision",
             "type": "integer"
@@ -4867,7 +4925,7 @@
                 "type": "null"
               }
             ],
-            "description": "Values in the scope that still name the subject after the erasure (the residue scan; 0 when nothing does).",
+            "description": "Values in the scope that still certainly name the subject after the erasure (the residue scan; 0 when nothing does). Unconfirmed candidates are not residue: `candidates_remaining` counts them.",
             "title": "Residue"
           },
           "scope": {
@@ -4971,6 +5029,16 @@
           }
         ],
         "properties": {
+          "confirm_candidates": {
+            "description": "Candidate mentions to erase too, by the `candidate_id` a dry run listed (ADR-154): a common word of the subject's name capitalised at the start of a sentence is erased only when confirmed here. An id the erasure does not meet is 422 `unknown_erasure_candidate`.",
+            "items": {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Confirm Candidates",
+            "type": "array"
+          },
           "dry_run": {
             "default": false,
             "description": "Report what would be erased and change nothing (no operation, no key).",
@@ -22909,7 +22977,7 @@
     }
   },
   "info": {
-    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- a word of the subject's name on its own when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`), and nicknames never declared as aliases (the full name, the declared aliases and every other word of the name are matched)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
+    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised (ADR-154)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
     "title": "Epistrel Engine",
     "version": "m3"
   },
@@ -23943,7 +24011,7 @@
     },
     "/admin/erasure": {
       "post": {
-        "description": "Right-to-be-forgotten erasure (FR-ADMIN-2, FR-ADMIN-6). `subject` is `{kind, id}` (`character`, `catalog_character` or `persona`) and `scope` `{story: <id>}` or `{catalog: true}`; a story `character` scoped to the catalog is 422 `invalid_erasure_scope`. **Story scope**: the subject's character rows, snapshots and deferred items are deleted (each leaves an erasure marker in the audit view, `include_audit=1`), every text in the story that names the subject reads `[erased]` where it did (a beat the subject said becomes `[erased]` whole, keeping its place), stored results that name it are purged, the rolling-summary segments that named it are summarised again from the redacted window (or stay redacted without a model), and the projections are rebuilt. It bumps the story's revision, so a turn in flight starts over, and runs on archived and paused stories too. **Catalog scope**: the catalog character (every version, its draft and companion) or the persona is deleted, the scenarios and other catalog records that name it are redacted, media depicting or naming only the subject are purged (or kept retired when another record still references them and `erasure_shared_media` is `retire`), and stories are never touched: `referencing_stories` lists those to erase separately. `dry_run: true` answers the counts and changes nothing (zero counts for an unknown subject). The ledger records identifiers, scope, story and counts, never content. 404 for an unknown story, or on a real run an unknown subject; 503 `config_key_missing` without `EPISTREL_CONFIG_KEY`; 503 `ledger_unavailable` when the erasure ledger's file cannot be written (nothing is erased). The erasure boundary, what erasure does not reach, is `GET /admin/erasure/boundary`.",
+        "description": "Right-to-be-forgotten erasure (FR-ADMIN-2, FR-ADMIN-6). `subject` is `{kind, id}` (`character`, `catalog_character` or `persona`) and `scope` `{story: <id>}` or `{catalog: true}`; a story `character` scoped to the catalog is 422 `invalid_erasure_scope`. **Story scope**: the subject's character rows, snapshots and deferred items are deleted (each leaves an erasure marker in the audit view, `include_audit=1`), every text in the story that names the subject reads `[erased]` where it did (a beat the subject said becomes `[erased]` whole, keeping its place), stored results that name it are purged, the rolling-summary segments that named it are summarised again from the redacted window (or stay redacted without a model), and the projections are rebuilt. It bumps the story's revision, so a turn in flight starts over, and runs on archived and paused stories too. **Catalog scope**: the catalog character (every version, its draft and companion) or the persona is deleted, the scenarios and other catalog records that name it are redacted, media depicting or naming only the subject are purged (or kept retired when another record still references them and `erasure_shared_media` is `retire`), and stories are never touched: `referencing_stories` lists those to erase separately. `dry_run: true` answers the counts and changes nothing (zero counts for an unknown subject). **Mentions** (ADR-154): the subject's names, aliases and name words are erased where they certainly refer to it; a name word that is also a common word (`Will`, `Rose`) only when capitalised, and at the start of a sentence it is a *candidate*: the dry run lists each one (`candidates`, with an id and a snippet returned only, never stored), and an erasure removes it only when `confirm_candidates` names its id (422 `unknown_erasure_candidate` for an id it does not meet). `candidates_remaining` counts those left. The ledger records identifiers, scope, story and counts (with the confirmed candidate ids), never content. 404 for an unknown story, or on a real run an unknown subject; 503 `config_key_missing` without `EPISTREL_CONFIG_KEY`; 503 `ledger_unavailable` when the erasure ledger's file cannot be written (nothing is erased). The erasure boundary, what erasure does not reach, is `GET /admin/erasure/boundary`.",
         "operationId": "erase",
         "parameters": [
           {
@@ -24060,7 +24128,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `invalid_erasure_scope`, `validation_error`."
+            "description": "Invalid request; nothing was written: `invalid_erasure_scope`, `unknown_erasure_candidate`, `validation_error`."
           },
           "503": {
             "content": {
@@ -24094,7 +24162,7 @@
     },
     "/admin/erasure/boundary": {
       "get": {
-        "description": "What an erasure covers and what it cannot reach (FR-ADMIN-8), as data. The same text is in `docs/OPERATIONS.md` and at the end of this API's description:\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- a word of the subject's name on its own when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`), and nicknames never declared as aliases (the full name, the declared aliases and every other word of the name are matched)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
+        "description": "What an erasure covers and what it cannot reach (FR-ADMIN-8), as data. The same text is in `docs/OPERATIONS.md` and at the end of this API's description:\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised (ADR-154)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
         "operationId": "erasure_boundary",
         "responses": {
           "200": {

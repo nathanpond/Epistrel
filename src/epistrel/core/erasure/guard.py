@@ -9,12 +9,14 @@ operation writes, inside the commit transaction (``Operation._write``, so ``comm
 steps and before the subject index is written.
 
 **What it compares.** The erasure ledger (``erasure_ledger``) holds, per erasure, the keyed
-hashes of the terms it scanned (``scan_term_hashes``: HMAC-SHA256 under
-``EPISTREL_CONFIG_KEY`` of each normalised term, ``erase.term_hashes``), never the terms. The
-guard hashes every span of one to ``MAX_NGRAM`` words of each text (normalised as the matcher
-normalises: NFC, case-folded, whitespace runs as one space; spans start and end at word
-boundaries, so a possessive ``'s`` still matches) with the same key and looks for a hash the
-ledger holds. Structured references are compared by id: an event's speaking character, its
+hashes of the certain terms it scanned (``scan_term_hashes``: HMAC-SHA256 under
+``EPISTREL_CONFIG_KEY`` of each term the erasure matcher guards, ``erase.term_hashes``; ADR-154),
+never the terms. The guard hashes every span of one to ``MAX_NGRAM`` words of each text
+(normalised: NFC, case-folded, whitespace runs as one space; spans start and end at word
+boundaries, so a possessive ``'s`` still matches), and every word capitalised in the middle of a
+sentence in its marked form (``matcher.guard_spans``: a name word that is a common word is
+guarded only so, never "it will rain"), with the same key and looks for a hash the ledger
+holds. Structured references are compared by id: an event's speaking character, its
 ``character_id`` and ``*character_ids`` keys, against the erasure's subject and the story
 characters it deleted (its ``erasure_marker`` events on ``characters``).
 
@@ -56,7 +58,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import Provenance
-from epistrel.core.erasure.index import MIN_TERM_CHARS, normalized
+from epistrel.core.erasure.matcher import MIN_TERM_CHARS, guard_spans, normalized
 from epistrel.core.erasure.records import character_ids, text_fields
 from epistrel.core.errors import ErasedSubjectReferenced, ErasureKeyMissing
 from epistrel.core.tables import events, operations
@@ -96,13 +98,15 @@ def bound_keys() -> tuple[str, ...]:
 
 def spans(value: str) -> Iterator[str]:
     """Every span of one to ``MAX_NGRAM`` words of ``value`` once normalised (see the module
-    docstring), as a whole-word match of a term would cover it."""
+    docstring), as a whole-word match of a term would cover it, then its marked capitalised
+    mid-sentence words."""
     text = normalized(value)
     words = [(m.start(), m.end()) for m in _WORD.finditer(text)]
     for i, (start, _) in enumerate(words):
         for _, end in words[i : i + MAX_NGRAM]:
             if end - start >= MIN_TERM_CHARS:
                 yield text[start:end]
+    yield from guard_spans(value)
 
 
 def span_hashes(values: Iterable[str], key: str) -> set[str]:

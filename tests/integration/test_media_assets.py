@@ -1141,6 +1141,10 @@ REFERENCE_COLUMNS = {
     "record_id": ("text", "NO"),
     "field": ("text", "YES"),
     "ref_kind": ("text", "NO"),
+    # Migration 0044 (ADR-154): a mention's position and rule.
+    "span_start": ("int4", "YES"),
+    "span_end": ("int4", "YES"),
+    "rule": ("text", "YES"),
 }
 
 

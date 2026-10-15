@@ -703,7 +703,7 @@ class FeedbackRedaction:
 
 
 class TextRedactor(Protocol):
-    def text(self, value: str) -> str: ...
+    def text(self, value: str, at: tuple[str, str, str] | None = None) -> str: ...
 
 
 async def redact_for_erasure(
@@ -731,9 +731,12 @@ async def redact_for_erasure(
             ).where(message_feedback.c.story_id == story_id)
         )
         for row in found:
-            if record_id(str(row.message_id), str(row.principal)) not in rating_ids:
+            rating = record_id(str(row.message_id), str(row.principal))
+            if rating not in rating_ids:
                 continue
-            new = redactor.text(row.text) if row.text else row.text
+            new = (
+                redactor.text(row.text, (RATING_RECORDS, rating, "text")) if row.text else row.text
+            )
             if new == row.text:
                 continue
             ratings += 1
@@ -752,7 +755,8 @@ async def redact_for_erasure(
             )
         )
         for row in found:
-            new = redactor.text(row.text) if row.text else row.text
+            at = (HISTORY_RECORDS, str(row.id), "text")
+            new = redactor.text(row.text, at) if row.text else row.text
             if new == row.text:
                 continue
             history += 1

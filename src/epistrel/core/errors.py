@@ -977,6 +977,15 @@ class OffboardingInProgress(EpistrelError):
 # -- erasure (#124) -----------------------------------------------------------------------------
 
 
+class UnknownErasureCandidate(EpistrelError):
+    """An erasure confirms a candidate mention it does not meet (ADR-154; #372): the id is
+    stale (the text changed since the dry run) or was never one of this subject's candidates.
+    Nothing is written. ``details``: ``field`` and ``candidate_ids``."""
+
+    code = "unknown_erasure_candidate"
+    http_status = 422
+
+
 class InvalidErasureScope(EpistrelError):
     """An erasure pairs a subject kind with a scope it cannot have (FR-ADMIN-2; #124): a story
     ``character`` exists only in its story, so its erasure is story-scoped. Nothing is written.

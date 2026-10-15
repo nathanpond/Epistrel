@@ -46,10 +46,22 @@ def erasure_settings(pg_url: str, **overrides: Any) -> Settings:
 
 
 def request(
-    kind: str, subject_id: str, story_id: str | None = None, *, dry_run: bool = False
+    kind: str,
+    subject_id: str,
+    story_id: str | None = None,
+    *,
+    dry_run: bool = False,
+    confirm: Iterable[str] = (),
 ) -> dict[str, Any]:
     scope: dict[str, Any] = {"story": story_id} if story_id is not None else {"catalog": True}
-    return {"subject": {"kind": kind, "id": subject_id}, "scope": scope, "dry_run": dry_run}
+    found: dict[str, Any] = {
+        "subject": {"kind": kind, "id": subject_id},
+        "scope": scope,
+        "dry_run": dry_run,
+    }
+    if confirm:
+        found["confirm_candidates"] = list(confirm)
+    return found
 
 
 async def erase(
@@ -61,12 +73,21 @@ async def erase(
     dry_run: bool = False,
     key: str | None = None,
     status: int = 200,
+    confirm: Iterable[str] = (),
+    confirm_all: bool = False,
 ) -> dict[str, Any]:
+    """``POST /admin/erasure``; ``confirm_all`` first asks a dry run for the candidates
+    (ADR-154: "Mum's patience..." starts a sentence with a common word) and confirms them all."""
+    if confirm_all:
+        listed = await erase(client, kind, subject_id, story_id, dry_run=True)
+        confirm = [*confirm, *(c["candidate_id"] for c in listed["candidates"])]
     headers = dict(WRITE)
     if key is not None:
         headers["Idempotency-Key"] = key
     response = await client.post(
-        PATH, json=request(kind, subject_id, story_id, dry_run=dry_run), headers=headers
+        PATH,
+        json=request(kind, subject_id, story_id, dry_run=dry_run, confirm=confirm),
+        headers=headers,
     )
     assert response.status_code == status, response.text
     found: dict[str, Any] = response.json()

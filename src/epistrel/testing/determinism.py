@@ -123,10 +123,11 @@ ORDER: dict[str, str] = {
     "client_events": f"{_STORY_RANK}, t.client_event_id",
     "audit_log": f"{_STORY_RANK} NULLS FIRST, t.at, t.kind",
     "config_changes": "t.at, t.config_revision, t.setting",
-    # The subject index (#105, #123): by record (its own natural position), field and subject.
+    # The subject index (#105, #123): by record (its own natural position), field, subject and
+    # a mention's position (ADR-154).
     "subject_references": (
         f"{_STORY_RANK}, t.record_table, {_RECORD_RANK}, t.field NULLS FIRST, t.ref_kind, "
-        f"t.subject_kind, {_SUBJECT_RANK}"
+        f"t.subject_kind, {_SUBJECT_RANK}, t.span_start NULLS FIRST"
     ),
     # Message feedback (#112): a principal's rating of a message variant, and its history.
     "message_feedback": f"{_STORY_RANK}, t.turn, t.variant, t.principal",

@@ -2862,8 +2862,11 @@ class Engine:
         erasure runs under the request's ``Idempotency-Key`` (deployment-scoped; ``dry_run`` is
         in the request hash): a story-scope erasure as one ``control`` operation that bumps the
         story's revision (its regenerated summary and rebuilt projections follow), a
-        catalog-scope one as one deployment operation that never touches a story. 422
-        ``invalid_erasure_scope`` for a story character scoped to the catalog; 404 for an
+        catalog-scope one as one deployment operation that never touches a story. Certain
+        mentions are erased; candidates (a common word of the name capitalised at the start of
+        a sentence, ADR-154) only when ``confirm_candidates`` names them, by the ids a dry run
+        lists. 422 ``invalid_erasure_scope`` for a story character scoped to the catalog, and
+        ``unknown_erasure_candidate`` for a confirmed id the erasure does not meet; 404 for an
         unknown story or, on a real run, an unknown subject; 409 ``revision_conflict`` for a
         stale expected revision (story scope); 503 ``config_key_missing`` without
         ``EPISTREL_CONFIG_KEY``."""
@@ -2997,6 +3000,7 @@ class Engine:
                 collect=collect,
                 erasure_id=pending.erasure_id,
                 write_ledger=False,
+                confirmed=pending.confirmed,
             )
         except SubjectNotFound:
             return erasure_ledger.SUBJECT_MISSING

@@ -35,7 +35,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144 |
@@ -51,7 +51,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115 |
 | NFR-REL | §20 | 045, 127 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 077, 101 |
+| NFR-PRIV | §20 | 077, 101, 154 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151 |
 | NFR-MAINT | §20 | 148 |
@@ -107,7 +107,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 043 | Ledger obligations per proposition; reactive narration exempt from novelty; widening perception validated | Current | — |
 | 044 | Separate gate rules for rate floors and zero-tolerance floors | Amended | 077 |
 | 045 | Replay determinism excludes live re-embedding; idempotency has a result window and permanent tombstone | Current | — |
-| 046 | Erasure is a control action, guarded at every write path, with a ledger that survives restores | Amended | 080, 128 |
+| 046 | Erasure is a control action, guarded at every write path, with a ledger that survives restores | Amended | 080, 128, 154 |
 | 047 | Explicit output viewpoint with an audience filter; disclosure is distinct from inference | Partly superseded | 059, 071, 091, 078, 145 |
 | 048 | Support requires coverage; instants are first-class | Partly superseded | 058 |
 | 049 | Functional uniqueness is over a declared key; distinct facts stay distinct; exhaustiveness only by declared closed sets | Current | — |
@@ -215,6 +215,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 151 | Video posters are taken with ffmpeg, a GPL program run as a separate process | Current | — |
 | 152 | A short-lived signed URL is enough to read media content | Current | — |
 | 153 | The erasure ledger's file is the authority, and a restore is reconciled before it is served | Current | — |
+| 154 | Erasure redacts only mentions attributed to the subject; ambiguous ones are reported, not guessed | Current | — |
 
 ---
 
@@ -575,7 +576,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-046 — Erasure is a control action, guarded at every write path, with a ledger that survives restores
 **Status:** Accepted. Refines ADR-033.
-**Amended by:** ADR-080 — recovery and audit treat erasure markers as expected gaps; ADR-128 — imports apply the erasure ledger before the story is served.
+**Amended by:** ADR-080 — recovery and audit treat erasure markers as expected gaps; ADR-128 — imports apply the erasure ledger before the story is served; ADR-154 — how erasure finds prose references: only mentions attributed to the subject, by position.
 **Context:** Erased content could come back two ways: an in-flight generation, rewrite, consolidation job, or outbox dispatch that read the subject before erasure and writes after it; or restoration of a backup predating the erasure, if the ledger itself was in that backup.
 **Decision:** Erasure bumps the timeline revision, so in-flight operations fail their revision check and abandon; every write path also checks the erasure ledger and refuses content referencing an erased subject (FR-ADMIN-9). The ledger is stored **outside** backed-up story data and **copied into** every backup; a restored story is not served until the ledger is reapplied (FR-ADMIN-7).
 **Consequences:** No resurrection by race or by restore. Cost: one ledger lookup per write path (indexed by subject ID) and a small, separately managed ledger store. Test S-ERASURE-BOUNDARY resurrection variants.
@@ -1458,6 +1459,34 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 **Context:** FR-ADMIN-7 keeps the erasure ledger outside the backups it governs and copied into each of them, and serves no restored story until the ledger has been reapplied. ADR-046 decided that, but not where the outside copy lives, which copy wins, or how a restore is caught when the backup predates an erasure. The owner decided, when M3 was planned (#125, round one), that Epistrel reapplies the ledger by itself at start-up and blocks the affected stories until it has.
 **Decision:** The authority is an append-only file, `EPISTREL_ERASURE_LEDGER_DIR/ledger.jsonl`, on its own volume (`erasure-ledger` in compose, separate from `pgdata` and `media`). It holds one JSON line per erasure, with identifiers, counts and keyed hashes and never a name. The lines are hash-chained: each `ledger_hash` is the SHA-256 of the line's canonical JSON, and each `ledger_hash_prev` is the previous line's hash. An erasure appends its line and fsyncs it before it commits, under an advisory lock held to the commit, so the chain's order is the commit order. The same row, with the same hashes, goes into the `erasure_ledger` table, which every `pg_dump` carries. A file that cannot be written refuses the erasure (503 `ledger_unavailable`). Before traffic, start-up compares the file with the table. A line the table lacks becomes pending and blocks its story (`blocked_by_erasure`: every read and write is 503 `erasure_pending`, except deleting the story and listing it). A row the file lacks is appended to the file. Differing copies, a broken chain or an unwritable directory refuse the start (exit 78). The reconciler reapplies each pending erasure with #124's own operation: the original id, principal `system`, and no new ledger line. It runs in the background under an advisory lock that every process shares, catalog erasures first, then every 5 minutes until none is pending. `epistrel backup verify` lists erasure markers as expected gaps and checks a dump's ledger rows against the file. `GET /admin/erasure/boundary`, `docs/OPERATIONS.md` and the API description state the erasure boundary from one constant (FR-ADMIN-7, FR-ADMIN-8, FR-ADMIN-4).
 **Consequences:** Restoring an old backup cannot serve an erased person again. The restored stories wait, refused, until the reapply finishes. A deployment that loses the ledger volume rebuilds it from the database's copy, chained anew. One that restores the file from a backup loses the erasures made after that backup, so the documentation says never to restore it. A reapply that cannot run, for example without `EPISTREL_CONFIG_KEY`, keeps its story blocked and is reported, never dropped. Tests S-ERASURE-BOUNDARY (M3) and `tests/integration/test_erasure_ledger.py`.
+
+---
+
+### ADR-154 — Erasure redacts only mentions attributed to the subject; ambiguous ones are reported, not guessed
+**Status:** Accepted. Amends ADR-046 (how erasure finds prose references).
+**Context:** FR-ADMIN-6 indexes subject references at write time, but only per record and field. Erasure then searched each field for the subject's terms. Matching only the full name missed a bare first name (#364). Matching every word of the name redacted ordinary English ("will", "black", "rose") from every character's prose and refused later turns that used them (#372). Neither is acceptable: erasure must remove what refers to the subject and nothing else. The owner decided on 2026-10-15, at the M3 re-verify, that erasure acts only on mentions known to refer to the subject.
+**Decision:** The index records each prose mention's **position** (field, start and end offsets in the NFC text, and the matching rule), never its text. One deterministic matcher, shared by the indexer, erasure, `verify()` and the write-path guard, classifies each occurrence:
+- **Certain (name):** the full name or a declared alias, whole-word and case-insensitive.
+- **Certain (part):** a word of the name that is not a title, a particle, or used by another subject in the same scope.
+  - A word that is not on the bundled common-word list matches in any case, as written (no case-folding), with each half of a hyphenated word matched as well.
+  - A word on the list matches only when it is capitalised and not at the start of a sentence.
+- **Candidate:** a common-list word of the name that is capitalised at the start of a sentence.
+
+Lowercase common words never match.
+
+Erasure re-indexes the subject's records, then redacts exactly the certain spans plus the candidates the operator confirmed by id in the request. The dry run lists every candidate with its id, location and a short snippet; the snippet is returned only, never stored. The result reports:
+- `residue`: a rescan for certain matches, which must be 0;
+- `candidates_remaining`.
+
+The ledger and the write-path guard (FR-ADMIN-9) use certain matches only. The common-word list is a versioned data file in the repo, under a licence compatible with invariant 2. The boundary states that unconfirmed candidates and undeclared nicknames stay out of scope (FR-ADMIN-2, FR-ADMIN-6, FR-ADMIN-8, FR-ADMIN-9, NFR-PRIV-2).
+**Consequences:**
+- Other characters' prose and later turns are never damaged by a name that is also a word.
+- "Will you come?" at the start of a sentence is not erased unless the operator confirms it. The erasure says how many such mentions remain instead of claiming none.
+- Every prose indexer records positions, including later memories, beliefs, imports, rewrites and image captions.
+- Index rows written before this ADR are rebuilt by a one-time re-index.
+- Tests: I-09 extended, plus matcher unit tests for each rule.
+
+**Implementation notes (#372).** The list is SCOWL 2020.12.07, size levels 10 and 20, without possessives: about 10,900 words, under SCOWL's permissive notice (the file's header), graded by commonness rather than ranked by frequency, and holding no proper names. A one-word name or alias on the list follows the common-word rule. A whole value that is only the name (a role's `canonical`) is certain, not a candidate. A sentence starts at the start of the text or a line, after a quotation mark, or after `.`, `!`, `?`, `…` or `:` (not a title's dot, as in `Mr.`). A candidate's id is a SHA-256 of its table, record, field path, start and rule. The confirmed ids go into the ledger's counts so a reapply after a restore erases them too. An unknown id is 422 `unknown_erasure_candidate`. The one-time re-index is `python -m epistrel.tools.reindex_subjects --write` (migration 0044).
 
 ---
 

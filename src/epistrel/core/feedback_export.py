@@ -563,12 +563,13 @@ async def delete(
 # -- erasure (#124's ERASURE_TARGETS) -------------------------------------------------------------
 
 
-def _redact_case(case: dict[str, Any], redactor: Redactor) -> bool:
+def _redact_case(case: dict[str, Any], redactor: Redactor, export_id: str, index: int) -> bool:
     changed = False
+    at = f"cases[{index}]"
     for name in CASE_TEXTS:
         value = case.get(name)
         if isinstance(value, str) and value:
-            new = redactor.text(value)
+            new = redactor.text(value, (feedback_export_log.name, export_id, f"{at}.{name}"))
             if new != value:
                 case[name] = new
                 changed = True
@@ -577,7 +578,9 @@ def _redact_case(case: dict[str, Any], redactor: Redactor) -> bool:
         for name in ("say", "do"):
             value = said.get(name)
             if isinstance(value, str) and value:
-                new = redactor.text(value)
+                new = redactor.text(
+                    value, (feedback_export_log.name, export_id, f"{at}.player_input.{name}")
+                )
                 if new != value:
                     said[name] = new
                     changed = True
@@ -623,12 +626,12 @@ class ExportErasureTarget:
                 continue
             cases = decode_cases(data)
             touched = 0
-            for case in cases:
+            for index, case in enumerate(cases):
                 position = case.get("position")
                 in_scope = story_id is None or (
                     isinstance(position, dict) and position.get("story_id") == story_id
                 )
-                if in_scope and _redact_case(case, redactor):
+                if in_scope and _redact_case(case, redactor, str(row.id), index):
                     touched += 1
             if not touched:
                 continue

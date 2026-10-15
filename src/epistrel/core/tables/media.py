@@ -126,6 +126,16 @@ SUBJECT_KIND_CHECK = _in("subject_kind", SubjectKind)
 SCOPE_CHECK = _in("scope", ReferenceScope)
 REF_KIND_CHECK = _in("ref_kind", ReferenceKind)
 STORY_SCOPE_CHECK = "(story_id IS NOT NULL) = (scope = 'story')"
+MENTION_RULES = ("name", "part", "candidate")
+"""A mention's ``rule`` (``core.erasure.matcher.Rule``; ADR-154)."""
+RULE_CHECK = "rule IS NULL OR rule IN (" + ", ".join(f"'{r}'" for r in MENTION_RULES) + ")"
+SPAN_CHECK = (
+    "(span_start IS NULL) = (span_end IS NULL) AND (span_start IS NULL) = (rule IS NULL) "
+    "AND (span_start IS NULL OR (ref_kind = 'mentioned' AND 0 <= span_start "
+    "AND span_start < span_end))"
+)
+"""Only a mention has a position; one indexed before positions were recorded (migration
+0044) has none until the one-time re-index."""
 UPLOAD_STATE_CHECK = _in("state", UploadState)
 DECLARED_SHA256_CHECK = "declared_sha256 ~ '^[0-9a-f]{64}$'"
 
@@ -215,17 +225,25 @@ subject_references = Table(
     Column("record_id", Text, nullable=False),
     Column("field", Text, nullable=True),
     Column("ref_kind", Text, nullable=False),
+    # A mention's position in the field's NFC text (code points) and its matcher rule, never the
+    # text (ADR-154).
+    Column("span_start", Integer, nullable=True),
+    Column("span_end", Integer, nullable=True),
+    Column("rule", Text, nullable=True),
     CheckConstraint(SUBJECT_KIND_CHECK, name="subject_kind"),
     CheckConstraint(SCOPE_CHECK, name="scope"),
     CheckConstraint(REF_KIND_CHECK, name="ref_kind"),
     CheckConstraint(STORY_SCOPE_CHECK, name="story_scope"),
+    CheckConstraint(RULE_CHECK, name="rule"),
+    CheckConstraint(SPAN_CHECK, name="span"),
     UniqueConstraint(
         "subject_kind",
         "subject_id",
         "record_table",
         "record_id",
         "field",
-        name="uq_subject_references_subject_record_field",
+        "span_start",
+        name="uq_subject_references_subject_record_field_span",
         postgresql_nulls_not_distinct=True,
     ),
 )
@@ -248,9 +266,12 @@ __all__ = [
     "CHECKSUM_LENGTH",
     "DECLARED_SHA256_CHECK",
     "KIND_CHECK",
+    "MENTION_RULES",
     "REF_KIND_CHECK",
+    "RULE_CHECK",
     "SCOPE_CHECK",
     "SOURCE_CHECK",
+    "SPAN_CHECK",
     "STATE_CHECK",
     "STORY_SCOPE_CHECK",
     "SUBJECT_KIND_CHECK",

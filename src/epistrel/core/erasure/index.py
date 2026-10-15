@@ -18,12 +18,14 @@ structured data and in prose. ``subject_references`` is the only lookup erasure 
 - a persona (``persona``, ``personas.id``), whose term is its ``name``. It links the player
   characters made from it (``characters.persona_id``); an ad-hoc persona has none.
 
-Each subject is also matched by the **words of its multi-word names** (``name_parts``, #364: a
-player writes "Marisol" for "Marisol Quenby"): the names above, never the aliases (an epithet's
-words, "the Red Witch", are not the person), less articles, particles and titles
-(``NAME_PARTICLES``) and words shorter than ``MIN_TERM_CHARS``. A word another subject of the
-same scope also uses (a shared surname, a word of another's name or alias) is left out
-(``with_name_parts``): it would name a living character too. The erasure boundary says so.
+Each subject is also matched by its **parts**, the words of its multi-word names (``name_parts``,
+#364: a player writes "Marisol" for "Marisol Quenby"), as written, and each half of a hyphenated
+word (#374): the names above, never the aliases (an epithet's words, "the Red Witch", are not
+the person), less articles, particles and titles (``NAME_PARTICLES``) and words shorter than
+``MIN_TERM_CHARS``. A word another subject of the same scope also uses (a shared surname, a word
+of another's name or alias) is left out (``with_name_parts``): it would name a living character
+too. The erasure boundary says so. How a name, an alias or a part matches is
+``core.erasure.matcher``'s (ADR-154).
 
 A story record (``scope = story``) is scanned for its story's characters, and every row that
 names a linked story character gets its ``catalog_character`` or ``persona`` row too, in the
@@ -44,11 +46,10 @@ the terms) delete the record's rows and write them again:
 - each subject the record **defines** (a ``characters`` row, a catalog character's draft and
   versions, a persona): ``declared``, ``field`` null;
 - an event's speaking character (its ``character_id`` column): ``authored``;
-- each subject **mentioned** in one of the record's text fields (``{dotted path: text}``, list
-  items as ``[n]``): the text holds one of the subject's terms as a whole word or phrase, ignoring
-  case (NFC, case-folded, whitespace runs as one space, Unicode word boundaries; a possessive
-  ``'s`` matches; terms shorter than ``MIN_TERM_CHARS`` are never matched; a common-word alias is
-  matched anyway: over-matching is the safe direction for erasure).
+- each **mention** of a subject in one of the record's text fields (``{dotted path: text}``,
+  list items as ``[n]``), one row per mention, with its position (ADR-154): ``span_start`` and
+  ``span_end`` (offsets in the field's NFC text, in code points) and the matcher's ``rule``
+  (``name``, ``part`` or ``candidate``; ``core.erasure.matcher``), never the text matched.
 
 **The writers.** ``SUBJECT_WRITERS`` lists every indexed table with the modules that write it
 (each calls ``index_references``/``index_records``) and the reader the rebuild enumerates it
@@ -60,8 +61,10 @@ tables that are not indexed, and why.
 
 ``drop_references``/``drop_many`` remove a record's rows; every delete path of an indexed record
 calls one. ``reindex_story`` recomputes one story's rows (a fork after its copy; an ad-hoc
-character, whose name earlier records may already hold). ``rebuild`` compares the index with
-what the records give now (``python -m epistrel.tools.reindex_subjects``).
+character, whose name earlier records may already hold; an erasure, first). ``rebuild``
+compares the index with what the records give now (``python -m epistrel.tools.reindex_subjects``;
+with ``--write``, the one-time re-index of rows written before positions were recorded,
+migration 0044).
 
 Log lines carry counts and identifiers only (invariant 3): one DEBUG line per call on this
 module's logger.
@@ -71,7 +74,6 @@ from __future__ import annotations
 
 import importlib
 import re
-import unicodedata
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -81,6 +83,14 @@ from typing import Any
 from sqlalchemy import and_, delete, func, insert, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core.erasure.matcher import (
+    MIN_TERM_CHARS,
+    NAME_PARTICLES,
+    Matcher,
+    matcher,
+    nfc,
+    normalized,
+)
 from epistrel.core.ids import new_ulid
 from epistrel.core.tables import (
     character_catalog,
@@ -100,8 +110,6 @@ from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
 
-MIN_TERM_CHARS = 2
-"""Terms (names and aliases) shorter than this are never matched in prose."""
 NAME_PATH = ("public_card", "name")
 """Where a catalog character's draft and versions hold its name (#115; migration 0032 moved
 #103's top-level ``name`` there)."""
@@ -111,28 +119,17 @@ of strings (#115). Anything else at this path (a value that is not a list, an en
 a string) is skipped."""
 CHUNK = 500
 """Records written per statement batch."""
-NAME_PARTICLES = frozenset(
-    {
-        # articles, conjunctions and name particles
-        *("a", "an", "the", "and", "of", "or", "y", "e", "al", "el", "bin", "ibn", "bint"),
-        *("da", "das", "de", "del", "della", "dei", "den", "der", "des", "di", "do", "dos"),
-        *("du", "la", "le", "les", "lo", "ter", "van", "von", "zu"),
-        # titles, honorifics and generational suffixes
-        *("mr", "mrs", "ms", "mx", "miss", "dr", "doctor", "prof", "professor", "sir", "dame"),
-        *("lady", "lord", "st", "saint", "jr", "sr", "ii", "iii", "iv", "captain", "capt"),
-        *("king", "queen", "prince", "princess", "father", "mother", "brother", "sister"),
-        *("aunt", "uncle", "master", "mistress", "madam", "madame", "señor", "señora"),
-    }
-)
-"""Words of a multi-word name that never match on their own (``name_parts``), case-folded."""
 
 Declared = tuple[SubjectKind, str, str | None]
 """A declared subject: its kind, its id and the field that declared it."""
 Defined = tuple[SubjectKind, str]
 """A subject a record defines (its own row): its kind and id."""
-RowKey = tuple[str, str, str, str | None, str, str, str | None, str]
+RowKey = tuple[
+    str, str, str, str | None, str, str, str | None, str, int | None, int | None, str | None
+]
 """A row as the rebuild compares it: ``(subject_kind, subject_id, scope, story_id,
-record_table, record_id, field, ref_kind)`` (the surrogate id left out)."""
+record_table, record_id, field, ref_kind, span_start, span_end, rule)`` (the surrogate id left
+out; the last three are null except on a mention)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,33 +149,23 @@ class Record:
 
 @dataclass(frozen=True, slots=True)
 class Subject:
-    """A subject a scan can find: its kind, id and terms, and the subjects it links (a story
+    """A subject a scan can find: its kind, id, terms (names and aliases) and parts (the words
+    of its names no other subject of the scope uses), and the subjects it links (a story
     character's catalog character and persona)."""
 
     kind: SubjectKind
     id: str
     terms: tuple[str, ...]
     links: tuple[Defined, ...] = ()
+    parts: tuple[str, ...] = ()
 
-    def pattern(self) -> re.Pattern[str] | None:
-        needles = sorted(
-            {n for n in (normalized(t) for t in self.terms) if len(n) >= MIN_TERM_CHARS},
-            key=lambda n: (-len(n), n),
-        )
-        if not needles:
-            return None
-        return re.compile(rf"(?<!\w)(?:{'|'.join(re.escape(n) for n in needles)})(?!\w)")
-
-
-def normalized(value: str) -> str:
-    """``value`` as the matcher compares it: NFC, case-folded, whitespace runs as one space."""
-    return " ".join(unicodedata.normalize("NFC", value).casefold().split())
+    def matcher(self) -> Matcher:
+        return matcher(self.terms, self.parts)
 
 
 def mentions(value: str, names: Iterable[str]) -> bool:
-    """Whether ``value`` holds one of ``names`` as a whole word (see the module docstring)."""
-    pattern = Subject(SubjectKind.CHARACTER, "", tuple(names)).pattern()
-    return pattern is not None and pattern.search(normalized(value)) is not None
+    """Whether ``value`` certainly names one of ``names`` (``core.erasure.matcher``)."""
+    return matcher(names).hits(value)
 
 
 # -- terms -------------------------------------------------------------------------------------
@@ -187,43 +174,56 @@ _WORD_EDGES = re.compile(r"^\W+|\W+$")
 
 
 def _words(value: str) -> list[str]:
-    """``value``'s whitespace-separated words, normalised, without leading or trailing
-    punctuation (``"(Marisol,"`` is ``marisol``)."""
-    return [w for w in (_WORD_EDGES.sub("", word) for word in normalized(value).split()) if w]
+    """``value``'s whitespace-separated words, NFC and as written, without leading or trailing
+    punctuation (``"(Marisol,"`` is ``Marisol``)."""
+    return [w for w in (_WORD_EDGES.sub("", word) for word in nfc(value).split()) if w]
 
 
 def name_parts(name: str) -> list[str]:
-    """The words of a multi-word ``name`` a subject is also matched by (see the module
-    docstring): none for a one-word name."""
+    """The parts of ``name`` a subject is also matched by (see the module docstring), as
+    written: the words of a multi-word name and the halves of a hyphenated word (#374)."""
     words = _words(name)
-    if len(words) < 2:
-        return []
-    return [w for w in words if len(w) >= MIN_TERM_CHARS and w not in NAME_PARTICLES]
+    found = list(words) if len(words) > 1 else []
+    for word in words:
+        if "-" in word:
+            found += [half for half in (_WORD_EDGES.sub("", h) for h in word.split("-")) if half]
+    return list(
+        dict.fromkeys(
+            w for w in found if len(w) >= MIN_TERM_CHARS and w.casefold() not in NAME_PARTICLES
+        )
+    )
 
 
 def with_name_parts(
     named: Sequence[tuple[Sequence[str], Sequence[str]]],
-) -> list[tuple[str, ...]]:
+) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
     """For each subject of one scope, given as ``(names, terms)`` (``terms`` holds the names),
-    its terms followed by the words of its names no other subject of the scope uses."""
+    its terms and its parts: the parts of its names no other subject of the scope uses."""
     # A word counts as used wherever the matcher would find it: "Ada's Shadow" uses "ada".
     owned = [
-        {w for term in terms for w in (*_words(term), *re.findall(r"\w+", normalized(term)))}
+        {
+            w
+            for term in terms
+            for w in (
+                *(normalized(word) for word in _words(term)),
+                *re.findall(r"\w+", normalized(term)),
+            )
+        }
         for _, terms in named
     ]
     users: dict[str, int] = {}
     for words in owned:
         for word in words:
             users[word] = users.get(word, 0) + 1
-    found: list[tuple[str, ...]] = []
+    found: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
     for (names, terms), words in zip(named, owned, strict=True):
         parts = [
             part
             for name in names
             for part in name_parts(name)
-            if users.get(part, 0) - (part in words) == 0
+            if users.get(normalized(part), 0) - (normalized(part) in words) == 0
         ]
-        found.append(tuple(dict.fromkeys([*terms, *parts])))
+        found.append((tuple(dict.fromkeys(terms)), tuple(dict.fromkeys(parts))))
     return found
 
 
@@ -267,8 +267,8 @@ async def catalog_subjects(conn: AsyncConnection) -> list[Subject]:
         keys.append((SubjectKind.PERSONA, str(subject_id)))
         named.append((_strings(name), _strings(name)))
     return [
-        Subject(kind, subject_id, found)
-        for (kind, subject_id), found in zip(keys, with_name_parts(named), strict=True)
+        Subject(kind, subject_id, terms, parts=parts)
+        for (kind, subject_id), (terms, parts) in zip(keys, with_name_parts(named), strict=True)
     ]
 
 
@@ -345,15 +345,17 @@ async def story_subjects(conn: AsyncConnection, story_id: str) -> list[Subject]:
         keys.append((character_id, tuple(links)))
         named.append((names, list(dict.fromkeys(terms))))
     return [
-        Subject(SubjectKind.CHARACTER, character_id, found, links)
-        for (character_id, links), found in zip(keys, with_name_parts(named), strict=True)
+        Subject(SubjectKind.CHARACTER, character_id, terms, links, parts)
+        for (character_id, links), (terms, parts) in zip(keys, with_name_parts(named), strict=True)
     ]
 
 
 # -- computing a record's rows -----------------------------------------------------------------
 
 
-Found = dict[tuple[str, str, str | None], ReferenceKind]
+Span = tuple[int, int, str] | None
+"""A mention's ``(span_start, span_end, rule)``; ``None`` for a declared or authored row."""
+Found = dict[tuple[str, str, str | None, int | None], tuple[ReferenceKind, Span]]
 
 
 def _scan(record: Record, subjects: Sequence[Subject]) -> Found:
@@ -361,10 +363,13 @@ def _scan(record: Record, subjects: Sequence[Subject]) -> Found:
     by_id = {s.id: s for s in subjects if s.kind is SubjectKind.CHARACTER} if story else {}
     found: Found = {}
 
-    def add(kind: SubjectKind, subject_id: str, at: str | None, how: ReferenceKind) -> None:
+    def add(
+        kind: SubjectKind, subject_id: str, at: str | None, how: ReferenceKind, span: Span = None
+    ) -> None:
         if story and kind is SubjectKind.CHARACTER and subject_id not in by_id:
             return  # names no character of this story
-        found.setdefault((SubjectKind(kind).value, subject_id, at), how)
+        start = None if span is None else span[0]
+        found.setdefault((SubjectKind(kind).value, subject_id, at, start), (how, span))
 
     for kind, subject_id in record.defines:
         add(kind, subject_id, None, ReferenceKind.DECLARED)
@@ -372,21 +377,49 @@ def _scan(record: Record, subjects: Sequence[Subject]) -> Found:
         add(SubjectKind.CHARACTER, record.authored_by, "character_id", ReferenceKind.AUTHORED)
     for kind, subject_id, at in record.subjects:
         add(kind, subject_id, at, ReferenceKind.DECLARED)
-    texts = {path: normalized(value) for path, value in record.fields.items() if value}
+    texts = {path: value for path, value in record.fields.items() if value}
     if texts:
         for subject in subjects:
-            pattern = subject.pattern()
-            if pattern is None:
-                continue
+            found_by = subject.matcher()
             for path, value in texts.items():
-                if pattern.search(value):
-                    add(subject.kind, subject.id, path, ReferenceKind.MENTIONED)
+                for mention in found_by.mentions(value):
+                    add(
+                        subject.kind,
+                        subject.id,
+                        path,
+                        ReferenceKind.MENTIONED,
+                        (mention.start, mention.end, mention.rule.value),
+                    )
     if story:
-        for (named_kind, named_id, at), how in list(found.items()):
+        for (named_kind, named_id, at, start), (how, span) in list(found.items()):
             linked = by_id.get(named_id) if named_kind == SubjectKind.CHARACTER.value else None
             for link_kind, link_id in linked.links if linked is not None else ():
-                found.setdefault((link_kind.value, link_id, at), how)
+                found.setdefault((link_kind.value, link_id, at, start), (how, span))
     return found
+
+
+def _row(
+    key: tuple[str, str, str | None, int | None],
+    how: ReferenceKind,
+    span: Span,
+    scope: ReferenceScope,
+    record: Record,
+) -> RowKey:
+    kind, subject_id, at, _ = key
+    start, end, rule = (None, None, None) if span is None else span
+    return (
+        kind,
+        subject_id,
+        scope.value,
+        record.story_id,
+        record.table,
+        record.record_id,
+        at,
+        how.value,
+        start,
+        end,
+        rule,
+    )
 
 
 class Terms:
@@ -414,24 +447,13 @@ async def compute(
     rows: list[RowKey] = []
     for record in records:
         scope = ReferenceScope.CATALOG if record.story_id is None else ReferenceScope.STORY
-        for (kind, subject_id, at), how in _scan(record, await terms.of(record.story_id)).items():
-            rows.append(
-                (
-                    kind,
-                    subject_id,
-                    scope.value,
-                    record.story_id,
-                    record.table,
-                    record.record_id,
-                    at,
-                    how.value,
-                )
-            )
+        for key, (how, span) in _scan(record, await terms.of(record.story_id)).items():
+            rows.append(_row(key, how, span, scope, record))
     return rows
 
 
 def _values(row: RowKey) -> dict[str, Any]:
-    kind, subject_id, scope, story_id, table, record_id, at, how = row
+    kind, subject_id, scope, story_id, table, record_id, at, how, start, end, rule = row
     return {
         "id": new_ulid(),
         "subject_kind": kind,
@@ -442,6 +464,9 @@ def _values(row: RowKey) -> dict[str, Any]:
         "record_id": record_id,
         "field": at,
         "ref_kind": how,
+        "span_start": start,
+        "span_end": end,
+        "rule": rule,
     }
 
 
@@ -756,6 +781,9 @@ async def current(conn: AsyncConnection, story_id: str | None) -> list[RowKey]:
             sr.record_id,
             sr.field,
             sr.ref_kind,
+            sr.span_start,
+            sr.span_end,
+            sr.rule,
         ).where(where)
     )
     return [
@@ -768,6 +796,9 @@ async def current(conn: AsyncConnection, story_id: str | None) -> list[RowKey]:
             str(r.record_id),
             r.field,
             str(r.ref_kind),
+            None if r.span_start is None else int(r.span_start),
+            None if r.span_end is None else int(r.span_end),
+            r.rule,
         )
         for r in found
     ]
@@ -822,7 +853,7 @@ async def rebuild(
 
 
 def _order(row: RowKey) -> tuple[str, ...]:
-    return tuple("" if v is None else v for v in row)
+    return tuple("" if v is None else f"{v:012d}" if isinstance(v, int) else v for v in row)
 
 
 async def rebuild_scope(
@@ -886,23 +917,9 @@ async def reindex_catalog_subject(conn: AsyncConnection, kind: SubjectKind, subj
         for record in await records_of(conn, None):
             if record.story_id is not None:
                 continue
-            for (found_kind, found_id, at), how in _scan(record, [subject]).items():
-                if how is ReferenceKind.MENTIONED and (found_kind, found_id) == (
-                    kind.value,
-                    subject_id,
-                ):
-                    rows.append(
-                        (
-                            found_kind,
-                            found_id,
-                            ReferenceScope.CATALOG.value,
-                            None,
-                            record.table,
-                            record.record_id,
-                            at,
-                            how.value,
-                        )
-                    )
+            for key, (how, span) in _scan(record, [subject]).items():
+                if how is ReferenceKind.MENTIONED and key[:2] == (kind.value, subject_id):
+                    rows.append(_row(key, how, span, ReferenceScope.CATALOG, record))
     await conn.execute(
         delete(subject_references).where(
             sr.subject_kind == kind.value,

@@ -2,7 +2,9 @@
 name the subject?
 
 ``verify`` reads every text-bearing column in the erasure's scope and counts the values in which
-the subject's terms still appear (``Redactor.hits``: the subject index's whole-word matching).
+the subject is still certainly named (``Redactor.hits``: the erasure matcher's certain mentions,
+ADR-154; a candidate left unconfirmed is not residue). A JSON or array value is read as JSON and
+its strings (keys and values) matched one by one, as erasure redacts them.
 The columns are enumerated from ``information_schema``, not listed by hand, so a table a later
 story adds is scanned without a change here:
 
@@ -27,7 +29,7 @@ again. Another subject with the same name in the same scope counts too.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -89,6 +91,20 @@ async def _columns(conn: AsyncConnection, schema: str, *, story: bool) -> dict[s
     return columns
 
 
+def _strings(value: Any) -> Iterator[str]:
+    """Every string of a column's value: itself, or a JSON document's or array's keys and
+    leaves."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for key, child in value.items():
+            yield str(key)
+            yield from _strings(child)
+    elif isinstance(value, list | tuple):
+        for child in value:
+            yield from _strings(child)
+
+
 def _quoted(schema: str, table: str) -> str:
     return f'"{schema}"."{table}"'
 
@@ -107,7 +123,7 @@ async def _scan(
     subject (into ``residue[label]``); answers how many values it read."""
     if not columns:
         return 0
-    selected = ", ".join(f'CAST("{c}" AS text) AS "{c}"' for c in columns)
+    selected = ", ".join(f'"{c}"' for c in columns)
     rows = await conn.execute(
         text(f"SELECT {selected} FROM {source} WHERE {where}"),  # noqa: S608 - names from the catalog
         params,
@@ -116,7 +132,7 @@ async def _scan(
     for row in rows:
         for value in row:
             read += 1
-            if value is not None and redactor.hits(str(value)):
+            if value is not None and any(redactor.hits(s) for s in _strings(value)):
                 residue[label] = residue.get(label, 0) + 1
     return read
 

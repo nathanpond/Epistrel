@@ -39,6 +39,9 @@ ROW_KEYS = (
     "record_id",
     "field",
     "ref_kind",
+    "span_start",
+    "span_end",
+    "rule",
 )
 
 

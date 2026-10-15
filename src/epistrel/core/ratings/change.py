@@ -58,7 +58,7 @@ from enum import StrEnum
 from types import SimpleNamespace
 from typing import Annotated, Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, StringConstraints
 from sqlalchemy import ColumnElement, delete, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -107,6 +107,7 @@ from epistrel.core.tables import (
 )
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.core.tables.rating_checks import RatingCheckKind, RatingCheckStatus
+from epistrel.core.trimmed import raw_max_length
 
 RATING_SETTING = "content_rating_id"
 """The story-scope ``config_changes`` setting of a rating change; old and new are rating ids."""
@@ -119,7 +120,11 @@ MESSAGE_RENDERED = "message_rendered"
 NON_TURN_ORDER = {"seed": 0, "pin": 1, "instruction": 2, "image": 3}
 """Where non-turn records sort, after every turn."""
 
-Reference = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+Reference = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
+    BeforeValidator(raw_max_length(64)),
+]
 
 
 class RatingChangeRequest(BaseModel):

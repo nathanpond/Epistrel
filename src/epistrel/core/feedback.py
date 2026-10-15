@@ -70,7 +70,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import Annotated, Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StrictInt, StringConstraints
 from sqlalchemy import delete, false, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -100,6 +100,7 @@ from epistrel.core.tables.feedback import (
     feedback_history,
     message_feedback,
 )
+from epistrel.core.trimmed import raw_max_length
 from epistrel.observability.logging import get_logger
 from epistrel.testing import pauses
 
@@ -122,6 +123,7 @@ RatingTag = Annotated[
     StringConstraints(
         strip_whitespace=True, to_lower=True, min_length=1, max_length=TAG_INPUT_MAX_CHARS
     ),
+    BeforeValidator(raw_max_length(TAG_INPUT_MAX_CHARS)),
 ]
 """A reason tag as sent: trimmed and lower-cased before it is compared with the deployment's."""
 

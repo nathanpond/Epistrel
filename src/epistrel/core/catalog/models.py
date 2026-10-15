@@ -60,6 +60,7 @@ from typing import Annotated, Any, Final
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StrictInt,
@@ -74,6 +75,7 @@ from epistrel.core.ids import Ulid
 from epistrel.core.json_numbers import require_finite
 from epistrel.core.ownership import Owner
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
+from epistrel.core.trimmed import raw_max_length
 
 NAME_MAX = 120
 PUBLIC_DESCRIPTION_MAX = 4_000
@@ -124,7 +126,11 @@ def _params_bounded(value: dict[str, Any] | None) -> dict[str, Any] | None:
     return value
 
 
-Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX)]
+Name = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX),
+    BeforeValidator(raw_max_length(NAME_MAX)),
+]
 """The character's name: trimmed, never blank."""
 Prose = Annotated[str, Field(max_length=PROSE_MAX)]
 """Definition prose, stored as written."""

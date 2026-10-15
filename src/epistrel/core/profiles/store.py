@@ -75,7 +75,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 from sqlalchemy import and_, delete, exists, func, insert, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -112,6 +112,7 @@ from epistrel.core.tables import (
 )
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.ownership import EntityType
+from epistrel.core.trimmed import raw_max_length
 from epistrel.testing import pauses
 
 NAME_MAX = 120
@@ -124,7 +125,11 @@ WARNINGS_MAX = 1_000
 PURGE_BATCH = 1_000
 """The most deleted profiles one ``retention_sweep`` run purges; the next run takes the rest."""
 
-Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX)]
+Name = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=NAME_MAX),
+    BeforeValidator(raw_max_length(NAME_MAX)),
+]
 
 
 EXAMPLE_SETTINGS: dict[str, Any] = {

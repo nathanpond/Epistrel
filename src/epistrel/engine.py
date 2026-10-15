@@ -673,6 +673,7 @@ class Engine:
                     await call.claim({**material, "expected_revision": ctx.expected_revision})
                 value = await run(ctx)
             except Replayed as replay:
+                await self._replay_gate(replay.stored)
                 return codec.load(replay.stored)
             except QueuedOriginal as queued:
                 assert story_id is not None  # noqa: S101 - only story calls queue
@@ -2952,6 +2953,16 @@ class Engine:
             self._erasure_marked = True
             return report
 
+    async def _replay_gate(self, stored: idempotency.StoredResult) -> None:
+        """A stored result naming a story (``create_story``'s, under a deployment-scoped key
+        the story gate never sees) is answered only while the story is not blocked: 503
+        ``erasure_pending`` otherwise, as every read of it is (#369). The reapply purges the
+        result, so a later replay answers the reference."""
+        body = stored.body
+        story_id = body.get("story_id") if isinstance(body, Mapping) else None
+        if isinstance(story_id, str):
+            await self._erasure_gate(story_id)
+
     async def _erasure_gate(self, story_id: str) -> None:
         """Every call naming a story: 503 ``erasure_pending`` while it is blocked."""
         if not self._erasure_marked:
@@ -3715,7 +3726,11 @@ class Engine:
     ) -> feedback_export.FeedbackExportContent:
         """The export's file (``application/x-ndjson``), delivered: the first download marks the
         export ``downloaded_at``, and from then on it is outside the erasure boundary
-        (FR-ADMIN-8). 404 for an unknown export or one whose file was deleted."""
+        (FR-ADMIN-8). 404 for an unknown export or one whose file was deleted. An undelivered
+        export with a case of a story the erasure reconciler holds blocked is 503
+        ``erasure_pending`` and stays undelivered; the ledger is compared first (#370)."""
+        if not self._erasure_marked:
+            await self._mark_erasures()
         return await feedback_export.content(self.db, self.media, export_id)
 
     async def delete_feedback_export(

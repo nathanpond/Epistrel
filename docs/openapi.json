@@ -24807,7 +24807,7 @@
     },
     "/admin/feedback/exports/{export_id}/content": {
       "get": {
-        "description": "The export's JSON Lines file (`application/x-ndjson`), behind the service credential only: there is no signed URL for it. The first download marks the export delivered (`downloaded_at`). Delivered exports are outside the erasure boundary (FR-ADMIN-8: exports already delivered): an export's file counts as delivered once it has been downloaded, and an erasure cannot reach a copy outside the deployment. Until its first download, an erasure redacts the subject in the file's cases. 404 for an unknown export, or `reason: deleted` once its file was deleted (by an operator, or seven days after it was written).",
+        "description": "The export's JSON Lines file (`application/x-ndjson`), behind the service credential only: there is no signed URL for it. The first download marks the export delivered (`downloaded_at`). Delivered exports are outside the erasure boundary (FR-ADMIN-8: exports already delivered): an export's file counts as delivered once it has been downloaded, and an erasure cannot reach a copy outside the deployment. Until its first download, an erasure redacts the subject in the file's cases. 404 for an unknown export, or `reason: deleted` once its file was deleted (by an operator, or seven days after it was written). An export not yet delivered that holds a case of a story held `blocked_by_erasure` after a restore is 503 `erasure_pending`, and stays undelivered, until its erasure is reapplied (FR-ADMIN-7).",
         "operationId": "get_feedback_export_content",
         "parameters": [
           {

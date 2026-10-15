@@ -33,6 +33,7 @@ from epistrel.core.errors import ErasurePending
 from epistrel.core.feedback_export import FeedbackExportRequest
 from epistrel.core.feedback_reporting import FeedbackReviewList
 from epistrel.core.ids import new_ulid
+from epistrel.core.stories import StorySpec
 from epistrel.engine import ERASURE_GATE_EXEMPT, ERASURE_GATED_ATTRIBUTE
 from epistrel.observability import logging as telemetry_logging
 from epistrel.orchestrator.jobs import queue as job_queue
@@ -40,9 +41,16 @@ from epistrel.testing import pauses
 from epistrel.tools import backup
 from tests import erasure_support as e
 from tests import ledger_support as ledger
-from tests.feedback_support import answered, play, rate, set_deployment
+from tests.feedback_support import (
+    OPERATOR,
+    answered,
+    as_principal,
+    play,
+    rate,
+    set_deployment,
+)
 from tests.respond_support import respond_client
-from tests.story_support import WRITE
+from tests.story_support import WRITE, story_body
 
 CTX = RequestContext(principal="p-ledger")
 
@@ -576,9 +584,9 @@ async def test_a_blocked_story_hides_its_policies(
 ) -> None:
     """#363: a story policy naming the subject. While the reapply is held, ``GET
     /admin/policies`` (also ``?scope=story``) leaves it out, ``GET /admin/policies/{id}`` is 503
-    ``erasure_pending``, and a fresh library Engine agrees (its first ``policies_list`` marks the
-    block); the deployment's policies are still served. Once the reapply settles the story, the
-    policy is served, redacted."""
+    ``erasure_pending``, and a fresh library Engine agrees: its first ``policies_get`` (#371) or
+    ``policies_list`` marks the block; the deployment's policies are still served. Once the
+    reapply settles the story, the policy is served, redacted."""
     url = ledger_server.fresh()
     ledger_dir = tmp_path / "ledger"
     policy = {
@@ -599,6 +607,12 @@ async def test_a_blocked_story_hides_its_policies(
     config = ledger.settings(url, ledger_dir)
     db = make_engine(config)
     try:
+        # #371: nothing has marked the database yet, so the refusal comes from
+        # ``policies_get``'s own ledger comparison as a fresh Engine's first call.
+        first = Engine(config)
+        first.bind(db)
+        with pytest.raises(ErasurePending):
+            await first.policies_get(CTX, row.id)
         lib = Engine(config)
         lib.bind(db)
         listed = await lib.policies_list(CTX)
@@ -797,3 +811,81 @@ async def test_reconcile_reads_go_through_the_engine(
     assert status["last_run_at"] is not None
     rows = await ledger.sql(url, "SELECT count(*) AS n FROM erasure_ledger")
     assert rows[0].n == 1
+
+
+async def test_the_restore_window_serves_no_replay_or_export_of_a_blocked_story(
+    ledger_server: ledger.Server, tmp_path: Path
+) -> None:
+    """#369, #370: during the restore window, replaying the ``Idempotency-Key`` that created a
+    blocked story (``POST /stories``, and the library's ``create_story`` as a fresh Engine's
+    first call) is 503 ``erasure_pending``, like every read of the story; an undelivered
+    feedback export with a case of it is 503 too and stays undelivered. Once the reapply
+    settles, the export's content holds no subject and the replay answers the reference."""
+    url = ledger_server.fresh()
+    ledger_dir = tmp_path / "ledger"
+    held: dict[str, str] = {}
+
+    async def prepare(client: httpx.AsyncClient, stories: ledger.Stories) -> None:
+        (player,) = await ledger.sql(
+            url, "SELECT id FROM characters WHERE story_id = :s AND is_player", s=stories.named
+        )
+        turn = await play(client, stories.named, player.id, f"Where is {ledger.SUBJECT}?")
+        rated = await rate(
+            client,
+            stories.named,
+            turn["message"]["message_id"],
+            {"rating": 2, "tags": ["forgot_something"]},
+        )
+        answered(rated, 201)
+        await set_deployment(client, feedback_export=True)
+        made = await client.post("/admin/feedback/export", json={}, headers=as_principal(OPERATOR))
+        assert made.status_code == 201, made.text
+        held["export"] = made.json()["export_id"]
+
+    stories = await _pending_story(url, ledger_dir, prepare=prepare)
+    keys = await ledger.sql(
+        url, "SELECT key, result::text AS r FROM idempotency_keys WHERE scope <> 'story'"
+    )
+    (key,) = [k.key for k in keys if ledger.SUBJECT in (k.r or "") and stories.named in k.r]
+    body = story_body(ledger.PLAYER_NAME, ledger.SUBJECT, ledger.BYSTANDER)
+    config = ledger.settings(url, ledger_dir)
+    db = make_engine(config)
+    try:
+        first = Engine(config)
+        first.bind(db)
+        with pytest.raises(ErasurePending):
+            await first.create_story(
+                RequestContext(principal="p-ledger", idempotency_key=key),
+                StorySpec.model_validate(body),
+            )
+    finally:
+        await db.dispose()
+    export_sql = "SELECT downloaded_at FROM feedback_export_log WHERE id = :i"
+    content_path = f"/admin/feedback/exports/{held['export']}/content"
+    with pauses.held(pauses.ERASURE_RECONCILE_BEFORE_REAPPLY) as hold:
+        async with ledger.started(config) as (client, lib):
+            await hold.arrived()
+            replay = await client.post(
+                "/stories", json=body, headers={**WRITE, "Idempotency-Key": key}
+            )
+            assert replay.status_code == 503, replay.text
+            assert replay.json()["error"]["code"] == "erasure_pending"
+            assert ledger.SUBJECT not in replay.text
+            refused = await client.get(content_path, headers=e.WRITE)
+            assert refused.status_code == 503, refused.text
+            assert refused.json()["error"]["code"] == "erasure_pending"
+            assert ledger.SUBJECT not in refused.text
+            (log_row,) = await ledger.sql(url, export_sql, i=held["export"])
+            assert log_row.downloaded_at is None
+            hold.release()
+            assert lib._reconcile_task is not None
+            await lib._reconcile_task
+            delivered = await client.get(content_path, headers=e.WRITE)
+            replayed = await client.post(
+                "/stories", json=body, headers={**WRITE, "Idempotency-Key": key}
+            )
+    assert delivered.status_code == 200, delivered.text
+    assert delivered.content.strip()
+    assert ledger.SUBJECT not in delivered.text
+    assert replayed.status_code == 200, replayed.text
+    assert ledger.SUBJECT not in replayed.text

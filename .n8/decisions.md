@@ -5955,3 +5955,9 @@ Fix pass on the four bugs the M3 re-verify at `c26993c` filed (#363, #364, #365,
 - **Decision (Rule 1, #366):** The branch's full suite (`1 failed, 1919 passed`, 24.5 min) failed C-01 on `POST /stories/{id}/characters/{cid}/promote` with `{"name": "\u001f"}`: a 500. Pydantic's `strip_whitespace` keeps `\x1c`–`\x1f`, while the catalog's `_non_blank` uses `str.strip`, which removes them. The name passed the request type and failed inside `ScenarioDraft`. This predates the pass (since `687796a`). It is the same family as #366 (a trimmed request string that disagrees with the server, so C-01 is intermittently red), and it sits in the validator #366 adds. So the validator (renamed `trim_as_sent`) also strips with `str.strip`, and a blank `"\x1f"` is now a 422 on every trimmed type. `tests/test_trimmed.py` pins it, and the pin fails without the strip (13 failed). Re-run: C-01 with the catalog, persona, scenario and config tests, 266 passed. CI runs the full suite again on the PR.
   **Why:** A 500 found by the merge gate, in code this story touches; one rule for blank across the server. Cost if wrong: a name made only of those four control characters is refused, which was never a usable name.
   **Issue:** #366
+
+## Owner decision — 2026-10-15
+
+- **Decision (owner):** #340 takes option 1: docs/04 C-15 is amended to read that a phrase planted in a catalog character's public description appears in **no prompt and no story knowledge record** (the `characters` row, events, transcript and story texts). The genesis snapshot (`character_snapshots`) and the creation report keep the catalog entry as provenance (FR-SCN-9), and erasure reaches both. The behaviour is unchanged.
+  **Why:** The snapshot is the provenance FR-SCN-9 asks for. Dropping the card fields would break the snapshot-equals-published-version guarantee that `test_i_17`/`test_i_27` assert. #339's test already asserts the amended wording.
+  **Issue:** #340

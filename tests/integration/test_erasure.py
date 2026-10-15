@@ -249,6 +249,30 @@ async def test_a_dry_run_of_an_unknown_subject_answers_zeros(
         assert missing["error"]["code"] == "not_found"
 
 
+async def test_erasure_from_a_blank_story_named_after_the_subject(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#349: a story created without a scenario, named after the subject. Erasing her answers
+    200, the story name is redacted, no residue is left, and the story still has no scenario
+    snapshot (SQL NULL, as its check constraint requires). Complement: the other names in the
+    cast survive."""
+    async with respond_client(erasure_settings, engine) as (client, _):
+        story, ids = await new_story(
+            client, "Wren", "Marisol Quenby", "Ty", name="Marisol Quenby's tale"
+        )
+        done = await e.erase(client, "character", ids["Marisol Quenby"], story)
+        assert done["residue"] == 0
+        shown = await client.get(f"/stories/{story}", headers=e.WRITE)
+        assert shown.status_code == 200, shown.text
+        assert shown.json()["name"] == "[erased]'s tale"
+        assert {c["name"] for c in shown.json()["characters"]} >= {"Wren", "Ty"}
+    assert sum((await e.residue(engine, story, ["Marisol Quenby", "Marisol"])).values()) == 0
+    snapshot = await scalar(
+        engine, "SELECT scenario_snapshot IS NULL FROM stories WHERE id = :s", s=story
+    )
+    assert snapshot is True
+
+
 async def test_erasure_refusals(
     erasure_settings: Settings, pg_url: str, engine: AsyncEngine
 ) -> None:

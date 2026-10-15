@@ -1742,13 +1742,23 @@ class Engine:
         """Every story, newest first, unless the request filters: by ``status``, by ``owner``
         (a principal), or by ``relation`` (each ``name:principal``, or ``name:`` for any
         principal; repeated filters all hold). Owners and relations narrow a list only when
-        asked (FR-AUTH-8)."""
-        return await stories.list_stories(
+        asked (FR-AUTH-8). A story the erasure reconciler holds blocked is listed with its
+        status but without its name and settings until the reapply settles it (#348): every
+        call naming it is refused, and the list must not serve what the erasure removes."""
+        if not self._erasure_marked:
+            await self._mark_erasures()
+        found = await stories.list_stories(
             self.db,
             status=status,
             owner=ownership.owner_filter(owner),
             relations=[ownership.parse_relation_filter(value) for value in relation],
         )
+        return [
+            dataclasses.replace(story, name=None, settings={})
+            if story.status is StoryStatus.BLOCKED_BY_ERASURE
+            else story
+            for story in found
+        ]
 
     async def archive_story(self, ctx: RequestContext, story_id: str) -> stories.StatusChange:
         """Make the story read-only; idempotent; 423 while a turn is in flight."""

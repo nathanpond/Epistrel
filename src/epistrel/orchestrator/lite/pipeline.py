@@ -242,7 +242,14 @@ async def respond(
                 "actor_character_id": cast.actor.id,
                 "viewpoint": try_resolve(resolution),
                 "expected_revision": ctx.expected_revision,
-            }
+            },
+            # The request as sent, which an erasure cannot change (#375).
+            sent={
+                "story_id": story_id,
+                "body": request.model_dump(mode="json"),
+                "viewpoint": ctx.viewpoint,
+                "expected_revision": ctx.expected_revision,
+            },
         )
     await check_expected_revision(db, story_id, ctx.expected_revision)
     viewpoint = resolution()

@@ -539,8 +539,9 @@ async def test_a_turn_key_replayed_after_an_erasure_answers_the_reference(
     """#365: a turn's key replayed with the identical body answers the stored result before an
     erasure, and after it (the erasure changed the cast the request hash resolved) answers the
     reference to the original operation, for a key whose result named the subject (purged) and
-    one whose did not. Complement: a key first used after the erasure still conflicts on a
-    different body."""
+    one whose did not. Complements: a pre-erasure key reused with a different body conflicts
+    (#375: the hash of the request as sent still differs), and so does a key first used after
+    the erasure."""
     async with respond_client(erasure_settings, engine) as (client, lib):
         story, ids = await new_story(client, "Wren", "Marisol Quenby", "Ty")
         wren = ids["Wren"]
@@ -573,6 +574,17 @@ async def test_a_turn_key_replayed_after_an_erasure_answers_the_reference(
             assert answer["operation_id"] == originals[key], key
             assert answer["reference"] == f"/operations/{answer['operation_id']}"
             assert "Marisol" not in replay.text
+        # #375: a pre-erasure key reused with a different request is still a conflict.
+        for key in turns:
+            changed = await respond(
+                client,
+                story,
+                body(wren, "Something else entirely."),
+                headers={"Idempotency-Key": key},
+            )
+            assert changed.status_code == 409, (key, changed.text)
+            assert changed.json()["error"]["code"] == "idempotency_conflict"
+            assert changed.json()["error"]["details"]["reason"] == "request_hash"
         await played(client, story, body(wren, "Evening."), headers={"Idempotency-Key": "late"})
         other = await respond(
             client, story, body(wren, "Morning."), headers={"Idempotency-Key": "late"}

@@ -37,6 +37,9 @@ idempotency_keys = Table(
     Column("scope_id", Text, nullable=False),
     Column("key", Text, nullable=False),
     Column("request_hash", Text, nullable=False),
+    # The hash of the request as sent, before anything was resolved (#375): an erasure changes
+    # what ``request_hash`` resolved, never this. Null on rows written before migration 0043.
+    Column("sent_hash", Text, nullable=True),
     Column("operation_id", ulid_type(), nullable=True),
     Column("status", Text, nullable=False, server_default=text("'in_flight'")),
     # ``none_as_null``: a purged or absent result is SQL NULL, never JSON ``null``, so the

@@ -1376,3 +1376,48 @@ async def test_a_catalog_subject_is_indexed_where_it_was_named_before_it_existed
         assert renamed.status_code == 200, renamed.text
         assert ("media_assets", asset["id"], "caption") not in await mentions()
         assert (await rebuild_scope(db, None)).clean
+
+
+async def test_a_deleted_catalog_subject_leaves_no_mentions(pg_url: str, tmp_path: Path) -> None:
+    """Deleting a persona or a catalog character drops the mention rows other catalog records
+    held for it (#350): the caption that named each was indexed for it, and after the deletes
+    no row of either remains and the catalog's full rebuild equals the incremental index.
+
+    Complement: the caption's mention of a third, surviving persona is kept."""
+    async with delivery(pg_url, tmp_path / "media", "local", None) as d:
+        client, db = d.client, d.space.db
+        await uploaded(client, caption="Hesper Lune and Mara Venn meet Odile Fenn at dusk.")
+        ids: dict[str, str] = {}
+        for name in ("Hesper Lune", "Odile Fenn"):
+            made = await client.post(
+                "/personas",
+                json={"name": name, "age": 30, "description": "A walker."},
+                headers=WRITE,
+            )
+            assert made.status_code == 201, made.text
+            ids[name] = made.json()["id"]
+        ids["Mara Venn"] = (await create(client, complete("Mara Venn")))["id"]
+
+        async def mentioned() -> set[str]:
+            async with db.connect() as conn:
+                found = await conn.scalars(
+                    text(
+                        "SELECT DISTINCT subject_id FROM subject_references "
+                        "WHERE record_table = 'media_assets' AND ref_kind = 'mentioned'"
+                    )
+                )
+                return {str(s) for s in found}
+
+        assert set(ids.values()) <= await mentioned()
+        assert (await rebuild_scope(db, None)).clean
+        for path in (f"/personas/{ids['Hesper Lune']}", f"/catalog/characters/{ids['Mara Venn']}"):
+            deleted = await client.delete(path, headers=WRITE)
+            assert deleted.status_code == 204, (path, deleted.text)
+        async with db.connect() as conn:
+            left = await conn.scalar(
+                text("SELECT count(*) FROM subject_references WHERE subject_id IN (:p, :c)"),
+                {"p": ids["Hesper Lune"], "c": ids["Mara Venn"]},
+            )
+        assert left == 0
+        assert ids["Odile Fenn"] in await mentioned()
+        assert (await rebuild_scope(db, None)).clean

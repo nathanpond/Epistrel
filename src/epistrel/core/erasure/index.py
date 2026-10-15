@@ -463,6 +463,22 @@ async def drop_references(conn: AsyncConnection, record_table: str, record_id: s
     return int(removed.rowcount or 0)
 
 
+async def drop_catalog_mentions(conn: AsyncConnection, kind: SubjectKind, subject_id: str) -> int:
+    """Remove every catalog ``mentioned`` row naming a catalog subject that is being deleted
+    (#350): other records that named it no longer reference anything, and a rebuild, which
+    scans only the subjects that exist, would not produce them. Returns how many."""
+    sr = subject_references.c
+    removed = await conn.execute(
+        delete(subject_references).where(
+            sr.subject_kind == kind.value,
+            sr.subject_id == subject_id,
+            sr.scope == ReferenceScope.CATALOG.value,
+            sr.ref_kind == ReferenceKind.MENTIONED.value,
+        )
+    )
+    return int(removed.rowcount or 0)
+
+
 async def drop_many(conn: AsyncConnection, record_table: str, record_ids: Iterable[str]) -> int:
     """Remove the rows of every record of ``record_table`` in ``record_ids`` (a bulk delete or
     purge of the records); returns how many."""
@@ -832,6 +848,7 @@ __all__ = [
     "catalog_subjects",
     "compute",
     "current",
+    "drop_catalog_mentions",
     "drop_many",
     "drop_prefixed",
     "drop_references",

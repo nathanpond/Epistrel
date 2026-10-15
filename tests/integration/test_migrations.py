@@ -456,3 +456,40 @@ def test_every_character_gets_a_companion(scratch_database: str) -> None:
             )
     finally:
         engine.dispose()
+
+
+def test_json_null_idempotency_results_become_sql_null(scratch_database: str) -> None:
+    """0042 (#361): a result purged to JSON ``null`` before the fix becomes SQL NULL; a stored
+    result and a row that never had one are unchanged."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0041")
+    engine = make_sync_engine(scratch_database)
+    try:
+        with engine.begin() as conn:
+            for key, result in (("purged", "null"), ("stored", '{"status": 200}'), ("none", None)):
+                conn.execute(
+                    text(
+                        "INSERT INTO idempotency_keys (scope, scope_id, key, request_hash, "
+                        "status, result, owner_token, lease_until) VALUES ('deployment', "
+                        "'deployment', :k, 'h', 'done', CAST(:r AS jsonb), 't', now())"
+                    ),
+                    {"k": key, "r": result},
+                )
+        command.upgrade(cfg, "0042")
+        with engine.connect() as conn:
+            found = {
+                row.key: row.kind
+                for row in conn.execute(
+                    text("SELECT key, jsonb_typeof(result) AS kind FROM idempotency_keys")
+                )
+            }
+            nulls = {
+                row.key
+                for row in conn.execute(
+                    text("SELECT key FROM idempotency_keys WHERE result IS NULL")
+                )
+            }
+    finally:
+        engine.dispose()
+    assert found == {"purged": None, "stored": "object", "none": None}
+    assert nulls == {"purged", "none"}

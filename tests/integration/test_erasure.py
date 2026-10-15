@@ -135,12 +135,13 @@ async def test_i_09(erasure_settings: Settings, engine: AsyncEngine) -> None:
         # The stored result of the first turn is purged; nothing indexes her any more.
         (stored,) = await rows(
             engine,
-            "SELECT result FROM idempotency_keys WHERE scope = 'story' AND scope_id = :s "
-            "AND key = :k",
+            "SELECT result, result IS NULL AS sql_null FROM idempotency_keys "
+            "WHERE scope = 'story' AND scope_id = :s AND key = :k",
             s=sid,
             k=e.FIRST_KEY,
         )
         assert stored.result is None
+        assert stored.sql_null  # SQL NULL, not JSON null: the sweep must not find it again (#361)
         assert (
             await scalar(
                 engine,

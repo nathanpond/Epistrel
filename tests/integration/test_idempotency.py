@@ -422,3 +422,51 @@ async def test_idempotency_purge_settles_stale_keys(engine: AsyncEngine) -> None
         "recent": ("in_flight", None),
         "queued": ("in_flight", None),
     }
+    # Settled without a result means SQL NULL, not JSON null (#361).
+    assert (
+        await count(
+            engine,
+            "SELECT count(*) FROM idempotency_keys WHERE key LIKE :k AND result IS NOT NULL",
+            k=f"{run}-%",
+        )
+        == 0
+    )
+
+
+async def test_a_purged_result_is_purged_once(engine: AsyncEngine) -> None:
+    """#361: ``purge_expired`` stores a purged result as SQL NULL, so the next sweep neither
+    finds nor counts it again; the row stays as the tombstone. Complement: a result whose window
+    is still open is kept."""
+    story = await new_event_story(engine)
+    run = new_ulid()
+    now = clock.now()
+    async with engine.begin() as conn:
+        for name, expires in (
+            ("lapsed", now - timedelta(hours=1)),
+            ("open", now + timedelta(hours=1)),
+        ):
+            await conn.execute(
+                idempotency_keys.insert().values(
+                    scope="story",
+                    scope_id=story,
+                    key=f"{run}-{name}",
+                    request_hash="h",
+                    status="done",
+                    result={"status": 200, "body": {"said": name}},
+                    owner_token="t",
+                    lease_until=now,
+                    expires_at=expires,
+                )
+            )
+    assert await idempotency.purge_expired(engine, now) >= 1
+    assert await idempotency.purge_expired(engine, now) == 0
+    left = {
+        r.key.removeprefix(f"{run}-"): (r.sql_null, r.request_hash)
+        for r in await rows(
+            engine,
+            "SELECT key, result IS NULL AS sql_null, request_hash FROM idempotency_keys "
+            "WHERE key LIKE :k",
+            k=f"{run}-%",
+        )
+    }
+    assert left == {"lapsed": (True, "h"), "open": (False, "h")}

@@ -8,11 +8,14 @@ A subject is looked for by its **names** (its names and declared aliases) and it
 words of a multi-word name, less titles, particles and the words another subject of the same
 scope uses: ``index.with_name_parts``). Every occurrence, on the NFC form of the text, as a whole
 word or phrase (Unicode word boundaries, any run of whitespace matching a space, longer terms
-first; terms shorter than ``MIN_TERM_CHARS`` never match), is one ``Mention`` of a ``Rule``:
+first; terms shorter than ``MIN_TERM_CHARS`` never match), is one ``Mention`` of a ``Rule``.
+Text and terms are compared **folded** (``fold``: full case-folding, so "Strauß", "STRAUSS" and
+"Strauss" are one word and "İpek", "IPEK" and "i̇pek" another; every dash, ``Pd`` and the soft
+hyphen, as ``-``: #384, #385); a mention's span is the original text's:
 
-- **name** (certain): a multi-word name or alias, ignoring case;
-- **part** (certain): a part, ignoring case but as written (no case-folding: "Strauß" never
-  matches "STRAUSS"), each half of a hyphenated word being a part too;
+- **name** (certain): a multi-word name or alias, in any case;
+- **part** (certain): a part, in any case, each half of a hyphenated word (any dash) being a
+  part too;
 - a single word on the bundled common-word list (``common_words.txt``; a one-word name or alias
   as much as a part, so a character called "Rose" does not erase "rose") matches only when it is
   capitalised: in the middle of a sentence it is certain (its ``name`` or ``part`` rule), and at
@@ -26,8 +29,9 @@ quotation (a quotation mark before the word), or a position after ``.``, ``!``, 
 ``Dr.``) does not end a sentence.
 
 The write-path guard compares keyed hashes, never terms (``guard_terms``): each certain term
-normalised (``normalized``: NFC, case-folded, whitespace runs as one space), a common word in
-its capitalised mid-sentence form only (``CAPITALISED`` before it).
+normalised (``normalized``: folded as above, whitespace runs as one space, so the guard and the
+matcher agree on case: #388), a common word in its capitalised mid-sentence form only
+(``CAPITALISED`` before it).
 """
 
 from __future__ import annotations
@@ -67,6 +71,13 @@ _SKIPPED = _QUOTES | frozenset("()[]{}<>*_")
 """Quotes, brackets and emphasis marks: skipped when looking back for a sentence's end."""
 _ENDS = frozenset(".!?…:")
 _LINE_BREAKS = frozenset("\n\r\u2028\u2029\x85")
+DASHES = "".join(
+    sorted({chr(c) for c in range(0x10000) if unicodedata.category(chr(c)) == "Pd"} | {"\u00ad"})
+)
+"""Every dash (Unicode ``Pd``) and the soft hyphen: one ``-`` when folded, and each splits a
+hyphenated name into parts (``index.name_parts``)."""
+_DASH_TO_HYPHEN = str.maketrans(dict.fromkeys(DASHES, "-"))
+_COMBINING_DOT = "\u0307"
 
 
 class Rule(StrEnum):
@@ -97,10 +108,41 @@ def nfc(value: str) -> str:
     return unicodedata.normalize("NFC", value)
 
 
+@lru_cache(maxsize=4096)
+def _fold_char(char: str) -> str:
+    return char.casefold().replace("i" + _COMBINING_DOT, "i").translate(_DASH_TO_HYPHEN)
+
+
+def _folded(text: str) -> tuple[str, list[int] | None, list[int] | None]:
+    """The NFC ``text`` folded (see ``fold``), with each folded character's source start and
+    end in ``text`` (``None``, ``None`` when every character folds to exactly one)."""
+    simple = text.casefold()
+    if len(simple) == len(text) and _COMBINING_DOT not in text:
+        return simple.translate(_DASH_TO_HYPHEN), None, None
+    out: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
+    for k, char in enumerate(text):
+        if char == _COMBINING_DOT and out and out[-1] == "i":
+            ends[-1] = k + 1  # "i" + a combining dot above folds as "i" ("İ" does too)
+            continue
+        for folded in _fold_char(char):
+            out.append(folded)
+            starts.append(k)
+            ends.append(k + 1)
+    return "".join(out), starts, ends
+
+
+def fold(value: str) -> str:
+    """``value`` as the matcher compares it: NFC, fully case-folded (``ß`` is ``ss``, ``İ`` is
+    ``i``, as is ``i`` with a combining dot above), every dash (``DASHES``) a ``-``."""
+    return _folded(nfc(value))[0]
+
+
 def normalized(value: str) -> str:
-    """``value`` as the guard's hashes compare it: NFC, case-folded, whitespace runs as one
+    """``value`` as the guard's hashes compare it: folded (``fold``), whitespace runs as one
     space."""
-    return " ".join(nfc(value).casefold().split())
+    return " ".join(fold(value).split())
 
 
 def _collapsed(value: str) -> str:
@@ -151,19 +193,18 @@ def capitalised(word: str) -> bool:
 _NOT_WORDS = re.compile(r"\W*")
 
 
-def _whole(text: str, match: re.Match[str]) -> bool:
-    """Whether the match is the whole text, punctuation aside: a name value, not prose."""
-    return bool(
-        _NOT_WORDS.fullmatch(text, 0, match.start()) and _NOT_WORDS.fullmatch(text, match.end())
-    )
+def _whole(text: str, start: int, end: int) -> bool:
+    """Whether ``text[start:end]`` is the whole text, punctuation aside: a name value, not
+    prose."""
+    return bool(_NOT_WORDS.fullmatch(text, 0, start) and _NOT_WORDS.fullmatch(text, end))
 
 
 @dataclass(frozen=True, slots=True)
 class _Term:
     text: str
+    folded: str
     rule: Rule
     common: bool
-    pattern: re.Pattern[str]
 
 
 def _phrase(term: str) -> str:
@@ -181,22 +222,17 @@ class Matcher:
                 if not isinstance(raw, str):
                     continue
                 term = _collapsed(raw)
-                if len(term) < MIN_TERM_CHARS or term.casefold() in found:
+                folded = normalized(term)
+                if len(term) < MIN_TERM_CHARS or folded in found:
                     continue
-                found[term.casefold()] = _Term(
-                    term,
-                    rule,
-                    is_common(term),
-                    re.compile(_phrase(term), re.IGNORECASE),
-                )
-        self._terms = sorted(found.values(), key=lambda t: (-len(t.text), t.text))
+                found[folded] = _Term(term, folded, rule, is_common(term))
+        self._terms = sorted(found.values(), key=lambda t: (-len(t.folded), t.folded))
+        self._by_folded = found
         self.names = tuple(t.text for t in self._terms if t.rule is Rule.NAME)
         self.parts = tuple(t.text for t in self._terms if t.rule is Rule.PART)
+        # Matched on the folded text, so no case flag: folding already made case one.
         self._pattern = (
-            re.compile(
-                rf"(?<!\w)(?:{'|'.join(_phrase(t.text) for t in self._terms)})(?!\w)",
-                re.IGNORECASE,
-            )
+            re.compile(rf"(?<!\w)(?:{'|'.join(_phrase(t.folded) for t in self._terms)})(?!\w)")
             if self._terms
             else None
         )
@@ -206,27 +242,32 @@ class Matcher:
         """Every term, names and parts, longest first."""
         return tuple(t.text for t in self._terms)
 
-    def _term(self, matched: str) -> _Term:
-        for term in self._terms:
-            if term.pattern.fullmatch(matched):
-                return term
-        raise LookupError(matched)  # pragma: no cover - the alternation matched one of them
-
     def mentions(self, value: str | None) -> list[Mention]:
         """Every mention in ``value`` (offsets in its NFC form), in order."""
         if not value or self._pattern is None:
             return []
         text = nfc(value)
+        folded, starts, ends = _folded(text)
         found: list[Mention] = []
-        for match in self._pattern.finditer(text):
-            term = self._term(match.group())
+        for match in self._pattern.finditer(folded):
+            a, b = match.span()
+            if starts is None or ends is None:
+                start, end = a, b
+            else:
+                # A match must cover whole source characters ("s" is not half of "ß").
+                if (a and starts[a - 1] == starts[a]) or (
+                    b < len(starts) and starts[b] == starts[b - 1]
+                ):
+                    continue
+                start, end = starts[a], ends[b - 1]
+            term = self._by_folded[" ".join(match.group().split())]
             rule = term.rule
             if term.common:
-                if not capitalised(match.group()):
+                if not capitalised(text[start:end]):
                     continue
-                if sentence_start(text, match.start()) and not _whole(text, match):
+                if sentence_start(text, start) and not _whole(text, start, end):
                     rule = Rule.CANDIDATE
-            found.append(Mention(match.start(), match.end(), rule))
+            found.append(Mention(start, end, rule))
         return found
 
     def certain(self, value: str | None) -> list[Mention]:
@@ -286,12 +327,14 @@ def guard_spans(value: str) -> list[str]:
 __all__ = [
     "CAPITALISED",
     "CERTAIN",
+    "DASHES",
     "MIN_TERM_CHARS",
     "NAME_PARTICLES",
     "Matcher",
     "Mention",
     "Rule",
     "common_words",
+    "fold",
     "guard_spans",
     "is_common",
     "matcher",

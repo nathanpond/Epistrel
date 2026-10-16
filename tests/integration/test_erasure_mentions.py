@@ -2,9 +2,10 @@
 
 A name word that is also a common word ("Will", "Black") is erased only where it is the name:
 capitalised mid-sentence it is certain, lowercase it is never touched, and capitalised at the
-start of a sentence it is a candidate the operator confirms by id. Name words are matched as
-written (#373) and hyphenated names by their halves (#374). The write-path guard follows the
-same rule, so a later reply using the ordinary word is not refused.
+start of a sentence it is a candidate the operator confirms by id. Name words are matched in
+any case, fully case-folded (#373, #384), and hyphenated names by their halves at any dash (#374,
+#385). The write-path guard follows the same rule, so a later reply using the ordinary word is
+not refused.
 """
 
 from __future__ import annotations
@@ -164,19 +165,20 @@ async def test_a_confirmed_candidate_is_erased(
             assert "you come" not in record.r
 
 
-async def test_name_words_match_as_written_and_by_their_halves(
+async def test_name_words_match_in_any_case_and_by_their_halves(
     erasure_settings: Settings, engine: AsyncEngine
 ) -> None:
-    """#373: a bare "Strauß" of "Jürgen Strauß" is redacted (no case-folding to "strauss"), and
-    the residue is 0. #374: "Mary" and "Jane" of "Mary-Jane Watson" are redacted. #364's
-    repro: a bare "Marisol" of "Marisol Quenby" still is."""
+    """#373, #384: a bare "Strauß" of "Jürgen Strauß" is redacted in every case-folded form
+    ("STRAUSS", "Strauss", "JÜRGEN"), and the residue is 0. #374, #385: "Mary", "Jane" and
+    "Mary-Jane" of "Mary-Jane Watson" stored with a non-breaking hyphen (U+2011) are
+    redacted. #364's repro: a bare "Marisol" of "Marisol Quenby" still is."""
     async with respond_client(erasure_settings, engine) as (client, lib):
-        cast = ("Wren", "Jürgen Strauß", "Mary-Jane Watson", "Marisol Quenby", "Ty")
+        cast = ("Wren", "Jürgen Strauß", "Mary\u2011Jane Watson", "Marisol Quenby", "Ty")
         story, ids = await new_story(client, *cast)
         lib.models.stub.script("generation", ["Ty nods."] * 3)
         lines = {
-            "Jürgen Strauß": "Hi Strauß. Hi Jürgen.",
-            "Mary-Jane Watson": "Hi Mary. Hi Jane.",
+            "Jürgen Strauß": "Hi Strauß. Hi Jürgen. Hi STRAUSS. Hi Strauss. Hi JÜRGEN.",
+            "Mary\u2011Jane Watson": "Hi Mary. Hi Jane. Hi Mary-Jane.",
             "Marisol Quenby": "Hi Marisol.",
         }
         for line in lines.values():
@@ -185,11 +187,12 @@ async def test_name_words_match_as_written_and_by_their_halves(
             done = await e.erase(client, "character", ids[name], story)
             assert done["residue"] == 0, name
         texts = await _texts(engine, story)
-        assert "Hi [erased]. Hi [erased]." in texts
-        assert texts.count("Hi [erased]. Hi [erased].") == 2
+        assert "Hi [erased]. Hi [erased]. Hi [erased]. Hi [erased]. Hi [erased]." in texts
+        assert "Hi [erased]. Hi [erased]. Hi [erased]." in texts
         assert "Hi [erased]." in texts
-        for word in ("Strauß", "Jürgen", "Mary", "Jane", "Marisol"):
+        for word in ("Strauß", "STRAUSS", "Strauss", "Jürgen", "JÜRGEN", "Mary", "Jane"):
             assert not any(word in t for t in texts), word
+        assert not any("Marisol" in t for t in texts)
 
 
 async def test_the_index_records_each_mention_by_position(

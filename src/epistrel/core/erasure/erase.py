@@ -1036,11 +1036,11 @@ def _with_report(turn_report: Any, edit: Callable[[dict[str, Any]], dict[str, An
 
 def story_erased_report(report: dict[str, Any], removed: set[str]) -> dict[str, Any]:
     """A genesis creation report once a story-scope erasure removed the story characters
-    ``removed``: their catalog cards keep their ids, labels and public description (docs/04
-    C-15; the boundary's ``KEPT_CARD``), with the name redacted and the images and content
-    rating emptied (#390); the ``deferred`` items that belong only to them are dropped, as their
-    ``genesis_deferred`` rows are, the others lose their ids, and ``counts.deferred`` is
-    recounted from what is left (#381)."""
+    ``removed``: their catalog cards are kept as the boundary's ``KEPT_CARD`` states (docs/04
+    C-15): labels, public description and structural fields stay, the name is redacted, and
+    the images and content rating are emptied (#390, #400); the ``deferred`` items that belong
+    only to them are dropped, as their ``genesis_deferred`` rows are, the others lose their
+    ids, and ``counts.deferred`` is recounted from what is left (#381)."""
     cast = [
         {**card, "images": NO_IMAGES, "content_rating": None}
         if isinstance(card, Mapping)

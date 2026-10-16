@@ -503,6 +503,30 @@ def test_s_erasure_boundary__docs() -> None:
             requirement,
             item,
         )
+    # #416: docs/04 C-15, which ``KEPT_CARD`` cites, states the kept card as it does.
+    c_15 = boundary.normalised(plan_item("C-15"))
+    for phrase in KEPT_CARD_PHRASES:
+        assert boundary.normalised(phrase) in boundary.normalised(boundary.KEPT_CARD), phrase
+        assert boundary.normalised(phrase) in c_15, phrase
+    assert "its id, labels and public description" not in c_15
+
+
+KEPT_CARD_PHRASES = (
+    "labels and public description",
+    "structural fields",
+    "its kind, ids, source, version and status values",
+    "images and content rating are emptied",
+    "name is redacted",
+    "catalog-scope erasure",
+)
+"""The keyed phrases of ``boundary.KEPT_CARD`` that docs/04 C-15 states too (#416)."""
+
+
+def plan_item(item: str) -> str:
+    """The docs/04 bullet of ``item`` (``- **[C-15] …``), on its one line."""
+    plan = (REPO_ROOT / "docs" / "04-testing-plan.md").read_text("utf-8")
+    (line,) = [x for x in plan.splitlines() if x.startswith(f"- **[{item}] ")]
+    return line
 
 
 SPEC_PHRASES: dict[str, tuple[str, str]] = {

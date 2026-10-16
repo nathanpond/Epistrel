@@ -6384,3 +6384,9 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** Out of scope: filed #429 for deployment policies and configuration changes naming a pending catalog-scope erasure's subject (the reapply redacts them, but they are not catalog reads); ADR-157 names it. Not fixed inline.
   **Why:** The owner's decision covers catalog reads; policies are deployment configuration, so extending it is the owner's call.
   **Issue:** #346, #429
+- **Decision:** #417: the policy tokeniser (`core/policies/evaluate.py` `_WORD`) is built from `core.erasure.matcher.WORD_CHAR` (`\w` plus every combining mark outside `DIACRITICS`), not from `matcher.WORD` itself and not a copy: `_WORD = WORD_CHAR+(?:['’]WORD_CHAR+)*`. Discretion: the owner said "reuse `erasure.matcher.WORD`"; `WORD` has no apostrophe join, and the policy word must keep it ("don" must not match "don't"), so the shared piece is the character class `WORD` is made of. No move of the definition into a neutral module: `core.policies` importing `core.erasure.matcher` is inside `core`, adds no cycle (the matcher imports nothing from the project) and `lint-imports` keeps every contract.
+  **Why:** One definition of a word character for every deterministic matcher, so a later fix to it reaches both; the triage named the erasure definition as the one to reuse.
+  **Issue:** #417
+- **Decision:** #417: `matched_span` (a report's quoted span, #111) uses the same `_WORD`, so it quotes the whole Devanagari word too; a script-neutral diacritic (U+0334) still ends a policy word, as in the matcher (#410). NFKC normalisation is unchanged; it decomposes "ढ़" into ढ plus the nukta (Mn, outside `DIACRITICS`), which is now inside its word.
+  **Why:** The verdict and the quoted span must tokenise alike; the diacritic behaviour stays the matcher's.
+  **Issue:** #417

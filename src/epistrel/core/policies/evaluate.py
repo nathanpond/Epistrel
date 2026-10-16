@@ -7,9 +7,11 @@ order the policies were given. Model-assisted policies are skipped silently; #56
 them through the ``guardrail check`` purpose.
 
 - ``wordlist`` and ``entity_list``: the text and each entry are normalised (NFKC, case folded)
-  and split into words. A word is a run of Unicode ``\\w`` characters, and an apostrophe
-  inside a word joins it. An entry matches when its words appear consecutively in the text,
-  so "kill" does not match "skill" and "don" does not match "don't".
+  and split into words. A word is a run of the erasure matcher's word characters
+  (``core.erasure.matcher.WORD_CHAR``: ``\\w`` and every combining mark of a script, so a
+  Devanagari vowel sign is inside its word: #417), and an apostrophe inside a word joins it.
+  An entry matches when its words appear consecutively in the text, so "kill" does not match
+  "skill", "don" does not match "don't" and "राम" does not match "रामायण".
 - ``regex``: ``re.search`` with ``IGNORECASE``. Each policy's patterns run in a child process
   (``regex_worker``) under a deadline (``REGEX_DEADLINE_S``). ``re`` holds the interpreter's
   lock for a whole match and nothing can interrupt it inside one interpreter, so catastrophic
@@ -34,6 +36,7 @@ import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 
+from epistrel.core.erasure.matcher import WORD_CHAR
 from epistrel.core.policies import regex_worker
 from epistrel.core.policies.model import (
     EntityListRule,
@@ -50,7 +53,9 @@ REGEX_WORKERS = 4
 STARTUP_GRACE_S = 5.0
 """How long a search may wait for a worker before it counts as missing its deadline."""
 
-_WORD = re.compile(r"\w+(?:['\u2019]\w+)*")
+_WORD = re.compile(rf"{WORD_CHAR}+(?:['\u2019]{WORD_CHAR}+)*")
+"""A policy word: a run of the erasure matcher's word characters (``WORD_CHAR``, #417), an
+apostrophe inside it joining it."""
 
 
 def _normalise(text: str) -> str:

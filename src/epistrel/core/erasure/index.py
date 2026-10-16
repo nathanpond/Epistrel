@@ -87,6 +87,8 @@ from epistrel.core.erasure.matcher import (
     DASHES,
     MIN_TERM_CHARS,
     NAME_PARTICLES,
+    NOT_WORD_CHAR,
+    WORD,
     Matcher,
     matcher,
     nfc,
@@ -171,7 +173,7 @@ def mentions(value: str, names: Iterable[str]) -> bool:
 
 # -- terms -------------------------------------------------------------------------------------
 
-_WORD_EDGES = re.compile(r"^\W+|\W+$")
+_WORD_EDGES = re.compile(rf"^{NOT_WORD_CHAR}+|{NOT_WORD_CHAR}+$")
 _DASH = re.compile(f"[{re.escape(DASHES)}]")
 
 
@@ -210,7 +212,7 @@ def with_name_parts(
             for term in terms
             for w in (
                 *(normalized(word) for word in _words(term)),
-                *re.findall(r"\w+", normalized(term)),
+                *WORD.findall(normalized(term)),
             )
         }
         for _, terms in named

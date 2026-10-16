@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -59,7 +58,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import Provenance
-from epistrel.core.erasure.matcher import MIN_TERM_CHARS, guard_spans, normalized
+from epistrel.core.erasure.matcher import MIN_TERM_CHARS, WORD, guard_spans, normalized
 from epistrel.core.erasure.records import character_ids, text_fields
 from epistrel.core.errors import ErasedSubjectReferenced, ErasureKeyMissing
 from epistrel.core.tables import events, operations
@@ -78,7 +77,7 @@ MESSAGE = (
     "This operation references an erased subject; rebuild your context from the current "
     "history and retry."
 )
-_WORD = re.compile(r"\w+")
+_WORD = WORD
 
 _KEYS: list[str] = []
 

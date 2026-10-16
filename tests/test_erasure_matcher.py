@@ -3,6 +3,7 @@ database."""
 
 from __future__ import annotations
 
+import re
 from importlib import resources
 
 import pytest
@@ -179,6 +180,35 @@ def test_a_mention_takes_the_combining_marks_after_it() -> None:
     assert found(m.matcher(["Marisol Quenby"], ["Quenby"]), "Hi Quenby\u0334!") == [
         ("Quenby\u0334", "part")
     ]
+
+
+def test_a_scripts_own_marks_are_inside_its_words() -> None:
+    """#414: a Devanagari vowel sign (Mc "ा", Mn "े") is a word character, so "राम" is not a word
+    of "रामायण", "रामा" or "रामेश", and "काराम" does not end in it: redaction keeps them, the
+    matcher finds nothing and the guard's spans are the whole words, so its hashes miss "राम".
+    Complement: "राम" alone is still erased and refused, and a script-neutral diacritic still
+    ends the word (#410: "Quenby" + U+0334 + "s")."""
+    ram = Redactor(["राम दास"], ["राम", "दास"])
+    for word in ("रामायण", "रामा", "रामेश", "काराम"):
+        assert ram.text(f"Ty reads {word} now.") == f"Ty reads {word} now.", word
+    assert ram.text("राम आया, रामायण पढ़ो।") == "[erased] आया, रामायण पढ़ो।"
+    assert ram.text("राम दास आया।") == "[erased] आया।"
+    assert m.WORD.findall("रामायण पढ़ो") == ["रामायण", "पढ़ो"]
+    hashes = set(term_hashes(["राम दास"], KEY, ["राम", "दास"]))
+    assert not guard.span_hashes(["Ty reads रामायण and रामेश."], KEY) & hashes
+    assert guard.span_hashes(["Ty sees राम."], KEY) & hashes
+    assert with_name_parts([(["राम दास"], ["राम दास"]), (["रामा"], ["रामा"])])[0][1] == (
+        "राम",
+        "दास",
+    )
+    assert Redactor(["Marisol Quenby"], ["Quenby"]).text("Hi Quenby\u0334s.") == "Hi [erased]s."
+    # A cased word with a script's mark inside (Cyrillic U+0483) is one word too, for the
+    # capitalised common-word spans as much as for the matcher: "Rose" is not in it.
+    rose = m.matcher(["Rose Ivanova"], ["Rose"])
+    assert not rose.hits("Ask Rose\u0483s now.")
+    assert "^rose" not in m.guard_spans("Ask Rose\u0483s now.")
+    assert "^rose" in m.guard_spans("Ask Rose now.")
+    assert all(not re.fullmatch(m.WORD_CHAR, chr(c)) for a, b in m.DIACRITICS for c in (a, b))
 
 
 KEY = "a guard test key, not a secret"

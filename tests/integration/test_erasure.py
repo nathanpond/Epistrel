@@ -20,7 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel import Engine
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
+from epistrel.core.erasure import erase as erase_module
 from epistrel.core.erasure.erase import ErasureRequest
+from epistrel.core.erasure.redact import Redactor
+from epistrel.core.erasure.verify import verify
 from epistrel.core.ids import new_ulid
 from epistrel.core.ports import Ports
 from tests import erasure_support as e
@@ -551,6 +554,49 @@ async def test_a_multi_word_name_is_erased_by_its_words(
     )
     assert [r.payload["text"] for r in replies] == ["[erased] waves at Ty and Ada Quenby."]
     assert sum((await e.residue(engine, story, ["Ada Quenby"])).values()) > 0
+
+
+MARISOL = ("Marisol Quenby", "Marisol", "Quenby")
+
+
+async def test_the_residue_scan_reports_what_is_left(
+    erasure_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#394: ``residue`` is what the scan finds, never a constant. Before any erasure,
+    ``verify()`` over a story that names Marisol Quenby counts, table by table, exactly what the
+    test's own scan counts (more than 0). Then an erasure runs while a mention survives its
+    pass (the story's name is written back inside the commit step, after the redaction and
+    before the scan): the response's ``residue`` and the ledger entry's are 1, the test's own
+    scan agrees ({"stories": 1}), and a second ``verify()`` says the same."""
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story, ids = await new_story(client, "Wren", "Marisol Quenby", "Ty")
+        lib.models.stub.script("generation", ["Marisol Quenby waves at Ty."])
+        await played(client, story, body(ids["Wren"], "Hi Marisol."))
+        redactor = Redactor(MARISOL[:1], MARISOL[1:])
+        theirs = {t: n for t, n in (await e.residue(engine, story, MARISOL)).items() if n}
+        async with engine.connect() as conn:
+            ours = await verify(conn, story, redactor)
+        assert theirs
+        assert ours.tables == theirs
+        assert ours.count == sum(theirs.values())
+
+        original = erase_module._insert_markers
+
+        async def leaves_a_mention(conn: Any, run: Any) -> None:
+            await original(conn, run)
+            await conn.exec_driver_sql(
+                "UPDATE stories SET name = 'Marisol returns' WHERE id = %s", (story,)
+            )
+
+        monkeypatch.setattr(erase_module, "_insert_markers", leaves_a_mention)
+        done = await e.erase(client, "character", ids["Marisol Quenby"], story)
+        assert done["residue"] == 1
+        assert done["ledger_entry"]["counts"]["residue"] == 1
+    left = {t: n for t, n in (await e.residue(engine, story, MARISOL)).items() if n}
+    assert left == {"stories": 1}
+    async with engine.connect() as conn:
+        again = await verify(conn, story, redactor)
+    assert (again.tables, again.count) == (left, 1)
 
 
 async def test_a_legacy_key_without_a_sent_hash_conflicts_after_an_erasure(

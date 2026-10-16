@@ -496,6 +496,37 @@ def test_s_erasure_boundary__docs() -> None:
         route = document["paths"]["/admin/erasure/boundary"]["get"]["description"]
         assert boundary.normalised(rendered) in boundary.normalised(route)
 
+    # #408: docs/03 states every out-of-scope item, worded its own way (a keyed phrase each).
+    assert set(SPEC_PHRASES) == set(boundary.OUT_OF_SCOPE)
+    for item, (requirement, phrase) in SPEC_PHRASES.items():
+        assert boundary.normalised(phrase) in boundary.normalised(requirement_text(requirement)), (
+            requirement,
+            item,
+        )
+
+
+SPEC_PHRASES: dict[str, tuple[str, str]] = {
+    boundary.DELIVERED_EXPORTS: ("FR-ADMIN-8", "exports already delivered to the consumer"),
+    boundary.PROVIDER_RETENTION: (
+        "FR-ADMIN-8",
+        "data retained by external model, image, or data providers",
+    ),
+    boundary.VISUAL_ONLY: ("FR-ADMIN-8", "appear in an image only visually"),
+    boundary.OLD_BACKUPS: ("FR-ADMIN-7", "restoring a backup that predates an erasure"),
+    boundary.LOGS_ITEM: ("FR-ADMIN-8", "operational logs shall not contain story content"),
+    boundary.AMBIGUOUS_MENTIONS: ("FR-ADMIN-8", "mentions the matcher classes as ambiguous"),
+    boundary.KEPT_CARD: ("FR-ADMIN-8", "public card in the creation report"),
+}
+"""Each ``boundary.OUT_OF_SCOPE`` item: the docs/03 requirement that states it and a phrase of
+that statement (old backups are FR-ADMIN-7's ledger rule; the rest FR-ADMIN-8's list)."""
+
+
+def requirement_text(requirement: str) -> str:
+    """The docs/03 bullet of ``requirement`` (``- **FR-…** …``), on its one line."""
+    spec = (REPO_ROOT / "docs" / "03-requirements-spec.md").read_text("utf-8")
+    (line,) = [x for x in spec.splitlines() if x.startswith(f"- **{requirement} (")]
+    return line
+
 
 # -- #127: resurrection, replay, fork, determinism, markers and logs ----------------------------
 

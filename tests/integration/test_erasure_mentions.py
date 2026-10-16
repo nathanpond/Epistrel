@@ -230,10 +230,12 @@ async def test_the_guard_refuses_every_folded_or_dashed_form(
     Strauß", "İpek Kaya" and "Mary-Jane Watson" (whose halves are Mary Smith's and Jane Doe's
     too, so "Mary-Jane" and "Watson" are her only terms), a model reply naming one of them as
     "Strauß", "STRAUSS", "İpek", "İPEK", or "Mary-Jane" with a non-breaking hyphen or an en
-    dash is refused (409 ``erased_subject_referenced``) after its regeneration budget.
+    dash is refused (409 ``erased_subject_referenced``) after its regeneration budget. #409:
+    so are ADR-156's forms, after erasing "Ταΐς Kalos" and "Ayşe Yılmaz" too: "Watson" with a
+    soft hyphen inside, "ΤΑΪ́Σ" (Greek upper case) and "YILMAZ" (``ı``).
     Complement: a reply naming Mary Smith and Jane Doe answers 200."""
     async with respond_client(erasure_settings, engine) as (client, lib):
-        erased = ("Jürgen Strauß", "İpek Kaya", "Mary-Jane Watson")
+        erased = ("Jürgen Strauß", "İpek Kaya", "Mary-Jane Watson", "Ταΐς Kalos", "Ayşe Yılmaz")
         story, ids = await new_story(client, "Wren", *erased, "Mary Smith", "Jane Doe", "Ty")
         lib.models.stub.script("generation", ["Ty nods."])
         await played(client, story, body(ids["Wren"], "Hello, Ty."))
@@ -255,6 +257,9 @@ async def test_the_guard_refuses_every_folded_or_dashed_form(
             "Ty sees İPEK.",
             "Ty sees Mary\u2011Jane.",
             "Ty sees Mary\u2013Jane.",
+            "Ty sees Wat\u00adson.",
+            "Ty sees \u03a4\u0391\u03aa\u0301\u03a3.",
+            "Ty sees YILMAZ.",
         ):
             lib.models.stub.reset()
             lib.models.stub.script("generation", [reply] * (budget + 1))

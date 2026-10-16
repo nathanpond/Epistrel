@@ -745,13 +745,29 @@ def test_every_story_method_is_gated() -> None:
         assert getattr(getattr(Engine, name), ERASURE_GATED_ATTRIBUTE, False), name
     assert not getattr(Engine.delete_story, ERASURE_GATED_ATTRIBUTE, False)
 
+    def kinds(hint: Any) -> Iterator[Any]:
+        """``hint`` and every type inside it (unions, ``Optional``, generics; #406)."""
+        yield hint
+        for argument in typing.get_args(hint):
+            yield from kinds(argument)
+
     def names_a_story_in_a_model(member: Any) -> bool:
         hints = typing.get_type_hints(member)
         return any(
             isinstance(kind, type) and hasattr(kind, "story_id")
-            for parameter, kind in hints.items()
+            for parameter, hint in hints.items()
             if parameter != "return"
+            for kind in kinds(hint)
         )
+
+    async def optional(ctx: RequestContext, request: ErasureRequest | None) -> None: ...
+    async def legacy(ctx: RequestContext, request: typing.Optional[ErasureRequest]) -> None: ...  # noqa: UP045
+    async def batch(ctx: RequestContext, requests: list[ErasureRequest]) -> None: ...
+    async def plain(ctx: RequestContext, story_name: str) -> None: ...
+
+    for probe in (optional, legacy, batch):
+        assert names_a_story_in_a_model(probe), probe.__name__
+    assert not names_a_story_in_a_model(plain)
 
     modelled = [
         name

@@ -85,6 +85,7 @@ Audit views show the same markers: `GET /stories/{id}/history?viewpoint=omniscie
 - message feedback and its history
 - feedback exports not yet downloaded (the subject is redacted in their cases)
 - story snapshots (scenario, characters, persona) and deferred genesis items
+- the story's creation report: the subject's deferred genesis items, and her cast card (see below for what a story-scope erasure keeps of a catalog character's card)
 - the subject-reference index
 - a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied
 
@@ -95,7 +96,8 @@ Audit views show the same markers: `GET /stories/{id}/history?viewpoint=omniscie
 - subjects appearing in images only visually with no declared or named reference
 - backups taken before the erasure, until restored and reconciled
 - logs, which never carry story content
-- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised (ADR-154)
+- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised. Names match in any case, fully case-folded (`Strauß` is `STRAUSS`), and a hyphenated name by its halves at any dash (ADR-154, ADR-155)
+- a cast catalog character's public card in the creation report of a story she was erased from at story scope: its id, labels and public description stay (its name is redacted, its images and content rating are emptied), because the card is public catalog data, until a catalog-scope erasure of that catalog character empties it too (docs/04 C-15)
 
 **Logs.** Operational logs contain no story content by default (NFR-SEC-4).
 <!-- erasure-boundary:end -->

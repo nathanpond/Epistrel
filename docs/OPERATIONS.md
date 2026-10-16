@@ -49,6 +49,8 @@ An erasure removes the mentions that certainly refer to the subject: its names a
 
 The subject-reference index records where each mention is (field, offsets and rule), never its text. **After upgrading to schema 0044, run the one-time re-index once:** `python -m epistrel.tools.reindex_subjects --write`. It rebuilds the rows written before mentions had positions. An erasure re-indexes its own story first in any case.
 
+**After upgrading past v0.1.1, run the catalog re-index once:** `python -m epistrel.tools.reindex_subjects --catalog --write`. Scenario drafts and versions saved before then were not indexed for the strings inside their starting-state objects, their roles' starting values or their own policies (#323, #422), so a catalog-scope erasure would not find a name written only there until they are re-indexed. Without `--write` the tool lists the rows it would add. A catalog-scope erasure does not re-index the catalog first; its `residue` count still reports any mention left behind.
+
 ## Verify
 
 `epistrel backup verify <dump>` checks a dump without restoring it. It reads the dump's `erasure_ledger` and `events` data through `pg_restore` (`--pg-restore` names the executable) and reports:

@@ -6334,3 +6334,26 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - All three integration tests fail with the two overlays disabled.
   **Why:** The issue has no test plan. These cover the issue's "Where" list: the access layer, the fingerprint and the pipeline. Like the other bug-regression tests in M4 (#315, #322), they are not new docs/04 parts.
   **Issue:** #325
+- **Decision:** #323 and #422 are one change and one commit: `core/catalog/scenarios.indexed_fields` also yields every string of the `starting_state` objects stored as given (`states`, `clock`, `scheduled_events`, `predicates`, `closed_sets`, `rules`), of each role's `state_initial_values` (#323), and of each `story_settings_defaults.policies[n]` (#422). Both halves are the same edit to the same function and share one test scenario.
+  **Why:** The owner's 2026-10-16 triage puts them together ("fix with #323 now, using the same generic string walk"). The 2026-10-16 decision on #323 overrides its earlier replan to M6: no #202 schema is needed, because the walk is generic.
+  **Issue:** #323, #422
+- **Decision:** The walk is `core.erasure.records.text_fields`, not `input_policy.strings_in`, which the owner's comment names. Both are generic JSON string walks at the same dotted paths. `text_fields` also skips id-like keys (`id`, `*_id`, `*_ids`) and blank strings, the same way `Redactor.document` walks a document.
+  **Why:** With this walk every indexed path is a string the erasure's redaction rewrites. `strings_in` would index the value of an id-like key inside a Structure, which the redaction never touches. That would be a mention the erasure can find but never remove. The scenario fallback path (`_indexed`, for a document that no longer validates) already uses `text_fields`, and `core.catalog.scenarios` already imports it. Cost if wrong: a name stored under an id-like key inside a Structure is not indexed. `verify()` and the independent catalog scan still count it as residue, because both read whole columns.
+  **Issue:** #323, #422
+- **Decision:** [Discretion] Each policy is walked whole (`policy.model_dump(mode="json", exclude_none=True)`, the stored document's form): its name, rule (for example a wordlist's words) and message, plus `applies_to`, `age_condition` and the rule's `type`. The AC names only the name, rule and message.
+  **Why:** Over-inclusion is the safe direction for erasure (`core.erasure.records`' docstring), and a field added to the policy later is covered without a change here. An enum value like `text_output` never matches a subject's name.
+  **Issue:** #422
+- **Decision:** [Discretion] Rows stored before the fix are covered by the existing rebuild path (`index.rebuild` / `python -m epistrel.tools.reindex_subjects --catalog --write`). It reads drafts and versions through the same `draft_record`/`version_record`, so no code change is needed there. `docs/OPERATIONS.md` gains the one-time step "after upgrading past v0.1.1, run the catalog re-index once". I did not make a catalog-scope erasure re-index the catalog first, as a story erasure does with `reindex_story`.
+  **Why:** The AC names the rebuild path. Re-indexing at erasure time would change erasure behaviour and its cost, which neither issue asks for. A mention the erasure misses still shows in its honest `residue`. Cost if wrong: an operator who skips the step and erases a subject named only in a pre-fix scenario's objects or policies gets `residue > 0` until they run the tool. If the owner wants it automatic, `reindex_catalog_subject` before `_catalog_pass` is the follow-up.
+  **Issue:** #323, #422
+- **Decision:** Tests: these are unmarked bug-regression tests in `tests/integration/test_erasure.py`, the erasure suite, as with #394/#404/#413. No new docs/04 part.
+  - `test_the_objects_stored_as_given_and_the_policies_are_indexed` (pure) checks the exact path set.
+  - `test_a_name_in_the_objects_stored_as_given_or_a_policy_is_erased[both|objects only|policies only]` checks:
+    - there are subject-reference rows at exactly those paths in the draft and the version;
+    - a catalog-scope erasure redacts them;
+    - residue is 0 from the response, the ledger entry, `verify()` and the independent `catalog_residue` scan;
+    - the complement: Bobby's and `BYSTANDER`'s mentions stay.
+  - `test_a_scenario_stored_before_the_fix_is_reindexed_by_the_rebuild`: the rows are removed, the catalog rebuild reports exactly them as missing, `write` restores them, and the erasure is then clean.
+  - Proven red: with `indexed_fields` reverted, all 5 fail. Dropping only the policies loop fails 4, including `[policies only]`. Dropping only the objects fails `[objects only]`. The one-sided scenarios exist because a record found through any one field is redacted whole by `Redactor.document`.
+  **Why:** The #422 test plan asks for redaction plus residue 0 from both `verify()` and the independent scan, and for the policies mutation to turn the test red. The scenario that names her in both halves alone would not catch a one-sided regression. No write path or table changed, so `SUBJECT_WRITERS`, `CONTENT_WRITE_PATHS` and the scan's table list need no new entry. The independent scan already reads whole JSON columns.
+  **Issue:** #323, #422

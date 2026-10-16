@@ -15,7 +15,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel import Engine
 from epistrel.config import Settings
@@ -658,14 +659,14 @@ CATALOG_SCOPE = frozenset(
 (with the catalog itself and the creation's idempotency key)."""
 
 
-async def _seed_the_catalog_scope(engine: AsyncEngine) -> None:
+async def _seed_the_catalog_scope(conn: AsyncConnection) -> None:
     """A certain mention of Linda in each catalog-scope table beyond ``catalog.*`` and
     ``idempotency_keys``: a persona's description, a media asset's caption, a story-less
     operation's ``turn_report`` and its story-less event, a global policy's message and a
-    deployment ``config_changes`` row."""
+    deployment ``config_changes`` row. The caller rolls them back: a global policy or a
+    story-less event left behind would reach every later test."""
     operation = new_ulid()
-    await execute_in_tx(
-        engine,
+    for sql, params in (
         (
             "INSERT INTO personas (id, owner_principal, name, age, description, created_at, "
             "updated_at) VALUES (:id, 'p', 'Quill', 40, 'Linda taught her to sail.', now(), "
@@ -703,7 +704,8 @@ async def _seed_the_catalog_scope(engine: AsyncEngine) -> None:
             "CAST(:j AS jsonb), 'prospective', 'p')",
             {"id": new_ulid(), "j": '"Linda was here."'},
         ),
-    )
+    ):
+        await conn.execute(text(sql), params)
 
 
 async def test_every_catalog_table_is_scanned(
@@ -712,13 +714,15 @@ async def test_every_catalog_table_is_scanned(
     """#413, the rest of #404: with Linda named once in each table of the catalog scope (the
     catalog, her creation's idempotency key, and ``_seed_the_catalog_scope``'s six), the test's
     own catalog scan and ``verify()`` both find her in every one of ``CATALOG_SCOPE``, and agree
-    table by table. A scan that stops reading a table fails it, ``verify``'s or the test's."""
+    table by table. A scan that stops reading a table fails it, ``verify``'s or the test's. The
+    seeded rows are read in their own transaction and rolled back."""
     async with respond_client(erasure_settings, engine) as (client, _lib):
         await e.linda(client)
-    await _seed_the_catalog_scope(engine)
-    theirs = await e.catalog_residue(engine, (e.NAME, e.ALIAS))
-    async with engine.connect() as conn:
+    async with engine.connect() as conn, conn.begin() as tx:
+        await _seed_the_catalog_scope(conn)
+        theirs = await e.catalog_residue(conn, (e.NAME, e.ALIAS))
         ours = await verify(conn, None, Redactor((e.NAME, e.ALIAS)))
+        await tx.rollback()
     assert set(theirs) >= CATALOG_SCOPE, sorted(CATALOG_SCOPE - set(theirs))
     assert set(ours.tables) >= CATALOG_SCOPE, sorted(CATALOG_SCOPE - set(ours.tables))
     assert ours.tables == theirs

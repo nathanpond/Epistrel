@@ -6207,3 +6207,5 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - #416 (2): the emptied clause dropped from C-15; the old "its id" wording put back.
   The first mutant batch for #414 printed "KILLED" on runs that collected no tests: zsh does not word-split `$T`. The batch was re-run with explicit paths, and the script now rejects a run with no pass/fail count.
   **Issue:** #413–#416
+- **Decision (Rule 1, own regression):** The first full run of this pass went 338 failed, 1 error, 1624 passed. #413's test had committed its seeds, and a global policy with an empty `rule` broke policy loading in every later test. The seeds and both scans now share one transaction, which the test rolls back: `erasure_support.catalog_values` / `catalog_residue` accept an `AsyncConnection`. A probe after the test found none of the six seeded rows left, and the 10 #413 mutants were re-run and are still killed. The targeted runs had passed because the test was run alone. Lesson: a test that writes deployment-scope rows must roll them back. The same run's `ruff format --check` also flagged the #414 e2e test, which is now formatted.
+  **Issue:** #413, #414

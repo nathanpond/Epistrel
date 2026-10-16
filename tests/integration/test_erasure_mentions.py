@@ -272,7 +272,6 @@ async def test_the_guard_refuses_every_folded_or_dashed_form(
         assert kept.status_code == 200, kept.text
 
 
-
 async def test_a_devanagari_name_word_matches_only_a_whole_word(
     erasure_settings: Settings, engine: AsyncEngine
 ) -> None:

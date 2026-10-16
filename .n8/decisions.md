@@ -6180,3 +6180,32 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - no soft-hyphen fold, and no `ı` fold, each killed by its own e2e reply (#409);
   - no mark extension (#410).
   **Issue:** #404–#411
+
+## /n8-exec M3 (verify fixes, pass 9) — 2026-10-16
+
+- **Decision (process):** Scope is the blocker #413 plus the carried #414 (medium), #415 and #416 (low). No new owner instruction was recorded, so this follows passes 7 and 8: every finding, lows included.
+  **Issue:** #413–#416
+- **Decision:** #413's test seeds the six uncovered catalog-scope tables with raw SQL in one transaction, not through API calls: a persona's description, a media asset's caption, a story-less `maintenance` operation's `turn_report` and its story-less `audit` event, a `global` policy's message, and a `deployment` `config_changes` row. Not every table has an API path that writes a story-less row naming a subject, and the scans read rows, not how they got there. The test runs no erasure (unindexed rows would not be redacted). It pins the eight catalog-scope labels, so a table dropped from both scans fails too.
+  **Issue:** #413
+- **Decision (deviation from the issue's literal fix):** #414 says to treat every combining mark (Mn, Mc, Me) as part of the word. That would undo #410's verified complement: "Quenby" + U+0334 + "s" would stop being a mention and survive whole. So marks are split in two. A mark from the script-neutral diacritic blocks (`matcher.DIACRITICS`: U+0300–036F, U+1AB0–1AFF, U+1DC0–1DFF, U+20D0–20FF, U+FE20–FE2F) decorates the letter before it and is no word character, as #410 had it. Every other mark belongs to its script's words (`matcher.WORD_MARKS`), so "राम" no longer matches inside "रामायण", "रामा", "रामेश" or "काराम".
+  **Why:** the generic blocks hold the marks that can be put on any script's letter, so they are the decorations #410 had to absorb. Script-specific marks, such as Indic vowel signs, Hebrew points or the Cyrillic titlo, are part of their words.
+  **Issue:** #414, #410
+- **Decision (Rule 1):** One word definition (`matcher.WORD`) now serves the matcher's lookarounds, `_whole`, `guard.spans`, `guard_spans`, and `index.with_name_parts` / `name_parts`' edge stripping. Without it, the index's `_WORD_EDGES` stripped a final vowel sign ("रामा" → "राम"), so a different subject named "रामा" took "राम" out of "राम दास"'s parts. The guard also split a Devanagari word into fragments that used up `MAX_NGRAM`'s budget.
+  **Issue:** #414
+- **Decision:** #414 needs no new ADR. The change keeps ADR-154's "whole word" rule and only corrects what a word is for scripts with marks. The fold (ADR-156) is unchanged, and so are the term hashes of every name without such marks.
+  **Issue:** #414
+- **Decision (discovered work):** The policy word-list tokeniser (`core/policies/evaluate.py`) has the same Devanagari split. It is a different feature, so it was filed as #417 (`needs-triage`) and not fixed here.
+  **Issue:** #414 → #417
+- **Decision:** #415 re-indexes ADR-083, ADR-114 and ADR-116 as Partly superseded. The widened marker regex flags exactly these three, and only their index rows change. The `[revised per` check is case-insensitive now.
+  **Issue:** #415
+- **Decision:** #416 rewords C-15's story-scope clause to match `KEPT_CARD`: labels, public description and structural fields stay; the name is redacted; the images and content rating are emptied. `test_s_erasure_boundary__docs` pins six keyed phrases, each checked against both `KEPT_CARD` and C-15, and rejects the old wording.
+  **Issue:** #416
+- **Decision (process):** Every new guard was shown to fail without its fix (23 mutants, all killed):
+  - #414 (6): each of the matcher's two lookarounds back to `\w`; the guard's `\w+`; the index's `\W` edges; marks in the diacritic blocks counted as word characters; `guard_spans` back to `\w+`. The last one first survived, so a cased case was added: Cyrillic U+0483 inside "Rose…s".
+  - #413 (10): P3, P4 per table (4), S5 per table (4), and `media_assets` dropped from the support scan.
+  - #415 (5): the standing check made `if False`; `Amended` accepted; the narrow regex; a case-sensitive `[revised per`; ADR-114's row put back to Amended.
+  - #416 (2): the emptied clause dropped from C-15; the old "its id" wording put back.
+  The first mutant batch for #414 printed "KILLED" on runs that collected no tests: zsh does not word-split `$T`. The batch was re-run with explicit paths, and the script now rejects a run with no pass/fail count.
+  **Issue:** #413–#416
+- **Decision (Rule 1, own regression):** The first full run of this pass went 338 failed, 1 error, 1624 passed. #413's test had committed its seeds, and a global policy with an empty `rule` broke policy loading in every later test. The seeds and both scans now share one transaction, which the test rolls back: `erasure_support.catalog_values` / `catalog_residue` accept an `AsyncConnection`. A probe after the test found none of the six seeded rows left, and the 10 #413 mutants were re-run and are still killed. The targeted runs had passed because the test was run alone. Lesson: a test that writes deployment-scope rows must roll them back. The same run's `ruff format --check` also flagged the #414 e2e test, which is now formatted.
+  **Issue:** #413, #414

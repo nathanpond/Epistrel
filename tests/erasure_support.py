@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx2 as httpx
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
 from tests import character_support as characters
@@ -189,42 +189,51 @@ CATALOG_DEPLOYMENT_ROWS = {
 """The deployment-scoped rows a catalog-scope erasure covers (the catalog index's records)."""
 
 
-async def catalog_values(engine: AsyncEngine) -> dict[str, list[str]]:
+async def catalog_values(engine: AsyncEngine | AsyncConnection) -> dict[str, list[str]]:
     """Every text value of the catalog scope, per table: the ``catalog`` tables (as
     ``catalog.<table>``), ``personas`` and ``media_assets`` (enumerated from
-    ``information_schema``), and the ``CATALOG_DEPLOYMENT_ROWS``."""
+    ``information_schema``), and the ``CATALOG_DEPLOYMENT_ROWS``. Given a connection, it reads
+    through it (so an open transaction's rows are seen)."""
+    if isinstance(engine, AsyncConnection):
+        return await _catalog_values(engine)
     async with engine.connect() as conn:
-        found = await conn.execute(
-            text(
-                "SELECT c.table_schema, c.table_name, c.column_name "
-                "FROM information_schema.columns c "
-                "JOIN information_schema.tables t "
-                "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
-                "WHERE t.table_type = 'BASE TABLE' AND c.data_type = ANY(CAST(:types AS text[])) "
-                "AND (c.table_schema = 'catalog' OR (c.table_schema = 'public' AND "
-                "c.table_name = ANY(CAST(:public AS text[]))))"
-            ),
-            {
-                "types": list(TEXT_TYPES),
-                "public": ["personas", "media_assets", *CATALOG_DEPLOYMENT_ROWS],
-            },
+        return await _catalog_values(conn)
+
+
+async def _catalog_values(conn: AsyncConnection) -> dict[str, list[str]]:
+    found = await conn.execute(
+        text(
+            "SELECT c.table_schema, c.table_name, c.column_name "
+            "FROM information_schema.columns c "
+            "JOIN information_schema.tables t "
+            "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
+            "WHERE t.table_type = 'BASE TABLE' AND c.data_type = ANY(CAST(:types AS text[])) "
+            "AND (c.table_schema = 'catalog' OR (c.table_schema = 'public' AND "
+            "c.table_name = ANY(CAST(:public AS text[]))))"
+        ),
+        {
+            "types": list(TEXT_TYPES),
+            "public": ["personas", "media_assets", *CATALOG_DEPLOYMENT_ROWS],
+        },
+    )
+    columns: dict[tuple[str, str], list[str]] = {}
+    for row in found:
+        columns.setdefault((row.table_schema, row.table_name), []).append(row.column_name)
+    values: dict[str, list[str]] = {}
+    for (schema, table), names in columns.items():
+        selected = ", ".join(f'CAST("{c}" AS text)' for c in names)
+        where = CATALOG_DEPLOYMENT_ROWS.get(table, "true") if schema == "public" else "true"
+        got = await conn.execute(
+            text(f'SELECT {selected} FROM "{schema}"."{table}" WHERE {where}')  # noqa: S608
         )
-        columns: dict[tuple[str, str], list[str]] = {}
-        for row in found:
-            columns.setdefault((row.table_schema, row.table_name), []).append(row.column_name)
-        values: dict[str, list[str]] = {}
-        for (schema, table), names in columns.items():
-            selected = ", ".join(f'CAST("{c}" AS text)' for c in names)
-            where = CATALOG_DEPLOYMENT_ROWS.get(table, "true") if schema == "public" else "true"
-            got = await conn.execute(
-                text(f'SELECT {selected} FROM "{schema}"."{table}" WHERE {where}')  # noqa: S608
-            )
-            label = table if schema == "public" else f"{schema}.{table}"
-            values[label] = [str(v) for r in got for v in r if v is not None]
+        label = table if schema == "public" else f"{schema}.{table}"
+        values[label] = [str(v) for r in got for v in r if v is not None]
     return values
 
 
-async def catalog_residue(engine: AsyncEngine, terms: Iterable[str]) -> dict[str, int]:
+async def catalog_residue(
+    engine: AsyncEngine | AsyncConnection, terms: Iterable[str]
+) -> dict[str, int]:
     """Per table of the catalog scope, how many text values name one of ``terms`` (only the
     tables that do)."""
     wanted = list(terms)

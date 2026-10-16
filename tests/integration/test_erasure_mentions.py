@@ -272,6 +272,40 @@ async def test_the_guard_refuses_every_folded_or_dashed_form(
         assert kept.status_code == 200, kept.text
 
 
+async def test_a_devanagari_name_word_matches_only_a_whole_word(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#414: after erasing "राम दास", a reply that reads "रामायण" (a vowel sign follows "राम")
+    keeps it: the redaction leaves it whole and a later reply naming it answers 200, while
+    "राम" alone is redacted, and a reply naming it is refused (409
+    ``erased_subject_referenced``) after its regeneration budget."""
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story, ids = await new_story(client, "Wren", "राम दास", "Ty")
+        lib.models.stub.script("generation", ["Ty reads the रामायण to राम."])
+        await played(client, story, body(ids["Wren"], "Hello, Ty."))
+        done = await e.erase(client, "character", ids["राम दास"], story)
+        assert done["residue"] == 0
+        texts = await _texts(engine, story)
+        assert "Ty reads the रामायण to [erased]." in texts
+        budget = int(
+            await scalar(
+                engine,
+                "SELECT coalesce((settings->>'regenerate_retry_budget')::int, 2) "
+                "FROM stories WHERE id = :s",
+                s=story,
+            )
+        )
+        lib.models.stub.reset()
+        lib.models.stub.script("generation", ["Ty sees राम."] * (budget + 1))
+        refused = await respond(client, story, body(ids["Wren"], "Who is there?"))
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["error"]["code"] == "erased_subject_referenced"
+        lib.models.stub.reset()
+        lib.models.stub.script("generation", ["Ty reads the रामायण again."])
+        kept = await respond(client, story, body(ids["Wren"], "What now?"))
+        assert kept.status_code == 200, kept.text
+
+
 async def test_an_erasure_re_indexes_the_story_before_it_redacts(
     erasure_settings: Settings, engine: AsyncEngine
 ) -> None:

@@ -7,8 +7,12 @@ the write-path guard (``core.erasure.guard``). Nothing else matches names.
 A subject is looked for by its **names** (its names and declared aliases) and its **parts** (the
 words of a multi-word name, less titles, particles and the words another subject of the same
 scope uses: ``index.with_name_parts``). Every occurrence, on the NFC form of the text, as a whole
-word or phrase (Unicode word boundaries, any run of whitespace matching a space, longer terms
-first; terms shorter than ``MIN_TERM_CHARS`` never match), is one ``Mention`` of a ``Rule``.
+word or phrase (word boundaries, any run of whitespace matching a space, longer terms first;
+terms shorter than ``MIN_TERM_CHARS`` never match), is one ``Mention`` of a ``Rule``. A **word**
+is a run of word characters (``WORD``): ``\\w`` and every combining mark of a script, so a
+Devanagari vowel sign is inside its word and "राम" is not a word of "रामायण" (#414). A mark from
+the script-neutral diacritic blocks (``DIACRITICS``) is no word character: it decorates the
+letter before it, and a mention takes the ones after it (#410).
 Text and terms are compared **folded** (``fold``: full case-folding, then NFC again, so
 "Strauß", "STRAUSS" and "Strauss" are one word, "İpek", "IPEK" and "i̇pek" another, "Ταΐς" and
 "ΤΑΪ́Σ" a third, and ``ı`` is ``i``, so "YILMAZ" is "Yılmaz"; every dash, ``Pd`` and the minus
@@ -88,6 +92,41 @@ _FOLD_TABLE = str.maketrans({**dict.fromkeys(DASHES, "-"), "\u0131": "i", SOFT_H
 """Dashes as ``-``, dotless ``ı`` as ``i`` (the owner's decision on #396: "YILMAZ".casefold() is
 "yilmaz"), the soft hyphen removed."""
 _COMBINING_DOT = "\u0307"
+DIACRITICS = (
+    (0x0300, 0x036F),  # Combining Diacritical Marks
+    (0x1AB0, 0x1AFF),  # Combining Diacritical Marks Extended
+    (0x1DC0, 0x1DFF),  # Combining Diacritical Marks Supplement
+    (0x20D0, 0x20FF),  # Combining Diacritical Marks for Symbols
+    (0xFE20, 0xFE2F),  # Combining Half Marks
+)
+"""The script-neutral combining-mark blocks, ``(first, last)``: a mark from one is no word
+character (see the module docstring). Every other combining mark belongs to its script's
+words."""
+
+
+def _class(points: Iterable[int]) -> str:
+    """A regex character-class body of ``points`` (ascending), as escaped ranges."""
+    ranges: list[list[int]] = []
+    for c in points:
+        if ranges and ranges[-1][1] == c - 1:
+            ranges[-1][1] = c
+        else:
+            ranges.append([c, c])
+    return "".join(f"\\U{a:08x}" + (f"-\\U{b:08x}" if b > a else "") for a, b in ranges)
+
+
+WORD_MARKS = _class(
+    c
+    for c in range(0x110000)
+    if unicodedata.category(chr(c)).startswith("M") and not any(a <= c <= b for a, b in DIACRITICS)
+)
+"""The combining marks that are word characters (a character-class body): every mark outside
+``DIACRITICS`` (#414)."""
+WORD_CHAR = rf"[\w{WORD_MARKS}]"
+"""One word character: ``\\w`` or one of ``WORD_MARKS``."""
+NOT_WORD_CHAR = rf"[^\w{WORD_MARKS}]"
+WORD = re.compile(rf"{WORD_CHAR}+")
+"""A word (see the module docstring): the matcher's, the index's and the guard's (#414)."""
 
 
 class Rule(StrEnum):
@@ -237,7 +276,7 @@ def capitalised(word: str) -> bool:
     return bool(word) and word[0].isupper()
 
 
-_NOT_WORDS = re.compile(r"\W*")
+_NOT_WORDS = re.compile(rf"{NOT_WORD_CHAR}*")
 
 
 def _whole(text: str, start: int, end: int) -> bool:
@@ -279,7 +318,10 @@ class Matcher:
         self.parts = tuple(t.text for t in self._terms if t.rule is Rule.PART)
         # Matched on the folded text, so no case flag: folding already made case one.
         self._pattern = (
-            re.compile(rf"(?<!\w)(?:{'|'.join(_phrase(t.folded) for t in self._terms)})(?!\w)")
+            re.compile(
+                rf"(?<!{WORD_CHAR})(?:{'|'.join(_phrase(t.folded) for t in self._terms)})"
+                rf"(?!{WORD_CHAR})"
+            )
             if self._terms
             else None
         )
@@ -298,9 +340,11 @@ class Matcher:
         found: list[Mention] = []
         for match in self._pattern.finditer(folded):
             a, b = match.span()
-            # A combining mark is not ``\w``, so the match stops before one: the mention takes
-            # the marks after it, so none is left behind ("ΤΑΪ́Σ́ x" is "[erased] x"; #410). A
-            # mark still ends the word, as before: what follows it is not the mention's.
+            # A diacritic (``DIACRITICS``) is no word character, so the match stops before one:
+            # the mention takes the marks after it, so none is left behind ("ΤΑΪ́Σ́ x" is
+            # "[erased] x"; #410). A diacritic still ends the word, as before: what follows it
+            # is not the mention's. A script's own marks are word characters (#414), so none
+            # can follow a match.
             while b < len(folded) and unicodedata.category(folded[b]).startswith("M"):
                 b += 1
             if starts is None or ends is None:
@@ -369,7 +413,7 @@ def guard_spans(value: str) -> list[str]:
     text = nfc(value)
     return [
         f"{CAPITALISED}{normalized(m.group())}"
-        for m in re.finditer(r"\w+", text)
+        for m in WORD.finditer(text)
         if capitalised(m.group())
         and len(m.group()) >= MIN_TERM_CHARS
         and not sentence_start(text, m.start())
@@ -380,9 +424,14 @@ __all__ = [
     "CAPITALISED",
     "CERTAIN",
     "DASHES",
+    "DIACRITICS",
     "MIN_TERM_CHARS",
     "NAME_PARTICLES",
+    "NOT_WORD_CHAR",
     "SOFT_HYPHEN",
+    "WORD",
+    "WORD_CHAR",
+    "WORD_MARKS",
     "Matcher",
     "Mention",
     "Rule",

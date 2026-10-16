@@ -15,7 +15,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel import Engine
 from epistrel.config import Settings
@@ -640,6 +641,92 @@ async def test_the_catalog_residue_scan_reports_what_is_left(
     async with engine.connect() as conn:
         again = await verify(conn, None, redactor)
     assert (again.tables, again.count) == (left, 1)
+
+
+CATALOG_SCOPE = frozenset(
+    {
+        "catalog.character_catalog",
+        "personas",
+        "media_assets",
+        "idempotency_keys",
+        "events",
+        "policies",
+        "operations",
+        "config_changes",
+    }
+)
+"""The tables of the catalog scope that ``test_every_catalog_table_is_scanned`` seeds Linda into
+(with the catalog itself and the creation's idempotency key)."""
+
+
+async def _seed_the_catalog_scope(conn: AsyncConnection) -> None:
+    """A certain mention of Linda in each catalog-scope table beyond ``catalog.*`` and
+    ``idempotency_keys``: a persona's description, a media asset's caption, a story-less
+    operation's ``turn_report`` and its story-less event, a global policy's message and a
+    deployment ``config_changes`` row. The caller rolls them back: a global policy or a
+    story-less event left behind would reach every later test."""
+    operation = new_ulid()
+    for sql, params in (
+        (
+            "INSERT INTO personas (id, owner_principal, name, age, description, created_at, "
+            "updated_at) VALUES (:id, 'p', 'Quill', 40, 'Linda taught her to sail.', now(), "
+            "now())",
+            {"id": new_ulid()},
+        ),
+        (
+            "INSERT INTO media_assets (id, owner_principal, kind, mime_type, size, checksum, "
+            "content_rating_version_id, source, state, depicted_subjects, caption, created_at, "
+            "created_by) VALUES (:id, 'p', 'image', 'image/png', 1, :sum, :v, 'uploaded', "
+            "'live', '[]', 'Linda on the quay.', now(), 'p')",
+            {"id": new_ulid(), "sum": "a" * 64, "v": "0" * 26},
+        ),
+        (
+            "INSERT INTO operations (operation_id, story_id, kind, principal, status, "
+            "turn_report) VALUES (:id, NULL, 'maintenance', 'p', 'committed', CAST(:j AS jsonb))",
+            {"id": operation, "j": '{"note": "Linda was here."}'},
+        ),
+        (
+            "INSERT INTO events (id, story_id, seq, operation_id, category, principal, type, "
+            "payload, provenance, authority) VALUES (:id, NULL, 1, :op, 'audit', 'p', "
+            "'catalog_note', CAST(:j AS jsonb), 'engine', 'authoritative')",
+            {"id": new_ulid(), "op": operation, "j": '{"text": "Linda was here."}'},
+        ),
+        (
+            "INSERT INTO policies (id, scope, scope_id, story_id, name, applies_to, kind, rule, "
+            "message, created_by, updated_by) VALUES (:id, 'global', NULL, NULL, 'No boats', "
+            "ARRAY['text_output'], 'deterministic', CAST('{}' AS jsonb), "
+            "'Linda says no boats.', 'p', 'p')",
+            {"id": new_ulid()},
+        ),
+        (
+            "INSERT INTO config_changes (change_id, scope, scope_id, config_revision, setting, "
+            "old, new, class, actor) VALUES (:id, 'deployment', NULL, 1, 'motd', NULL, "
+            "CAST(:j AS jsonb), 'prospective', 'p')",
+            {"id": new_ulid(), "j": '"Linda was here."'},
+        ),
+    ):
+        await conn.execute(text(sql), params)
+
+
+async def test_every_catalog_table_is_scanned(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#413, the rest of #404: with Linda named once in each table of the catalog scope (the
+    catalog, her creation's idempotency key, and ``_seed_the_catalog_scope``'s six), the test's
+    own catalog scan and ``verify()`` both find her in every one of ``CATALOG_SCOPE``, and agree
+    table by table. A scan that stops reading a table fails it, ``verify``'s or the test's. The
+    seeded rows are read in their own transaction and rolled back."""
+    async with respond_client(erasure_settings, engine) as (client, _lib):
+        await e.linda(client)
+    async with engine.connect() as conn, conn.begin() as tx:
+        await _seed_the_catalog_scope(conn)
+        theirs = await e.catalog_residue(conn, (e.NAME, e.ALIAS))
+        ours = await verify(conn, None, Redactor((e.NAME, e.ALIAS)))
+        await tx.rollback()
+    assert set(theirs) >= CATALOG_SCOPE, sorted(CATALOG_SCOPE - set(theirs))
+    assert set(ours.tables) >= CATALOG_SCOPE, sorted(CATALOG_SCOPE - set(ours.tables))
+    assert ours.tables == theirs
+    assert ours.count == sum(theirs.values())
 
 
 async def test_a_legacy_key_without_a_sent_hash_conflicts_after_an_erasure(

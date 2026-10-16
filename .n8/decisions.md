@@ -6232,6 +6232,35 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - Closed as completed with commit evidence: #316, #317, #319, #326, #327, #298.
 - **Left for execution or later:** #227 and #232 keep planning-time "owner question pending" lines (pre-replan, not drift); M8 depends on unexecuted M4/M5/M7 stories, so a quick `/n8-replan M8` before `/n8-exec M8` is advised; ~30 no-milestone `needs-triage` issues remain untriaged. Structured-profile seeds (#129) set `repair.max_attempts 1` and `extraction_mode always` over the schema defaults — flagged to the owner.
 
+## Triage — 2026-10-16
+
+- **Decision:** All 31 `needs-triage` issues were triaged: each was re-checked at c8b347c and given a type, a `sev:*` and an `area:*` label. 28 go into **M4 as a bug lane worked before any M4 story** (owner's instruction: "unless there's a good reason not to pull them in now, put them in M4 and work them first").
+  - Blocked-by edges keep each bug ahead of the M4 story that builds on the same code: #275 → #150/#152; #281 → #130/#136/#153/#154; #282 → #143/#147/#153; #308 → #134/#153; #315 → #129/#322; #322 → #129; #325 → #129/#138/#150; #318 → #331; #310 → #312/#313; #323, #419 and #422 → #135; #417 → M8 #257.
+  - M4's description has a phase 0 with the order.
+  **Why:** the owner's instruction. Several of the bugs sit on code M4 extends (the commit path, summary scheduling, deployment settings, model routing), and #283 has a deadline: the P-04 report expires around 2026-11-10.
+- **Not pulled in:**
+  - #306 stays in M7. Only `until M7` interim parts exist, so nothing hits it before #229, which it already blocks.
+  - #277 and #328 were closed as already fixed (687796a; 62a6d1c).
+  - #332 was closed after its CodeQL alert #2 was dismissed as won't-fix.
+- **Owner decisions (2026-10-16):**
+  - #346: catalog reads that touch a pending catalog-scope erasure are blocked (503 `erasure_pending`, or the entry is omitted) until the reapply finishes. This needs an FR-ADMIN-7 amendment and an ADR in the story.
+  - #323 and #422: fixed now in M4 with a generic string walk. This overrides the replan's M6 placement for #323.
+  - #283: a scheduled reminder workflow opens an issue about 2 weeks before P-04 expires. P-04 is re-run once before 2026-11-10.
+  - #332: dismissed as intended behaviour.
+- **Recommended defaults applied (the owner may override):**
+  - #306: option 2.
+  - #308: assert the designed calls and report extra calls with a bound.
+  - #310: a real SPDX parser.
+  - #312: keep the rule, pinned by a test.
+  - #313: a bare `GNU` value counts as GPL.
+  - #320: option 2.
+  - #321: refuse C1 controls.
+  - #324: option 1.
+  - #331: a directory-sharded matrix plus `coverage combine`.
+- **Re-scoped:**
+  - #275 was retitled to NUL in model-produced text. #73 already fixed the consumer-input path.
+  - #315 also lacks `ErasureSettings`. A deployment-settings PUT resets audit retention and erasure's `retire` choice.
+
 ## /n8-exec M4 — 2026-10-16
 
 - **Decision:** Work order is the bug lane in the owner's order (milestone description, phase 0: #283, #318 → #331, #315 → #322, #325, #323 + #422, #419, #346, #417, #275 + #278, #281, #282, #308, #309, #310 → #312/#313, #320, #321, #324, #329, #276, #307, #311, #314), then the 30 stories in the milestone's creation order #129 → #158, which matches every native `blocked_by` edge.

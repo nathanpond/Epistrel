@@ -21,6 +21,7 @@ from epistrel.config import Settings
 from tests import erasure_support as e
 from tests import genesis_support as g
 from tests import lite_genesis_support as lg
+from tests import media_support as media
 from tests import scenario_support as scenarios
 from tests.auth_support import auth_settings
 from tests.respond_support import body as body_of
@@ -387,18 +388,23 @@ async def test_a_catalog_characters_card_never_reaches_the_story(
 
 
 async def _cast_june(
-    client: Any, label: str = CARD_LABEL, phrase: str = CARD_PHRASE
+    client: Any,
+    label: str = CARD_LABEL,
+    phrase: str = CARD_PHRASE,
+    images: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
     """A story from ``lg.sunday_dinner`` with the catalog character "June Harrow" (``label``,
-    ``phrase``) cast as ``mother``: the story's id, her story character's id and her catalog
-    id."""
+    ``phrase``, ``images`` when given) cast as ``mother``: the story's id, her story character's
+    id and her catalog id."""
     locked, default = await scenarios.cast_characters(client)
+    extra: dict[str, Any] = {"images": images} if images is not None else {}
     mother = await g.catalog_character_id(
         client,
         "June Harrow",
         age=60,
         labels=["warm", label],
         public_description=f"{phrase}, at every county fair.",
+        **extra,
     )
     body = lg.sunday_dinner(locked, default)
     scenario_id, _ = await g.published_scenario(client, body)
@@ -410,6 +416,18 @@ async def _cast_june(
     )
     june = next(c["id"] for c in made["characters"] if c["name"] == "June Harrow")
     return made["story_id"], june, mother
+
+
+KEPT_CARD_FIELDS = frozenset(
+    {
+        *("kind", "id", "character_id", "role_id", "source", "version"),
+        *("status", "listing_status", "labels", "public_description"),
+    }
+)
+"""The card fields a story-scope erasure keeps as they were (``boundary.KEPT_CARD``: labels and
+public description, and the structural fields: kind, ids, source, version, status values)."""
+ERASED_CARD_FIELDS = frozenset({"name", "images", "content_rating"})
+"""The rest: the name redacted, the images and the content rating emptied (#390)."""
 
 
 async def _report(engine: AsyncEngine, story_id: str) -> dict[str, Any]:
@@ -442,18 +460,26 @@ async def test_a_story_erasure_keeps_the_public_card_in_the_creation_report(
     """docs/04 C-15 as amended for #376 (the owner's option 2): a story-scope erasure of a cast
     catalog character deletes her genesis snapshot, and the creation report keeps her public
     catalog card (id, labels, public description) with her name redacted, because the card is
-    public catalog data until a catalog-scope erasure. #390: nothing else of the card stays (its
-    images and content rating are emptied). #381: the report's deferred items that belong only
+    public catalog data until a catalog-scope erasure. #390, #393: nothing else of the card stays
+    (her primary and gallery images and her content rating are emptied); #400: the card keeps
+    exactly its structural fields beside those. #381: the report's deferred items that belong only
     to her (her secret memory, her stats, her relationships) go with her ``genesis_deferred``
     rows, and ``counts.deferred`` is recounted.
 
-    Complements asserted: before the erasure the snapshot exists, the report names her and
-    holds her deferred items and her secret; after it none of that does, and the card's label
-    and phrase are still there."""
+    Complements asserted: before the erasure the snapshot exists, the report names her, shows
+    both her images and holds her deferred items and her secret; after it none of that does, and
+    the card's label and phrase are still there."""
     report_sql = "SELECT o::text FROM operations o WHERE o.story_id = :s AND o::text LIKE :label"
     snapshot_sql = "SELECT count(*) FROM character_snapshots WHERE character_id = :c"
     async with respond_client(e.erasure_settings(pg_url), engine) as (client, _):
-        story_id, june, mother = await _cast_june(client)
+        primary = (await media.uploaded(client, headers=scenarios.WRITE))["id"]
+        gallery = (await media.uploaded(client, headers=scenarios.WRITE))["id"]
+        images = {"primary": primary, "gallery": [gallery]}
+        story_id, june, mother = await _cast_june(client, images=images)
+        shown = _card(await _report(engine, story_id), mother)
+        assert shown["images"]["primary"]["media_id"] == primary
+        assert [item["media_id"] for item in shown["images"]["gallery"]] == [gallery]
+        kept = {k: v for k, v in shown.items() if k in KEPT_CARD_FIELDS}
         label = f"%{CARD_LABEL}%"
         assert await _one(engine, snapshot_sql, c=june) == 1
         (before,) = await _rows(engine, report_sql, s=story_id, label=label)
@@ -475,7 +501,14 @@ async def test_a_story_erasure_keeps_the_public_card_in_the_creation_report(
     assert _holding(report, june) == []
     card = _card(report, mother)
     assert (card["images"], card["content_rating"]) == ({"primary": None, "gallery": []}, None)
+    assert primary not in after
+    assert gallery not in after
     assert CARD_LABEL in card["labels"]
+    # #400: what boundary.KEPT_CARD declares, and only that: the structural fields unchanged,
+    # labels and public description kept, the name redacted, the rest emptied.
+    assert set(card) == KEPT_CARD_FIELDS | ERASED_CARD_FIELDS
+    assert {k: v for k, v in card.items() if k in KEPT_CARD_FIELDS} == kept
+    assert not e.naming(card["name"], ["June Harrow", "June"])
     deferred = report["counts"]["deferred"]
     assert sum(deferred["by_class"].values()) == len(report["deferred"])
     assert sum(deferred["by_capability"].values()) == len(report["deferred"])

@@ -502,8 +502,8 @@ def test_s_erasure_boundary__docs() -> None:
     """The erasure boundary reads the same from the API (``GET /admin/erasure/boundary``), the
     API description (the route's and ``info.description``, served and in ``docs/openapi.json``)
     and ``docs/OPERATIONS.md`` (its marked block), whitespace aside; every out-of-scope item is
-    there: delivered exports, provider retention, subjects shown only visually, older backups
-    and the logs."""
+    there: delivered exports, provider retention, subjects shown only visually, older backups,
+    the logs, ambiguous mentions and the kept creation-report card (#400)."""
     rendered = boundary.render_boundary()
     client = TestClient(create_app(auth_settings(DUMMY_DSN)))  # reads no database
     served = client.get("/admin/erasure/boundary", headers=e.WRITE)
@@ -520,6 +520,8 @@ def test_s_erasure_boundary__docs() -> None:
         boundary.VISUAL_ONLY,
         boundary.OLD_BACKUPS,
         boundary.LOGS_ITEM,
+        boundary.AMBIGUOUS_MENTIONS,
+        boundary.KEPT_CARD,
     ):
         assert item in served.json()["out_of_scope"]
     assert boundary.LOGS == "operational logs contain no story content by default (NFR-SEC-4)"

@@ -30,14 +30,16 @@ AMBIGUOUS_MENTIONS = (
     "(`candidates_remaining`). A word of the subject's name on its own is not matched when "
     "another character in the same scope also uses it (a shared surname) or when it is a "
     "title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only "
-    "capitalised. Names match in any case, fully case-folded (`Strauß` is `STRAUSS`), and a "
-    "hyphenated name by its halves at any dash (ADR-154, ADR-155)"
+    "capitalised. Names match in any case, fully case-folded (`Strauß` is `STRAUSS`, `Yılmaz` "
+    "is `YILMAZ`), a hyphenated name by its halves at any dash, and a soft hyphen inside a "
+    "word is ignored (ADR-154, ADR-155, ADR-156)"
 )
 KEPT_CARD = (
     "a cast catalog character's public card in the creation report of a story she was erased "
-    "from at story scope: its id, labels and public description stay (its name is redacted, "
-    "its images and content rating are emptied), because the card is public catalog data, "
-    "until a catalog-scope erasure of that catalog character empties it too (docs/04 C-15)"
+    "from at story scope: its labels and public description stay, with its structural fields "
+    "(its kind, ids, source, version and status values), while its name is redacted and its "
+    "images and content rating are emptied, because the card is public catalog data, until a "
+    "catalog-scope erasure of that catalog character empties it too (docs/04 C-15)"
 )
 LOGS = "operational logs contain no story content by default (NFR-SEC-4)"
 

@@ -4,6 +4,8 @@ character in every place a name can sit, and a test-side residue scan.
 The scan here is the test's own, independent of ``core.erasure.verify``: it enumerates every
 story-scoped table with a text column from ``information_schema`` (plus the rows that name the
 story by ``scope_id`` or by one of its operations) and looks for whole-word names in each value.
+``catalog_residue`` does the same over the catalog scope (#404): every ``catalog`` table,
+``personas`` and ``media_assets``, and the deployment-scoped rows of ``CATALOG_DEPLOYMENT_ROWS``.
 """
 
 from __future__ import annotations
@@ -174,6 +176,62 @@ async def residue(engine: AsyncEngine, story_id: str, terms: Iterable[str]) -> d
     return {
         table: sum(1 for value in found if naming(value, wanted))
         for table, found in (await story_values(engine, story_id)).items()
+    }
+
+
+CATALOG_DEPLOYMENT_ROWS = {
+    "idempotency_keys": "scope <> 'story' AND result IS NOT NULL",
+    "events": "story_id IS NULL",
+    "policies": "story_id IS NULL",
+    "operations": "story_id IS NULL AND turn_report IS NOT NULL",
+    "config_changes": "scope <> 'story'",
+}
+"""The deployment-scoped rows a catalog-scope erasure covers (the catalog index's records)."""
+
+
+async def catalog_values(engine: AsyncEngine) -> dict[str, list[str]]:
+    """Every text value of the catalog scope, per table: the ``catalog`` tables (as
+    ``catalog.<table>``), ``personas`` and ``media_assets`` (enumerated from
+    ``information_schema``), and the ``CATALOG_DEPLOYMENT_ROWS``."""
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT c.table_schema, c.table_name, c.column_name "
+                "FROM information_schema.columns c "
+                "JOIN information_schema.tables t "
+                "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
+                "WHERE t.table_type = 'BASE TABLE' AND c.data_type = ANY(CAST(:types AS text[])) "
+                "AND (c.table_schema = 'catalog' OR (c.table_schema = 'public' AND "
+                "c.table_name = ANY(CAST(:public AS text[]))))"
+            ),
+            {
+                "types": list(TEXT_TYPES),
+                "public": ["personas", "media_assets", *CATALOG_DEPLOYMENT_ROWS],
+            },
+        )
+        columns: dict[tuple[str, str], list[str]] = {}
+        for row in found:
+            columns.setdefault((row.table_schema, row.table_name), []).append(row.column_name)
+        values: dict[str, list[str]] = {}
+        for (schema, table), names in columns.items():
+            selected = ", ".join(f'CAST("{c}" AS text)' for c in names)
+            where = CATALOG_DEPLOYMENT_ROWS.get(table, "true") if schema == "public" else "true"
+            got = await conn.execute(
+                text(f'SELECT {selected} FROM "{schema}"."{table}" WHERE {where}')  # noqa: S608
+            )
+            label = table if schema == "public" else f"{schema}.{table}"
+            values[label] = [str(v) for r in got for v in r if v is not None]
+    return values
+
+
+async def catalog_residue(engine: AsyncEngine, terms: Iterable[str]) -> dict[str, int]:
+    """Per table of the catalog scope, how many text values name one of ``terms`` (only the
+    tables that do)."""
+    wanted = list(terms)
+    return {
+        table: n
+        for table, found in (await catalog_values(engine)).items()
+        if (n := sum(1 for v in found if naming(v, wanted)))
     }
 
 

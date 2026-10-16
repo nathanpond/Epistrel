@@ -599,6 +599,49 @@ async def test_the_residue_scan_reports_what_is_left(
     assert (again.tables, again.count) == (left, 1)
 
 
+async def test_the_catalog_residue_scan_reports_what_is_left(
+    erasure_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#404, the catalog half of #394: a catalog-scope erasure's ``residue`` is what the scan
+    finds, never a constant. Before any erasure, ``verify()`` over a catalog that names Linda
+    counts, table by table, exactly what the test's own catalog scan counts (more than 0). Then
+    a catalog-scope erasure runs while a mention survives its pass (a bystander's draft is made
+    to name her inside the transaction, after the redaction and before the scan): the
+    response's ``residue`` and the ledger entry's are 1, the test's own scan agrees
+    ({"catalog.character_catalog": 1}), and a second ``verify()`` says the same."""
+    async with respond_client(erasure_settings, engine) as (client, _lib):
+        linda = await e.linda(client)
+        bobby = await e.linda(client, e.OTHER, "Bob")
+        redactor = Redactor((e.NAME, e.ALIAS))
+        theirs = await e.catalog_residue(engine, (e.NAME, e.ALIAS))
+        async with engine.connect() as conn:
+            ours = await verify(conn, None, redactor)
+        assert theirs
+        assert ours.tables == theirs
+        assert ours.count == sum(theirs.values())
+
+        original = erase_module._catalog_pass
+
+        async def leaves_a_mention(conn: Any, run: Any) -> Any:
+            tally = await original(conn, run)
+            await conn.exec_driver_sql(
+                "UPDATE catalog.character_catalog "
+                'SET draft = draft || \'{"note": "Linda returns"}\'::jsonb WHERE id = %s',
+                (bobby,),
+            )
+            return tally
+
+        monkeypatch.setattr(erase_module, "_catalog_pass", leaves_a_mention)
+        done = await e.erase(client, "catalog_character", linda)
+        assert done["residue"] == 1
+        assert done["ledger_entry"]["counts"]["residue"] == 1
+    left = await e.catalog_residue(engine, (e.NAME, e.ALIAS))
+    assert left == {"catalog.character_catalog": 1}
+    async with engine.connect() as conn:
+        again = await verify(conn, None, redactor)
+    assert (again.tables, again.count) == (left, 1)
+
+
 async def test_a_legacy_key_without_a_sent_hash_conflicts_after_an_erasure(
     erasure_settings: Settings, engine: AsyncEngine
 ) -> None:

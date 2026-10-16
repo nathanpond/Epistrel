@@ -75,48 +75,6 @@ def erasure_settings(pg_url: str) -> Settings:
     return e.erasure_settings(pg_url)
 
 
-async def catalog_values(engine: AsyncEngine) -> dict[str, list[str]]:
-    """Every text value of the catalog, media and persona tables (enumerated from
-    ``information_schema``), and the deployment-scoped stored results."""
-    async with engine.connect() as conn:
-        found = await conn.execute(
-            text(
-                "SELECT c.table_schema, c.table_name, c.column_name "
-                "FROM information_schema.columns c "
-                "JOIN information_schema.tables t "
-                "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
-                "WHERE t.table_type = 'BASE TABLE' AND c.data_type = ANY(CAST(:types AS text[])) "
-                "AND (c.table_schema = 'catalog' OR (c.table_schema = 'public' AND "
-                "c.table_name IN ('personas', 'media_assets')))"
-            ),
-            {"types": list(e.TEXT_TYPES)},
-        )
-        columns: dict[tuple[str, str], list[str]] = {}
-        for row in found:
-            columns.setdefault((row.table_schema, row.table_name), []).append(row.column_name)
-        values: dict[str, list[str]] = {}
-        for (schema, table), names in columns.items():
-            selected = ", ".join(f'CAST("{c}" AS text)' for c in names)
-            got = await conn.execute(text(f'SELECT {selected} FROM "{schema}"."{table}"'))  # noqa: S608
-            values[f"{schema}.{table}"] = [str(v) for r in got for v in r if v is not None]
-        results = await conn.scalars(
-            text(
-                "SELECT CAST(result AS text) FROM idempotency_keys "
-                "WHERE scope <> 'story' AND result IS NOT NULL"
-            )
-        )
-        values["idempotency_keys"] = [str(v) for v in results]
-    return values
-
-
-async def catalog_residue(engine: AsyncEngine, terms: tuple[str, ...]) -> dict[str, int]:
-    return {
-        table: n
-        for table, found in (await catalog_values(engine)).items()
-        if (n := sum(1 for v in found if e.naming(v, terms)))
-    }
-
-
 async def published(client: Any, name: str, alias: str, image: str) -> str:
     body = characters.complete(
         name, metadata={"aliases": [alias]}, images={"primary": image, "gallery": []}
@@ -219,7 +177,7 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
         made = await g.create_from(client, g.from_scenario(scenario_id, ignore_warnings=True))
         story = made["story_id"]
         cast = {c["role_id"]: c["id"] for c in made["characters"]}
-        assert await catalog_residue(engine, TERMS)  # the catalog names her
+        assert await e.catalog_residue(engine, TERMS)  # the catalog names her
 
         story_before = await story_rows(engine, story)
         before = await e.dump_all(engine)
@@ -263,8 +221,8 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
                 "[erased] keeps the lamp oil in the cellar."
             )
         # No catalog, media or persona table names her; Corvin is still named (complement).
-        assert await catalog_residue(engine, TERMS) == {}
-        assert await catalog_residue(engine, SECOND_TERMS)
+        assert await e.catalog_residue(engine, TERMS) == {}
+        assert await e.catalog_residue(engine, SECOND_TERMS)
         # Media: shared stays without her; hers alone purged with its bytes; her portrait,
         # referenced by the story's snapshot, purged under ``purge``.
         (kept,) = await rows(
@@ -340,7 +298,7 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
         )
         assert await content(client, second_portrait["id"]) == 200  # its bytes still serve
         assert media.blob_path(MEDIA_ROOT, second_portrait["checksum"]).exists()
-        assert await catalog_residue(engine, SECOND_TERMS) == {}
+        assert await e.catalog_residue(engine, SECOND_TERMS) == {}
         assert [s["story_id"] for s in second["referencing_stories"]] == [story]
 
 

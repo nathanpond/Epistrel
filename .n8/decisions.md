@@ -164,7 +164,7 @@ Changes made outside the n8SDLC commands that deviate from what planned issues a
 - **Floating tags `0.1`/`0` restored by re-running the v0.1.1 release workflow** rather than a third rollback: a rollback without `bad_version` moves only `latest` by design, and passing `bad_version=0.1.0` would have demoted a good release. The re-run exercised the re-run-safe path (release body's `Image:` line replaced, not duplicated). Image builds are not reproducible: the re-run's digest (`5bf4ce8a…`) differs from the first `0.1.1` build (`bc0d586d…`); `0.1.1`, `0.1`, `0` and `latest` now all point at `5bf4ce8a…`.
 - **M1 end state**: #33, #34, #35, #36, #37, #38, #39, #40, #41 complete and closed; #42 `blocked` + `needs-owner-action` (psycopg LGPL vs invariant 2) with its check implemented but not wired into CI; CLAUDE.md guard for invariant 2 remains `#42 (planned)`. Milestone M1 is **partially executed**; `/n8-verify M0,M1` can run once #42 is decided, or now for M0.
 
-## Ad-hoc
+## Ad-hoc — reconciled by /n8-replan 2026-10-16
 
 - **2026-10-08 — Invariant 2 amended (owner decision on #42, option 1).** Was "no AGPL/GPL/LGPL"; now "no GPL, AGPL, SSPL or EUPL; LGPL acceptable for a library used unmodified through its public API". Why: psycopg 3 (docs/02's driver, built on since #31) is LGPL-3.0-only, and LGPL used as a library is Apache-2.0-compatible; the stricter wording would have forced a driver swap for no licensing gain. Effect: `[tool.epistrel.gates.licenses]` allows the four LGPL ids and `deny` drops `LGPL`; `check-licenses` is wired into the lint job; CLAUDE.md guard for invariant 2 is `#42 (merged)`. Plans likely affected: none — no other story references the LGPL clause; `/n8-replan` not needed. Reconciled here (#42 completed).
 
@@ -1732,7 +1732,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** That is the issue's fix shape. The scratch database matters because a rating left at the int32 maximum in the shared session database would change every later default order, and `test_display_order_default_and_listing` asserts `+10`.
   **Issue:** #280
 
-## Ad-hoc — 2026-10-12
+## Ad-hoc — 2026-10-12 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** For M3 only (as a trial), `/n8-exec` runs the test gate per group of stories instead of per story. M3's 30 work items (26 stories + bugs #93, #94, #303, #305; the 6 epics carry no code) are split into three groups that each depend only on earlier groups: **A** = #305 (moved from M2 by the owner, first in A), #93, #94, #303, #103, #104, #105, #106, #107, #108, #109; **B** = #110, #111, #112, #113, #114, #115, #116, #117, #118, #119; **C** = #120, #121, #122, #123, #124, #125, #126, #127, #128. For each story: its own new tests, plus the existing tests for the areas it touched, plus `ruff check`, `ruff format --check`, `mypy` and `lint-imports`, then one commit (`Refs #N`), as now. At the end of each group: one full `uv run pytest`. A group-run failure that its test name doesn't explain is traced to a story with `git bisect` over that group's commits. A story's completion comment states "own tests green @ SHA, awaiting group gate" until its group's full run passes; only then does it get the full evidence line and its AC boxes ticked. Per-milestone CI at the PR is unchanged. Full plan and metrics: `.n8/memory/m3-batched-test-gate.md`.
   **Why:** Running the full local suite after every story is the main cost of `/n8-exec`. The owner accepts some loss of per-story test traceability in exchange for speed: any regression must be fixed either way, and per-story commits plus bisect recover which story caused it. The groups are cut along the dependency graph (blocked-by links), so no group builds on code that hasn't passed a full run, and stories that touch the same files (e.g. the erasure cluster #123–#127) share a group.
@@ -2337,7 +2337,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** An unreachable database is `/health`'s to report (NFR-REL-3). The check runs again at the next start. Cost if wrong: a start against a down database records nothing, which is harmless.
   **Issue:** #107
 
-## Ad-hoc — 2026-10-12
+## Ad-hoc — 2026-10-12 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** Project invariant 2 gains an explicit exception (CLAUDE.md, ADR-151): "ffmpeg is a GPL command-line tool invoked as a separate process for poster extraction; it is not linked and not a Python dependency". The image's runtime stage installs Debian's `ffmpeg` and CI installs it on the runner. `check-licenses`, over the Python runtime closure, is unchanged and passes.
   **Why:** This is the owner's round-one decision on #107, applied by #107 for FR-MEDIA-3's poster extraction: "ffmpeg (GPL) may be installed in the image and run as a separate process by subprocess; it is never linked or imported, so invariant 2 holds — recorded as an `## Ad-hoc` decision and an ADR line".
@@ -2451,7 +2451,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** Under the batched gate, a story's correctness rests on its own tests until group A's full run. Cost if wrong: none.
   **Issue:** #108
 
-## Ad-hoc — 2026-10-13
+## Ad-hoc — 2026-10-13 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** docs/02 §4.10's `scenario_roles` table is replaced by the roles inside each scenario draft and version document (jsonb), and docs/02 is amended to match. A role carries the fields the table planned: kind, required, fill mode, public label and setup description, default or locked `character_id@version`, eligibility filters, role seeds with holder, audience and disclosure, relationships, role-scoped State values, starting location, default participation role and name overrides. `scenario_catalog` gains `companion_of`, and `scenario_versions` gains the companion pin `(pinned_character_id, pinned_character_version)`. Applied by #108.
   **Why:** #108's planner line: "Seeds and roles are jsonb documents inside the version content", and "docs/02 §4.10's `scenario_roles` table is replaced by jsonb roles — logged as an `## Ad-hoc` entry and a docs/02 amendment in this story". A version is immutable and copied whole into a story's snapshot at genesis, so its roles belong with it.
@@ -3040,7 +3040,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** #316 is a hand-off between stories in this milestone. It closes when #119 lands.
   **Issue:** #316, #108, #119
 
-## Ad-hoc — 2026-10-13
+## Ad-hoc — 2026-10-13 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #106 amended by owner decision, recorded in the `/n8-exec M3` session on 2026-10-12 as option A, "Amend #106 to the docs".
   - AC4 and the test plan: presets are ordinary profiles (FR-PROF-3). An edit creates a new version, and copy and delete follow the same rules. The only refusal is deleting the deployment default (409). "Presets immutable" is gone.
@@ -3624,7 +3624,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** The older settings are M2's and earlier M3 stories', outside #112's scope, and tightening them changes accepted input for every integer setting: a triage call. Cost if wrong: none.
   **Issue:** #112, #322
 
-## Ad-hoc — 2026-10-13
+## Ad-hoc — 2026-10-13 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** A published scenario version keeps the validation report its publish answered, in `catalog.scenario_versions.report` (jsonb, migration 0028; #111). That report is content.
   - A warning's `text` quotes the version's own text. For `personality_in_role` it is the sentence from a role's setup description or seed. For `input_policy` it is the matched words, or the first 200 characters of the field when a pattern or model-assisted policy locates no span.
@@ -3873,7 +3873,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** The change runs through the turn path, the settings and the summary job, so "the tests of every area touched" is most of the suite. Cost: about 20 minutes of test time.
   **Issue:** #113
 
-## Ad-hoc — 2026-10-13
+## Ad-hoc — 2026-10-13 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #113 moved M2's engine dials out of a story's settings and the deployment's settings into the engine-profile layers (FR-PROF-5). The moved dials and their new places:
 
@@ -4090,7 +4090,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** This is the M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
   **Issue:** #114
 
-## Ad-hoc — 2026-10-13
+## Ad-hoc — 2026-10-13 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #114 changed shapes that later stories build on.
   - **The interim catalog `CharacterDraft` (#103) gained the fields a promotion copies,** at #115's planned paths and limits:
@@ -4335,7 +4335,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
   **Issue:** #115
 
-## Ad-hoc — 2026-10-13
+## Ad-hoc — 2026-10-13 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #115 gave a catalog character its full document and changed shapes that later stories build on.
   - **Request bodies.** `POST`/`PATCH /catalog/characters` take `public_card {name, public_description, images {primary, gallery}}`; a top-level `name` or `public_description` is now 422. The draft has typed groups: `definition` (true age, appearance, personality, likes and dislikes, five disposition axes each `{setting, nuance}`, values and motivations, interaction style, background flavor, `deflection_style`, `safe_fallback_text`), `metadata {aliases, labels, content_rating_id}` and an optional `visual_identity` whose reference images require an `audience`. Migration 0032 moved every stored draft and version to this shape.
@@ -4512,7 +4512,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** the M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
   **Issue:** #116
 
-## Ad-hoc — 2026-10-13
+## Ad-hoc — 2026-10-13 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #116 gave every catalog character its companion scenario and amended docs/02 §4.10, as its pass-2 line asks: docs/02's "a trigger in the catalog service creates one per character" is read as application code, and "slot edits are rejected by constraint" as the scenario save's refusal plus a validation check, since roles live in the document. What later stories build on:
   - **Creation.** A character's creation (a promotion's too) creates its companion in the same transaction: `scenario_catalog.companion_of` (now unique), the roles `npc` (locked to the character, no version until its first publish) and `player`, the character's name and rating, an empty world. Migration 0033 backfilled one for every existing character, without subject-reference rows.
@@ -4640,7 +4640,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** The M3 per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
   **Issue:** #117
 
-## Ad-hoc — 2026-10-13
+## Ad-hoc — 2026-10-13 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #117 built principal lookup and offboarding with shapes that differ from what its plan and later plans name.
   - **Routes.** `GET /principals/{id}` (tag `principals`), `POST /admin/offboarding` and `GET /admin/offboarding/{job_id}` replace docs/02 §9's `/principals/{pid}/entities` and `/admin/principals/{pid}/offboard[/{job_id}]`. docs/02 §9 and §4.10 are amended, and the README gains a section.
@@ -4756,7 +4756,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** M3's per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
   **Issue:** #118
 
-## Ad-hoc — 2026-10-13
+## Ad-hoc — 2026-10-13 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #118 built rating changes with shapes that differ from what its plan and later plans name.
   - **The request's operation.** It is a committed `control` operation that records `story_paused` and binds the key. The plan's `in_flight` operation, finalised by the job, is not built, and `jobs.operation_id` is not added: the link is `rating_check_jobs.operation_id`. The applied change is recorded by its own committed configuration-write operation, with the requester as principal.
@@ -4854,7 +4854,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** M3's per-story gate rule. Cost if wrong: a failure surfaces in group B's full run.
   **Issue:** #119
 
-## Ad-hoc — 2026-10-14
+## Ad-hoc — 2026-10-14 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #119 built story creation from a scenario with shapes later stories build on.
   - **Storage.** `stories.scenario_id`, `scenario_version` and `scenario_snapshot` (the published version's whole document), `characters.role_id`, and the story table `character_snapshots (story_id, character_id, source_catalog_id, version, content, published_at, content_rating_version_id)` (migration 0036). A catalog-sourced `characters.definition` holds an interim plain rendering of the snapshot's private definition (`core.genesis.create.render_definition`), not `NULL` as the plan said.
@@ -4955,7 +4955,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** M3's per-story gate rule. Cost if wrong: a failure surfaces in group C's full run.
   **Issue:** #120
 
-## Ad-hoc — 2026-10-14
+## Ad-hoc — 2026-10-14 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #120 built the reactivation re-check with shapes that later plans name differently or do not name.
   - **The edits.** `untruncate`, `swap` and `fork` (with a non-active `variant_chain`) can answer 202 `RatingCheckStarted` (#118's body plus `Location`) instead of their 200/201.
@@ -4976,7 +4976,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** This keeps the drift-ledger entry and leaves the run's section last, as #111 and #113 to #119 did. Cost if wrong: one heading.
   **Issue:** #120
 
-## Ad-hoc — 2026-10-14
+## Ad-hoc — 2026-10-14 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #121 delivered the `rating_suggestion` purpose and the advisory table. Some of what it built differs from, or adds to, what later plans name.
   - **The surface.** The routes are `POST /catalog/{characters|scenarios}/{id}/rating-suggestion` (`suggest_ratings_character`, `suggest_ratings_scenario`), flagged `mutating=False`. Their body is `{version?: n | "draft"}`, and `include_retired` is a query parameter. The answer is `{advisory, entry, evaluated, rows, unavailable, model_calls, elapsed_ms}`. Each row is `{rating_id, rating_name, rating_version, appropriate, concerns, error, truncated, dropped_concerns}`. A concern's `element.location` is #111's location plus `media_id`.
@@ -5151,7 +5151,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** The pass-1 line names those stories. Cost if wrong: #123/#124 miss the table (named in their Affects line).
   **Issue:** #122, #123, #124
 
-## Ad-hoc — 2026-10-14
+## Ad-hoc — 2026-10-14 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #122 materialised Lite stories from their scenario snapshot. It changed shapes that later stories build on.
   - **The new table `genesis_deferred`** (migration 0038; docs/02 §4.10 amended). Its columns are `id, story_id, operation_id, field_ref, field_class, location, capability_needed, payload {value, characters}, created_at, materialized_at`.
@@ -5258,7 +5258,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** The hook runs on every commit. Cost if wrong: the group C gate's metrics would show it.
   **Issue:** #123
 
-## Ad-hoc — 2026-10-14
+## Ad-hoc — 2026-10-14 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #123 completed the subject-reference index. Shapes later stories build on:
   - **Table and ids.** No migration: `subject_references` is #105's 0022 table. `record_table` holds plain table names. Record ids are a row's id, or composite ids joined by `:`:
@@ -5399,7 +5399,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** The design doc is authoritative and earlier M3 stories amended it when a shape landed. Cost if wrong: one paragraph.
   **Issue:** #124
 
-## Ad-hoc — 2026-10-14
+## Ad-hoc — 2026-10-14 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #124 built erasure, with shapes later stories build on.
   - **Route.** `POST /admin/erasure {subject: {kind, id}, scope: {story: <id>} | {catalog: true}, dry_run?}` (`Engine.erase`, tag `admin`; errors `invalid_erasure_scope` 422, `not_found` 404, `revision_conflict` 409, `config_key_missing` 503). One response model: the counts, `regeneration`, `degradation`, `referencing_stories`, `erasure_id`, `operation_id`, `ledger_entry`, `residue`, `config_revision` and, for the story scope, `timeline_revision`.
@@ -5489,7 +5489,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** Pass 1/pass 2. Cost if wrong: none.
   **Issue:** #125
 
-## Ad-hoc — 2026-10-14
+## Ad-hoc — 2026-10-14 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #125 made the erasure ledger's file the authority and added a block for unreconciled stories. Shapes later stories build on:
   - **Ledger.** `core.erasure.ledger`: `LedgerFile` (`EPISTREL_ERASURE_LEDGER_DIR/ledger.jsonl`, hash-chained) and `Entry`. `write(conn, ledger, entry)` sits inside #124's transaction; `erase(..., ledger=)` takes the Engine's `self.ledger`. A file that cannot be written gives 503 `ledger_unavailable`.
@@ -5606,7 +5606,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** FR-API-4. The schema says `date-time`. Cost if wrong: none.
   **Issue:** #126
 
-## Ad-hoc — 2026-10-14
+## Ad-hoc — 2026-10-14 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #126 built feedback reporting and export. Some of the shapes it settled are ones later stories build on:
   - **Routes.** `GET /feedback/aggregates` (`feedback_aggregates`), `GET /feedback/review/{guardrail|memory}` (`feedback_review_guardrail`/`_memory`, Engine `feedback_review`), and under `/admin/feedback`: `POST /export` (`export_feedback`, 201), `GET /exports`, `GET /exports/{id}`, `GET /exports/{id}/content` and `DELETE /exports/{id}` (`mutating=False`, 204), all tagged `feedback`. New error codes: 403 `feedback_export_disabled`, and 404 `not_found` with `reason: deleted`. The deployment settings gain `feedback_export` and `feedback_regen_window_s`. `docs/openapi.json` is regenerated.
@@ -5689,7 +5689,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** The drift note's correction. Cost if wrong: #128's parity check adjusts the lists.
   **Issue:** #127, #128
 
-## Ad-hoc — 2026-10-14
+## Ad-hoc — 2026-10-14 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #127 added the resurrection guard. Later stories build on these shapes:
   - **Commit-time check.** `core.erasure.guard.check_content` runs in `Operation._write` on every staged event. It runs after #47's decision and the commit steps, and before indexing. A refused write is 409 `erased_subject_referenced` (`ErasedSubjectReferenced`, `{erasure_id, match_count}`), and the operation ends `abandoned`. A revalidating turn regenerates first (`concurrency.ERASED_SUBJECT`).
@@ -5776,7 +5776,7 @@ Re-execution of M2 for #280, which `/n8-verify M2` at 9361eb1 adopted into M2 (`
   **Why:** The relayed Ad-hoc entries' `Affects: #128` items. None contradicts an AC. Cost if wrong: none.
   **Issue:** #128, #114, #115, #116, #117, #118, #119, #120, #121, #122, #124, #125, #126, #127
 
-## Ad-hoc — 2026-10-14
+## Ad-hoc — 2026-10-14 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** #128 froze M3's API surface. Some of the shapes it settled are ones later stories build on.
   - **`GET /operations/{id}`** gains `label` and `stages`.
@@ -5962,7 +5962,7 @@ Fix pass on the four bugs the M3 re-verify at `c26993c` filed (#363, #364, #365,
   **Why:** The snapshot is the provenance FR-SCN-9 asks for. Dropping the card fields would break the snapshot-equals-published-version guarantee that `test_i_17`/`test_i_27` assert. #339's test already asserts the amended wording.
   **Issue:** #340
 
-## Ad-hoc — 2026-10-15
+## Ad-hoc — 2026-10-15 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** Erasure redacts only mentions attributed to the subject (ADR-154, implemented under #372):
   - a positional subject index (offsets and rule per prose mention, never the text);
@@ -6090,7 +6090,7 @@ Fix pass on the bugs the M3 re-verify at `a172145` filed (#378–#390). It runs 
 - **Decision (process, Rule 1 in a test):** the new #382 test's database-wide dump first failed because an earlier test in the module leaves its own un-erased "June Harrow" catalog entry with the same label. The test now uses a per-test label and phrase.
   **Issue:** #382
 
-## Ad-hoc — 2026-10-15
+## Ad-hoc — 2026-10-15 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** two changes to the erasure design, decided by the owner at the start of M3's fix pass 6:
   - **ADR-155:** the erasure matcher and the write-path guard compare names fully case-folded (`Strauß` = `STRAUSS`), with every dash as `-`. This amends ADR-154's "as written (no case-folding)".
@@ -6149,7 +6149,7 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   The owner's batched gate applies: area tests (95 passed in the erasure area), then one full suite on the branch.
   **Issue:** #392–#402
 
-## Ad-hoc — 2026-10-16
+## Ad-hoc — 2026-10-16 — reconciled by /n8-replan 2026-10-16
 
 - **Change:** ADR-156, decided at the start of M3's fix pass 7. The erasure fold, shared by the matcher, the subject-reference index, the residue scan and the write-path guard, is now canonical caseless matching (NFC again after case-folding). It also folds `ı` to `i` (the owner's decision on #396), removes the soft hyphen (no longer a dash or a split point), and counts U+2212 and U+2043 as dashes.
   **Why:** #395, #396 and #397 each left a form of an erased name behind with `residue: 0`.
@@ -6209,3 +6209,25 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #413–#416
 - **Decision (Rule 1, own regression):** The first full run of this pass went 338 failed, 1 error, 1624 passed. #413's test had committed its seeds, and a global policy with an empty `rule` broke policy loading in every later test. The seeds and both scans now share one transaction, which the test rolls back: `erasure_support.catalog_values` / `catalog_residue` accept an `AsyncConnection`. A probe after the test found none of the six seeded rows left, and the 10 #413 mutants were re-run and are still killed. The targeted runs had passed because the test was run alone. Lesson: a test that writes deployment-scope rows must roll them back. The same run's `ruff format --check` also flagged the #414 e2e test, which is now formatted.
   **Issue:** #413, #414
+
+## Ad-hoc — 2026-10-16 — reconciled by /n8-replan 2026-10-16
+
+- **Change:** Invariant 6 amended (the owner's decision on #274): whole-story deletion (FR-STORE-16) is the fourth exception to "the event log is the truth", next to erasure, opt-in compaction and audit-record retention expiry. It is a `story_id`-scoped delete of the whole log and leaves no marker. CLAUDE.md invariant 6 and docs/03 FR-STORE-1 ("four exceptions") now say so.
+  **Why:** docs/02 §4.6, FR-STORE-16, #45's `epistrel.allow_story_delete` trigger exemption and #50 already delete whole stories; the invariant's wording omitted it, so an `/n8-audit` reading it literally would flag shipped, required behaviour. No code changes.
+  **Affects:** M10's documents-against-code emphasis (item I, updated in this replan). No story plan names the old wording.
+
+## /n8-replan M4–M10 — 2026-10-16
+
+- **Cause:** every `## Ad-hoc` entry from M2/M3 (none had been reconciled) plus M3 as built. M3 shipped every later milestone's profile modules (#106/#113), the scenario/settings plumbing (#108/#122), the erasure machinery (subject index, `SUBJECT_WRITERS`/`CONTENT_WRITE_PATHS`, `_story_pass`, ADR-153 restore window, ADR-154/155/156 matcher and fold), the frozen route table `fr_api_6_routes.json` (#128) and the one-file-per-test-ID traceability rule. The M4–M8 plans (2026-10-08/10) predate all of it.
+- **Method:** one read-only analysis subagent per milestone (M4, M5, M6, M7, M8, M9+M10) checked every open issue and milestone description against the ledger, git history and the code at efe0d06; the owner approved the combined change set ("approve all"); one apply subagent per milestone edited bodies via `--body-file`, commented on every modified issue and re-fetched to verify.
+- **Owner decisions (2026-10-16):** adopt the shipped profile schema everywhere; `budgets.model_calls` is a total cap with guardrail calls inside, `repair.max_attempts` schema default stays 0; entailment gate default 1.0 (#142); extraction default stays `gated`, docs/03 amended in #148; consolidation keeps both triggers (#143); hot-set limits are profile dials under `memory.hot_set.*`, no story-level overrides (#147); only the deployment-default profile refuses deletion (#227); in-process crash hook `crash.arm_failure`/`crash.fail` adopted (#222/#223/#247/#250); M8 #260 Option A (candidate previews use the one signed route `GET /media/{id}/content`, no invariant change); #298's local-tier label accepted; invariant 6 amended (#274, entry above).
+- **Issues touched:**
+  - M4: #129–#158 edited (30); 12 edges to closed M3 issues; #147/#141 corrected once after the apply over-read decision 6 (the retain/importance-floor options were briefly dropped; restored as `memory.hot_set.*` dials). Pulled forward into M4: #283, #331, #325, #419.
+  - M5: #159, #160, #162–#164, #166, #167, #171, #173, #174, #176–#178, #180–#182 edited (16); #181 adopts #106's shipped shape; 26 edges to closed M3 issues.
+  - M6: 25 stories edited (#185–#187, #192–#197, #199, #200, #202–#205, #207, #209–#214, #216–#218); new story **#423** (REST/library surface for M6, under epic #23); #211 edges to #120/#125/#127; milestone description (`tests/scenario/`, #423, 35 stories). #323 moved here (with #202) and split: its scenario-policies half is new **#422** (M9).
+  - M7: #220–#251 edited (32); edge #306 → #229 (#306 moved to M7); coverage-map lines for #243/#246.
+  - M8: #254–#270, #272 edited (18); milestone description note on #260's signed route.
+  - M9: description "M2–M8" → "M0–M8"; #346 (+`needs-owner-action`), #417, #420, #421 moved in (M3 now 0 open); #99 commented.
+  - M10: audit emphases appended for what M3 built (items A–I); #332 moved in.
+  - Closed as completed with commit evidence: #316, #317, #319, #326, #327, #298.
+- **Left for execution or later:** #227 and #232 keep planning-time "owner question pending" lines (pre-replan, not drift); M8 depends on unexecuted M4/M5/M7 stories, so a quick `/n8-replan M8` before `/n8-exec M8` is advised; ~30 no-milestone `needs-triage` issues remain untriaged. Structured-profile seeds (#129) set `repair.max_attempts 1` and `extraction_mode always` over the schema defaults — flagged to the owner.

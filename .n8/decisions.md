@@ -6231,3 +6231,12 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - M10: audit emphases appended for what M3 built (items A–I); #332 moved in.
   - Closed as completed with commit evidence: #316, #317, #319, #326, #327, #298.
 - **Left for execution or later:** #227 and #232 keep planning-time "owner question pending" lines (pre-replan, not drift); M8 depends on unexecuted M4/M5/M7 stories, so a quick `/n8-replan M8` before `/n8-exec M8` is advised; ~30 no-milestone `needs-triage` issues remain untriaged. Structured-profile seeds (#129) set `repair.max_attempts 1` and `extraction_mode always` over the schema defaults — flagged to the owner.
+
+## /n8-exec M4 — 2026-10-16
+
+- **Decision:** Work order is the bug lane in the owner's order (milestone description, phase 0: #283, #318 → #331, #315 → #322, #325, #323 + #422, #419, #346, #417, #275 + #278, #281, #282, #308, #309, #310 → #312/#313, #320, #321, #324, #329, #276, #307, #311, #314), then the 30 stories in the milestone's creation order #129 → #158, which matches every native `blocked_by` edge.
+  **Why:** The owner set the bug lane first on 2026-10-16. The creation order was checked edge by edge against the dependency API.
+- **Decision:** The full suite runs for every work item at that item's own commit. It runs in a detached worktree (`uv run pytest --cov=epistrel.core --cov-report=term-missing:skip-covered --cov-fail-under=90`, the same command as M3's gates), in the background, at most 3 at once, while the next item is built in the main checkout. An item's AC are ticked and its completion comment posted only after the run at its SHA is green. A red run is fixed by a follow-up commit that `Refs` the item, and the suite is re-run.
+  **Why:** The skill's rule is "full suite per story", and M3's batched gate was the owner's decision for M3 only. The suite takes about 25 min. Running each SHA's suite next to the next item's work keeps the per-story evidence without leaving implementation idle. Every run starts its own Postgres container, so concurrent runs are isolated.
+- **Decision:** Each work item is implemented by one foreground subagent in the main checkout, one at a time. The subagent comments the plan, implements, runs the item's own and touched-area tests plus ruff, format, mypy and lint-imports, logs its decisions here and commits with `Refs #N`. The orchestrator runs the full suite, posts the evidence and ticks the boxes.
+  **Why:** 58 work items do not fit one context. A fresh context per item reads the issue, the subtasks and docs in full.

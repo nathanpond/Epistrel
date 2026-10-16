@@ -41,7 +41,8 @@ complete erasure:
 
 1. one ``control`` operation (it bumps the story's revision, so a turn in flight abandons, and
    runs on archived and paused stories), in one transaction under the story lock and
-   ``epistrel.erasure = on``: the subject's ``characters`` rows, their ``character_snapshots``
+   ``epistrel.erasure = on``: the story is re-indexed first, so a stale index cannot hide a
+   mention (#386); the subject's ``characters`` rows, their ``character_snapshots``
    and the ``genesis_deferred`` items that belong only to them are deleted, each leaving one
    position-less ``erasure_marker`` event; every string of every record that names the subject
    is redacted in place (``Redactor``: each matched span becomes ``[erased]``), and a beat the
@@ -75,10 +76,12 @@ the subject are rewritten (several subjects: the subject leaves ``depicted_subje
 and alt text are redacted) or, depicting only the subject, purged with their bytes once no other
 asset shares them, unless a record the erasure leaves untouched references them and the
 deployment's ``erasure_shared_media`` is ``retire`` (the asset is kept ``retired``, redacted);
-deployment-scoped stored results naming the subject are purged. Stories are never touched
-(FR-STORE-14): ``referencing_stories`` lists those that reference the subject (with their
-characters), for the operator to erase separately. Blob bytes are deleted after the commit; a
-failed delete is left to the media sweep.
+deployment-scoped stored results naming the subject are purged. Stories are otherwise never
+touched (FR-STORE-14): ``referencing_stories`` lists those that reference the subject (with
+their characters), for the operator to erase separately. The one exception is the public card
+a catalog character's genesis creation report copied, which is public catalog data until this
+erasure: it is emptied in every story's report that casts her (#382, docs/04 C-15). Blob
+bytes are deleted after the commit; a failed delete is left to the media sweep.
 
 **The ledger** (``erasure_ledger``, and first its file outside the database: #125,
 ``core.erasure.ledger``) holds identifiers, the scope, the story, the counts, the
@@ -740,14 +743,13 @@ async def _story_pass(conn: AsyncConnection, run: _StoryRun) -> _Tally:
     await _redact_characters(conn, story_id, refs, removed, redactor, tally, run)
     await _redact_snapshots(conn, story_id, refs, removed, redactor, tally, run)
     await _redact_deferred(conn, story_id, refs, removed, redactor, tally, run)
-    await _redact_json_rows(
+    await _redact_operations(
         conn,
-        operations,
-        operations.c.operation_id,
-        refs.get(operations.name, ()),
-        ("turn_report",),
+        refs.get(operations.name, set()),
         redactor,
         tally,
+        reports=operations.c.story_id == story_id,
+        edit=lambda report: story_erased_report(report, removed),
         write=write,
     )
     await _redact_policies(conn, story_id, refs, removed, redactor, tally, run)
@@ -1013,6 +1015,143 @@ async def _redact_json_rows(
         if write:
             await conn.execute(update(table).where(key == row[0]).values(**values))
     return rewritten
+
+
+# -- creation reports (#381, #382, #390) ------------------------------------------------------
+
+NO_IMAGES: dict[str, Any] = {"primary": None, "gallery": []}
+
+
+def _report_of(turn_report: Any) -> dict[str, Any] | None:
+    found = turn_report.get("creation_report") if isinstance(turn_report, Mapping) else None
+    return dict(found) if isinstance(found, Mapping) else None
+
+
+def _with_report(turn_report: Any, edit: Callable[[dict[str, Any]], dict[str, Any]]) -> Any:
+    report = _report_of(turn_report)
+    if report is None:
+        return turn_report
+    return {**turn_report, "creation_report": edit(report)}
+
+
+def story_erased_report(report: dict[str, Any], removed: set[str]) -> dict[str, Any]:
+    """A genesis creation report once a story-scope erasure removed the story characters
+    ``removed``: their catalog cards keep their ids, labels and public description (docs/04
+    C-15; the boundary's ``KEPT_CARD``), with the name redacted and the images and content
+    rating emptied (#390); the ``deferred`` items that belong only to them are dropped, as their
+    ``genesis_deferred`` rows are, the others lose their ids, and ``counts.deferred`` is
+    recounted from what is left (#381)."""
+    cast = [
+        {**card, "images": NO_IMAGES, "content_rating": None}
+        if isinstance(card, Mapping)
+        and card.get("kind") == "catalog"
+        and card.get("character_id") in removed
+        else card
+        for card in report.get("cast") or []
+    ]
+    found = {**report, "cast": cast} if "cast" in report else dict(report)
+    deferred = report.get("deferred")
+    if not isinstance(deferred, list):
+        return found
+    kept: list[Any] = []
+    for item in deferred:
+        payload = item.get("payload") if isinstance(item, Mapping) else None
+        held = payload.get("characters") if isinstance(payload, Mapping) else None
+        if not isinstance(payload, Mapping) or not isinstance(held, Mapping):
+            kept.append(item)
+            continue
+        named = {c for c in held.values() if isinstance(c, str)}
+        if named and named <= removed:
+            continue
+        characters = {r: c for r, c in held.items() if c not in removed}
+        kept.append({**item, "payload": {**payload, "characters": characters}})
+    found["deferred"] = kept
+    counts = report.get("counts")
+    if isinstance(counts, Mapping) and len(kept) != len(deferred):
+        by_class: dict[str, int] = {}
+        by_capability: dict[str, int] = {}
+        for item in kept:
+            if isinstance(item, Mapping):
+                klass, capability = item.get("field_class"), item.get("capability_needed")
+                by_class[str(klass)] = by_class.get(str(klass), 0) + 1
+                by_capability[str(capability)] = by_capability.get(str(capability), 0) + 1
+        found["counts"] = {
+            **counts,
+            "deferred": {"by_class": by_class, "by_capability": by_capability},
+        }
+    return found
+
+
+def catalog_erased_report(report: dict[str, Any], catalog_id: str) -> dict[str, Any]:
+    """A genesis creation report once a catalog-scope erasure removed the catalog character
+    ``catalog_id``: every card cast from it is emptied of its catalog content (name, public
+    description, labels, images, content rating), keeping its ids, version and status values,
+    so the report still validates (#382, the owner's decision: the card is public catalog data
+    until a catalog-scope erasure, docs/04 C-15)."""
+    if "cast" not in report:
+        return report
+    cast = [
+        {
+            **card,
+            "name": None,
+            "public_description": None,
+            "labels": [],
+            "images": NO_IMAGES,
+            "content_rating": None,
+        }
+        if isinstance(card, Mapping)
+        and card.get("kind") == "catalog"
+        and isinstance(source := card.get("source"), Mapping)
+        and source.get("catalog_id") == catalog_id
+        else card
+        for card in report["cast"]
+    ]
+    return {**report, "cast": cast}
+
+
+async def _redact_operations(
+    conn: AsyncConnection,
+    ids: Iterable[str],
+    redactor: Redactor,
+    tally: _Tally,
+    *,
+    reports: Any,
+    edit: Callable[[dict[str, Any]], dict[str, Any]],
+    write: bool,
+) -> None:
+    """Redact the ``turn_report`` of the operations ``ids`` the index names, and apply ``edit``
+    to the creation report of every genesis operation ``reports`` selects (``None``: none)
+    and of those ``ids``; each row rewritten counts once."""
+    wanted = set(ids)
+    where: list[Any] = [operations.c.operation_id.in_(sorted(wanted))] if wanted else []
+    if reports is not None:
+        where.append(and_(operations.c.kind == OperationKind.GENESIS.value, reports))
+    if not where:
+        return
+    rows = await conn.execute(
+        select(operations.c.operation_id, operations.c.kind, operations.c.turn_report).where(
+            or_(*where)
+        )
+    )
+    for row in rows:
+        value, changed = row.turn_report, 0
+        if value is None:
+            continue
+        if str(row.operation_id) in wanted:
+            value, changed = redactor.document(
+                value, (operations.name, str(row.operation_id)), "turn_report"
+            )
+        if str(row.kind) == OperationKind.GENESIS.value:
+            value = _with_report(value, edit)
+        if value == row.turn_report:
+            continue
+        tally.record(operations.name, changed)
+        if write:
+            await conn.execute(
+                update(operations)
+                .where(operations.c.operation_id == row.operation_id)
+                .values(turn_report=value)
+            )
 
 
 async def _redact_policies(
@@ -1290,11 +1429,24 @@ async def _catalog_pass(conn: AsyncConnection, run: _CatalogRun) -> _Tally:
     for table, key, columns in (
         (policies, policies.c.id, ("name", "message", "rule")),
         (config_changes, config_changes.c.change_id, ("old", "new")),
-        (operations, operations.c.operation_id, ("turn_report",)),
     ):
         await _redact_json_rows(
             conn, table, key, refs.get(table.name, set()), columns, redactor, tally, write=write
         )
+    carded = subject.kind is SubjectKind.CATALOG_CHARACTER
+    await _redact_operations(
+        conn,
+        refs.get(operations.name, set()),
+        redactor,
+        tally,
+        reports=operations.c.turn_report.contains(
+            {"creation_report": {"cast": [{"source": {"catalog_id": subject.id}}]}}
+        )
+        if carded
+        else None,
+        edit=lambda report: catalog_erased_report(report, subject.id) if carded else report,
+        write=write,
+    )
     for target in ERASURE_TARGETS:
         changed = await target.erase(conn, story_id=None, redactor=redactor, write=write)
         for _ in range(changed):
@@ -1688,13 +1840,14 @@ async def dry_run(
     principal: str,
 ) -> ErasureResult:
     """What ``erase`` would do, written nowhere (see the module docstring). A story's dry run
-    reads in one read-only snapshot. A catalog dry run does the catalog pass and rolls it back:
+    reads in one snapshot, re-indexes the story first as the real run does (#386), and rolls
+    that back. A catalog dry run does the catalog pass and rolls it back:
     what the subject's own deletion removes decides whether a medium is still referenced, so the
     counts are the real run's by construction; nothing it did is ever committed (no operation,
     no key, no ledger row, no bytes deleted)."""
     async with db.connect() as conn, conn.begin() as tx:
         if request.story_id is not None:
-            await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+            await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
         subject = await _subject(conn, request)
         redactor = subject.redactor(request.confirm_candidates)
         revision = await config_revision(conn)
@@ -1705,6 +1858,7 @@ async def dry_run(
             tally = _Tally()
         elif subject.story_id is not None:
             run = _StoryRun(subject, redactor, False, "", None, principal, clock.now())
+            await reindex_story(conn, subject.story_id)
             tally = await _story_pass(conn, run)
             windows = await _summary_events(conn, run) + await _windows(conn, subject.story_id)
         else:
@@ -1975,6 +2129,9 @@ async def _erase_story(
         )
 
         async def step(conn: AsyncConnection) -> None:
+            # The index is rebuilt first, so a stale one (rows written before a matcher
+            # change, or lost) cannot hide a mention from the redaction (#386).
+            await reindex_story(conn, story_id)
             tally = await _story_pass(conn, run)
             if strict:
                 check_confirmed(redactor)

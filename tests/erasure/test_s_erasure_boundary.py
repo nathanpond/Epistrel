@@ -11,7 +11,7 @@ persona tables name her nowhere (the test's own scan); her versions, draft and c
 gone; the scenario is redacted; media are purged or rewritten under ``erasure_shared_media``
 (bytes another live asset shares are kept)
 (``purge`` for her, ``retire`` for a second character); and the story is untouched until erased
-separately.
+separately, but for her catalog card in its creation report, which is emptied (#382).
 """
 
 from __future__ import annotations
@@ -301,8 +301,18 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
         assert (entry.scope, entry.story_ref) == ("catalog", None)
         assert not e.naming(entry.row, TERMS)
         # The story is untouched (FR-STORE-14): every row of its own as it was, still naming her
-        # (a deployment-scoped stored result that named her is the catalog's: purged above).
-        assert await story_rows(engine, story) == story_before
+        # (a deployment-scoped stored result that named her is the catalog's: purged above),
+        # except her catalog card in the genesis creation report, which the catalog erasure
+        # empties (#382, docs/04 C-15).
+        story_after = await story_rows(engine, story)
+        assert {t: v for t, v in story_after.items() if t != "operations"} == {
+            t: v for t, v in story_before.items() if t != "operations"
+        }
+        kept = story_after["operations"] & story_before["operations"]
+        (emptied,) = story_after["operations"] - kept
+        (copied,) = story_before["operations"] - kept
+        assert ",genesis," in emptied
+        assert ",genesis," in copied
         assert sum((await e.residue(engine, story, TERMS)).values()) > 0
 
         # Corvin under ``retire``: his portrait, which the story references, stays retired.

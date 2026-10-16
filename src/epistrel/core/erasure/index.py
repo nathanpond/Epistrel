@@ -84,6 +84,7 @@ from sqlalchemy import and_, delete, func, insert, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.erasure.matcher import (
+    DASHES,
     MIN_TERM_CHARS,
     NAME_PARTICLES,
     Matcher,
@@ -171,6 +172,7 @@ def mentions(value: str, names: Iterable[str]) -> bool:
 # -- terms -------------------------------------------------------------------------------------
 
 _WORD_EDGES = re.compile(r"^\W+|\W+$")
+_DASH = re.compile(f"[{re.escape(DASHES)}]")
 
 
 def _words(value: str) -> list[str]:
@@ -181,12 +183,14 @@ def _words(value: str) -> list[str]:
 
 def name_parts(name: str) -> list[str]:
     """The parts of ``name`` a subject is also matched by (see the module docstring), as
-    written: the words of a multi-word name and the halves of a hyphenated word (#374)."""
+    written: the words of a multi-word name and the halves of a hyphenated word (#374), at any
+    dash (``matcher.DASHES``, #385)."""
     words = _words(name)
     found = list(words) if len(words) > 1 else []
     for word in words:
-        if "-" in word:
-            found += [half for half in (_WORD_EDGES.sub("", h) for h in word.split("-")) if half]
+        halves = _DASH.split(word)
+        if len(halves) > 1:  # any dash, not only "-" (#385)
+            found += [half for half in (_WORD_EDGES.sub("", h) for h in halves) if half]
     return list(
         dict.fromkeys(
             w for w in found if len(w) >= MIN_TERM_CHARS and w.casefold() not in NAME_PARTICLES

@@ -35,7 +35,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144 |
@@ -215,7 +215,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 151 | Video posters are taken with ffmpeg, a GPL program run as a separate process | Current | — |
 | 152 | A short-lived signed URL is enough to read media content | Current | — |
 | 153 | The erasure ledger's file is the authority, and a restore is reconciled before it is served | Current | — |
-| 154 | Erasure redacts only mentions attributed to the subject; ambiguous ones are reported, not guessed | Current | — |
+| 154 | Erasure redacts only mentions attributed to the subject; ambiguous ones are reported, not guessed | Partly superseded | 155 |
+| 155 | Erasure matches a name in any case by full case-folding, and at any dash | Current | — |
 
 ---
 
@@ -1464,11 +1465,12 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-154 — Erasure redacts only mentions attributed to the subject; ambiguous ones are reported, not guessed
 **Status:** Accepted. Amends ADR-046 (how erasure finds prose references).
+**Amended by:** ADR-155 — a name word matches in any case by full case-folding, and a hyphenated word splits at any dash.
 **Context:** FR-ADMIN-6 indexes subject references at write time, but only per record and field. Erasure then searched each field for the subject's terms. Matching only the full name missed a bare first name (#364). Matching every word of the name redacted ordinary English ("will", "black", "rose") from every character's prose and refused later turns that used them (#372). Neither is acceptable: erasure must remove what refers to the subject and nothing else. The owner decided on 2026-10-15, at the M3 re-verify, that erasure acts only on mentions known to refer to the subject.
 **Decision:** The index records each prose mention's **position** (field, start and end offsets in the NFC text, and the matching rule), never its text. One deterministic matcher, shared by the indexer, erasure, `verify()` and the write-path guard, classifies each occurrence:
 - **Certain (name):** the full name or a declared alias, whole-word and case-insensitive.
 - **Certain (part):** a word of the name that is not a title, a particle, or used by another subject in the same scope.
-  - A word that is not on the bundled common-word list matches in any case, as written (no case-folding), with each half of a hyphenated word matched as well.
+  - A word that is not on the bundled common-word list matches in any case, as written (no case-folding) *[superseded by ADR-155: in any case by full case-folding]*, with each half of a hyphenated word matched as well *[revised per ADR-155: split at any dash]*.
   - A word on the list matches only when it is capitalised and not at the start of a sentence.
 - **Candidate:** a common-list word of the name that is capitalised at the start of a sentence.
 
@@ -1487,6 +1489,18 @@ The ledger and the write-path guard (FR-ADMIN-9) use certain matches only. The c
 - Tests: I-09 extended, plus matcher unit tests for each rule.
 
 **Implementation notes (#372).** The list is SCOWL 2020.12.07, size levels 10 and 20, without possessives: about 10,900 words, under SCOWL's permissive notice (the file's header), graded by commonness rather than ranked by frequency, and holding no proper names. A one-word name or alias on the list follows the common-word rule. A whole value that is only the name (a role's `canonical`) is certain, not a candidate. A sentence starts at the start of the text or a line, after a quotation mark, or after `.`, `!`, `?`, `…` or `:` (not a title's dot, as in `Mr.`). A candidate's id is a SHA-256 of its table, record, field path, start and rule. The confirmed ids go into the ledger's counts so a reapply after a restore erases them too. An unknown id is 422 `unknown_erasure_candidate`. The one-time re-index is `python -m epistrel.tools.reindex_subjects --write` (migration 0044).
+
+---
+
+### ADR-155 — Erasure matches a name in any case by full case-folding, and at any dash
+**Status:** Accepted. Amends ADR-154 (how a name word is compared).
+**Context:** ADR-154 matched a rare name word "in any case, as written (no case-folding)". After erasing "Jürgen Strauß", the forms "STRAUSS" (Python's `"Strauß".upper()`) and "Strauss" survived while `residue` reported 0, because the residue scan uses the same matcher (#384). The write-path guard already case-folded its hashes, so it refused "Strauss" while the matcher did not see it (#388). A name stored with a Unicode hyphen ("Mary‑Jane", U+2011, common in model output) had no halves, and even the ASCII "Mary-Jane" survived (#385). The owner decided on 2026-10-15, at the start of M3's sixth fix pass, that "any case" means full case-folding.
+**Decision:** The matcher compares text and terms **folded**: NFC, Unicode full case-folding (`ß` is `ss`; `İ` and an `i` with a combining dot above are `i`), and every dash (Unicode `Pd`, plus the soft hyphen) as `-`. A mention's span is still the original text's offsets. The write-path guard's normalisation is the same fold, so the guard and the matcher agree. A hyphenated name splits into halves at any dash. Common-word handling is unchanged: it decides by the list and by capitalisation, and folding never makes a lowercase common word match (FR-ADMIN-6, FR-ADMIN-9).
+**Consequences:**
+- "STRAUSS", "Strauss" and "strauß" are redacted after erasing "Strauß", and the reverse. Residue sees them.
+- A later reply using such a form is refused by the guard, consistently with what the matcher would erase.
+- Ledger rows written before this change hold hashes of the earlier normalisation. They differ only for names with `İ` or a dash other than `-`. M3 is unreleased, so no deployment holds such rows.
+- Tests: `tests/test_erasure_matcher.py` (folding, dashes, guard agreement) and `tests/integration/test_erasure_mentions.py`.
 
 ---
 

@@ -6033,3 +6033,70 @@ Fix pass on the bugs the M3 re-verify at `b5c5d67` filed (#369–#376). It runs 
 
   The owner's batched gate applies: area tests per fix (269 passed in the erasure area), then one full suite on the branch.
   **Issue:** #369–#376
+
+## /n8-exec M3 (verify fixes, pass 6) — 2026-10-15
+
+Fix pass on the bugs the M3 re-verify at `a172145` filed (#378–#390). It runs on `milestone/m3-verify-fixes-6` from `a172145`. The three owner calls were asked before any code was written: #382 (option a), #384 (full case-folding) and #389 (409 for legacy rows).
+
+- **Decision (owner):** #382: a catalog-scope erasure of a catalog character empties her card in every creation report that casts her, in either order with a story-scope erasure. C-15's wording stays, with one clarifying clause ("which empties the card in every creation report that casts the character, in either order").
+  **Issue:** #382
+- **Decision:** #382: "empties" means the card keeps its ids (`id`, `character_id`, `role_id`, `source`), `version`, `listing_status` and `status`. `name`, `public_description` and `content_rating` become null, and `labels` and `images` become empty. The stored report therefore still validates against `CreationReport` (`extra=forbid`, every card field required), with no API schema change. S-ERASURE-BOUNDARY's "the story is untouched" check now allows exactly one changed row: the genesis operation. erase.py's docstring says the same.
+  **Why:** Removing the cast entry would misstate who the story cast. Changing the card into a `MemberCastCard` would misstate its kind. Nullable fields already exist on the card model. FR-STORE-14 forbids records referencing another story, which this does not breach. Cost if wrong: a client sees a catalog card with null name and description, which is what an erased card is.
+  **Issue:** #382
+- **Decision:** #390: a story-scope erasure keeps the card's id, labels and public description (C-15, the owner's #376 option 2), and empties its `images` and `content_rating`. `listing_status` and `status` stay: they are enum values, not content. The boundary gains `KEPT_CARD` (`OUT_OF_SCOPE`) and an `IN_SCOPE` line for the creation report, mirrored to OPERATIONS.md and openapi.json.
+  **Issue:** #390
+- **Decision:** #381: the report's `deferred[]` follows the `genesis_deferred` rows. Items that belong only to the erased characters are dropped, and the others lose their ids. `counts.deferred` is recounted from what is left, but only when the full list is stored; under the `card` projection only the counts exist, and they are numbers, not content.
+  **Issue:** #381
+- **Decision:** #381/#382: one `_redact_operations` step serves both scopes. It replaces the plain `turn_report` redaction, so a row that is both redacted and edited is counted once in `records.operations`.
+  **Issue:** #381, #382
+- **Decision (owner):** #384: "any case" is full case-folding. ADR-155 is appended. ADR-154's clause is marked superseded inline and its hyphen clause revised; the indexes are updated. ADRs are append-only, so ADR-154's text was not edited.
+  **Issue:** #384
+- **Decision:** #384/#385/#388: one fold, `matcher.fold`: NFC, `str.casefold()`, then `i` + U+0307 → `i`, then every `Pd` dash and the soft hyphen → `-`. The matcher runs its regex over the **folded** text and maps each match back to the original's offsets. When every character folds to exactly one, the map is the identity: a fast path with one `casefold()`. A match that would start or end inside a character's expansion is dropped. The guard's `normalized` is the same fold, which resolves #388: Strauss is now matched **and** refused.
+  **Why:** Building a regex that accepts every fold-equivalent spelling grows exponentially with repeated `ss`. Folding the text keeps the match linear, and spans stay exact. Mapping `i` + U+0307 to `i` keeps "IPEK" matching "İpek", which #384's evidence said works today; plain casefold would have lost it. Cost if wrong: ledger rows written before this pass hash names with `İ` or a non-ASCII dash differently. M3 is unreleased, so no deployment holds such rows (ADR-155 says so).
+  **Issue:** #384, #385, #388
+- **Decision:** #385: `index.name_parts` splits on `matcher.DASHES`, the same set the fold uses.
+  **Issue:** #385
+- **Decision:** #383/#387: `Engine.erase` calls `_erasure_gate(request.story_id)` for any story-scope request, dry run or not, before the expected-revision check. This is an explicit call, not a change to `gate_story_methods`: the gate recognises methods by parameter names, and `erase` takes its story inside its request model. The reapply calls `erasure.erase` directly, so it is not gated.
+  **Why:** One line closes both issues. Generalising the decorator to inspect request models would gate methods nobody has reviewed. Cost if wrong: none expected; the new test pins the method.
+  **Issue:** #383, #387
+- **Decision:** #378: while any catalog-scope ledger entry is pending, every undelivered feedback export is 503 `erasure_pending` (`ledger.refuse_catalog_pending`, details `story_id: null`), whatever the export holds. Delivered exports are served as before.
+  **Why:** A catalog erasure blocks no story, and nothing short of rescanning the file tells which exports name the subject. The window lasts until the catalog reapply, which runs first, typically seconds. Cost if wrong: an operator waits for the reapply to download any export.
+  **Issue:** #378
+- **Decision:** #386: the story erasure calls `reindex_story` at the start of its commit step. The story dry run does too, so its transaction is `REPEATABLE READ` but no longer `READ ONLY`, and it is still rolled back. The test asserts that the index is unchanged after the dry run.
+  **Why:** The dry run must count what the real run will touch (its contract). Cost if wrong: a dry run briefly holds row locks on the story's index rows.
+  **Issue:** #386
+- **Decision (owner):** #389: `row.sent_hash == self.sent_hash`. A legacy null row is no longer a match, so after an erasure it is 409 `request_hash` with any body. Migration 0043's docstring is updated to say so (text only; the schema is unchanged).
+  **Issue:** #389
+- **Decision (process):** Commits:
+  - #378, #379, #380, #383 and #387 share one (one test file);
+  - #384, #385 and #388 share one (the matcher);
+  - #381, #382 and #390 share one (the creation report);
+  - #386 and #389 each have their own.
+
+  Every plan comment was posted before code. Every new guard was shown to fail without its fix (14 mutants, all killed):
+  - the erase gate;
+  - the catalog export refusal;
+  - #379's and #380's issue mutations;
+  - the fold reverted to `lower()`;
+  - the ASCII-only dash split;
+  - `normalized` without the fold;
+  - the story and catalog report edits;
+  - the card narrowing;
+  - both re-index calls;
+  - the null `sent_hash` match.
+
+  The owner's batched gate applies: area tests per fix (194 passed in the erasure, creation-report and boundary area), then one full suite on the branch.
+  **Issue:** #378–#390
+- **Decision (process, Rule 1 in a test):** the new #382 test's database-wide dump first failed because an earlier test in the module leaves its own un-erased "June Harrow" catalog entry with the same label. The test now uses a per-test label and phrase.
+  **Issue:** #382
+
+## Ad-hoc — 2026-10-15
+
+- **Change:** two changes to the erasure design, decided by the owner at the start of M3's fix pass 6:
+  - **ADR-155:** the erasure matcher and the write-path guard compare names fully case-folded (`Strauß` = `STRAUSS`), with every dash as `-`. This amends ADR-154's "as written (no case-folding)".
+  - **#382:** a catalog-scope erasure now writes to stories' genesis operations: it empties the cast card copied from the erased catalog character. Previously, "a catalog-scope erasure never touches a story".
+  **Why:** #384 (STRAUSS survived with residue 0), #388 (the guard and the matcher disagreed) and #382 (C-15's "until a catalog-scope erasure" was never true).
+  **Affects:**
+  - M4 #135, M5 #178, M8 #266: indexers of memories, beliefs and captions get the fold through the shared matcher, but plans that describe matching "as written" are stale.
+  - M7 #251 (imports apply erasures) and #237 (rewrites): a catalog-scope reapply on import now also edits creation reports.
+  - Run `/n8-replan` for M4, M5, M7 and M8 after M3 closes, together with the earlier ADR-154 entry.

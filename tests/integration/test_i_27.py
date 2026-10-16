@@ -11,6 +11,7 @@ stay in that fixture.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 from sqlalchemy import text
@@ -385,42 +386,83 @@ async def test_a_catalog_characters_card_never_reaches_the_story(
                 assert found == 0, table
 
 
+async def _cast_june(
+    client: Any, label: str = CARD_LABEL, phrase: str = CARD_PHRASE
+) -> tuple[str, str, str]:
+    """A story from ``lg.sunday_dinner`` with the catalog character "June Harrow" (``label``,
+    ``phrase``) cast as ``mother``: the story's id, her story character's id and her catalog
+    id."""
+    locked, default = await scenarios.cast_characters(client)
+    mother = await g.catalog_character_id(
+        client,
+        "June Harrow",
+        age=60,
+        labels=["warm", label],
+        public_description=f"{phrase}, at every county fair.",
+    )
+    body = lg.sunday_dinner(locked, default)
+    scenario_id, _ = await g.published_scenario(client, body)
+    made = await g.create_from(
+        client,
+        g.from_scenario(
+            scenario_id, slots={"mother": g.catalog_slot(mother)}, ignore_warnings=True
+        ),
+    )
+    june = next(c["id"] for c in made["characters"] if c["name"] == "June Harrow")
+    return made["story_id"], june, mother
+
+
+async def _report(engine: AsyncEngine, story_id: str) -> dict[str, Any]:
+    """The story's genesis creation report, as stored."""
+    async with engine.connect() as conn:
+        found = await conn.scalar(
+            text("SELECT turn_report FROM operations WHERE story_id = :s AND kind = 'genesis'"),
+            {"s": story_id},
+        )
+    assert isinstance(found, dict)
+    report: dict[str, Any] = found["creation_report"]
+    return report
+
+
+def _card(report: dict[str, Any], catalog_id: str) -> dict[str, Any]:
+    (card,) = [c for c in report["cast"] if (c.get("source") or {}).get("catalog_id") == catalog_id]
+    found: dict[str, Any] = card
+    return found
+
+
+def _holding(report: dict[str, Any], character_id: str) -> list[dict[str, Any]]:
+    return [
+        d for d in report["deferred"] if character_id in d["payload"].get("characters", {}).values()
+    ]
+
+
 async def test_a_story_erasure_keeps_the_public_card_in_the_creation_report(
     pg_url: str, engine: AsyncEngine
 ) -> None:
     """docs/04 C-15 as amended for #376 (the owner's option 2): a story-scope erasure of a cast
     catalog character deletes her genesis snapshot, and the creation report keeps her public
     catalog card (id, labels, public description) with her name redacted, because the card is
-    public catalog data until a catalog-scope erasure.
+    public catalog data until a catalog-scope erasure. #390: nothing else of the card stays (its
+    images and content rating are emptied). #381: the report's deferred items that belong only
+    to her (her secret memory, her stats, her relationships) go with her ``genesis_deferred``
+    rows, and ``counts.deferred`` is recounted.
 
-    Complements asserted: before the erasure the snapshot exists and the report names her; after
-    it the snapshot row is gone, the report holds no match for her name, and the card's label
+    Complements asserted: before the erasure the snapshot exists, the report names her and
+    holds her deferred items and her secret; after it none of that does, and the card's label
     and phrase are still there."""
     report_sql = "SELECT o::text FROM operations o WHERE o.story_id = :s AND o::text LIKE :label"
     snapshot_sql = "SELECT count(*) FROM character_snapshots WHERE character_id = :c"
     async with respond_client(e.erasure_settings(pg_url), engine) as (client, _):
-        locked, default = await scenarios.cast_characters(client)
-        mother = await g.catalog_character_id(
-            client,
-            "June Harrow",
-            age=60,
-            labels=["warm", CARD_LABEL],
-            public_description=f"{CARD_PHRASE}, at every county fair.",
-        )
-        body = lg.sunday_dinner(locked, default)
-        scenario_id, _ = await g.published_scenario(client, body)
-        made = await g.create_from(
-            client,
-            g.from_scenario(
-                scenario_id, slots={"mother": g.catalog_slot(mother)}, ignore_warnings=True
-            ),
-        )
-        story_id = made["story_id"]
-        june = next(c["id"] for c in made["characters"] if c["name"] == "June Harrow")
+        story_id, june, mother = await _cast_june(client)
         label = f"%{CARD_LABEL}%"
         assert await _one(engine, snapshot_sql, c=june) == 1
         (before,) = await _rows(engine, report_sql, s=story_id, label=label)
         assert "June Harrow" in before
+        assert scenarios.ROLE_SECRET in before
+        held = _holding(await _report(engine, story_id), june)
+        assert held
+        dry = await e.erase(client, "character", june, story_id, dry_run=True)
+        assert dry["records"].get("operations", 0) >= 1
         await e.erase(client, "character", june, story_id)
     assert await _one(engine, snapshot_sql, c=june) == 0
     (after,) = await _rows(engine, report_sql, s=story_id, label=label)
@@ -428,6 +470,54 @@ async def test_a_story_erasure_keeps_the_public_card_in_the_creation_report(
     assert not e.naming(after, ["June Harrow", "June"]), after
     assert CARD_PHRASE in after
     assert mother in after
+    assert scenarios.ROLE_SECRET not in after
+    report = await _report(engine, story_id)
+    assert _holding(report, june) == []
+    card = _card(report, mother)
+    assert (card["images"], card["content_rating"]) == ({"primary": None, "gallery": []}, None)
+    assert CARD_LABEL in card["labels"]
+    deferred = report["counts"]["deferred"]
+    assert sum(deferred["by_class"].values()) == len(report["deferred"])
+    assert sum(deferred["by_capability"].values()) == len(report["deferred"])
+
+
+@pytest.mark.parametrize("story_first", [True, False], ids=["story_first", "catalog_first"])
+async def test_a_catalog_erasure_empties_the_card_in_every_creation_report(
+    pg_url: str, engine: AsyncEngine, story_first: bool
+) -> None:
+    """#382 (the owner's decision): the card is public catalog data until a catalog-scope
+    erasure of that catalog character, which empties it in every creation report that casts
+    her, in either order with a story-scope erasure of her story character: afterwards no table
+    holds the card's label or phrase (this test's own, so another test's catalog entry is not
+    counted), and the genesis operation still reads (omniscient), its card keeping only ids,
+    version and status. Complement: both are in the report before."""
+    tag = "first" if story_first else "second"
+    label, phrase = f"{CARD_LABEL}-{tag}", f"{CARD_PHRASE} ({tag})"
+    async with respond_client(e.erasure_settings(pg_url), engine) as (client, _):
+        story_id, june, mother = await _cast_june(client, label, phrase)
+        before = json.dumps(await _report(engine, story_id))
+        assert label in before
+        assert phrase in before
+        if story_first:
+            await e.erase(client, "character", june, story_id)
+        await e.erase(client, "catalog_character", mother)
+        if not story_first:
+            await e.erase(client, "character", june, story_id)
+        genesis = await _one(
+            engine,
+            "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'genesis'",
+            s=story_id,
+        )
+        read = await client.get(
+            f"/operations/{genesis}", params={"viewpoint": "omniscient"}, headers=e.WRITE
+        )
+    assert read.status_code == 200, read.text
+    for table, values in (await e.dump_all(engine)).items():
+        assert not any(label in v or phrase in v for v in values), table
+    card = _card(read.json()["creation_report"], mother)
+    assert card["id"] == mother
+    assert (card["name"], card["public_description"], card["labels"]) == (None, None, [])
+    assert (card["images"], card["content_rating"]) == ({"primary": None, "gallery": []}, None)
 
 
 async def _rows(engine: AsyncEngine, sql: str, **params: object) -> list[str]:

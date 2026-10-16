@@ -26,7 +26,7 @@ from epistrel.core.ports import Ports
 from tests import erasure_support as e
 from tests import genesis_support as g
 from tests.auth_support import auth_settings
-from tests.event_support import rows, scalar
+from tests.event_support import execute_in_tx, rows, scalar
 from tests.respond_support import body, new_story, played, respond, respond_client
 from tests.story_support import dump, override
 from tests.summary_support import run_due_jobs, segment_rows
@@ -551,6 +551,39 @@ async def test_a_multi_word_name_is_erased_by_its_words(
     )
     assert [r.payload["text"] for r in replies] == ["[erased] waves at Ty and Ada Quenby."]
     assert sum((await e.residue(engine, story, ["Ada Quenby"])).values()) > 0
+
+
+async def test_a_legacy_key_without_a_sent_hash_conflicts_after_an_erasure(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#389 (the owner's decision): a key stored before migration 0043 (``sent_hash`` null)
+    cannot show a retry is the same request once an erasure changed what its request hash
+    resolved, so after the erasure it is 409 ``request_hash`` with the identical body and with
+    a different one. Complement: before the erasure the identical body still replays."""
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story, ids = await new_story(client, "Wren", "Marisol Quenby", "Ty")
+        wren = ids["Wren"]
+        lib.models.stub.script("generation", ["Marisol Quenby waves at Ty.", "Ty shrugs."])
+        payload = body(wren, "Hello, Marisol Quenby.")
+        await played(client, story, payload, headers={"Idempotency-Key": "LEG"})
+        await execute_in_tx(
+            engine,
+            (
+                "UPDATE idempotency_keys SET sent_hash = NULL "
+                "WHERE scope = 'story' AND scope_id = :s AND key = 'LEG'",
+                {"s": story},
+            ),
+        )
+        again = await respond(client, story, payload, headers={"Idempotency-Key": "LEG"})
+        assert again.status_code == 200, again.text
+        assert again.headers["Idempotent-Replay"] == "true"
+        await e.erase(client, "character", ids["Marisol Quenby"], story)
+        for retry in (payload, body(ids["Ty"], "Something else entirely.")):
+            refused = await respond(client, story, retry, headers={"Idempotency-Key": "LEG"})
+            assert refused.status_code == 409, refused.text
+            assert refused.json()["error"]["code"] == "idempotency_conflict"
+            assert refused.json()["error"]["details"]["reason"] == "request_hash"
+            assert "Marisol" not in refused.text
 
 
 async def test_a_turn_key_replayed_after_an_erasure_answers_the_reference(

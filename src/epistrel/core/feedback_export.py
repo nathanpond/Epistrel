@@ -518,8 +518,8 @@ async def content(db: AsyncEngine, store: BlobStore, export_id: str) -> Feedback
     """The export's file, delivered: the first download marks ``downloaded_at``, after which it
     is outside the erasure boundary. 404 for an unknown export, or one whose file was deleted
     (``reason`` ``deleted``). An export not yet delivered with a case of a story the erasure
-    reconciler holds blocked is 503 ``erasure_pending`` and stays undelivered (#370); the
-    caller compares the ledger first."""
+    reconciler holds blocked, or while a catalog-scope erasure is pending (#378), is 503
+    ``erasure_pending`` and stays undelivered (#370); the caller compares the ledger first."""
     async with db.begin() as conn:
         row = await _row(conn, export_id, lock=True)
         if row.deleted_at is not None:
@@ -529,6 +529,7 @@ async def content(db: AsyncEngine, store: BlobStore, export_id: str) -> Feedback
         except FileNotFoundError:
             raise _gone(export_id) from None
         if row.downloaded_at is None:
+            await erasure_ledger.refuse_catalog_pending(conn)
             await _refuse_blocked_cases(conn, data)
             await conn.execute(
                 update(feedback_export_log)

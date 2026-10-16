@@ -3,7 +3,8 @@
 ``idempotency_keys.sent_hash``: the hash of the request as the client sent it, before the cast
 and viewpoint were resolved. After an erasure changed what ``request_hash`` resolved, only a
 retry of the same request as sent gets the original's reference; a different one is 409.
-Nullable: rows written before this migration have none and keep #365's behaviour.
+Nullable: rows written before this migration have none. After an erasure, such a key whose
+request hash no longer matches is 409, since it cannot show it is the same request (#389).
 
 Revision ID: 0043
 Revises: 0042

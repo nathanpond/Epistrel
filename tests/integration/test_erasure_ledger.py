@@ -28,6 +28,7 @@ from epistrel.core import clock
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.erasure import ledger as erasure_ledger
+from epistrel.core.erasure.erase import ErasureRequest
 from epistrel.core.erasure.ledger import GENESIS_HASH, Entry, LedgerFile, canonical, parse
 from epistrel.core.errors import ErasurePending
 from epistrel.core.feedback_export import FeedbackExportRequest
@@ -40,6 +41,7 @@ from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.testing import pauses
 from epistrel.tools import backup
 from tests import erasure_support as e
+from tests import genesis_support as g
 from tests import ledger_support as ledger
 from tests.feedback_support import (
     OPERATOR,
@@ -363,11 +365,13 @@ async def _pending_story(
     ledger_dir: Path,
     *,
     prepare: Callable[[httpx.AsyncClient, ledger.Stories], Awaitable[None]] | None = None,
+    catalog: Callable[[], str] | None = None,
     **fields: Any,
 ) -> ledger.Stories:
     """Two stories (``fields`` for hers, then ``prepare`` run on them), and a ledger line
     erasing the subject from hers that the database lacks (as after a restore), the reconciler
-    not started."""
+    not started. With ``catalog`` (called after ``prepare``: a catalog character's id), the
+    line is a catalog-scope erasure of that catalog character instead, which blocks no story."""
     config = ledger.settings(url, ledger_dir)
     db = make_engine(config)
     try:
@@ -382,10 +386,10 @@ async def _pending_story(
             Entry(
                 erasure_id=new_ulid(),
                 at=clock.now(),
-                subject_kind="character",
-                subject_id=stories.subject,
-                scope="story",
-                story_id=stories.named,
+                subject_kind="character" if catalog is None else "catalog_character",
+                subject_id=stories.subject if catalog is None else catalog(),
+                scope="story" if catalog is None else "catalog",
+                story_id=stories.named if catalog is None else None,
                 principal="p-op",
                 operation_id=new_ulid(),
                 counts={},
@@ -585,8 +589,9 @@ async def test_a_blocked_story_hides_its_policies(
     """#363: a story policy naming the subject. While the reapply is held, ``GET
     /admin/policies`` (also ``?scope=story``) leaves it out, ``GET /admin/policies/{id}`` is 503
     ``erasure_pending``, and a fresh library Engine agrees: its first ``policies_get`` (#371) or
-    ``policies_list`` marks the block; the deployment's policies are still served. Once the
-    reapply settles the story, the policy is served, redacted."""
+    ``policies_list`` (#380) marks the block, each on a database nothing has marked yet; the
+    deployment's policies are still served. Once the reapply settles the story, the policy is
+    served, redacted."""
     url = ledger_server.fresh()
     ledger_dir = tmp_path / "ledger"
     policy = {
@@ -607,12 +612,14 @@ async def test_a_blocked_story_hides_its_policies(
     config = ledger.settings(url, ledger_dir)
     db = make_engine(config)
     try:
-        # #371: nothing has marked the database yet, so the refusal comes from
-        # ``policies_get``'s own ledger comparison as a fresh Engine's first call.
+        # #371, #380: nothing has marked the database yet, so the refusal comes from the
+        # method's own ledger comparison as a fresh Engine's first call.
+        await _unblock_all(url)
         first = Engine(config)
         first.bind(db)
         with pytest.raises(ErasurePending):
             await first.policies_get(CTX, row.id)
+        await _unblock_all(url)
         lib = Engine(config)
         lib.bind(db)
         listed = await lib.policies_list(CTX)
@@ -643,6 +650,22 @@ async def test_a_blocked_story_hides_its_policies(
     assert served.json()["name"] == "Keep [erased] offstage"
     assert row.id in {p["id"] for p in listed_after.json()["items"]}
     assert ledger.SUBJECT not in listed_after.text
+
+
+def _fresh(config: Any, db: Any) -> Engine:
+    """A library Engine that has compared nothing with the ledger yet."""
+    lib = Engine(config)
+    lib.bind(db)
+    return lib
+
+
+async def _unblock_all(url: str) -> None:
+    """Undo every block, as a database nothing has compared with the ledger yet holds it."""
+    await ledger.sql(
+        url,
+        "UPDATE stories SET status = status_before_block, status_before_block = NULL "
+        "WHERE status = 'blocked_by_erasure'",
+    )
 
 
 async def test_library_reads_mark_before_they_serve(
@@ -819,7 +842,8 @@ async def test_the_restore_window_serves_no_replay_or_export_of_a_blocked_story(
     """#369, #370: during the restore window, replaying the ``Idempotency-Key`` that created a
     blocked story (``POST /stories``, and the library's ``create_story`` as a fresh Engine's
     first call) is 503 ``erasure_pending``, like every read of the story; an undelivered
-    feedback export with a case of it is 503 too and stays undelivered. Once the reapply
+    feedback export with a case of it is 503 too and stays undelivered (in REST, and as a fresh
+    library Engine's first call: #379). Once the reapply
     settles, the export's content holds no subject and the replay answers the reference."""
     url = ledger_server.fresh()
     ledger_dir = tmp_path / "ledger"
@@ -858,9 +882,18 @@ async def test_the_restore_window_serves_no_replay_or_export_of_a_blocked_story(
                 RequestContext(principal="p-ledger", idempotency_key=key),
                 StorySpec.model_validate(body),
             )
+        # #379: the export's content as a fresh Engine's first call, on a database nothing has
+        # marked: its own ledger comparison blocks the story, and the export stays undelivered.
+        await _unblock_all(url)
+        content_first = Engine(config)
+        content_first.bind(db)
+        with pytest.raises(ErasurePending):
+            await content_first.get_feedback_export_content(CTX, held["export"])
     finally:
         await db.dispose()
     export_sql = "SELECT downloaded_at FROM feedback_export_log WHERE id = :i"
+    (untouched,) = await ledger.sql(url, export_sql, i=held["export"])
+    assert untouched.downloaded_at is None
     content_path = f"/admin/feedback/exports/{held['export']}/content"
     with pauses.held(pauses.ERASURE_RECONCILE_BEFORE_REAPPLY) as hold:
         async with ledger.started(config) as (client, lib):
@@ -889,3 +922,106 @@ async def test_the_restore_window_serves_no_replay_or_export_of_a_blocked_story(
     assert ledger.SUBJECT not in delivered.text
     assert replayed.status_code == 200, replayed.text
     assert ledger.SUBJECT not in replayed.text
+
+
+async def test_the_restore_window_refuses_an_erasure_in_a_blocked_story(
+    ledger_server: ledger.Server, tmp_path: Path
+) -> None:
+    """#383, #387: during the restore window, ``POST /admin/erasure`` naming a blocked story is
+    503 ``erasure_pending``: a dry run (its candidate snippets would quote the restored text
+    the pending erasure removes) as much as a real erasure of another subject of the story
+    (which would write to it before its reapply), in REST and as a fresh library Engine's first
+    call. The story's revision is unchanged. Once the reapply settles, the erasure runs."""
+    url = ledger_server.fresh()
+    ledger_dir = tmp_path / "ledger"
+    stories = await _pending_story(url, ledger_dir)
+    config = ledger.settings(url, ledger_dir)
+    revision_sql = "SELECT timeline_revision FROM stories WHERE id = :s"
+    (before,) = await ledger.sql(url, revision_sql, s=stories.named)
+    db = make_engine(config)
+    try:
+        for subject, dry_run in ((stories.subject, True), (stories.bystander, False)):
+            await _unblock_all(url)
+            asked = e.request("character", subject, stories.named, dry_run=dry_run)
+            with pytest.raises(ErasurePending):
+                await _fresh(config, db).erase(CTX, ErasureRequest.model_validate(asked))
+    finally:
+        await db.dispose()
+    with pauses.held(pauses.ERASURE_RECONCILE_BEFORE_REAPPLY) as hold:
+        async with ledger.started(config) as (client, lib):
+            await hold.arrived()
+            for subject, dry_run in ((stories.subject, True), (stories.bystander, False)):
+                refused = await client.post(
+                    e.PATH,
+                    json=e.request("character", subject, stories.named, dry_run=dry_run),
+                    headers={**e.WRITE, "Idempotency-Key": new_ulid()},
+                )
+                assert refused.status_code == 503, (dry_run, refused.text)
+                assert refused.json()["error"]["code"] == "erasure_pending"
+                assert ledger.SUBJECT not in refused.text
+            (during,) = await ledger.sql(url, revision_sql, s=stories.named)
+            assert during.timeline_revision == before.timeline_revision
+            hold.release()
+            assert lib._reconcile_task is not None
+            await lib._reconcile_task
+            done = await e.erase(client, "character", stories.bystander, stories.named)
+    assert done["residue"] == 0
+
+
+async def test_a_pending_catalog_erasure_holds_undelivered_exports(
+    ledger_server: ledger.Server, tmp_path: Path
+) -> None:
+    """#378: a pending catalog-scope erasure blocks no story, but an undelivered feedback
+    export may still name its subject: during the restore window its content is 503
+    ``erasure_pending`` and it stays undelivered, so the reapply redacts it; afterwards it is
+    delivered without the subject."""
+    url = ledger_server.fresh()
+    ledger_dir = tmp_path / "ledger"
+    held: dict[str, str] = {}
+
+    async def prepare(client: httpx.AsyncClient, stories: ledger.Stories) -> None:
+        held["catalog"] = await g.catalog_character_id(client, ledger.SUBJECT)
+        (player,) = await ledger.sql(
+            url, "SELECT id FROM characters WHERE story_id = :s AND is_player", s=stories.named
+        )
+        turn = await play(client, stories.named, player.id, f"Where is {ledger.SUBJECT}?")
+        rated = await rate(
+            client,
+            stories.named,
+            turn["message"]["message_id"],
+            {"rating": 2, "tags": ["forgot_something"]},
+        )
+        answered(rated, 201)
+        await set_deployment(client, feedback_export=True)
+        made = await client.post("/admin/feedback/export", json={}, headers=as_principal(OPERATOR))
+        assert made.status_code == 201, made.text
+        held["export"] = made.json()["export_id"]
+
+    await _pending_story(url, ledger_dir, prepare=prepare, catalog=lambda: held["catalog"])
+    config = ledger.settings(url, ledger_dir)
+    export_sql = "SELECT downloaded_at FROM feedback_export_log WHERE id = :i"
+    content_path = f"/admin/feedback/exports/{held['export']}/content"
+    db = make_engine(config)
+    try:
+        with pytest.raises(ErasurePending) as caught:
+            await _fresh(config, db).get_feedback_export_content(CTX, held["export"])
+        assert caught.value.details["story_id"] is None
+        assert caught.value.details["pending_count"] == 1
+    finally:
+        await db.dispose()
+    with pauses.held(pauses.ERASURE_RECONCILE_BEFORE_REAPPLY) as hold:
+        async with ledger.started(config) as (client, lib):
+            await hold.arrived()
+            refused = await client.get(content_path, headers=e.WRITE)
+            assert refused.status_code == 503, refused.text
+            assert refused.json()["error"]["code"] == "erasure_pending"
+            assert ledger.SUBJECT not in refused.text
+            (log_row,) = await ledger.sql(url, export_sql, i=held["export"])
+            assert log_row.downloaded_at is None
+            hold.release()
+            assert lib._reconcile_task is not None
+            await lib._reconcile_task
+            delivered = await client.get(content_path, headers=e.WRITE)
+    assert delivered.status_code == 200, delivered.text
+    assert "[erased]" in delivered.text
+    assert ledger.SUBJECT not in delivered.text

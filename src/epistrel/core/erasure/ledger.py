@@ -439,6 +439,24 @@ async def refuse_blocked(conn: AsyncConnection, story_id: str, status: str | Non
         raise await pending_error(conn, story_id)
 
 
+async def refuse_catalog_pending(conn: AsyncConnection) -> None:
+    """503 ``erasure_pending`` while a catalog-scope erasure is pending (#378): it blocks no
+    story, but what it removes may still be anywhere the catalog reaches (an undelivered
+    feedback export). ``story_id`` is null in the details."""
+    found = (
+        await conn.execute(
+            select(erasure_ledger.c.id)
+            .where(_pending_rows(), erasure_ledger.c.scope == CATALOG)
+            .order_by(erasure_ledger.c.at, erasure_ledger.c.id)
+        )
+    ).all()
+    if found:
+        raise ErasurePending(
+            "this is not served until the erasure ledger's catalog erasures have been reapplied",
+            {"story_id": None, "erasure_id": found[0].id, "pending_count": len(found)},
+        )
+
+
 async def check_story(db: AsyncEngine, story_id: str) -> None:
     """The Engine's check before any read or write naming ``story_id``. An unknown story
     passes (the call itself answers 404)."""
@@ -837,6 +855,7 @@ __all__ = [
     "reapply",
     "reapplying",
     "refuse_blocked",
+    "refuse_catalog_pending",
     "settle_deleted",
     "status",
     "write",

@@ -1032,7 +1032,9 @@ class ErasurePending(EpistrelError):
     that predates it), so the story is not served until the erasure is reapplied. Every read
     and write of the story is refused, except deleting it; retry after ``Retry-After`` seconds.
     ``details``: ``story_id``, ``erasure_id`` (the first pending erasure) and ``pending_count``
-    (the story's pending erasures)."""
+    (the story's pending erasures). An undelivered feedback export is also refused while a
+    catalog-scope erasure is pending (#378): ``story_id`` is then null and ``pending_count``
+    counts the pending catalog erasures."""
 
     code = "erasure_pending"
     http_status = 503

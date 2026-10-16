@@ -2866,10 +2866,11 @@ class Engine:
         mentions are erased; candidates (a common word of the name capitalised at the start of
         a sentence, ADR-154) only when ``confirm_candidates`` names them, by the ids a dry run
         lists. 422 ``invalid_erasure_scope`` for a story character scoped to the catalog, and
-        ``unknown_erasure_candidate`` for a confirmed id the erasure does not meet; 404 for an
-        unknown story or, on a real run, an unknown subject; 409 ``revision_conflict`` for a
-        stale expected revision (story scope); 503 ``config_key_missing`` without
-        ``EPISTREL_CONFIG_KEY``."""
+        ``unknown_erasure_candidate`` for a confirmed id the erasure does not meet; 503
+        ``erasure_pending`` for a story the erasure reconciler holds blocked, dry run or not
+        (#383); 404 for an unknown story or, on a real run, an unknown subject; 409
+        ``revision_conflict`` for a stale expected revision (story scope); 503
+        ``config_key_missing`` without ``EPISTREL_CONFIG_KEY``."""
         principal = self.require_principal(ctx)
         erasure.check_request(request)
         key = erasure.require_key(
@@ -2879,6 +2880,9 @@ class Engine:
         )
         story_id = request.story_id
         if story_id is not None:
+            # A request naming a story is gated like any call naming one (#383, #387): the
+            # method has no ``story_id`` parameter, so ``gate_story_methods`` cannot see it.
+            await self._erasure_gate(story_id)
             await check_expected_revision(self.db, story_id, ctx.expected_revision)
         compressor = self.ports.summary_compressor
         if request.dry_run:
@@ -3731,8 +3735,9 @@ class Engine:
         """The export's file (``application/x-ndjson``), delivered: the first download marks the
         export ``downloaded_at``, and from then on it is outside the erasure boundary
         (FR-ADMIN-8). 404 for an unknown export or one whose file was deleted. An undelivered
-        export with a case of a story the erasure reconciler holds blocked is 503
-        ``erasure_pending`` and stays undelivered; the ledger is compared first (#370)."""
+        export with a case of a story the erasure reconciler holds blocked (#370), or while a
+        catalog-scope erasure is pending (#378), is 503 ``erasure_pending`` and stays
+        undelivered; the ledger is compared first."""
         if not self._erasure_marked:
             await self._mark_erasures()
         return await feedback_export.content(self.db, self.media, export_id)

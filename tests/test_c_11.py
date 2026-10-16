@@ -151,8 +151,10 @@ def _ci() -> dict[str, Any]:
 @pytest.mark.part("M2", "NFR-MAINT-1,3")
 def test_c_11__ci_wires_every_gate_into_the_required_check() -> None:
     """Each of the six gates is a step of ``lint`` that runs even after an earlier step failed;
-    ``test`` gates core coverage at 90 %; the required ``gate`` job needs every job and fails
-    unless each succeeded. Complement: no gate step is allowed to fail (``continue-on-error``)."""
+    every ``test`` shard measures core coverage and the ``coverage`` job gates the combined data
+    at 90 % (#331); the required ``gate`` job needs every job, ``coverage`` included, and fails
+    unless each succeeded. Complement: no gate step is allowed to fail (``continue-on-error``),
+    and no shard applies a threshold of its own (a shard's partial coverage is not the gate)."""
     ci = _ci()
     jobs = ci["jobs"]
     lint_steps = jobs["lint"]["steps"]
@@ -165,11 +167,24 @@ def test_c_11__ci_wires_every_gate_into_the_required_check() -> None:
     )
     (pytest_step,) = [s for s in jobs["test"]["steps"] if "pytest" in s.get("run", "")]
     assert "--cov=epistrel.core" in pytest_step["run"]
-    assert "--cov-fail-under=90" in pytest_step["run"]
+    assert "fail-under" not in pytest_step["run"]
+    coverage = jobs["coverage"]
+    assert coverage["needs"] == ["test"]
+    assert coverage.get("if") is None, "the coverage gate must not run when a shard failed"
+    runs = [s.get("run", "") for s in coverage["steps"]]
+    combine = runs.index("uv run coverage combine")
+    (report,) = [i for i, r in enumerate(runs) if "coverage report" in r]
+    assert combine < report
+    (threshold,) = [w for w in runs[report].split() if w.startswith("--fail-under=")]
+    assert threshold == "--fail-under=90"
     gate = jobs["gate"]
     assert gate["if"] == "always()"
-    assert set(gate["needs"]) == {"lint", "types", "test", "docker"}
-    assert '[ "$r" = "success" ] ||' in gate["steps"][-1]["run"]
+    assert set(gate["needs"]) == {"lint", "types", "test", "coverage", "docker"}
+    summary = gate["steps"][-1]
+    assert '[ "$r" = "success" ] ||' in summary["run"]
+    for need in gate["needs"]:
+        (var,) = [k for k, v in summary["env"].items() if v == f"${{{{ needs.{need}.result }}}}"]
+        assert f'"${var}"' in summary["run"].split("for r in", 1)[1].split("; do", 1)[0], need
 
 
 @pytest.mark.part("M2", "NFR-MAINT-1,3")

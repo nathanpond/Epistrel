@@ -153,3 +153,29 @@ def test_pr_ci_runs_only_the_quick_chaos_tests() -> None:
         '-m "not live_model and (not chaos or chaos_quick) and (not perf_long or perf_quick)"'
         in pytest_step["run"]
     )
+
+
+def test_p04_expiry_reminds_daily_and_files_one_issue() -> None:
+    """#283: every day (06:00 UTC) and on dispatch, `perf.lite_smoke.freshness` judges the newest
+    full-length P-04 report; when the reminder is due, one "P-04 report expires" issue is opened
+    with the rerun command.
+
+    Complement asserted: the issue step runs only when the reminder is due, and files nothing
+    while such an issue is open."""
+    wf = _workflow("p04-expiry.yml")
+    triggers = _on(wf)
+    assert triggers["schedule"] == [{"cron": "0 6 * * *"}]
+    assert "workflow_dispatch" in triggers
+    assert wf["permissions"] == {"contents": "read"}
+    job = wf["jobs"]["remind"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    check = next(s for s in _steps(wf, "remind") if s.get("id") == "freshness")
+    assert "python -m perf.lite_smoke.freshness" in check["run"]
+    assert '"$GITHUB_OUTPUT"' in check["run"]
+    remind = next(s for s in _steps(wf, "remind") if s.get("name") == "Open the reminder")
+    assert remind["if"] == "steps.freshness.outputs.due == 'true'"
+    script = remind["run"]
+    assert "--search 'in:title \"P-04 report expires\"'" in script
+    assert script.index("exit 0") < script.index("gh issue create")
+    assert "uv run python -m perf.lite_smoke --minutes 30 --host-class mac" in script
+    assert '--title "$title"' in script

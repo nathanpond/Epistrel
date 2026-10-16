@@ -6,7 +6,9 @@ long and too heavy for a test session. Its evidence is the committed report in
 ``perf/results/``. What runs here, in PR CI:
 
 - ``test_p_04``: a full-length report (30 minutes, 10,000-turn stories) newer than 30 days is
-  committed, states its host class and verdict, and has its raw JSON sidecar;
+  committed, states its host class and verdict, and has its raw JSON sidecar
+  (``perf.lite_smoke.freshness``, which also drives the ``p04-expiry.yml`` reminder; #283);
+- ``test_p_04__expiry``: that window, and the reminder's 14-day warning before it closes;
 - ``test_p_04__gate``: the report's gate logic (``perf.lite_smoke.report``) over a synthetic run:
   a run that keeps up passes, and one story falling behind fails the run although the aggregate
   keeps up;
@@ -22,23 +24,20 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
-from perf.lite_smoke import RESULTS_DIR, report
+from perf.lite_smoke import RESULTS_DIR, freshness, report
 from prometheus_client import REGISTRY
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.observability import metrics
 from epistrel.observability.stages import STAGES
-from epistrel.testing import perf
 from tests.auth_support import auth_settings
 from tests.respond_support import FIRST, PLAYER, body, new_story, respond, respond_client
 from tests.story_support import READ
-
-FRESH = timedelta(days=30)
-FULL_MINUTES = 30
 
 
 @pytest.fixture
@@ -55,28 +54,87 @@ def test_p_04() -> None:
     old one does not count as fresh."""
     reports = sorted(RESULTS_DIR.glob("*-lite.md"))
     assert reports, f"no P-04 report in {RESULTS_DIR}: run `python -m perf.lite_smoke`"
-    now = datetime.now(UTC)
-    fresh = []
     for path in reports:
         found = report.header(path.read_text())
         assert found.host_class in ("mac", "reference", "ci"), path
         assert path.with_suffix(".json").exists(), f"{path.name} has no JSON sidecar"
-        full = found.minutes >= FULL_MINUTES and found.turns == perf.TURNS
-        if full and now - found.started <= FRESH:
-            fresh.append((path, found))
-    assert fresh, (
+    now = datetime.now(UTC)
+    current = freshness.status(now)
+    rerun = (
         "no full-length P-04 report from the last 30 days in perf/results/: run "
         "`uv run python -m perf.lite_smoke --minutes 30 --host-class <class>` and commit it"
     )
-    sidecar = json.loads(fresh[-1][0].with_suffix(".json").read_text())
-    assert sidecar["info"]["host_class"] == fresh[-1][1].host_class
-    assert sidecar["passed"] == (fresh[-1][1].verdict == report.PASS)
+    assert current.report is not None, rerun
+    assert not current.expired, rerun
+    newest = report.header(current.report.read_text())
+    sidecar = json.loads(current.report.with_suffix(".json").read_text())
+    assert sidecar["info"]["host_class"] == newest.host_class
+    assert sidecar["passed"] == (newest.verdict == report.PASS)
 
-    text = fresh[-1][0].read_text()
+    text = current.report.read_text()
     with pytest.raises(ValueError, match="host class"):
         report.header(text.replace("(host class ", "(class "))
-    stale = text.replace(fresh[-1][1].started.strftime("%Y-%m-%d %H:%M"), "2000-01-01 00:00", 1)
-    assert now - report.header(stale).started > FRESH
+    stale = text.replace(newest.started.strftime("%Y-%m-%d %H:%M"), "2000-01-01 00:00", 1)
+    assert now - report.header(stale).started > freshness.FRESH
+
+
+def _write_report(
+    results: Path, text: str, started: datetime, swap: dict[str, str] | None = None
+) -> Path:
+    """A copy of a committed report, retitled to ``started`` and with ``swap`` applied."""
+    title = report.TITLE.search(text)
+    assert title is not None
+    body = text.replace(title.group(1), started.strftime("%Y-%m-%d %H:%M"), 1)
+    for old, new in (swap or {}).items():
+        body = body.replace(old, new, 1)
+    path = results / f"{started:%Y-%m-%d-%H%M}-lite.md"
+    path.write_text(body)
+    return path
+
+
+@pytest.mark.part("M2", "NFR-PERF-4")
+def test_p_04__expiry(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """#283: the reminder (``p04-expiry.yml``) is due 14 days before the newest full-length
+    report's 30-day window closes, and on and after that day; the gate's window closes at 30
+    days.
+
+    Complement asserted: a shorter (demo) or smaller run never counts as the newest report, a
+    file that is not a report is skipped, and with no full-length report the reminder is due
+    and the gate's window is closed."""
+    text = sorted(RESULTS_DIR.glob("*-lite.md"))[-1].read_text()
+    started = datetime(2026, 10, 11, 21, 43, tzinfo=UTC)
+    empty = freshness.status(started, tmp_path)
+    assert (empty.report, empty.due, empty.expired) == (None, True, True)
+
+    full = _write_report(tmp_path, text, started)
+    later = started + timedelta(days=3)
+    _write_report(tmp_path, text, later, {", 30 minutes,": ", 5 minutes,"})
+    _write_report(tmp_path, text, later + timedelta(hours=1), {"10,000 turns": "1,000 turns"})
+    (tmp_path / "2026-12-01-0000-lite.md").write_text("not a report\n")
+
+    expires = started + freshness.FRESH
+    assert expires == datetime(2026, 11, 10, 21, 43, tzinfo=UTC)
+    early = freshness.status(expires - freshness.WARN - timedelta(minutes=1), tmp_path)
+    assert (early.report, early.due, early.expired) == (full, False, False)
+    warn = freshness.status(expires - freshness.WARN, tmp_path)
+    assert (warn.due, warn.expired) == (True, False)
+    last = freshness.status(expires, tmp_path)
+    assert (last.due, last.expired) == (True, False)
+    gone = freshness.status(expires + timedelta(minutes=1), tmp_path)
+    assert (gone.due, gone.expired) == (True, True)
+
+    rerun = _write_report(tmp_path, text, started + timedelta(days=20))
+    renewed = freshness.status(expires, tmp_path)
+    assert (renewed.report, renewed.due, renewed.expired) == (rerun, False, False)
+
+    assert freshness.main(["--now", "2026-10-27T21:43:00Z", "--results", str(tmp_path)]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        f"report={rerun.as_posix()}",
+        "started=2026-10-31 21:43 UTC",
+        "expires=2026-11-30",
+        "due=false",
+        "expired=false",
+    ]
 
 
 def _run(info: report.RunInfo, *, late_story: str | None = None) -> list[dict[str, Any]]:

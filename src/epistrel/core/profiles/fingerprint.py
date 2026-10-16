@@ -11,9 +11,11 @@ as strings) of::
      "quality_relevant_settings": {<dotted path>: value, ..., "prompt_templates": {...}}}
 
 - ``profile_version``: the profile and the version the configuration resolves to.
-- ``models``: every model purpose the deployment delivers, with the model id the Orchestrator
-  resolves for it (``/admin/model-config``) and the version the provider reports (``null`` in
-  M3: no adapter reports one). Endpoints and keys never enter it.
+- ``models``: every model purpose the deployment delivers, with the model id a call for it
+  uses (``routed_models``: the configuration's own route, ``models.purposes.<purpose>.model``,
+  when it names one, as a profile's model wins over the deployment's, #106 and #325; else the
+  one the Orchestrator resolves from ``/admin/model-config``) and the version the provider
+  reports (``null`` in M3: no adapter reports one). Endpoints and keys never enter it.
 - ``quality_relevant_settings``: every setting the schema tags ``Quality.relevant`` at its
   effective value (a setting the stored document leaves out at its default), and each prompt
   template's SHA-256 under ``prompt_templates`` (FR-PROF-16's "prompt-template versions").
@@ -96,17 +98,31 @@ class RuntimeFacts:
     templates: Mapping[str, str]
 
 
+def routed_models(
+    models: Mapping[str, ModelIdentity], settings: ProfileSettings
+) -> dict[str, ModelIdentity]:
+    """``models`` (the deployment's, as the Orchestrator resolves them) under ``settings``'
+    routes: a purpose whose route names a model uses that model (no reported version yet), the
+    others keep theirs. A route for a purpose ``models`` does not list adds nothing."""
+    found = dict(models)
+    for purpose, route in settings.models.purposes.items():
+        if purpose in found and route.model is not None:
+            found[purpose] = ModelIdentity(id=route.model)
+    return found
+
+
 @dataclass(frozen=True, slots=True)
 class Stamp:
     """What every respond response, effective-configuration read and impact report states about
     a configuration (FR-PROF-16): its fingerprint, the capabilities it enables, and its quality
-    status."""
+    status; and the model each purpose uses under it (``routed_models``)."""
 
     fingerprint: str
     capabilities: tuple[str, ...]
     quality_status: QualityStatus
+    models: Mapping[str, ModelIdentity]
 
-    def record(self, profile_id: str, version: int, facts: RuntimeFacts) -> dict[str, Any]:
+    def record(self, profile_id: str, version: int) -> dict[str, Any]:
         """What an operation records in ``config_revisions`` beside its revisions (#112 reads
         it): the fingerprint, the profile and version, each purpose's model, the quality status
         and the capabilities."""
@@ -116,7 +132,7 @@ class Stamp:
             "profile_version": version,
             "models": {
                 purpose: model.model_dump(mode="json")
-                for purpose, model in sorted(facts.models.items())
+                for purpose, model in sorted(self.models.items())
             },
             "quality_status": self.quality_status.model_dump(mode="json"),
             "capabilities": list(self.capabilities),
@@ -169,11 +185,10 @@ def fingerprint(
     *, profile_id: str, version: int, settings: ProfileSettings, facts: RuntimeFacts
 ) -> str:
     """The configuration's fingerprint (see the module docstring)."""
+    models = routed_models(facts.models, settings)
     document = {
         "profile_version": {"profile_id": profile_id, "version": version},
-        "models": {
-            purpose: model.model_dump(mode="json") for purpose, model in facts.models.items()
-        },
+        "models": {purpose: model.model_dump(mode="json") for purpose, model in models.items()},
         "quality_relevant_settings": quality_relevant_settings(settings, facts.templates),
     }
     digest = hashlib.sha256(canonical_json(document).encode("utf-8")).hexdigest()
@@ -190,6 +205,7 @@ def stamp(
         ),
         capabilities=capabilities(settings),
         quality_status=UNCERTIFIED,
+        models=routed_models(facts.models, settings),
     )
 
 
@@ -237,5 +253,6 @@ __all__ = [
     "fingerprint",
     "guarantees",
     "quality_relevant_settings",
+    "routed_models",
     "stamp",
 ]

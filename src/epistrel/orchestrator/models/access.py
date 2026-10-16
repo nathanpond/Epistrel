@@ -7,6 +7,14 @@ purpose's input schema (an undeclared field is refused), renders its template, a
 ``complete(purpose, messages, params)`` sends prepared messages. Under the stub, calls never
 need ``model_config``: the stub only reports the configured model name when a database is bound.
 
+**Routing** (#325): ``routing(routes)`` scopes a story's per-purpose routes (``config.Route``,
+from its effective configuration's ``models.purposes``) to the calls made inside it, in this task
+and the tasks it starts. ``resolve`` lays the route over the deployment's configuration
+(``config.routed``), so the adapter, the model a call is recorded under and the stub's reported
+model all follow it. A Lite turn routes from the configuration it captured at its start, and the
+``lite_summary`` job from the story's; calls outside a story (rating suggestions, catalog checks,
+probes) use the deployment's configuration.
+
 Every call goes through ``send``, which is where provider failures stop (FR-MODEL-6, NFR-REL-3):
 the call is bounded by its timeout (the purpose's ``params.timeout``, default 60 s) and by the
 turn's deadline when a ``TurnBudget`` is passed, whichever is sooner (``TurnBudget.clamp``), and
@@ -23,7 +31,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from types import MappingProxyType
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -50,6 +61,8 @@ from epistrel.orchestrator.models.config import (
     ConfigEntry,
     EffectiveConfig,
     KeyBox,
+    Route,
+    routed,
 )
 from epistrel.orchestrator.models.errors import (
     BudgetExhausted,
@@ -83,6 +96,21 @@ from epistrel.orchestrator.models.structured import (
 from epistrel.orchestrator.models.stub import StubAdapter
 
 log = logging.getLogger(__name__)
+
+
+NO_ROUTES: Mapping[str, Route] = MappingProxyType({})
+ROUTES: ContextVar[Mapping[str, Route]] = ContextVar("ROUTES", default=NO_ROUTES)
+"""The per-purpose routes of the story whose calls are being made (``routing``)."""
+
+
+@contextmanager
+def routing(routes: Mapping[str, Route]) -> Iterator[None]:
+    """Route the calls made inside the block by ``routes`` (a story's ``config.routes_of``)."""
+    token = ROUTES.set(MappingProxyType(dict(routes)))
+    try:
+        yield
+    finally:
+        ROUTES.reset(token)
 
 
 def get_delivered(name: str) -> Purpose:
@@ -195,8 +223,9 @@ class ModelAccessLayer:
         return self.adapter
 
     async def resolve(self, purpose: str) -> EffectiveConfig:
-        """``purpose``'s effective configuration as of the current ``config_revision``."""
-        return await self.cache.effective(self.db, purpose)
+        """``purpose``'s effective configuration as of the current ``config_revision``, under
+        the current story's route for it (``routing``) when it has one."""
+        return routed(await self.cache.effective(self.db, purpose), ROUTES.get().get(purpose))
 
     async def _configured_model(self, purpose: str) -> str | None:
         if self._db is None:
@@ -412,9 +441,12 @@ class ModelAccessLayer:
 
 
 __all__ = [
+    "NO_ROUTES",
+    "ROUTES",
     "ModelAccessLayer",
     "build_inputs",
     "declared_fields",
     "get_delivered",
     "payload_fields",
+    "routing",
 ]

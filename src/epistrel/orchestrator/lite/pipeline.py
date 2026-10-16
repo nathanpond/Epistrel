@@ -19,7 +19,9 @@
    Its budget (#69, ``budget.plan_lite_budget``) is the request's ``budget.max_calls``, else the
    configuration's ``budgets.model_calls``, else ``9 + G``, and the configuration's
    ``budgets.deadline_ms`` (or the request's ``budget.deadline_s``), its clock started when the
-   request arrived. It reserves the generation call and G, the model-assisted guardrail calls
+   request arrived. Every model call of the turn is routed by the configuration's
+   ``models.purposes`` (``access.routing``, #325): a routed purpose's model and params. It
+   reserves the generation call and G, the model-assisted guardrail calls
    (one per input policy for the input, one per output policy for the first output check); a
    cap below ``1 + G`` is 422 ``budget_below_safety_minimum`` before any model call. Then **the
    input
@@ -79,7 +81,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from functools import partial
 from types import SimpleNamespace
@@ -139,8 +141,9 @@ from epistrel.orchestrator.lite.schemas import (
     RespondRequest,
     RespondResult,
 )
-from epistrel.orchestrator.models.access import ModelAccessLayer
+from epistrel.orchestrator.models.access import ModelAccessLayer, routing
 from epistrel.orchestrator.models.adapter import ModelResult
+from epistrel.orchestrator.models.config import routes_of
 from epistrel.orchestrator.models.errors import EmptyCompletion, ModelError
 from epistrel.orchestrator.models.facts import runtime_facts
 from epistrel.orchestrator.models.metrics import CallLog, recording
@@ -267,7 +270,7 @@ async def respond(
         started=started,
     )
     timing = TurnTiming(front=started)
-    with recording() as calls, reporting_costs(calls, budget):
+    with recording() as calls, reporting_costs(calls, budget), _routed(concurrency):
         gating = time.perf_counter()
         await gate(
             budget,
@@ -320,6 +323,12 @@ def _captured(concurrency: Concurrency) -> StoryProfile:
     """The configuration ``read_concurrency`` captured at the turn's start."""
     assert concurrency.configuration is not None  # noqa: S101 - read_concurrency always sets it
     return concurrency.configuration
+
+
+def _routed(concurrency: Concurrency) -> AbstractContextManager[None]:
+    """Every model call of the turn (its input and output checks and its generations) routed
+    by the configuration captured at its start (``models.purposes``, FR-PROF-5; #325)."""
+    return routing(routes_of(_captured(concurrency).settings))
 
 
 def polish_budget(settings: ProfileSettings) -> int:
@@ -378,7 +387,7 @@ async def run_queued(
         started=front,
     )
     budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))  # gated when queued
-    with recording() as calls, reporting_costs(calls, budget):
+    with recording() as calls, reporting_costs(calls, budget), _routed(concurrency):
         return await _play(
             db,
             models,
@@ -434,7 +443,7 @@ async def regenerate(
         started=started,
     )
     timing = TurnTiming(front=started)
-    with recording() as calls, reporting_costs(calls, budget):
+    with recording() as calls, reporting_costs(calls, budget), _routed(concurrency):
         gating = time.perf_counter()
         await gate(budget, joined_input(recorded.say, recorded.do), cast.actor.id, cast.render_ids)
         timing.policy_check_s += time.perf_counter() - gating
@@ -538,7 +547,7 @@ async def _play(
         op.config_revisions = {
             **(op.config_revisions or {}),
             "generation_settings": resolved.model_dump(mode="json"),
-            **stamped[0].record(captured.profile_id, captured.version, facts),
+            **stamped[0].record(captured.profile_id, captured.version),
             "overrides_revision": configuration.overrides_revision,
         }
         return inputs, resolved

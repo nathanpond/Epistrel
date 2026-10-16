@@ -18,6 +18,12 @@ changes nothing writes nothing. API-key rows record the key's fingerprint, never
 connection of its own and re-reads ``model_config`` only when the revision moved, so the call
 after a write sees it, with no restart and no stale cache.
 
+**Routes** (#325): a story's effective configuration may route a story purpose
+(``models.purposes.<purpose>``, FR-PROF-5). ``routed`` lays a ``Route`` over the deployment's
+effective configuration: the route's ``model`` wins (#106), and its ``params`` sit between the
+deployment's and the call's own (``model_config`` < route < call). Endpoints and keys are never
+routed. ``routes_of`` reads a configuration's routes.
+
 API keys are stored as Fernet ciphertext under ``EPISTREL_CONFIG_KEY`` and decrypted only to
 build a client or compute a fingerprint. They never reach story data, ``config_changes``,
 responses or logs (NFR-SEC-3).
@@ -28,7 +34,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -55,6 +61,7 @@ from epistrel.core.config_changes import (
     record_config_change,
 )
 from epistrel.core.errors import ConfigConflict, InvalidRequest
+from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.settings_schema import ConfigClass, StructuredSettings
 from epistrel.core.tables import deployment_state, model_config
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -157,6 +164,39 @@ class EffectiveConfig:
     @property
     def has_api_key(self) -> bool:
         return self.api_key_ciphertext is not None
+
+
+@dataclass(frozen=True)
+class Route:
+    """A story's routing of one purpose (``models.purposes.<purpose>``, #325): the model and
+    the params it sets; ``None`` inherits the deployment's."""
+
+    model: str | None = None
+    params: ModelParams | None = None
+
+
+def routes_of(settings: ProfileSettings) -> dict[str, Route]:
+    """The purposes ``settings`` route, each with what its route sets (a route that sets
+    nothing is left out)."""
+    found: dict[str, Route] = {}
+    for purpose, route in settings.models.purposes.items():
+        set_params = route.params.model_dump(exclude_none=True) if route.params else {}
+        params = ModelParams.model_validate(set_params) if set_params else None
+        if route.model is not None or params is not None:
+            found[purpose] = Route(model=route.model, params=params)
+    return found
+
+
+def routed(config: EffectiveConfig, route: Route | None) -> EffectiveConfig:
+    """``config`` under ``route``: its model when it names one, and its params over the
+    deployment's (a call's own params still win over both)."""
+    if route is None:
+        return config
+    return replace(
+        config,
+        model=route.model if route.model is not None else config.model,
+        params=config.params.merged(route.params),
+    )
 
 
 @dataclass(frozen=True)

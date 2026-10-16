@@ -38,6 +38,7 @@ from epistrel.core.profiles.fingerprint import (
     fingerprint,
     guarantees,
     quality_relevant_settings,
+    routed_models,
 )
 from epistrel.core.profiles.impact import (
     CAMEL_CASE,
@@ -116,6 +117,33 @@ def test_the_fingerprint_follows_what_is_quality_relevant() -> None:
     assert _print(_settings(), version=2) != base
     other = fingerprint(profile_id="0" * 26, version=1, settings=_settings(), facts=FACTS)
     assert other != base
+
+
+def test_a_routed_model_is_the_fingerprints_model() -> None:
+    """A configuration that routes a purpose to a model names that model for it in the
+    fingerprint and in what an operation records, as its calls use it (#325; FR-PROF-16): a
+    profile's model wins over the deployment's. Two configurations that route ``generation``
+    to different models have different fingerprints, and an unrouted purpose keeps the
+    deployment's model. A route that names no model, or names a purpose the deployment does not
+    list, leaves the models as they are."""
+    routed = _settings(nest("models.purposes.generation.model", "m-9"))
+    stamped = Configuration(LITE_PRESET_ID, 1, routed).stamp(FACTS)
+    assert stamped.models == {
+        "generation": ModelIdentity(id="m-9"),
+        "guardrail_check": ModelIdentity(id="m-2"),
+    }
+    assert stamped.record(LITE_PRESET_ID, 1)["models"] == {
+        "generation": {"id": "m-9", "reported_version": None},
+        "guardrail_check": {"id": "m-2", "reported_version": None},
+    }
+    assert routed_models(FACTS.models, routed) == stamped.models
+    elsewhere = _settings(nest("models.purposes.generation.model", "m-8"))
+    assert _print(routed) != _print(elsewhere)
+    assert stamped.fingerprint == _print(routed)
+    params_only = _settings(nest("models.purposes.generation.params.temperature", 0.3))
+    assert routed_models(FACTS.models, params_only) == dict(FACTS.models)
+    unlisted = _settings(nest("models.purposes.lite_summary.model", "m-7"))
+    assert routed_models(FACTS.models, unlisted) == dict(FACTS.models)
 
 
 def test_quality_relevant_settings_are_the_tagged_ones_and_the_templates() -> None:

@@ -10586,7 +10586,7 @@
                 "type": "null"
               }
             ],
-            "description": "The story's or profile's name, a catalog entry's draft card name, a persona's name, or a media asset's caption (else its alt text). `null` for a story that is `blocked_by_erasure` after a restore, until its erasure is reapplied.",
+            "description": "The story's or profile's name, a catalog entry's draft card name, a persona's name, or a media asset's caption (else its alt text). `null` for a story that is `blocked_by_erasure` after a restore, and for an entry a pending catalog-scope erasure reaches, until its erasure is reapplied.",
             "title": "Name"
           },
           "status": {
@@ -24138,7 +24138,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -27345,7 +27345,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -27643,7 +27643,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -27792,7 +27792,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -27966,7 +27966,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -28122,7 +28122,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -28273,7 +28273,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -28439,7 +28439,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -28605,7 +28605,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -28783,7 +28783,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -28932,7 +28932,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -29033,7 +29033,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -29223,7 +29223,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -29402,7 +29402,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -29558,7 +29558,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -29658,7 +29658,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -29870,7 +29870,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -30168,7 +30168,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -30317,7 +30317,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -30491,7 +30491,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -30647,7 +30647,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -30813,7 +30813,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -30979,7 +30979,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -31145,7 +31145,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -31294,7 +31294,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -31395,7 +31395,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -31585,7 +31585,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -31764,7 +31764,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -31920,7 +31920,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -32087,7 +32087,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -32188,7 +32188,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -34773,7 +34773,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -35267,7 +35267,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -35365,7 +35365,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -35547,7 +35547,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `media_store_unavailable`, `moderation_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `media_store_unavailable`, `moderation_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -35756,7 +35756,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `media_store_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `media_store_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -35905,7 +35905,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -36003,7 +36003,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -36323,7 +36323,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `media_store_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `media_store_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -36490,7 +36490,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -36590,7 +36590,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -36780,7 +36780,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -36959,7 +36959,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -37079,7 +37079,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `config_key_missing`, `config_missing`, `database_unavailable`, `media_store_unavailable`.",
+            "description": "Unavailable; nothing was written: `config_key_missing`, `config_missing`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `media_store_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -37354,7 +37354,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -37642,7 +37642,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -37740,7 +37740,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -37904,7 +37904,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38070,7 +38070,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38170,7 +38170,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38360,7 +38360,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38539,7 +38539,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -38879,7 +38879,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `ledger_unavailable`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -39166,7 +39166,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",

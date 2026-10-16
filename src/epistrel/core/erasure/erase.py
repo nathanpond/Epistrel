@@ -1360,6 +1360,42 @@ async def _catalog_records(
     return found
 
 
+def _cast_from(catalog_id: str) -> Any:
+    """The genesis operations whose creation report casts the catalog character ``catalog_id``
+    (its public card, emptied by a catalog-scope erasure: #382)."""
+    return operations.c.turn_report.contains(
+        {"creation_report": {"cast": [{"source": {"catalog_id": catalog_id}}]}}
+    )
+
+
+async def catalog_reach(
+    conn: AsyncConnection, subject_kind: str, subject_id: str, confirmed: Sequence[str] = ()
+) -> dict[str, set[str]]:
+    """``{record_table: {record_id}}``: what a catalog-scope erasure of the subject would touch
+    now (a pending one's reapply, #346, ADR-157). The catalog pass's own discovery (the index's
+    rows, and every catalog record the subject's terms or the ``confirmed`` candidates match:
+    ``_catalog_records``), the subject's own entry and a catalog character's companion
+    scenarios (deleted with it), and the genesis operations whose creation report carries its
+    public card (``operations``). Reads only, and reads the subject's terms as the erasure
+    does, so a subject already gone reaches only what the index still names."""
+    request = ErasureRequest.model_validate(
+        {"subject": {"kind": subject_kind, "id": subject_id}, "scope": {"catalog": True}}
+    )
+    subject = await _subject(conn, request)
+    found = await _catalog_records(conn, subject, subject.redactor(confirmed))
+    if subject.kind is SubjectKind.PERSONA:
+        found.setdefault(personas.name, set()).add(subject.id)
+    elif subject.kind is SubjectKind.CATALOG_CHARACTER:
+        found.setdefault(character_catalog.name, set()).add(subject.id)
+        companions = await conn.scalars(
+            select(scenario_catalog.c.id).where(scenario_catalog.c.companion_of == subject.id)
+        )
+        found.setdefault(scenario_catalog.name, set()).update(str(c) for c in companions)
+        carded = await conn.scalars(select(operations.c.operation_id).where(_cast_from(subject.id)))
+        found.setdefault(operations.name, set()).update(str(o) for o in carded)
+    return found
+
+
 async def _catalog_pass(conn: AsyncConnection, run: _CatalogRun) -> _Tally:
     subject, redactor, write = run.subject, run.redactor, run.write
     tally = _Tally()
@@ -1439,11 +1475,7 @@ async def _catalog_pass(conn: AsyncConnection, run: _CatalogRun) -> _Tally:
         refs.get(operations.name, set()),
         redactor,
         tally,
-        reports=operations.c.turn_report.contains(
-            {"creation_report": {"cast": [{"source": {"catalog_id": subject.id}}]}}
-        )
-        if carded
-        else None,
+        reports=_cast_from(subject.id) if carded else None,
         edit=lambda report: catalog_erased_report(report, subject.id) if carded else report,
         write=write,
     )
@@ -2331,6 +2363,7 @@ __all__ = [
     "StoryScope",
     "SubjectRef",
     "append_stage",
+    "catalog_reach",
     "check_request",
     "dry_run",
     "erase",

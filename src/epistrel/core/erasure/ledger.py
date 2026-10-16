@@ -41,8 +41,11 @@ reconcile, which only repeats an erasure an operator asked for.
 (``Retry-After: 30``): by ``check_story`` (every Engine method naming the story), by
 ``Operation`` (``refuse_blocked``; the reapply's own operations pass, inside ``reapplying``),
 and by the job claim, which leaves the story's jobs queued. ``GET /stories`` lists it with its
-status, ``GET /operations/{id}`` answers, and ``DELETE /stories/{id}`` deletes it (its entries
+status, and ``DELETE /stories/{id}`` deletes it (its entries
 are settled ``story_deleted``).
+A pending **catalog-scope** entry blocks no story; what it reaches in the catalog is refused
+or left out of lists until it is reapplied (``pending_catalog``; ``core.erasure.catalog_block``,
+#346, ADR-157).
 
 The run's state (``in_progress``, ``last_run_at``, ``last_error``, ``attempts``) is
 ``deployment_state.erasure_reconcile_state``, written by reconcile runs only. Log lines carry
@@ -457,6 +460,12 @@ async def refuse_catalog_pending(conn: AsyncConnection) -> None:
         )
 
 
+async def pending_catalog(conn: AsyncConnection) -> list[Pending]:
+    """The pending catalog-scope entries, in ``at`` order: what ``core.erasure.catalog_block``
+    refuses the catalog reads they reach for until each is reapplied (#346, ADR-157)."""
+    return [item for item in await _pending(conn) if item.scope == CATALOG]
+
+
 async def check_story(db: AsyncEngine, story_id: str) -> None:
     """The Engine's check before any read or write naming ``story_id``. An unknown story
     passes (the call itself answers 404)."""
@@ -850,6 +859,7 @@ __all__ = [
     "log_summary",
     "mark",
     "parse",
+    "pending_catalog",
     "pending_count",
     "pending_error",
     "reapply",

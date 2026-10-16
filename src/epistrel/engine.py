@@ -61,6 +61,7 @@ from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext
 from epistrel.core.enums import EntryStatus, StoryStatus
 from epistrel.core.erasure import boundary as erasure_boundary
+from epistrel.core.erasure import catalog_block
 from epistrel.core.erasure import erase as erasure
 from epistrel.core.erasure import guard as erasure_guard
 from epistrel.core.erasure import ledger as erasure_ledger
@@ -673,7 +674,12 @@ class Engine:
                     await call.claim({**material, "expected_revision": ctx.expected_revision})
                 value = await run(ctx)
             except Replayed as replay:
-                await self._replay_gate(replay.stored)
+                await self._replay_gate(
+                    replay.stored,
+                    None
+                    if story_id is not None
+                    else catalog_block.key_record(KeyScope.DEPLOYMENT, DEPLOYMENT_SCOPE_ID, key),
+                )
                 return codec.load(replay.stored)
             except QueuedOriginal as queued:
                 assert story_id is not None  # noqa: S101 - only story calls queue
@@ -956,11 +962,16 @@ class Engine:
         that viewpoint (``viewpoint`` or ``ctx.viewpoint``); another named viewpoint is 409
         ``idempotency_conflict``. Unknown is 404. An operation of a story the erasure reconciler
         holds blocked is 503 ``erasure_pending`` like every other read of that story (#333): its
-        stored result may carry what the pending erasure removes."""
+        stored result may carry what the pending erasure removes. So is one whose
+        deployment-scoped stored result, or creation report, a pending catalog-scope erasure
+        reaches (#346)."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         view = await operation_view.read_operation(self.db, operation_id, viewpoint=ctx.viewpoint)
         if view.story_id is not None:
             await self._erasure_gate(view.story_id)
+        if (block := await self._catalog_block()) is not None:
+            async with self.db.connect() as conn:
+                block.check_records(await catalog_block.operation_records(conn, operation_id))
         return view
 
     # -- story lifecycle (FR-ADMIN-1, FR-STORE-14,16, FR-CAT-12) ----------------------------
@@ -991,6 +1002,10 @@ class Engine:
         principal = self.require_principal(ctx)
         if isinstance(spec, StoryFromScenario):
             request = spec
+            # A story copies the catalog entries it is created from, and a catalog-scope erasure
+            # never touches a story (FR-STORE-14): none may be reached by a pending one (#346).
+            for kind, entry_id in _catalog_entries_of(request):
+                await self._catalog_gate(kind, entry_id)
             return await self._keyed(
                 ctx,
                 "create_story",
@@ -2548,7 +2563,8 @@ class Engine:
         hold) narrow the list only when given (FR-AUTH-8). A plain string ``label`` or
         ``relation`` is one value, as one query parameter is. Companion scenarios are listed
         only with ``include_companions``. ``cursor`` (a page's ``next_cursor``) continues with
-        the same filters."""
+        the same filters. An entry a pending catalog-scope erasure reaches is left out until it
+        has been reapplied (#346), so a page may hold fewer than ``limit``."""
         service = catalog_kinds.service_of(entity_type)
         query = catalog_search.catalog_query(
             q=q,
@@ -2560,7 +2576,17 @@ class Engine:
             status=status,
             include_companions=include_companions,
         )
-        return await catalog_search.search(self.db, service, query, limit=limit, cursor=cursor)
+        page = await catalog_search.search(self.db, service, query, limit=limit, cursor=cursor)
+        kind = (
+            catalog_block.CHARACTER
+            if service.entity_type is EntityType.CHARACTER
+            else catalog_block.SCENARIO
+        )
+        if (block := await self._catalog_block()) is None:
+            return page
+        return dataclasses.replace(
+            page, items=[i for i in page.items if not block.hides(kind, str(i.id))]
+        )
 
     # -- personas (FR-CAT-6, FR-AUTH-5; FR-API-6; #114) -----------------------------------------
     # Deployment-scoped like the catalog: each write is one transaction recording a story-less
@@ -2597,10 +2623,11 @@ class Engine:
         """A page of personas, newest first: every principal's unless ``owner`` (a principal)
         or ``relation`` (``name:principal``, or ``name:`` for any principal; one, or several that
         must all hold) narrow it (FR-AUTH-8). A plain string ``relation`` is one value.
-        ``cursor`` (a page's ``next_cursor``) continues with the same filters."""
+        ``cursor`` (a page's ``next_cursor``) continues with the same filters. A persona a
+        pending catalog-scope erasure reaches is left out until it has been reapplied (#346)."""
         values = (relation,) if isinstance(relation, str) else tuple(relation)
         refuse_nul({"owner": owner, "relation": list(values), "cursor": cursor}, ("query",))
-        return await catalog_personas.list_personas(
+        page = await catalog_personas.list_personas(
             self.db,
             owner=ownership.owner_filter(owner),
             relations=[
@@ -2609,6 +2636,11 @@ class Engine:
             ],
             limit=limit,
             cursor=cursor,
+        )
+        if (block := await self._catalog_block()) is None:
+            return page
+        return dataclasses.replace(
+            page, items=[p for p in page.items if not block.hides(catalog_block.PERSONA, p.id)]
         )
 
     async def update_persona(
@@ -2777,13 +2809,17 @@ class Engine:
         count, newest first. ``cursors`` maps a page (``stories``, ``related.stories``, …) to its
         previous page's ``next_cursor``. An unknown principal answers empty pages. A story the
         erasure reconciler holds blocked is listed without its name (#359); the ledger is
-        compared first, as for ``list_stories`` (#360)."""
+        compared first, as for ``list_stories`` (#360). So is a catalog entry, persona or
+        media asset a pending catalog-scope erasure reaches (#346)."""
         found = principals.lookup_principal_id(principal_id)
         given = dict(cursors or {})
         refuse_nul({"principal": found, "cursors": given}, ("query",))
         if not self._erasure_marked:
             await self._mark_erasures()
-        return await principals.lookup(self.db, found, limit=limit, cursors=given)
+        lookup = await principals.lookup(self.db, found, limit=limit, cursors=given)
+        if (block := await self._catalog_block()) is None:
+            return lookup
+        return principals.without_names(lookup, block.hides)
 
     async def offboard_principal(
         self, ctx: RequestContext, request: offboarding.OffboardingRequest
@@ -2868,7 +2904,8 @@ class Engine:
         lists. 422 ``invalid_erasure_scope`` for a story character scoped to the catalog, and
         ``unknown_erasure_candidate`` for a confirmed id the erasure does not meet; 503
         ``erasure_pending`` for a story the erasure reconciler holds blocked, dry run or not
-        (#383); 404 for an unknown story or, on a real run, an unknown subject; 409
+        (#383), and for a catalog-scope request while a catalog-scope erasure is pending
+        (#346); 404 for an unknown story or, on a real run, an unknown subject; 409
         ``revision_conflict`` for a stale expected revision (story scope); 503
         ``config_key_missing`` without ``EPISTREL_CONFIG_KEY``."""
         principal = self.require_principal(ctx)
@@ -2884,6 +2921,11 @@ class Engine:
             # method has no ``story_id`` parameter, so ``gate_story_methods`` cannot see it.
             await self._erasure_gate(story_id)
             await check_expected_revision(self.db, story_id, ctx.expected_revision)
+        elif await self._catalog_block() is not None:
+            # A catalog-scope erasure, dry run or not, reads the whole catalog (its candidate
+            # snippets quote it): refused while another is pending there (#346, as #383).
+            async with self.db.connect() as conn:
+                await erasure_ledger.refuse_catalog_pending(conn)
         compressor = self.ports.summary_compressor
         if request.dry_run:
             return await erasure.dry_run(
@@ -2960,21 +3002,40 @@ class Engine:
             self._erasure_marked = True
             return report
 
-    async def _replay_gate(self, stored: idempotency.StoredResult) -> None:
+    async def _replay_gate(
+        self, stored: idempotency.StoredResult, record: tuple[str, str] | None = None
+    ) -> None:
         """A stored result naming a story (``create_story``'s, under a deployment-scoped key
         the story gate never sees) is answered only while the story is not blocked: 503
-        ``erasure_pending`` otherwise, as every read of it is (#369). The reapply purges the
-        result, so a later replay answers the reference."""
+        ``erasure_pending`` otherwise, as every read of it is (#369). A deployment-scoped
+        result (``record``, its index record) a pending catalog-scope erasure reaches is 503
+        too (#346). The reapply purges the result, so a later replay answers the reference."""
         body = stored.body
         story_id = body.get("story_id") if isinstance(body, Mapping) else None
         if isinstance(story_id, str):
             await self._erasure_gate(story_id)
+        if record is not None and (block := await self._catalog_block()) is not None:
+            block.check_records([record])
 
     async def _erasure_gate(self, story_id: str) -> None:
         """Every call naming a story: 503 ``erasure_pending`` while it is blocked."""
         if not self._erasure_marked:
             await self._mark_erasures()
         await erasure_ledger.check_story(self.db, story_id)
+
+    async def _catalog_block(self) -> catalog_block.CatalogBlock | None:
+        """What the pending catalog-scope erasures reach (#346, ADR-157), the ledger compared
+        first as for a story; ``None`` while none is pending."""
+        if not self._erasure_marked:
+            await self._mark_erasures()
+        async with self.db.connect() as conn:
+            return await catalog_block.read(conn)
+
+    async def _catalog_gate(self, kind: str, entry_id: str) -> None:
+        """Every call naming a catalog entry: 503 ``erasure_pending`` while a pending
+        catalog-scope erasure reaches it."""
+        if (block := await self._catalog_block()) is not None:
+            block.check_entry(kind, entry_id)
 
     async def _reapply_one(self, pending: erasure_ledger.Pending) -> str:
         """#124's erasure again, with the entry's own id, principal ``system`` and no new
@@ -3207,8 +3268,9 @@ class Engine:
     ) -> media.MediaPage:
         """``live`` assets (``state=retired``: the deleted ones), newest first, a page at a time
         (``cursor``). ``owner``, ``relation`` and ``kind`` narrow the list only when given
-        (FR-AUTH-8)."""
-        return await media.list_assets(
+        (FR-AUTH-8). An asset a pending catalog-scope erasure reaches is left out until it has
+        been reapplied (#346)."""
+        page = await media.list_assets(
             self.db,
             owner=ownership.owner_filter(owner),
             relations=[ownership.parse_relation_filter(value) for value in relation],
@@ -3216,6 +3278,11 @@ class Engine:
             state=state,
             limit=limit,
             cursor=cursor,
+        )
+        if (block := await self._catalog_block()) is None:
+            return page
+        return dataclasses.replace(
+            page, items=[a for a in page.items if not block.hides(catalog_block.MEDIA, a.id)]
         )
 
     async def delete_media(self, ctx: RequestContext, media_id: str) -> media.MediaRetirement:
@@ -3809,6 +3876,92 @@ def gate_story_methods(engine_class: type) -> None:
             setattr(engine_class, name, _erasure_gated(member))
 
 
+CATALOG_PARAMETERS: Mapping[str, str] = {
+    "character_id": catalog_block.CHARACTER,
+    "scenario_id": catalog_block.SCENARIO,
+    "persona_id": catalog_block.PERSONA,
+    "media_id": catalog_block.MEDIA,
+    "upload_id": catalog_block.UPLOAD,
+}
+"""The parameters that name a catalog entry (in a method without a ``story_id``), and its kind
+(#346). ``entity_type`` with ``entity_id`` or ``entry_id`` names one when the type is a catalog
+kind (``CATALOG_ENTITY_TYPES``)."""
+CATALOG_ENTITY_TYPES = frozenset(
+    {catalog_block.CHARACTER, catalog_block.SCENARIO, catalog_block.PERSONA, catalog_block.MEDIA}
+)
+CATALOG_GATED_ATTRIBUTE = "__epistrel_catalog_gated__"
+
+
+def _names_an_entry(parameters: Mapping[str, Any]) -> bool:
+    """Whether a method with ``parameters`` can name a catalog entry (#346). A method naming a
+    story is the story's: its ``character_id`` is a story character."""
+    if "story_id" in parameters:
+        return False
+    return any(name in parameters for name in CATALOG_PARAMETERS) or (
+        "entity_type" in parameters and bool({"entity_id", "entry_id"} & parameters.keys())
+    )
+
+
+def _named_entry(arguments: Mapping[str, Any]) -> tuple[str, str] | None:
+    """The catalog entry a call's bound ``arguments`` name, as ``(kind, id)``."""
+    for name, kind in CATALOG_PARAMETERS.items():
+        value = arguments.get(name)
+        if isinstance(value, str):
+            return kind, value
+    entity_type = arguments.get("entity_type")
+    entity_id = arguments.get("entity_id", arguments.get("entry_id"))
+    if isinstance(entity_id, str) and isinstance(entity_type, str):
+        kind = str(entity_type)
+        if kind in CATALOG_ENTITY_TYPES:
+            return kind, entity_id
+    return None
+
+
+def _catalog_entries_of(request: StoryFromScenario) -> list[tuple[str, str]]:
+    """The catalog entries a story created from a scenario copies: the scenario, the catalog
+    characters filling its roles, and the players' saved personas."""
+    found = [(catalog_block.SCENARIO, str(request.scenario.id))]
+    found += [
+        (catalog_block.CHARACTER, str(slot.catalog_id))
+        for slot in request.slots.values()
+        if slot.catalog_id is not None
+    ]
+    for player in request.players.values():
+        persona_id = getattr(player.persona, "id", None)
+        if isinstance(persona_id, str):
+            found.append((catalog_block.PERSONA, persona_id))
+    return found
+
+
+def _catalog_gated[F: Callable[..., Awaitable[Any]]](method: F) -> F:
+    signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    async def gated(self: Engine, *args: Any, **kwargs: Any) -> Any:
+        entry = _named_entry(signature.bind_partial(self, *args, **kwargs).arguments)
+        if entry is not None:
+            await self._catalog_gate(*entry)
+        return await method(self, *args, **kwargs)
+
+    setattr(gated, CATALOG_GATED_ATTRIBUTE, True)
+    return gated  # type: ignore[return-value]
+
+
+def gate_catalog_methods(engine_class: type) -> None:
+    """Put the catalog's restore-window block (#346, ADR-157) in front of every public coroutine
+    method of ``engine_class`` that can name a catalog entry (``_names_an_entry``), reads and
+    writes alike, deletes included (deleting the subject would take the terms its reapply
+    redacts by): one check in the Engine, so REST and the library refuse alike."""
+    for name, member in list(vars(engine_class).items()):
+        if name.startswith("_") or not inspect.iscoroutinefunction(member):
+            continue
+        if getattr(member, CATALOG_GATED_ATTRIBUTE, False):
+            continue
+        if _names_an_entry(inspect.signature(member).parameters):
+            setattr(engine_class, name, _catalog_gated(member))
+
+
 gate_story_methods(Engine)
+gate_catalog_methods(Engine)
 # One span, summary line and count per outermost call of every public coroutine method (#74).
 instrument.instrument_engine(Engine)

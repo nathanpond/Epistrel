@@ -3,9 +3,10 @@
 A name word that is also a common word ("Will", "Black") is erased only where it is the name:
 capitalised mid-sentence it is certain, lowercase it is never touched, and capitalised at the
 start of a sentence it is a candidate the operator confirms by id. Name words are matched in
-any case, fully case-folded (#373, #384), and hyphenated names by their halves at any dash (#374,
-#385). The write-path guard follows the same rule, so a later reply using the ordinary word is
-not refused.
+any case, fully case-folded and renormalised (#373, #384, #396), hyphenated names by their halves
+at any dash (#374, #385, #397), and a soft hyphen is no character (#395; ADR-156). The write-path
+guard follows the same rule, so a later reply using the ordinary word is not refused, and one
+using a folded or dashed form of the name is (#392).
 """
 
 from __future__ import annotations
@@ -193,6 +194,77 @@ async def test_name_words_match_in_any_case_and_by_their_halves(
         for word in ("Strauß", "STRAUSS", "Strauss", "Jürgen", "JÜRGEN", "Mary", "Jane"):
             assert not any(word in t for t in texts), word
         assert not any("Marisol" in t for t in texts)
+
+
+async def test_names_match_renormalised_and_through_a_soft_hyphen(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#396: "ΤΑΪ́Σ" (``"Ταΐς".upper()``) of "Ταΐς Kalos" and "YILMAZ" of "Ayşe Yılmaz" (the
+    owner's decision: ``ı`` folds to ``i``) are redacted. #397: "Mary" and "Jane" of
+    "Mary\u2212Jane Watson", stored with a minus sign, are. #395: "Wat\u00adson", a soft hyphen
+    inside, is. The residue is 0 each time; Ty is untouched (complement)."""
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        cast = ("Wren", "Ταΐς Kalos", "Ayşe Yılmaz", "Mary\u2212Jane Watson", "Ty")
+        story, ids = await new_story(client, *cast)
+        lib.models.stub.script("generation", ["Ty nods."] * 3)
+        lines = {
+            "Ταΐς Kalos": f"Hi Ταΐς. Hi {'Ταΐς'.upper()}.",
+            "Ayşe Yılmaz": "Hi Yılmaz. Hi YILMAZ.",
+            "Mary\u2212Jane Watson": "Hi Mary. Hi Jane. Hi Wat\u00adson.",
+        }
+        for line in lines.values():
+            await played(client, story, body(ids["Wren"], line))
+        for name in lines:
+            done = await e.erase(client, "character", ids[name], story)
+            assert done["residue"] == 0, name
+        texts = await _texts(engine, story)
+        assert texts.count("Hi [erased]. Hi [erased].") == 2, texts
+        assert "Hi [erased]. Hi [erased]. Hi [erased]." in texts
+        assert texts.count("Ty nods.") == 3
+
+
+async def test_the_guard_refuses_every_folded_or_dashed_form(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#392: the write-path guard's own normalisation, end to end. After erasing "Jürgen
+    Strauß", "İpek Kaya" and "Mary-Jane Watson" (whose halves are Mary Smith's and Jane Doe's
+    too, so "Mary-Jane" and "Watson" are her only terms), a model reply naming one of them as
+    "Strauß", "STRAUSS", "İpek", "İPEK", or "Mary-Jane" with a non-breaking hyphen or an en
+    dash is refused (409 ``erased_subject_referenced``) after its regeneration budget.
+    Complement: a reply naming Mary Smith and Jane Doe answers 200."""
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        erased = ("Jürgen Strauß", "İpek Kaya", "Mary-Jane Watson")
+        story, ids = await new_story(client, "Wren", *erased, "Mary Smith", "Jane Doe", "Ty")
+        lib.models.stub.script("generation", ["Ty nods."])
+        await played(client, story, body(ids["Wren"], "Hello, Ty."))
+        for name in erased:
+            done = await e.erase(client, "character", ids[name], story)
+            assert done["residue"] == 0, name
+        budget = int(
+            await scalar(
+                engine,
+                "SELECT coalesce((settings->>'regenerate_retry_budget')::int, 2) "
+                "FROM stories WHERE id = :s",
+                s=story,
+            )
+        )
+        for reply in (
+            "Ty sees Strauß.",
+            "Ty sees STRAUSS.",
+            "Ty sees İpek.",
+            "Ty sees İPEK.",
+            "Ty sees Mary\u2011Jane.",
+            "Ty sees Mary\u2013Jane.",
+        ):
+            lib.models.stub.reset()
+            lib.models.stub.script("generation", [reply] * (budget + 1))
+            refused = await respond(client, story, body(ids["Wren"], "Who is there?"))
+            assert refused.status_code == 409, (reply, refused.text)
+            assert refused.json()["error"]["code"] == "erased_subject_referenced", reply
+        lib.models.stub.reset()
+        lib.models.stub.script("generation", ["Ty sees Mary Smith and Jane Doe."])
+        kept = await respond(client, story, body(ids["Wren"], "Who is there?"))
+        assert kept.status_code == 200, kept.text
 
 
 async def test_an_erasure_re_indexes_the_story_before_it_redacts(

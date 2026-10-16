@@ -12,13 +12,14 @@ steps and before the subject index is written.
 hashes of the certain terms it scanned (``scan_term_hashes``: HMAC-SHA256 under
 ``EPISTREL_CONFIG_KEY`` of each term the erasure matcher guards, ``erase.term_hashes``; ADR-154),
 never the terms. The guard hashes every span of one to ``MAX_NGRAM`` words of each text
-(normalised: NFC, case-folded, whitespace runs as one space; spans start and end at word
-boundaries, so a possessive ``'s`` still matches), and every word capitalised in the middle of a
-sentence in its marked form (``matcher.guard_spans``: a name word that is a common word is
-guarded only so, never "it will rain"), with the same key and looks for a hash the ledger
-holds. Structured references are compared by id: an event's speaking character, its
-``character_id`` and ``*character_ids`` keys, against the erasure's subject and the story
-characters it deleted (its ``erasure_marker`` events on ``characters``).
+(normalised: the matcher's fold, ``matcher.normalized``, whitespace runs as one space;
+ADR-155, ADR-156; spans start and end at word boundaries, so a possessive ``'s`` still
+matches), and every word capitalised in the middle of a sentence in its marked form
+(``matcher.guard_spans``: a name word that is a common word is guarded only so, never "it
+will rain"), with the same key and looks for a hash the ledger holds. Structured references
+are compared by id: an event's speaking character, its ``character_id`` and ``*character_ids``
+keys, against the erasure's subject and the story characters it deleted (its
+``erasure_marker`` events on ``characters``).
 
 **Whose text.** Engine, system and model text is always checked: it comes from context the
 Engine assembled, which may predate the erasure. Text a consumer wrote (``player`` and

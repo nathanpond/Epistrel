@@ -9,9 +9,11 @@ words of a multi-word name, less titles, particles and the words another subject
 scope uses: ``index.with_name_parts``). Every occurrence, on the NFC form of the text, as a whole
 word or phrase (Unicode word boundaries, any run of whitespace matching a space, longer terms
 first; terms shorter than ``MIN_TERM_CHARS`` never match), is one ``Mention`` of a ``Rule``.
-Text and terms are compared **folded** (``fold``: full case-folding, so "Strauß", "STRAUSS" and
-"Strauss" are one word and "İpek", "IPEK" and "i̇pek" another; every dash, ``Pd`` and the soft
-hyphen, as ``-``: #384, #385); a mention's span is the original text's:
+Text and terms are compared **folded** (``fold``: full case-folding, then NFC again, so
+"Strauß", "STRAUSS" and "Strauss" are one word, "İpek", "IPEK" and "i̇pek" another, "Ταΐς" and
+"ΤΑΪ́Σ" a third, and ``ı`` is ``i``, so "YILMAZ" is "Yılmaz"; every dash, ``Pd`` and the minus
+sign, as ``-``; a soft hyphen is no character at all: #384, #385, #395, #396, #397, ADR-156); a
+mention's span is the original text's:
 
 - **name** (certain): a multi-word name or alias, in any case;
 - **part** (certain): a part, in any case, each half of a hyphenated word (any dash) being a
@@ -72,11 +74,19 @@ _SKIPPED = _QUOTES | frozenset("()[]{}<>*_")
 _ENDS = frozenset(".!?…:")
 _LINE_BREAKS = frozenset("\n\r\u2028\u2029\x85")
 DASHES = "".join(
-    sorted({chr(c) for c in range(0x10000) if unicodedata.category(chr(c)) == "Pd"} | {"\u00ad"})
+    sorted(
+        {chr(c) for c in range(0x10000) if unicodedata.category(chr(c)) == "Pd"}
+        | {"\u2212", "\u2043"}
+    )
 )
-"""Every dash (Unicode ``Pd``) and the soft hyphen: one ``-`` when folded, and each splits a
-hyphenated name into parts (``index.name_parts``)."""
-_DASH_TO_HYPHEN = str.maketrans(dict.fromkeys(DASHES, "-"))
+"""Every dash (Unicode ``Pd``), the minus sign and the hyphen bullet (#397): one ``-`` when
+folded, and each splits a hyphenated name into parts (``index.name_parts``)."""
+SOFT_HYPHEN = "\u00ad"
+"""A hyphenation hint, shown only at a line break: folded away, so "Wat\u00adson" is "watson",
+and never a split (#395)."""
+_FOLD_TABLE = str.maketrans({**dict.fromkeys(DASHES, "-"), "\u0131": "i", SOFT_HYPHEN: None})
+"""Dashes as ``-``, dotless ``ı`` as ``i`` (the owner's decision on #396: "YILMAZ".casefold() is
+"yilmaz"), the soft hyphen removed."""
 _COMBINING_DOT = "\u0307"
 
 
@@ -110,15 +120,50 @@ def nfc(value: str) -> str:
 
 @lru_cache(maxsize=4096)
 def _fold_char(char: str) -> str:
-    return char.casefold().replace("i" + _COMBINING_DOT, "i").translate(_DASH_TO_HYPHEN)
+    return char.casefold().replace("i" + _COMBINING_DOT, "i").translate(_FOLD_TABLE)
+
+
+def _composed(
+    out: list[str], starts: list[int], ends: list[int]
+) -> tuple[str, list[int], list[int]]:
+    """``out`` back in NFC (casefolding ``Ϊ`` + U+0301 gives ``ϊ`` + U+0301, which is ``ΐ``:
+    #396), composed per starter and the combining marks after it; a cluster that changes maps
+    each of its characters to the cluster's whole source range."""
+    joined = "".join(out)
+    if unicodedata.is_normalized("NFC", joined):
+        return joined, starts, ends
+    chars: list[str] = []
+    new_starts: list[int] = []
+    new_ends: list[int] = []
+    i = 0
+    while i < len(out):
+        j = i + 1
+        while j < len(out) and unicodedata.combining(out[j]):
+            j += 1
+        cluster = "".join(out[i:j])
+        composed = unicodedata.normalize("NFC", cluster)
+        if composed == cluster:
+            chars += out[i:j]
+            new_starts += starts[i:j]
+            new_ends += ends[i:j]
+        else:
+            chars += composed
+            new_starts += [starts[i]] * len(composed)
+            new_ends += [max(ends[i:j])] * len(composed)
+        i = j
+    return "".join(chars), new_starts, new_ends
 
 
 def _folded(text: str) -> tuple[str, list[int] | None, list[int] | None]:
     """The NFC ``text`` folded (see ``fold``), with each folded character's source start and
     end in ``text`` (``None``, ``None`` when every character folds to exactly one)."""
-    simple = text.casefold()
-    if len(simple) == len(text) and _COMBINING_DOT not in text:
-        return simple.translate(_DASH_TO_HYPHEN), None, None
+    simple = text.casefold().translate(_FOLD_TABLE)
+    if (
+        len(simple) == len(text)
+        and _COMBINING_DOT not in text
+        and unicodedata.is_normalized("NFC", simple)
+    ):
+        return simple, None, None
     out: list[str] = []
     starts: list[int] = []
     ends: list[int] = []
@@ -126,16 +171,17 @@ def _folded(text: str) -> tuple[str, list[int] | None, list[int] | None]:
         if char == _COMBINING_DOT and out and out[-1] == "i":
             ends[-1] = k + 1  # "i" + a combining dot above folds as "i" ("İ" does too)
             continue
-        for folded in _fold_char(char):
+        for folded in _fold_char(char):  # a soft hyphen folds to nothing
             out.append(folded)
             starts.append(k)
             ends.append(k + 1)
-    return "".join(out), starts, ends
+    return _composed(out, starts, ends)
 
 
 def fold(value: str) -> str:
     """``value`` as the matcher compares it: NFC, fully case-folded (``ß`` is ``ss``, ``İ`` is
-    ``i``, as is ``i`` with a combining dot above), every dash (``DASHES``) a ``-``."""
+    ``i``, as is ``i`` with a combining dot above, and ``ı`` is ``i``), NFC again (``ΐ``), every
+    dash (``DASHES``) a ``-``, and no soft hyphen (ADR-156)."""
     return _folded(nfc(value))[0]
 
 
@@ -160,9 +206,10 @@ def common_words() -> frozenset[str]:
 
 
 def is_common(term: str) -> bool:
-    """Whether ``term`` is one word on the common-word list."""
+    """Whether ``term`` is one word on the common-word list, compared folded (``fold``: a name
+    "Kıt" is the common word "kit", ADR-156)."""
     word = _collapsed(term)
-    return " " not in word and word.casefold() in common_words()
+    return " " not in word and fold(word) in common_words()
 
 
 def sentence_start(text: str, start: int) -> bool:
@@ -330,6 +377,7 @@ __all__ = [
     "DASHES",
     "MIN_TERM_CHARS",
     "NAME_PARTICLES",
+    "SOFT_HYPHEN",
     "Matcher",
     "Mention",
     "Rule",

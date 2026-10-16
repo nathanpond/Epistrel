@@ -10,10 +10,10 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core.config_changes import read_settings, redact
+from epistrel.core.config_changes import SECTIONS, read_section, read_settings, redact
 from epistrel.core.deployment import apply_settings
 from epistrel.core.ids import new_ulid, ulid_after
-from epistrel.core.settings_schema import DeploymentSettings
+from epistrel.core.settings_schema import DeploymentSettings, TurnQueueDefaults
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import new_story, respond_client
@@ -101,6 +101,66 @@ async def test_admin_settings_cover_every_setting(
                 headers=OPERATOR,
             )
             assert restored.status_code == 200, restored.text
+
+
+STORED: dict[str, Any] = {
+    "lite_summary_chunk": 12,
+    "max_pinned_memories": 51,
+    "idempotency_result_window": 25,
+    "structured_retry_budget": 3,
+    "rating_check_model_calls_per_record": 3,
+    "audit_retention_days": 30,
+    "job_retention_days": 8,
+    "offboarding_report_retention_days": 91,
+    "rating_check_retention_days": 31,
+    "worker_heartbeat_timeout": 10.0,
+    "timer_lag_alert": 120.0,
+    "media_sweep_interval": 7200,
+    "validation_model_calls": 1,
+    "feedback_text_max_chars": 1999,
+    "erasure_shared_media": "retire",
+}
+"""A non-default value of one setting or more in every section of the settings document
+(all of #315's three missing sections' settings among them)."""
+
+
+async def test_a_write_keeps_every_other_section(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """Every section of the settings document reads back as stored, and a ``PUT`` of one
+    unrelated setting leaves the others as they were, both on ``/admin/settings`` and in what
+    the retention sweep, ``/health`` and erasure read (``read_section``; #315, FR-CONC-14,15;
+    FR-ADMIN-2 for the erasure's ``erasure_shared_media``).
+    Before #315 the retention, worker-health and erasure settings read as their defaults and
+    the next write reset them."""
+    views = {name: view for view in SECTIONS for name in view.model_fields}
+    assert {views[name] for name in STORED} == set(SECTIONS) - {TurnQueueDefaults}
+    async with respond_client(stub_settings, engine) as (client, _):
+        start = (await client.get("/admin/settings", headers=READ)).json()
+        assert all(start[name] != value for name, value in STORED.items())
+        try:
+            stored = await client.put("/admin/settings", json=STORED, headers=OPERATOR)
+            assert stored.status_code == 200, stored.text
+            assert {name: stored.json()[name] for name in STORED} == STORED
+            unrelated = await client.put(
+                "/admin/settings", json={"turn_queue_max": 9}, headers=OPERATOR
+            )
+            assert unrelated.status_code == 200, unrelated.text
+            assert unrelated.json()["turn_queue_max"] == 9
+            assert {name: unrelated.json()[name] for name in STORED} == STORED
+            after = (await client.get("/admin/settings", headers=READ)).json()
+            assert {name: after[name] for name in STORED} == STORED
+            for name, value in STORED.items():
+                assert getattr(await read_section(engine, views[name]), name) == value, name
+        finally:
+            restored = await client.put(
+                "/admin/settings",
+                json={name: start[name] for name in (*STORED, "turn_queue_max")},
+                headers=OPERATOR,
+            )
+            assert restored.status_code == 200, restored.text
+            for name in STORED:
+                assert getattr(await read_section(engine, views[name]), name) == start[name]
 
 
 async def test_listings_filter_page_and_redact(

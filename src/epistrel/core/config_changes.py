@@ -48,17 +48,11 @@ from epistrel.core.settings_schema import (
     DEFAULT_LISTING_STATUS_VALUES,
     DEFAULT_MAX_CHARACTERS_AT_START,
     DEPLOYMENT_COLUMNS,
-    CatalogValidationSettings,
     ConfigClass,
     DeploymentSettings,
-    FeedbackSettings,
     GuardrailSettings,
-    IdempotencySettings,
     LiteDefaults,
-    MediaSettings,
     StoryTextCaps,
-    StructuredSettings,
-    TurnQueueDefaults,
 )
 from epistrel.core.tables import config_changes, deployment_state, events
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -222,20 +216,14 @@ def _change_id(conn: AsyncConnection) -> str:
 
 # -- the deployment's state ----------------------------------------------------------------------
 
-SECTIONS: tuple[type[BaseModel], ...] = (
-    LiteDefaults,
-    StoryTextCaps,
-    IdempotencySettings,
-    TurnQueueDefaults,
-    StructuredSettings,
-    GuardrailSettings,
-    MediaSettings,
-    CatalogValidationSettings,
-    FeedbackSettings,
+SECTIONS: tuple[type[BaseModel], ...] = tuple(
+    base for base in DeploymentSettings.__bases__ if issubclass(base, BaseModel)
 )
-"""The views of ``deployment_state.settings`` earlier stories read
-(#53/#57/#60/#61/#63/#68), the media settings (#105), the catalog validation's (#111) and
-message feedback's (#112). #69's call cap moved to ``profile_defaults`` (#113)."""
+"""The views of ``deployment_state.settings`` that ``document_settings`` keeps: every section
+``DeploymentSettings`` is built from, derived from its bases so that a new section cannot be
+missed (#315: a hand-kept list lacked ``RetentionSettings``, ``WorkerHealthSettings`` and
+``ErasureSettings``, so ``/admin/settings`` reported their defaults and the next write reset
+them)."""
 
 
 def section[M: BaseModel](view: type[M], document: Mapping[str, Any] | None) -> M:

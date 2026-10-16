@@ -18,10 +18,11 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
-from epistrel.core.config_changes import read_settings
+from epistrel.core.config_changes import SECTIONS, document_settings, read_settings
 from epistrel.core.deployment import SettingsPatch, apply_settings
 from epistrel.core.ratings import RatingFields, create_rating
 from epistrel.core.settings_schema import (
+    DEPLOYMENT_COLUMNS,
     PROSPECTIVE,
     ConfigClass,
     DeploymentSettings,
@@ -141,6 +142,19 @@ def test_config_changes_has_one_writer() -> None:
             ):
                 writers.append(path.relative_to(SRC).as_posix())
     assert writers == ["core/config_changes.py"]
+
+
+def test_sections_cover_every_deployment_setting() -> None:
+    """Every section ``DeploymentSettings`` is built from is a view ``document_settings``
+    keeps, and every setting outside the ``deployment_state`` columns belongs to one of them
+    (#315: ``RetentionSettings``, ``WorkerHealthSettings`` and ``ErasureSettings`` were missing,
+    so ``/admin/settings`` read their defaults and the next write reset them)."""
+    bases = {base for base in DeploymentSettings.__bases__ if issubclass(base, BaseModel)}
+    assert bases <= set(SECTIONS), sorted(b.__name__ for b in bases - set(SECTIONS))
+    kept = {name for view in SECTIONS for name in view.model_fields}
+    document = set(DeploymentSettings.model_fields) - set(DEPLOYMENT_COLUMNS)
+    assert document <= kept, sorted(document - kept)
+    assert set(document_settings({})) == document
 
 
 async def _story_revisions(engine: AsyncEngine, story: str) -> tuple[int, int]:

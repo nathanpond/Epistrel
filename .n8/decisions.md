@@ -6291,3 +6291,22 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** [Rule 3] The regression test's docstring also cites FR-ADMIN-2 (erasure, M3), so it gates from M3. Citing only FR-CONC-14,15 made it an M2 part, and `check-lexicon` refused its use of `erasure_shared_media` ("erasure" is an M3 term).
   **Why:** The test does check the setting erasure reads, so the citation is accurate. It is not a way around the gate: the lexicon gate stays untouched and passes, 0 violations.
   **Issue:** #315
+- **Decision:** [Rule 1] Finding: over HTTP, `strict_json_body` (#73) already checks `PUT /admin/settings` and `PATCH /stories/{id}/settings` bodies in strict JSON mode, so `true`, `"7"` and `2048.0` were already 422 there. The coercion the issue reproduced is in the library: `SettingsPatch.model_validate`, `apply_settings` (via `DeploymentSettings`) and `update_story_settings` (via `StorySettings`) validate in lax mode, so a library caller's `true` was stored as `1`. Fixed by typing every integer field `StrictInt` in `SettingsPatch`, in every `DeploymentSettings` section and column, and in `StorySettings`. That also covers `update_story_text_caps` and `update_idempotency_settings`. The JSON Schema is still `integer`, so the OpenAPI document is unchanged.
+  **Why:** The issue's "likely fix", applied field by field rather than `strict=True` on the model. Model-wide strict in Python mode would refuse string values for enum and `Literal` fields (`erasure_shared_media`, `turn_concurrency`), and it does not reach the nested profile document.
+  **Issue:** #322
+- **Decision:** [Rule 1, Discretion] The three number settings (`uncertain_below`, `worker_heartbeat_timeout`, `timer_lag_alert`) are now `StrictFloat` in `SettingsPatch` and their sections. They had the same coercion (`true` became `1.0`, `"0.5"` became `0.5`). A JSON integer is still accepted as a number. `profile_defaults` was not changed: `effective.check_document` already parses it strictly.
+  **Why:** Same bug class on the same write path. FR-API-4 says inputs are validated as the schema types them.
+  **Issue:** #322
+- **Decision:** Tests sit in `tests/integration/test_config_changes.py`, unmarked and citing FR-API-4 (M2):
+  - `test_settings_refuse_values_only_lax_coercion_accepts` takes every integer and number setting from the models' JSON Schemas, so a new setting is covered automatically.
+  - `test_library_writes_refuse_a_mistyped_integer` checks a 422 at `body.<field>` with no revision moved.
+  - `test_routes_refuse_a_mistyped_integer` checks the HTTP 422 and that nothing was written.
+  The first two fail without the fix. The route test passes before and after, because #73 already covered that path; it stays as a guard.
+  **Why:** The issue asked for a test that `true`, `"7"` and `2.5` are refused for a representative integer setting, with the story settings checked too.
+  **Issue:** #322
+- **Decision:** The library-level coercion outside the settings (e.g. a scenario document's `story_settings_defaults.audit_retention_days: true` becomes `1`) was filed as #427 (`needs-triage`, `area:core`) and not fixed inline.
+  **Why:** It is outside #322's scope (deployment and story settings). The brief's rule for out-of-scope findings is to file them.
+  **Issue:** #322
+- **Decision:** [Rule 3] `tests/integration/test_i_18.py`'s `_bounded` (I-18's FR-PROF-14 property strategy) now unwraps `Annotated` before matching `int`/`float`. Pydantic leaves a nullable `StrictInt | None` (`StorySettings.turn_queue_max`) as `Annotated[int, Strict()] | None`, so the helper stopped recognising it as `int` and failed asking for a strategy. The strategy, its bounds and the property it checks are unchanged.
+  **Why:** The change from `int` to `StrictInt` broke a test that reads the field types. Every story setting is still drawn and checked.
+  **Issue:** #322

@@ -43,6 +43,7 @@ from pydantic import (
     Field,
     PlainValidator,
     StrictBool,
+    StrictFloat,
     StrictInt,
     WithJsonSchema,
     field_validator,
@@ -150,7 +151,7 @@ class LiteDefaults(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    lite_summary_chunk: Annotated[int, PROSPECTIVE] = Field(
+    lite_summary_chunk: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_LITE_SUMMARY_CHUNK, ge=2, le=MAX_LITE_SUMMARY_CHUNK
     )
     """Transcript rows per level-0 summary segment (#72); chunks are whole turns, two rows
@@ -176,10 +177,10 @@ class StoryTextCaps(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    max_pinned_memories: Annotated[int, PROSPECTIVE] = Field(
+    max_pinned_memories: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MAX_PINNED_MEMORIES, ge=1, le=MAX_PINNED_MEMORIES_LIMIT
     )
-    max_custom_instructions_chars: Annotated[int, PROSPECTIVE] = Field(
+    max_custom_instructions_chars: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MAX_CUSTOM_INSTRUCTIONS_CHARS, ge=1, le=MAX_CUSTOM_INSTRUCTIONS_CHARS_LIMIT
     )
 
@@ -197,7 +198,7 @@ class IdempotencySettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    idempotency_result_window: Annotated[int, PROSPECTIVE] = Field(
+    idempotency_result_window: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_IDEMPOTENCY_RESULT_WINDOW_HOURS,
         ge=1,
         le=MAX_IDEMPOTENCY_RESULT_WINDOW_HOURS,
@@ -267,7 +268,7 @@ class TurnQueueDefaults(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    turn_queue_max: Annotated[int, PROSPECTIVE] = Field(
+    turn_queue_max: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_TURN_QUEUE_MAX, ge=TURN_QUEUE_MAX_MIN, le=TURN_QUEUE_MAX_LIMIT
     )
 
@@ -283,7 +284,7 @@ class StorySettings(BaseModel):
 
     model_config = ConfigDict(extra="allow", frozen=True, use_attribute_docstrings=True)
 
-    regenerate_retry_budget: Annotated[int, PROSPECTIVE] = Field(
+    regenerate_retry_budget: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_REGENERATE_RETRY_BUDGET, ge=0, le=10
     )
     """How many times a turn whose read set was touched is regenerated before the call fails
@@ -294,7 +295,7 @@ class StorySettings(BaseModel):
     (423 ``story_busy``), ``queue`` queues it in a per-story FIFO (#63). Stored in its own
     ``stories`` column. Prospective: a change applies to requests that arrive after it."""
 
-    turn_queue_max: Annotated[int | None, PROSPECTIVE] = Field(
+    turn_queue_max: Annotated[StrictInt | None, PROSPECTIVE] = Field(
         default=None, ge=TURN_QUEUE_MAX_MIN, le=TURN_QUEUE_MAX_LIMIT
     )
     """How many turns may wait behind the running one under ``queue`` (``None``: the
@@ -306,12 +307,12 @@ class StorySettings(BaseModel):
     actor (FR-RESP-12): ``character:<id>``, never ``omniscient`` (#59 resolves it).
     Interpretive: a Lite turn depends on it (#64)."""
 
-    lite_summary_chunk: Annotated[int | None, PROSPECTIVE] = Field(
+    lite_summary_chunk: Annotated[StrictInt | None, PROSPECTIVE] = Field(
         default=None, ge=2, le=MAX_LITE_SUMMARY_CHUNK
     )
     """The story's override of the transcript rows per level-0 summary segment (#72)."""
 
-    audit_retention_days: Annotated[int | None, PROSPECTIVE] = Field(
+    audit_retention_days: Annotated[StrictInt | None, PROSPECTIVE] = Field(
         default=None, ge=AUDIT_RETENTION_MIN_DAYS, le=AUDIT_RETENTION_MAX_DAYS
     )
     """How many days this story's audit records are kept before the ``retention_sweep`` deletes
@@ -349,10 +350,10 @@ class StructuredSettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    structured_retry_budget: Annotated[int, PROSPECTIVE] = Field(
+    structured_retry_budget: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_STRUCTURED_RETRY_BUDGET, ge=0, le=10
     )
-    uncertain_below: Annotated[float, INTERPRETIVE] = Field(
+    uncertain_below: Annotated[StrictFloat, INTERPRETIVE] = Field(
         default=DEFAULT_UNCERTAIN_BELOW, ge=0.0, le=1.0
     )
 
@@ -385,7 +386,7 @@ class GuardrailSettings(BaseModel):
     default_safe_fallback: Annotated[str, PROSPECTIVE] = Field(
         default=DEFAULT_SAFE_FALLBACK, min_length=1, max_length=SAFE_FALLBACK_MAX_CHARS
     )
-    rating_check_model_calls_per_record: Annotated[int, PROSPECTIVE] = Field(
+    rating_check_model_calls_per_record: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_RATING_CHECK_MODEL_CALLS, ge=0, le=RATING_CHECK_MODEL_CALLS_MAX
     )
 
@@ -415,18 +416,18 @@ class RetentionSettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    audit_retention_days: Annotated[int, PROSPECTIVE] = Field(
+    audit_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_AUDIT_RETENTION_DAYS,
         ge=AUDIT_RETENTION_MIN_DAYS,
         le=AUDIT_RETENTION_MAX_DAYS,
     )
-    job_retention_days: Annotated[int, PROSPECTIVE] = Field(
+    job_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_JOB_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
-    offboarding_report_retention_days: Annotated[int, PROSPECTIVE] = Field(
+    offboarding_report_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_OFFBOARDING_REPORT_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
-    rating_check_retention_days: Annotated[int, PROSPECTIVE] = Field(
+    rating_check_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_RATING_CHECK_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
 
@@ -439,10 +440,10 @@ class WorkerHealthSettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    worker_heartbeat_timeout: Annotated[float, PROSPECTIVE] = Field(
+    worker_heartbeat_timeout: Annotated[StrictFloat, PROSPECTIVE] = Field(
         default=DEFAULT_WORKER_HEARTBEAT_TIMEOUT_S, ge=1.0, le=3600.0
     )
-    timer_lag_alert: Annotated[float, PROSPECTIVE] = Field(
+    timer_lag_alert: Annotated[StrictFloat, PROSPECTIVE] = Field(
         default=DEFAULT_TIMER_LAG_ALERT_S, ge=1.0, le=86_400.0
     )
 
@@ -511,32 +512,32 @@ class MediaSettings(BaseModel):
     media_allowed_types: Annotated[list[MimeType], PROSPECTIVE] = Field(
         default_factory=lambda: list(DEFAULT_MEDIA_ALLOWED_TYPES), min_length=1, max_length=50
     )
-    media_max_bytes: Annotated[int, PROSPECTIVE] = Field(
+    media_max_bytes: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_MAX_BYTES, ge=1, le=MEDIA_MAX_BYTES_LIMIT
     )
     media_moderation_webhook_url: Annotated[HttpUrl | None, PROSPECTIVE] = None
-    media_moderation_timeout_ms: Annotated[int, PROSPECTIVE] = Field(
+    media_moderation_timeout_ms: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_MODERATION_TIMEOUT_MS,
         ge=MEDIA_MODERATION_TIMEOUT_MIN_MS,
         le=MEDIA_MODERATION_TIMEOUT_MAX_MS,
     )
-    media_sweep_interval: Annotated[int, PROSPECTIVE] = Field(
+    media_sweep_interval: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_SWEEP_INTERVAL_S,
         ge=MEDIA_SWEEP_INTERVAL_MIN_S,
         le=MEDIA_SWEEP_INTERVAL_MAX_S,
     )
     public_base_url: Annotated[HttpUrl | None, PROSPECTIVE] = None
-    media_signed_url_ttl: Annotated[int, PROSPECTIVE] = Field(
+    media_signed_url_ttl: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_SIGNED_URL_TTL_S,
         ge=MEDIA_SIGNED_URL_TTL_MIN_S,
         le=MEDIA_SIGNED_URL_TTL_MAX_S,
     )
-    media_multipart_threshold: Annotated[int, PROSPECTIVE] = Field(
+    media_multipart_threshold: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_MULTIPART_THRESHOLD,
         ge=MEDIA_MULTIPART_THRESHOLD_MIN,
         le=MEDIA_MAX_BYTES_LIMIT,
     )
-    media_upload_ttl: Annotated[int, PROSPECTIVE] = Field(
+    media_upload_ttl: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MEDIA_UPLOAD_TTL_S, ge=MEDIA_UPLOAD_TTL_MIN_S, le=MEDIA_UPLOAD_TTL_MAX_S
     )
 
@@ -580,7 +581,7 @@ class CatalogValidationSettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    validation_model_calls: Annotated[int, PROSPECTIVE] = Field(
+    validation_model_calls: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_VALIDATION_MODEL_CALLS, ge=0, le=MAX_VALIDATION_MODEL_CALLS
     )
     require_primary_image: Annotated[bool, PROSPECTIVE] = False
@@ -813,19 +814,19 @@ class DeploymentSettings(
     default_content_rating_id: Annotated[str, INTERPRETIVE] = Field(min_length=1, max_length=64)
     """The rating a story created without one gets (FR-RATE-1). Interpretive."""
 
-    minor_age_threshold: Annotated[int, INTERPRETIVE] = Field(
+    minor_age_threshold: Annotated[StrictInt, INTERPRETIVE] = Field(
         default=DEFAULT_MINOR_AGE_THRESHOLD, ge=MINOR_AGE_THRESHOLD_MIN, le=MINOR_AGE_THRESHOLD_MAX
     )
     """Below this true age a character is a minor (docs/02 §4.12). Interpretive."""
 
-    max_characters_at_start_default: Annotated[int, PROSPECTIVE] = Field(
+    max_characters_at_start_default: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_MAX_CHARACTERS_AT_START, ge=CAST_LIMIT_MIN, le=CAST_LIMIT_MAX
     )
     """The most character slots, player slots included, a story created from a scenario starts
     with when the scenario sets none (FR-SCN-4; default 16). Prospective: a story created after
     a change uses the new value."""
 
-    max_characters_at_start_ceiling: Annotated[int | None, PROSPECTIVE] = Field(
+    max_characters_at_start_ceiling: Annotated[StrictInt | None, PROSPECTIVE] = Field(
         default=None, ge=CAST_LIMIT_MIN, le=CAST_LIMIT_MAX
     )
     """An optional deployment-wide ceiling (``null``: none) on every starting-cast limit: a

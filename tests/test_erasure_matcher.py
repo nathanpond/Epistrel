@@ -1,4 +1,5 @@
-"""The erasure matcher's rules, one by one (ADR-154; #372, #373, #374): no database."""
+"""The erasure matcher's rules, one by one (ADR-154, ADR-155, ADR-156; #372, #373, #374): no
+database."""
 
 from __future__ import annotations
 
@@ -6,8 +7,10 @@ from importlib import resources
 
 import pytest
 
+from epistrel.core.erasure import guard
 from epistrel.core.erasure import matcher as m
-from epistrel.core.erasure.index import name_parts
+from epistrel.core.erasure.erase import term_hashes
+from epistrel.core.erasure.index import name_parts, with_name_parts
 from epistrel.core.erasure.redact import Redactor, candidate_id
 from epistrel.core.tables.media import MENTION_RULES
 
@@ -105,9 +108,9 @@ def test_hyphenated_halves_match_and_words_never_match_inside_words() -> None:
         ("Jane", "part"),
         ("Mary-Jane", "part"),
     ]
-    # #385: a name stored with any dash (U+2010, U+2011, U+2013, the soft hyphen) has halves,
-    # and matches the same name written with another dash.
-    for dash in ("-", "\u2010", "\u2011", "\u2013", "\u00ad"):
+    # #385, #397: a name stored with any dash (U+2010, U+2011, U+2013, the minus sign, the
+    # hyphen bullet) has halves, and matches the same name written with another dash.
+    for dash in ("-", "\u2010", "\u2011", "\u2013", "\u2212", "\u2043"):
         stored = f"Mary{dash}Jane Watson"
         parts = name_parts(stored)
         assert {"Mary", "Jane"} <= set(parts), dash
@@ -120,6 +123,95 @@ def test_hyphenated_halves_match_and_words_never_match_inside_words() -> None:
     ann = m.matcher(["Ann Lee"], ["Ann", "Lee"])
     assert found(ann, "The Annual report; Annabel and Leeds.") == []
     assert found(ann, "Ann's coat") == [("Ann", "candidate" if m.is_common("Ann") else "part")]
+
+
+def test_a_soft_hyphen_inside_a_word_is_no_character() -> None:
+    """#395 (ADR-156): a soft hyphen (U+00AD) is a hyphenation hint, shown only at a line break.
+    "Wat\u00adson" is "Watson" to the matcher, the redactor and the guard, and a name stored
+    with one is not split at it: its part is the whole word, so plain "Watson" is matched and
+    "Wat" and "Son" are not (complement)."""
+    assert m.fold("Wat\u00adson") == "watson"
+    t, p = with_name_parts([(["Mary-Jane Watson"], ["Mary-Jane Watson"])])[0]
+    assert Redactor(t, p).text("Hi Wat\u00adson.") == "Hi [erased]."
+    t, p = with_name_parts([(["Mary-Jane Wat\u00adson"], ["Mary-Jane Wat\u00adson"])])[0]
+    assert "Wat" not in p
+    assert "son" not in p
+    redactor = Redactor(t, p)
+    assert redactor.text("Hi Watson. Wat and Son.") == "Hi [erased]. Wat and Son."
+    stored = m.matcher(t, p)
+    assert found(stored, "Hi Wat\u00adson!") == [("Wat\u00adson", "part")]  # the source span
+
+
+def test_upper_case_greek_and_dotless_i_are_folded() -> None:
+    """#396: Python's ``upper()`` of a name is matched. "ΤΑΪ́Σ" (U+03AA + U+0301) folds to the
+    NFC "ΐ" of "Ταΐς" (canonical caseless matching: NFC again after case-folding), with the
+    span over both source characters; "YILMAZ" matches "Yılmaz", ``ı`` folding to ``i`` (the
+    owner's decision), and so does the spelling "Yilmaz"; a lowercase common word never does."""
+    greek = m.matcher(["Ταΐς Kalos"], ["Ταΐς", "Kalos"])
+    upper = m.nfc("Ταΐς".upper())  # offsets are the NFC text's
+    assert upper == "\u03a4\u0391\u03aa\u0301\u03a3"
+    assert m.fold(upper) == m.fold("Ταΐς")
+    assert found(greek, f"Hi {upper}. Hi Ταΐς.") == [(upper, "part"), ("Ταΐς", "part")]
+    yilmaz = m.matcher(["Ayşe Yılmaz"], ["Ayşe", "Yılmaz"])
+    assert found(yilmaz, "Hi YILMAZ. Hi Yilmaz. AYŞE YILMAZ!") == [
+        ("YILMAZ", "part"),
+        ("Yilmaz", "part"),
+        ("AYŞE YILMAZ", "name"),
+    ]
+    assert found(m.matcher(["Johann Strauß"], ["Strauß"]), "Hi STRAUSS.") == [("STRAUSS", "part")]
+    # Commonness is decided on the same fold: "Kıt" is the common word "kit" (complement).
+    assert found(m.matcher(["Kıt Aras"], ["Kıt", "Aras"]), "Pack the kit, Kıt.") == [
+        ("Kıt", "part")
+    ]
+
+
+KEY = "a guard test key, not a secret"
+GUARD_PROBES = (
+    "Hi Strauß.",
+    "Hi STRAUSS.",
+    "Hi strauss.",
+    "Hi İpek.",
+    "Hi IPEK.",
+    "Hi i\u0307pek.",
+    "Ty sees Mary\u2011Jane.",
+    "Ty sees Mary\u2013Jane.",
+    "Ty sees Mary-Jane.",
+    "Hi Wat\u00adson.",
+    "Hi \u03a4\u0391\u03aa\u0301\u03a3.",
+    "Hi YILMAZ.",
+)
+"""A form of an erased name each: the guard's own hashes must refuse every one (#392)."""
+GUARD_COMPLEMENTS = ("Hi Straus.", "Ty sees Mary.", "Ty sees Jane Doe.", "Hi Wat.", "Hi Ipekçi.")
+
+
+def test_the_guards_own_normalisation_agrees_with_the_matcher() -> None:
+    """#392: the guard's hashes of a text (``guard.span_hashes``, its own normalisation, not
+    re-normalised here) meet the erasure's term hashes (``erase.term_hashes``, the ledger's
+    construction) exactly when the matcher certainly finds the subject. Every probe form is
+    found and refused (case-folded, dashed, soft-hyphened, Greek upper case, ``ı``); none of the
+    complements is. "Mary" and "Jane" are Mary Smith's and Jane Doe's too, so "Mary-Jane" and
+    "Watson" are Mary-Jane's only terms."""
+    named = with_name_parts(
+        [
+            (["Jürgen Strauß"], ["Jürgen Strauß"]),
+            (["İpek Kaya"], ["İpek Kaya"]),
+            (["Mary-Jane Watson"], ["Mary-Jane Watson"]),
+            (["Mary Smith"], ["Mary Smith"]),
+            (["Jane Doe"], ["Jane Doe"]),
+            (["Ταΐς Kalos"], ["Ταΐς Kalos"]),
+            (["Ayşe Yılmaz"], ["Ayşe Yılmaz"]),
+        ]
+    )
+    erased = [named[k] for k in (0, 1, 2, 5, 6)]
+    assert set(erased[2][1]) == {"Mary-Jane", "Watson"}
+    for terms, parts in erased:
+        assert not set(m.matcher(terms, parts).guard_terms()) & {"mary", "jane"}
+    hashes = {h for terms, parts in erased for h in term_hashes(terms, KEY, parts)}
+    for text in (*GUARD_PROBES, *GUARD_COMPLEMENTS):
+        refused = bool(guard.span_hashes([text], KEY) & hashes)
+        hit = any(m.matcher(terms, parts).hits(text) for terms, parts in erased)
+        assert refused == hit, text
+        assert refused == (text in GUARD_PROBES), text
 
 
 def test_the_guard_hashes_a_common_word_only_capitalised_mid_sentence() -> None:

@@ -154,7 +154,8 @@ async def get_feedback_export(
         "once its file was deleted (by an operator, or seven days after it was written). An "
         "export not yet delivered that holds a case of a story held `blocked_by_erasure` after "
         "a restore is 503 `erasure_pending`, and stays undelivered, until its erasure is "
-        "reapplied (FR-ADMIN-7)."
+        "reapplied; so is every export not yet delivered while a catalog-scope erasure is "
+        "pending (details `story_id: null`), until the catalog reapply (FR-ADMIN-7)."
     ),
     responses={
         http_status.HTTP_200_OK: {

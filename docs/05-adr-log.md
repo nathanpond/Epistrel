@@ -35,7 +35,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144 |
@@ -216,7 +216,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 152 | A short-lived signed URL is enough to read media content | Current | — |
 | 153 | The erasure ledger's file is the authority, and a restore is reconciled before it is served | Current | — |
 | 154 | Erasure redacts only mentions attributed to the subject; ambiguous ones are reported, not guessed | Partly superseded | 155 |
-| 155 | Erasure matches a name in any case by full case-folding, and at any dash | Current | — |
+| 155 | Erasure matches a name in any case by full case-folding, and at any dash | Partly superseded | 156 |
+| 156 | The erasure fold is canonical caseless matching, `ı` is `i`, and a soft hyphen is no character | Current | — |
 
 ---
 
@@ -1470,7 +1471,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 **Decision:** The index records each prose mention's **position** (field, start and end offsets in the NFC text, and the matching rule), never its text. One deterministic matcher, shared by the indexer, erasure, `verify()` and the write-path guard, classifies each occurrence:
 - **Certain (name):** the full name or a declared alias, whole-word and case-insensitive.
 - **Certain (part):** a word of the name that is not a title, a particle, or used by another subject in the same scope.
-  - A word that is not on the bundled common-word list matches in any case, as written (no case-folding) *[superseded by ADR-155: in any case by full case-folding]*, with each half of a hyphenated word matched as well *[revised per ADR-155: split at any dash]*.
+  - A word that is not on the bundled common-word list matches in any case, as written (no case-folding) *[superseded by ADR-155: in any case by full case-folding]*, with each half of a hyphenated word matched as well *[superseded by ADR-155: split at any dash]*.
   - A word on the list matches only when it is capitalised and not at the start of a sentence.
 - **Candidate:** a common-list word of the name that is capitalised at the start of a sentence.
 
@@ -1494,13 +1495,32 @@ The ledger and the write-path guard (FR-ADMIN-9) use certain matches only. The c
 
 ### ADR-155 — Erasure matches a name in any case by full case-folding, and at any dash
 **Status:** Accepted. Amends ADR-154 (how a name word is compared).
+**Amended by:** ADR-156 — the fold renormalises to NFC after case-folding and folds `ı` to `i`; the soft hyphen is removed, not a dash; the minus sign and the hyphen bullet are dashes.
 **Context:** ADR-154 matched a rare name word "in any case, as written (no case-folding)". After erasing "Jürgen Strauß", the forms "STRAUSS" (Python's `"Strauß".upper()`) and "Strauss" survived while `residue` reported 0, because the residue scan uses the same matcher (#384). The write-path guard already case-folded its hashes, so it refused "Strauss" while the matcher did not see it (#388). A name stored with a Unicode hyphen ("Mary‑Jane", U+2011, common in model output) had no halves, and even the ASCII "Mary-Jane" survived (#385). The owner decided on 2026-10-15, at the start of M3's sixth fix pass, that "any case" means full case-folding.
-**Decision:** The matcher compares text and terms **folded**: NFC, Unicode full case-folding (`ß` is `ss`; `İ` and an `i` with a combining dot above are `i`), and every dash (Unicode `Pd`, plus the soft hyphen) as `-`. A mention's span is still the original text's offsets. The write-path guard's normalisation is the same fold, so the guard and the matcher agree. A hyphenated name splits into halves at any dash. Common-word handling is unchanged: it decides by the list and by capitalisation, and folding never makes a lowercase common word match (FR-ADMIN-6, FR-ADMIN-9).
+**Decision:** The matcher compares text and terms **folded**: NFC, Unicode full case-folding (`ß` is `ss`; `İ` and an `i` with a combining dot above are `i`), and every dash (Unicode `Pd`, plus the soft hyphen) as `-` *[superseded by ADR-156: NFC again after case-folding, `ı` as `i`, the soft hyphen removed, and the minus sign and hyphen bullet dashes too]*. A mention's span is still the original text's offsets. The write-path guard's normalisation is the same fold, so the guard and the matcher agree. A hyphenated name splits into halves at any dash. Common-word handling is unchanged: it decides by the list and by capitalisation, and folding never makes a lowercase common word match (FR-ADMIN-6, FR-ADMIN-9).
 **Consequences:**
 - "STRAUSS", "Strauss" and "strauß" are redacted after erasing "Strauß", and the reverse. Residue sees them.
 - A later reply using such a form is refused by the guard, consistently with what the matcher would erase.
 - Ledger rows written before this change hold hashes of the earlier normalisation. They differ only for names with `İ` or a dash other than `-`. M3 is unreleased, so no deployment holds such rows.
 - Tests: `tests/test_erasure_matcher.py` (folding, dashes, guard agreement) and `tests/integration/test_erasure_mentions.py`.
+
+---
+
+### ADR-156 — The erasure fold is canonical caseless matching, `ı` is `i`, and a soft hyphen is no character
+**Status:** Accepted. Amends ADR-155 (the fold).
+**Context:** M3's re-verify at `38bbc6b` found four gaps in ADR-155's fold, each leaving `residue` at 0. Upper-case Greek with precomposed diacritics did not match: `"Ταΐς".upper()` is `ΤΑΪ́Σ`, whose case-fold `ϊ` + U+0301 is not the term's `ι` + U+0308 + U+0301, because the fold did not renormalise (#396). `"Yılmaz".upper()` is `YILMAZ`, and default case-folding maps `I` to `i`, never to `ı` (#396). A soft hyphen inside a word ("Wat" U+00AD "son", shown "Watson") folded to `-`, so neither the matcher nor the guard saw the name, and a name stored with one split at it into `Wat` and `son` (#395). U+2212 MINUS SIGN is not `Pd`, so "Mary−Jane" had no halves (#397). The owner decided on 2026-10-16, at the start of M3's seventh fix pass, that `ı` folds to `i`.
+**Decision:** The fold is NFC, full case-folding, then NFC again per starter and its combining marks (Unicode canonical caseless matching). The offsets still map to the original text, and a recomposed cluster maps to its whole source range. The fold also:
+- maps `ı` (U+0131) to `i` on both sides, so "YILMAZ", "Yılmaz" and "Yilmaz" are one word;
+- removes the soft hyphen (U+00AD), which is a hyphenation hint, so "Wat" U+00AD "son" is "watson" and a stored name never splits at one;
+- counts U+2212 MINUS SIGN and U+2043 HYPHEN BULLET as dashes beside `Pd`.
+
+The guard's normalisation is the same fold (FR-ADMIN-6, FR-ADMIN-9).
+**Consequences:**
+- "ΤΑΪ́Σ" is redacted after erasing "Ταΐς", "YILMAZ" after erasing "Yılmaz", "Wat" U+00AD "son" after erasing "Watson", and "Mary" and "Jane" after erasing "Mary−Jane". The guard refuses each.
+- Folding `ı` to `i` over-matches a little: a name word with `ı` also matches the same word spelt with `i` (Turkish "kıt" and English "kit" are one word to the matcher). Whether a word is common is decided on the same fold, so a name "Kıt" is the common word "kit" and matches only capitalised. The cost is redacting a rare word's dotted-i spelling.
+- A name stored with a soft hyphen between two halves ("Mary" U+00AD "Jane") is one word, "MaryJane". That narrows ADR-155's "plus the soft hyphen".
+- Ledger rows written before this change hash names holding `ı`, a soft hyphen, a minus sign or a decomposable upper case differently. M3 is unreleased, so no deployment holds such rows.
+- Tests: `tests/test_erasure_matcher.py` (the fold, and the guard's own hashes against the ledger's term hashes, #392) and `tests/integration/test_erasure_mentions.py` (end to end, and the guard's 409s).
 
 ---
 

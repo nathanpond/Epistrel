@@ -14,6 +14,8 @@ import inspect
 import io
 import json
 import logging
+import re
+import typing
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -721,7 +723,9 @@ async def test_library_reads_mark_before_they_serve(
 def test_every_story_method_is_gated() -> None:
     """Every public Engine coroutine method that can name a story (a ``story_id``, or an
     ``entity_type`` and ``entity_id``) refuses a blocked story, except the deletion: the check
-    is in the Engine, so REST and the library agree."""
+    is in the Engine, so REST and the library agree. #398: a method that names a story inside
+    a request model (a parameter whose type has a ``story_id``, today ``Engine.erase``) is not
+    seen by the decorator, so its own body must await ``self._erasure_gate``."""
 
     def names_a_story(member: Any) -> bool:
         parameters = inspect.signature(member).parameters
@@ -740,6 +744,28 @@ def test_every_story_method_is_gated() -> None:
     for name in ("list_relations", "add_relation", "remove_relation", "transfer_owner"):
         assert getattr(getattr(Engine, name), ERASURE_GATED_ATTRIBUTE, False), name
     assert not getattr(Engine.delete_story, ERASURE_GATED_ATTRIBUTE, False)
+
+    def names_a_story_in_a_model(member: Any) -> bool:
+        hints = typing.get_type_hints(member)
+        return any(
+            isinstance(kind, type) and hasattr(kind, "story_id")
+            for parameter, kind in hints.items()
+            if parameter != "return"
+        )
+
+    modelled = [
+        name
+        for name, member in vars(Engine).items()
+        if not name.startswith("_")
+        and inspect.iscoroutinefunction(member)
+        and name not in ERASURE_GATE_EXEMPT
+        and not getattr(member, ERASURE_GATED_ATTRIBUTE, False)
+        and names_a_story_in_a_model(member)
+    ]
+    assert "erase" in modelled  # the check sees the shape it is for
+    gate_call = re.compile(r"^\s*await self\._erasure_gate\(", re.MULTILINE)
+    for name in modelled:
+        assert gate_call.search(inspect.getsource(getattr(Engine, name))), name
 
 
 # -- backup verify ------------------------------------------------------------------------------
@@ -1025,3 +1051,13 @@ async def test_a_pending_catalog_erasure_holds_undelivered_exports(
     assert delivered.status_code == 200, delivered.text
     assert "[erased]" in delivered.text
     assert ledger.SUBJECT not in delivered.text
+
+
+def test_the_export_content_route_states_both_pending_refusals() -> None:
+    """#399: the content route's description (committed ``docs/openapi.json``, held equal to the
+    generated schema by ``epistrel.tools.openapi --check``) names the story-scope 503 and the
+    catalog-scope one #378 added."""
+    schema = json.loads((Path(__file__).parents[2] / "docs" / "openapi.json").read_text())
+    route = schema["paths"]["/admin/feedback/exports/{export_id}/content"]["get"]
+    assert "`blocked_by_erasure`" in route["description"]
+    assert "while a catalog-scope erasure is pending" in route["description"]

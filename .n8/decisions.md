@@ -6100,3 +6100,57 @@ Fix pass on the bugs the M3 re-verify at `a172145` filed (#378–#390). It runs 
   - M4 #135, M5 #178, M8 #266: indexers of memories, beliefs and captions get the fold through the shared matcher, but plans that describe matching "as written" are stale.
   - M7 #251 (imports apply erasures) and #237 (rewrites): a catalog-scope reapply on import now also edits creation reports.
   - Run `/n8-replan` for M4, M5, M7 and M8 after M3 closes, together with the earlier ADR-154 entry.
+
+## /n8-exec M3 (verify fixes, pass 7) — 2026-10-16
+
+Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs on `milestone/m3-verify-fixes-7` from `38bbc6b`. Two owner calls were asked before any code was written: #396(b) (fold `ı` to `i`) and the scope (all of #392–#402, the carried mediums and lows included).
+
+- **Decision (owner):** #396(b): dotless `ı` (U+0131) folds to `i` on both sides, so "YILMAZ", "Yılmaz" and "Yilmaz" are one word. The cost, a little over-matching between ı-words and i-words, is stated in ADR-156.
+  **Issue:** #396
+- **Decision:** #396(a): the fold renormalises to NFC after case-folding, per starter and the combining marks after it (`matcher._composed`). A cluster that recomposes maps each of its folded characters to the cluster's whole source range, so a match can neither start nor end inside it. There is no starter-to-starter composition (Hangul, some Indic scripts), because case-folding never produces one from NFC text. The fast path (every character folds to exactly one) now also requires the folded text to be NFC.
+  **Why:** Canonical caseless matching is the Unicode definition of "the same text in any case". Doing it per cluster keeps the offset map exact without a second pass over the whole string. Cost if wrong: an exotic sequence folds differently from its global NFC. Terms and text use the same function, so they still agree.
+  **Issue:** #396
+- **Decision:** #395: the soft hyphen is **removed** by the fold, not mapped to `-`, and it leaves `DASHES`, so `index.name_parts` never splits at one. This narrows ADR-155's "plus the soft hyphen": a stored "Mary" U+00AD "Jane" is the one word "MaryJane", not halves. The #385 test's dash loop drops U+00AD.
+  **Why:** A soft hyphen is invisible except at a line break, so "Wat" U+00AD "son" is read as "Watson". Treating it as a dash both hid the name from the matcher and the guard, and split a stored name into "Wat" and "son" (over-redacting "Son"). Cost if wrong: a name genuinely written with a visible soft-hyphen break loses its halves. No renderer shows one mid-line.
+  **Issue:** #395
+- **Decision:** #397: `DASHES` gains U+2212 MINUS SIGN and U+2043 HYPHEN BULLET, the two non-`Pd` characters the issue named. Nothing else is added, since other `Sm`/`Po` look-alikes have no issue or evidence.
+  **Issue:** #397
+- **Decision (Rule 1):** `matcher.is_common` compares by `fold`, not `casefold`. Without this, the owner's `ı` → `i` would make a name word "Kıt" rare, so every lowercase "kit" would be redacted. With it, "Kıt" is the common word "kit" and matches only capitalised. Covered by a complement assertion in `test_upper_case_greek_and_dotless_i_are_folded`.
+  **Issue:** #396
+- **Decision:** ADR-156 appended (the fold: NFC again, `ı`, soft hyphen, minus sign). ADR-155 gains an Amended-by line and a `[superseded by ADR-156: …]` marker on its fold clause. The indexes show 155 as partly superseded and list 156 under FR-ADMIN. #402: ADR-154's hyphen clause now carries `[superseded by ADR-155: …]`.
+  **Issue:** #395, #396, #397, #402
+- **Decision (process, Rule 3):** `pyproject.toml` `[tool.ruff.lint] allowed-confusables = ["ı"]`. The erasure tests and docs must name Turkish names, and escaping every `ı` would make them unreadable.
+  **Issue:** #396
+- **Decision:** #392's unit test compares `guard.span_hashes([text], key)` with `erase.term_hashes(...)` (the ledger's own construction), not with a test-side HMAC. It covers 12 probe forms and 5 complements, asserting agreement with `matcher.hits` and the expected verdict. The e2e test uses "Strauß" and "İpek" themselves as well as their upper-case forms: under a lower-case-only guard, "STRAUSS" and "YILMAZ" still match (lower-case happens to equal the fold), but "Strauß" and "İpek" do not.
+  **Issue:** #392
+- **Decision:** #394's end-to-end leak is made by wrapping `erase._insert_markers` (inside the commit step, after `_story_pass` and before `verify`) to write "Marisol returns" into the story's name. That puts a certain mention the pass could not have redacted where the scan must find it. The same test pins that `verify()` and the suite's independent scan agree table by table on an un-erased story.
+  **Issue:** #394
+- **Decision:** #398: the structural test finds methods with a parameter type that has a `story_id` (`typing.get_type_hints`; only `Engine.erase` today), and requires that their source holds a line `await self._erasure_gate(`. The decorator stays as it is (pass 6's decision).
+  **Issue:** #398
+- **Decision:** #400: `KEPT_CARD` now reads "its labels and public description stay, with its structural fields (its kind, ids, source, version and status values), while its name is redacted and its images and content rating are emptied". `test_i_27` pins the card's key set (`KEPT_CARD_FIELDS` and `ERASED_CARD_FIELDS`) and that the kept fields are unchanged.
+  **Issue:** #400
+- **Decision:** #401: FR-ADMIN-8's out-of-scope list gains the kept creation-report card, in the same terms as `KEPT_CARD` and C-15.
+  **Issue:** #401
+- **Decision (process):** Commits:
+  - `59b75c7`: the fold (#392, #395, #396, #397) and #402, because the ADR edits share docs/05;
+  - `f250814`: #394;
+  - `eb376f9`: #393, #398, #399, #400, #401. It also carries the boundary's ADR-156 sentence for #395/#396, because boundary.py, OPERATIONS.md and openapi.json are shared.
+
+  Every plan comment was posted before code. Every new guard was shown to fail without its fix (9 mutants, all killed):
+  - the guard lower-cases only (unit and e2e);
+  - no NFC recomposition;
+  - no `ı` mapping;
+  - the soft hyphen as `-`;
+  - the kept card's images not emptied;
+  - `verify()` returning 0;
+  - `Engine.erase` without its gate;
+  - `KEPT_CARD` dropped from `OUT_OF_SCOPE`.
+
+  The owner's batched gate applies: area tests (95 passed in the erasure area), then one full suite on the branch.
+  **Issue:** #392–#402
+
+## Ad-hoc — 2026-10-16
+
+- **Change:** ADR-156, decided at the start of M3's fix pass 7. The erasure fold, shared by the matcher, the subject-reference index, the residue scan and the write-path guard, is now canonical caseless matching (NFC again after case-folding). It also folds `ı` to `i` (the owner's decision on #396), removes the soft hyphen (no longer a dash or a split point), and counts U+2212 and U+2043 as dashes.
+  **Why:** #395, #396 and #397 each left a form of an erased name behind with `residue: 0`.
+  **Affects:** the same plans as the 2026-10-15 ADR-155 entry: M4 #135, M5 #178 and M8 #266 (indexers of memories, beliefs and captions get the fold through the shared matcher), and M7 #251 (an import's reapply hashes under the new fold). Run `/n8-replan` for M4, M5, M7 and M8 after M3 closes, together with the ADR-154 and ADR-155 entries.

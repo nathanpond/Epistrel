@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from tests import erasure_support as e
-from tests.event_support import rows, scalar
+from tests.event_support import execute_in_tx, rows, scalar
 from tests.respond_support import body, new_story, played, respond, respond_client
 
 pytestmark = pytest.mark.integration
@@ -193,6 +193,39 @@ async def test_name_words_match_in_any_case_and_by_their_halves(
         for word in ("Strauß", "STRAUSS", "Strauss", "Jürgen", "JÜRGEN", "Mary", "Jane"):
             assert not any(word in t for t in texts), word
         assert not any("Marisol" in t for t in texts)
+
+
+async def test_an_erasure_re_indexes_the_story_before_it_redacts(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#386 (#372's AC, docs/OPERATIONS.md): with Will Black's ``mentioned`` rows gone from the
+    index (a stale index: rows written before a matcher change), the dry run still counts the
+    mentions, as it did with the index whole, and rolls its re-index back; the erasure redacts
+    "Ty asked Will." and its residue is 0."""
+    mentioned = (
+        "SELECT count(*) FROM subject_references "
+        "WHERE story_id = :s AND subject_id = :w AND ref_kind = 'mentioned'"
+    )
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story, ids = await _will_black(client, lib)
+        will = ids["Will Black"]
+        whole = await e.erase(client, "character", will, story, dry_run=True)
+        assert whole["prose_segments"] > 0
+        assert await scalar(engine, mentioned, s=story, w=will) > 0
+        await execute_in_tx(
+            engine,
+            (mentioned.replace("SELECT count(*) FROM", "DELETE FROM"), {"s": story, "w": will}),
+        )
+        assert await scalar(engine, mentioned, s=story, w=will) == 0
+        stale = await e.erase(client, "character", will, story, dry_run=True)
+        assert stale["prose_segments"] == whole["prose_segments"]
+        assert stale["records"] == whole["records"]
+        assert await scalar(engine, mentioned, s=story, w=will) == 0  # rolled back
+        done = await e.erase(client, "character", will, story)
+        assert done["residue"] == 0
+        texts = await _texts(engine, story)
+    assert BARE not in texts
+    assert "Ty asked [erased]." in texts
 
 
 async def test_the_index_records_each_mention_by_position(

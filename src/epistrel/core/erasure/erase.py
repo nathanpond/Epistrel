@@ -41,7 +41,8 @@ complete erasure:
 
 1. one ``control`` operation (it bumps the story's revision, so a turn in flight abandons, and
    runs on archived and paused stories), in one transaction under the story lock and
-   ``epistrel.erasure = on``: the subject's ``characters`` rows, their ``character_snapshots``
+   ``epistrel.erasure = on``: the story is re-indexed first, so a stale index cannot hide a
+   mention (#386); the subject's ``characters`` rows, their ``character_snapshots``
    and the ``genesis_deferred`` items that belong only to them are deleted, each leaving one
    position-less ``erasure_marker`` event; every string of every record that names the subject
    is redacted in place (``Redactor``: each matched span becomes ``[erased]``), and a beat the
@@ -1839,13 +1840,14 @@ async def dry_run(
     principal: str,
 ) -> ErasureResult:
     """What ``erase`` would do, written nowhere (see the module docstring). A story's dry run
-    reads in one read-only snapshot. A catalog dry run does the catalog pass and rolls it back:
+    reads in one snapshot, re-indexes the story first as the real run does (#386), and rolls
+    that back. A catalog dry run does the catalog pass and rolls it back:
     what the subject's own deletion removes decides whether a medium is still referenced, so the
     counts are the real run's by construction; nothing it did is ever committed (no operation,
     no key, no ledger row, no bytes deleted)."""
     async with db.connect() as conn, conn.begin() as tx:
         if request.story_id is not None:
-            await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+            await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
         subject = await _subject(conn, request)
         redactor = subject.redactor(request.confirm_candidates)
         revision = await config_revision(conn)
@@ -1856,6 +1858,7 @@ async def dry_run(
             tally = _Tally()
         elif subject.story_id is not None:
             run = _StoryRun(subject, redactor, False, "", None, principal, clock.now())
+            await reindex_story(conn, subject.story_id)
             tally = await _story_pass(conn, run)
             windows = await _summary_events(conn, run) + await _windows(conn, subject.story_id)
         else:
@@ -2126,6 +2129,9 @@ async def _erase_story(
         )
 
         async def step(conn: AsyncConnection) -> None:
+            # The index is rebuilt first, so a stale one (rows written before a matcher
+            # change, or lost) cannot hide a mention from the redaction (#386).
+            await reindex_story(conn, story_id)
             tally = await _story_pass(conn, run)
             if strict:
                 check_confirmed(redactor)

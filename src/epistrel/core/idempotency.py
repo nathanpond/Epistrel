@@ -13,7 +13,8 @@ caller's, or a server-generated ULID: the key is optional everywhere). The call:
      hash resolved (a turn's cast), so a retry of the same request gets the reference
      (``ReferenceReplay``, #365). "The same request" is judged by ``sent_hash``, the hash of the
      request as sent, before anything was resolved (#375): a different one is still 409. A key
-     written before ``sent_hash`` existed (null) gets the reference;
+     written before ``sent_hash`` existed (null) cannot show it is the same request, so it is
+     409 too (#389, the owner's decision);
    - ``done`` within the result window replays the stored result (``Replayed``), never
      re-executing; after it (or once #71's sweep purged the result) the retry gets a reference
      to the original operation (``ReferenceReplay``), never a re-execution;
@@ -363,7 +364,7 @@ class IdempotentCall:
             if row.request_hash != self.request_hash:
                 if (
                     row.status == KeyStatus.DONE.value
-                    and row.sent_hash in (None, self.sent_hash)
+                    and row.sent_hash == self.sent_hash
                     and await self._erased_since(row)
                 ):
                     self._answer_reference(row)

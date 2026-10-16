@@ -493,3 +493,37 @@ def test_json_null_idempotency_results_become_sql_null(scratch_database: str) ->
         engine.dispose()
     assert found == {"purged": None, "stored": "object", "none": None}
     assert nulls == {"purged", "none"}
+
+
+def test_sent_hash_is_added_null_and_dropped_on_downgrade(scratch_database: str) -> None:
+    """0043 (#375, #389): ``idempotency_keys.sent_hash`` is added nullable, with no backfill (a
+    key stored before it holds null, which an erasure's retry answers 409), and the downgrade
+    drops it and keeps the rows."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0042")
+    engine = make_sync_engine(scratch_database)
+    columns = (
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'idempotency_keys' AND column_name = 'sent_hash'"
+    )
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO idempotency_keys (scope, scope_id, key, request_hash, status, "
+                    "owner_token, lease_until) VALUES ('deployment', 'deployment', 'old', 'h', "
+                    "'done', 't', now())"
+                )
+            )
+        command.upgrade(cfg, "0043")
+        with engine.connect() as conn:
+            assert conn.scalar(text(columns)) == "sent_hash"
+            legacy = conn.execute(text("SELECT key, sent_hash FROM idempotency_keys")).all()
+        command.downgrade(cfg, "0042")
+        with engine.connect() as conn:
+            assert conn.scalar(text(columns)) is None
+            kept = conn.scalars(text("SELECT key FROM idempotency_keys")).all()
+    finally:
+        engine.dispose()
+    assert [tuple(r) for r in legacy] == [("old", None)]
+    assert kept == ["old"]

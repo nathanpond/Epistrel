@@ -140,11 +140,11 @@ Epistrel runs behind the consumer and must never be exposed to end users. It aut
 uv run pytest                            # everything; integration tests start a pgvector container (Docker)
 uv run pytest -m "not integration"       # unit tests only, no Docker
 uv run ruff check && uv run ruff format --check && uv run mypy
-uv run pytest --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90   # what CI gates on
+uv run pytest --cov=epistrel.core --cov-report=term-missing --cov-fail-under=90   # what CI gates on, in one run
 uv run python -m tools.gates check-assignment   # docs/03 §22: every requirement assigned exactly once
 ```
 
-Every pull request runs the same five checks in CI (lint, types, tests with core coverage ≥ 90 %, Docker build); the `gate` check is required by the `main` ruleset, so a red gate blocks the merge for everyone.
+Every pull request runs the same checks in CI (lint, types, tests, core coverage ≥ 90 %, Docker build); the `gate` check is required by the `main` ruleset, so a red gate blocks the merge for everyone. CI runs the tests as a matrix of directory shards (`.github/workflows/ci.yml`), each writing its own coverage data, and the `coverage` job combines them and applies the 90 % gate once; `tests/test_workflows.py` checks that the shards run every test module exactly once.
 
 The chaos suite (`tests/chaos/`, marker `chaos`) kills the engine at named crash points (X-03), cuts its database (X-06, which needs Docker even when `EPISTREL_TEST_DATABASE_URL` is set) and storms it with retries. Pull requests run its `chaos_quick` tests at their quick defaults; the weekly `chaos.yml` workflow runs all of it with `EPISTREL_CHAOS_ITERATIONS=500`. Each seeded test prints its `EPISTREL_CHAOS_SEED`; running it again with that seed repeats the test's random draws, which is not always the same run. In X-04 the seed fixes which requests drop and after how long, the backoffs, which client always drops its first request, and how long after the engine is back each later restart comes. X-04's engine is a separate process that races the clients on the wall clock, though, and that interleaving is not replayed: when the first kill comes and which turns a kill catches, for example, can differ (the module docstring of `tests/chaos/test_x_04.py` lists what a seed fixes and what it does not). `tests/determinism/` replays a committed script twice on fresh databases and compares the Engine Core state (NFR-DETERM-1).
 

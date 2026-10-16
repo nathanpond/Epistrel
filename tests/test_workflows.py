@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from pathlib import Path
 from typing import Any
@@ -179,3 +180,124 @@ def test_p04_expiry_reminds_daily_and_files_one_issue() -> None:
     assert script.index("exit 0") < script.index("gh issue create")
     assert "uv run python -m perf.lite_smoke --minutes 30 --host-class mac" in script
     assert '--title "$title"' in script
+
+
+def _shards() -> list[dict[str, str]]:
+    matrix = _workflow("ci.yml")["jobs"]["test"]["strategy"]["matrix"]
+    shards: list[dict[str, str]] = matrix["shard"]
+    return shards
+
+
+def _test_files_under(path: Path) -> set[Path]:
+    """The test modules pytest would collect under ``path`` (``python_files`` is the default
+    ``test_*.py``; ``norecursedirs`` keeps the gate fixtures out)."""
+    if path.is_file():
+        return {path}
+    fixtures = REPO_ROOT / "tests" / "gates" / "fixtures"
+    return {p for p in path.rglob("test_*.py") if fixtures not in p.parents}
+
+
+def _shard_files(spec: str) -> set[Path]:
+    """The test modules one shard's arguments select, with pytest's own semantics: positional
+    paths, minus ``--ignore`` paths, minus files whose absolute path (or a parent's) matches an
+    ``--ignore-glob`` pattern made absolute against the repository root."""
+    selected: set[Path] = set()
+    ignored: list[Path] = []
+    globs: list[str] = []
+    for word in spec.split():
+        if word.startswith("--ignore="):
+            ignored.append(REPO_ROOT / word.removeprefix("--ignore="))
+        elif word.startswith("--ignore-glob="):
+            globs.append(str(REPO_ROOT / word.removeprefix("--ignore-glob=")))
+        else:
+            assert not word.startswith("-"), f"unexpected shard option {word!r}"
+            target = REPO_ROOT / word
+            assert target.exists(), f"shard path {word!r} does not exist"
+            selected |= _test_files_under(target)
+
+    def kept(path: Path) -> bool:
+        chain = [path, *path.parents]
+        if any(p in ignored for p in chain):
+            return False
+        return not any(fnmatch.fnmatch(str(p), g) for p in chain for g in globs)
+
+    return {p for p in selected if kept(p)}
+
+
+def test_ci_shards_partition_the_test_files() -> None:
+    """#331: the sharded `test` job runs every test module under tests/ in exactly one shard.
+
+    Complement asserted: a module no shard names (or two shards both name) is reported; the
+    shard names are unique, since each names its coverage data file."""
+    shards = _shards()
+    names = [s["name"] for s in shards]
+    assert len(names) == len(set(names)), names
+    assert len(shards) > 1, names
+    owners: dict[Path, list[str]] = {}
+    for shard in shards:
+        for path in _shard_files(shard["paths"]):
+            owners.setdefault(path, []).append(shard["name"])
+    every = _test_files_under(REPO_ROOT / "tests")
+    missing = sorted(str(p.relative_to(REPO_ROOT)) for p in every - set(owners))
+    twice = {str(p.relative_to(REPO_ROOT)): o for p, o in owners.items() if len(o) > 1}
+    assert missing == [], f"no CI shard runs {missing}"
+    assert twice == {}, f"more than one CI shard runs {twice}"
+    assert set(owners) == every
+
+
+def test_ci_shard_partition_check_sees_a_gap() -> None:
+    """The partition check is not vacuous: without the catch-all shard, modules go missing; the
+    two integration halves are disjoint and together cover tests/integration."""
+    by_name = {s["name"]: _shard_files(s["paths"]) for s in _shards()}
+    integration = _test_files_under(REPO_ROOT / "tests" / "integration")
+    halves = [files for name, files in by_name.items() if name.startswith("integration-")]
+    assert len(halves) == 2
+    assert all(halves)
+    assert halves[0].isdisjoint(halves[1])
+    assert halves[0] | halves[1] == integration
+    others = set().union(*(files for name, files in by_name.items() if name != "rest"))
+    assert by_name["rest"]
+    assert by_name["rest"].isdisjoint(others)
+    assert _test_files_under(REPO_ROOT / "tests") - others == by_name["rest"]
+
+
+def test_scenario_and_perf_share_a_ci_shard() -> None:
+    """P-05 (tests/perf) gates the turn census of the S-tests (tests/scenario) run in the same
+    session, so the two directories must not be split across shards."""
+    scenario = _test_files_under(REPO_ROOT / "tests" / "scenario")
+    p05 = REPO_ROOT / "tests" / "perf" / "test_p_05.py"
+    (shard,) = [s["name"] for s in _shards() if p05 in _shard_files(s["paths"])]
+    assert scenario <= _shard_files(next(s["paths"] for s in _shards() if s["name"] == shard))
+
+
+def test_coverage_is_gated_once_on_the_combined_shards() -> None:
+    """#331: each shard writes its own coverage data file without a per-shard threshold; the
+    `coverage` job combines them all and fails under 90 %; `gate` is red if it does not
+    succeed."""
+    wf = _workflow("ci.yml")
+    test = wf["jobs"]["test"]
+    assert test["strategy"]["fail-fast"] is False
+    (pytest_step,) = [s for s in _steps(wf, "test") if "pytest" in s.get("run", "")]
+    assert "$SHARD_PATHS" in pytest_step["run"]
+    assert "set -f" in pytest_step["run"]
+    assert pytest_step["env"]["SHARD_PATHS"] == "${{ matrix.shard.paths }}"
+    assert pytest_step["env"]["COVERAGE_FILE"] == ".coverage.${{ matrix.shard.name }}"
+    assert "--cov=epistrel.core" in pytest_step["run"]
+    assert "--cov-fail-under" not in pytest_step["run"]
+    upload = next(s for s in _steps(wf, "test") if "upload-artifact" in str(s.get("uses")))
+    assert upload["with"]["path"] == ".coverage.${{ matrix.shard.name }}"
+    assert upload["with"]["include-hidden-files"] is True
+    assert upload["with"]["if-no-files-found"] == "error"
+
+    coverage = wf["jobs"]["coverage"]
+    assert coverage["needs"] == ["test"]
+    runs = [s.get("run", "") for s in coverage["steps"]]
+    download = next(s for s in coverage["steps"] if "download-artifact" in str(s.get("uses")))
+    assert download["with"] == {"pattern": "coverage-*", "merge-multiple": True}
+    assert "uv run coverage combine" in runs
+    assert any(r.startswith("uv run coverage report") and "--fail-under=90" in r for r in runs)
+    assert runs.index("uv run coverage combine") < next(
+        i for i, r in enumerate(runs) if r.startswith("uv run coverage report")
+    )
+    assert "coverage" in wf["jobs"]["gate"]["needs"]
+    assert "$COVERAGE" in wf["jobs"]["gate"]["steps"][0]["run"]

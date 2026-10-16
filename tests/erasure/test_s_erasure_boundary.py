@@ -75,48 +75,6 @@ def erasure_settings(pg_url: str) -> Settings:
     return e.erasure_settings(pg_url)
 
 
-async def catalog_values(engine: AsyncEngine) -> dict[str, list[str]]:
-    """Every text value of the catalog, media and persona tables (enumerated from
-    ``information_schema``), and the deployment-scoped stored results."""
-    async with engine.connect() as conn:
-        found = await conn.execute(
-            text(
-                "SELECT c.table_schema, c.table_name, c.column_name "
-                "FROM information_schema.columns c "
-                "JOIN information_schema.tables t "
-                "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
-                "WHERE t.table_type = 'BASE TABLE' AND c.data_type = ANY(CAST(:types AS text[])) "
-                "AND (c.table_schema = 'catalog' OR (c.table_schema = 'public' AND "
-                "c.table_name IN ('personas', 'media_assets')))"
-            ),
-            {"types": list(e.TEXT_TYPES)},
-        )
-        columns: dict[tuple[str, str], list[str]] = {}
-        for row in found:
-            columns.setdefault((row.table_schema, row.table_name), []).append(row.column_name)
-        values: dict[str, list[str]] = {}
-        for (schema, table), names in columns.items():
-            selected = ", ".join(f'CAST("{c}" AS text)' for c in names)
-            got = await conn.execute(text(f'SELECT {selected} FROM "{schema}"."{table}"'))  # noqa: S608
-            values[f"{schema}.{table}"] = [str(v) for r in got for v in r if v is not None]
-        results = await conn.scalars(
-            text(
-                "SELECT CAST(result AS text) FROM idempotency_keys "
-                "WHERE scope <> 'story' AND result IS NOT NULL"
-            )
-        )
-        values["idempotency_keys"] = [str(v) for v in results]
-    return values
-
-
-async def catalog_residue(engine: AsyncEngine, terms: tuple[str, ...]) -> dict[str, int]:
-    return {
-        table: n
-        for table, found in (await catalog_values(engine)).items()
-        if (n := sum(1 for v in found if e.naming(v, terms)))
-    }
-
-
 async def published(client: Any, name: str, alias: str, image: str) -> str:
     body = characters.complete(
         name, metadata={"aliases": [alias]}, images={"primary": image, "gallery": []}
@@ -219,7 +177,7 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
         made = await g.create_from(client, g.from_scenario(scenario_id, ignore_warnings=True))
         story = made["story_id"]
         cast = {c["role_id"]: c["id"] for c in made["characters"]}
-        assert await catalog_residue(engine, TERMS)  # the catalog names her
+        assert await e.catalog_residue(engine, TERMS)  # the catalog names her
 
         story_before = await story_rows(engine, story)
         before = await e.dump_all(engine)
@@ -263,8 +221,8 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
                 "[erased] keeps the lamp oil in the cellar."
             )
         # No catalog, media or persona table names her; Corvin is still named (complement).
-        assert await catalog_residue(engine, TERMS) == {}
-        assert await catalog_residue(engine, SECOND_TERMS)
+        assert await e.catalog_residue(engine, TERMS) == {}
+        assert await e.catalog_residue(engine, SECOND_TERMS)
         # Media: shared stays without her; hers alone purged with its bytes; her portrait,
         # referenced by the story's snapshot, purged under ``purge``.
         (kept,) = await rows(
@@ -340,7 +298,7 @@ async def test_s_erasure_boundary__catalog(erasure_settings: Settings, engine: A
         )
         assert await content(client, second_portrait["id"]) == 200  # its bytes still serve
         assert media.blob_path(MEDIA_ROOT, second_portrait["checksum"]).exists()
-        assert await catalog_residue(engine, SECOND_TERMS) == {}
+        assert await e.catalog_residue(engine, SECOND_TERMS) == {}
         assert [s["story_id"] for s in second["referencing_stories"]] == [story]
 
 
@@ -537,6 +495,37 @@ def test_s_erasure_boundary__docs() -> None:
         assert boundary.normalised(description).endswith(boundary.normalised(rendered))
         route = document["paths"]["/admin/erasure/boundary"]["get"]["description"]
         assert boundary.normalised(rendered) in boundary.normalised(route)
+
+    # #408: docs/03 states every out-of-scope item, worded its own way (a keyed phrase each).
+    assert set(SPEC_PHRASES) == set(boundary.OUT_OF_SCOPE)
+    for item, (requirement, phrase) in SPEC_PHRASES.items():
+        assert boundary.normalised(phrase) in boundary.normalised(requirement_text(requirement)), (
+            requirement,
+            item,
+        )
+
+
+SPEC_PHRASES: dict[str, tuple[str, str]] = {
+    boundary.DELIVERED_EXPORTS: ("FR-ADMIN-8", "exports already delivered to the consumer"),
+    boundary.PROVIDER_RETENTION: (
+        "FR-ADMIN-8",
+        "data retained by external model, image, or data providers",
+    ),
+    boundary.VISUAL_ONLY: ("FR-ADMIN-8", "appear in an image only visually"),
+    boundary.OLD_BACKUPS: ("FR-ADMIN-7", "restoring a backup that predates an erasure"),
+    boundary.LOGS_ITEM: ("FR-ADMIN-8", "operational logs shall not contain story content"),
+    boundary.AMBIGUOUS_MENTIONS: ("FR-ADMIN-8", "mentions the matcher classes as ambiguous"),
+    boundary.KEPT_CARD: ("FR-ADMIN-8", "public card in the creation report"),
+}
+"""Each ``boundary.OUT_OF_SCOPE`` item: the docs/03 requirement that states it and a phrase of
+that statement (old backups are FR-ADMIN-7's ledger rule; the rest FR-ADMIN-8's list)."""
+
+
+def requirement_text(requirement: str) -> str:
+    """The docs/03 bullet of ``requirement`` (``- **FR-…** …``), on its one line."""
+    spec = (REPO_ROOT / "docs" / "03-requirements-spec.md").read_text("utf-8")
+    (line,) = [x for x in spec.splitlines() if x.startswith(f"- **{requirement} (")]
+    return line
 
 
 # -- #127: resurrection, replay, fork, determinism, markers and logs ----------------------------

@@ -165,6 +165,22 @@ def test_upper_case_greek_and_dotless_i_are_folded() -> None:
     ]
 
 
+def test_a_mention_takes_the_combining_marks_after_it() -> None:
+    """#410: a combining mark is not a word character, so a match stops before one; the
+    mention takes every mark right after the name, so none is left after ``[erased]``. A mark
+    still ends the word: "Quenby" + U+0334 + "s" (U+0334 composes with nothing) is redacted as
+    before, to "[erased]s", never kept whole (complement); a name with no mark is unchanged."""
+    greek = Redactor(["Ταΐς Kalos"], ["Ταΐς", "Kalos"])
+    assert greek.text("ΤΑΪ\u0301Σ\u0301 x") == "[erased] x"
+    quenby = Redactor(["Marisol Quenby"], ["Marisol", "Quenby"])
+    assert quenby.text("Hi Quenby\u0334\u0335 and Marisol\u20dd.") == "Hi [erased] and [erased]."
+    assert quenby.text("Hi Quenby\u0334s.") == "Hi [erased]s."
+    assert quenby.text("Hi Quenby, Marisol.") == "Hi [erased], [erased]."
+    assert found(m.matcher(["Marisol Quenby"], ["Quenby"]), "Hi Quenby\u0334!") == [
+        ("Quenby\u0334", "part")
+    ]
+
+
 KEY = "a guard test key, not a secret"
 GUARD_PROBES = (
     "Hi Strauß.",

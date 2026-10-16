@@ -24,8 +24,9 @@ from tests.auth_support import auth_settings
 from tests.model_support import config_key, mock_openai, restored_model_config
 
 DEADLINE_S = 2.0
-"""The minors story's turn deadline in the deadline run (its override of ``budgets.deadline_ms``,
-#113): short, so a hung call ends soon."""
+"""The minors story's turn deadline in the deadline run's hanging turns (its override of
+``budgets.deadline_ms``, #113): short, so a hung call ends soon. Every other turn runs under the
+profile's own deadline, so only the scripted hang can reach a deadline (#411)."""
 PASSED = '{"violation": false, "confidence": 1.0}'
 FLAGGED = '{"violation": true, "confidence": 0.9}'
 MEASURED = 5
@@ -51,9 +52,10 @@ def hang_on(purpose: str, nth: int) -> Callable[[str], FaultKind | None]:
 
 @dataclass
 class DeadlineDriver:
-    """``RespondDriver`` with stub fault injection in the minors row, which runs under a
-    ``DEADLINE_S`` turn deadline: in the measured turns of ``HANGS`` the output check flags the
-    draft, the output gate regenerates, and one call then hangs until the deadline cuts it."""
+    """``RespondDriver`` with stub fault injection in the minors row: in the measured turns of
+    ``HANGS`` the story runs under a ``DEADLINE_S`` turn deadline, the output check flags the
+    draft, the output gate regenerates, and one call then hangs until the deadline cuts it.
+    The other turns run under the profile's deadline, however slow the runner (#411)."""
 
     stub: StubAdapter
     inner: mm.RespondDriver = field(default_factory=mm.RespondDriver)
@@ -61,30 +63,45 @@ class DeadlineDriver:
     faulty: bool = False
     played: int = -1
     """Turns played so far, the warm-up turn being 0."""
+    deadlines: list[int | None] = field(default_factory=list)
+    """The minors row's ``deadline_ms`` override in force at each turn (``None``: none)."""
+    engine: Engine | None = None
+    slow_s: float = 0.0
+    """Stub latency per call in the minors row's other turns: a slow runner (#411)."""
 
     async def prepare(self, engine: Engine, policies: mm.PolicySet) -> None:
         await self.inner.prepare(engine, policies)
+        self.engine = engine
         self.faulty = policies == "minors"
-        if self.faulty:
-            await engine.set_profile_overrides(
-                RequestContext(principal=mm.PRINCIPAL),
-                self.inner.story_id,
-                ProfileOverridesPatch(
-                    settings={"budgets": {"deadline_ms": int(DEADLINE_S * 1000)}},
-                    ignore_warnings=True,
-                ),
-            )
+
+    async def _deadline(self, deadline_ms: int | None) -> None:
+        assert self.engine is not None
+        await self.engine.set_profile_overrides(
+            RequestContext(principal=mm.PRINCIPAL),
+            self.inner.story_id,
+            ProfileOverridesPatch(
+                settings={"budgets": {"deadline_ms": deadline_ms}}, ignore_warnings=True
+            ),
+        )
 
     async def turn(self, said: str) -> mm.TurnCalls:
         self.played += 1
         hang = HANGS.get(self.played) if self.faulty else None
+        if self.faulty:
+            self.deadlines.append(None if hang is None else int(DEADLINE_S * 1000))
         if hang is not None:
+            await self._deadline(int(DEADLINE_S * 1000))
             self.stub.script("guardrail_check", [PASSED, FLAGGED])
             self.stub.fault_hook = hang_on(*hang)
+        elif self.faulty:
+            self.stub.latency_s = self.slow_s
         try:
             return await self.inner.turn(said)
         finally:
             self.stub.fault_hook = None
+            self.stub.latency_s = 0.0
+            if hang is not None:
+                await self._deadline(None)
 
 
 async def test_matrix_run_against_a_local_server(
@@ -164,7 +181,8 @@ async def test_matrix_breakdown_of_scripted_deadline_turns(
     pg_url: str, engine: AsyncEngine, tmp_path: Path
 ) -> None:
     """#303: the issue's live run, scripted with stub fault injection. In the minors row
-    (a 2 s turn deadline), measured turn 2's output check flags the draft and the
+    (a 2 s turn deadline in turns 2 and 4 only, #411), measured turn 2's output check flags the
+    draft and the
     regeneration hangs until the deadline, and turn 4's regeneration answers but its re-check
     hangs. Both turns release the safe fallback with cause ``deadline``. The mean folds all of
     this into ``generation 1.4, guardrail_check 2.2``. The breakdown reports instead: designed
@@ -175,8 +193,17 @@ async def test_matrix_breakdown_of_scripted_deadline_turns(
 
     Complement asserted: the policies-off row of the same run had no fault and reports the
     design only: no extra or failed call, no faulted turn, a whole number of calls per turn."""
-    rows = await stub_run(pg_url, engine, lambda epistrel: DeadlineDriver(epistrel.models.stub))
+    drivers: list[DeadlineDriver] = []
+
+    def driver(epistrel: Engine) -> DeadlineDriver:
+        drivers.append(DeadlineDriver(epistrel.models.stub))
+        return drivers[-1]
+
+    rows = await stub_run(pg_url, engine, driver)
     off, minors = rows
+    # #411: only the hanging turns run under the short deadline (warm-up, then turns 1-5).
+    short = int(DEADLINE_S * 1000)
+    assert [d.deadlines for d in drivers if d.faulty] == [[None, None, short, None, short, None]]
     assert minors.policies == "minors"
     assert minors.calls_per_turn == {"generation": 1.4, "guardrail_check": 2.2}
     assert minors.designed_calls_per_turn == {"generation": 1.0, "guardrail_check": 2.0}
@@ -187,7 +214,6 @@ async def test_matrix_breakdown_of_scripted_deadline_turns(
     slow = [minors.latencies_ms[n - 1] for n in minors.faulted_turns]
     assert min(slow) >= DEADLINE_S * 1000
     others = [ms for n, ms in enumerate(minors.latencies_ms, 1) if n not in minors.faulted_turns]
-    assert max(others) < min(slow)
 
     assert off.calls_per_turn == off.designed_calls_per_turn == {"generation": 1.0}
     assert (off.extra_calls, off.failed_calls, off.faulted_turns, off.fallbacks) == ({}, {}, [], {})
@@ -207,6 +233,26 @@ async def test_matrix_breakdown_of_scripted_deadline_turns(
     assert written["minors"]["extra_calls"] == {"generation": 2, "guardrail_check": 1}
     assert written["minors"]["faulted_turns"] == [2, 4]
     assert written["off"]["extra_calls"] == {}
+
+
+async def test_a_slow_runner_hits_only_the_scripted_deadlines(
+    pg_url: str, engine: AsyncEngine
+) -> None:
+    """#411: the deadline run on a slow runner. Every call of the minors row's unfaulted turns
+    takes 0.8 s (three calls: 2.4 s, past ``DEADLINE_S``), yet only the scripted hangs hit a
+    deadline: turns 2 and 4 are the faulted turns, with two ``deadline`` fallbacks and one
+    ``timeout`` of each purpose, and the unfaulted turns answered and took the stub's
+    latency."""
+    slow = 0.8
+    rows = await stub_run(
+        pg_url, engine, lambda epistrel: DeadlineDriver(epistrel.models.stub, slow_s=slow)
+    )
+    minors = rows[1]
+    assert minors.faulted_turns == [2, 4]
+    assert minors.fallbacks == {"deadline": 2}
+    assert minors.failed_calls == {"generation": {"timeout": 1}, "guardrail_check": {"timeout": 1}}
+    others = [ms for n, ms in enumerate(minors.latencies_ms, 1) if n not in minors.faulted_turns]
+    assert min(others) >= 3 * slow * 1000 > DEADLINE_S * 1000
 
 
 async def test_fault_free_run_reports_the_design_only(pg_url: str, engine: AsyncEngine) -> None:

@@ -6154,3 +6154,29 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Change:** ADR-156, decided at the start of M3's fix pass 7. The erasure fold, shared by the matcher, the subject-reference index, the residue scan and the write-path guard, is now canonical caseless matching (NFC again after case-folding). It also folds `ı` to `i` (the owner's decision on #396), removes the soft hyphen (no longer a dash or a split point), and counts U+2212 and U+2043 as dashes.
   **Why:** #395, #396 and #397 each left a form of an erased name behind with `residue: 0`.
   **Affects:** the same plans as the 2026-10-15 ADR-155 entry: M4 #135, M5 #178 and M8 #266 (indexers of memories, beliefs and captions get the fold through the shared matcher), and M7 #251 (an import's reapply hashes under the new fold). Run `/n8-replan` for M4, M5, M7 and M8 after M3 closes, together with the ADR-154 and ADR-155 entries.
+
+## /n8-exec M3 (verify fixes, pass 8) — 2026-10-16
+
+- **Decision (process):** Scope is the two blockers (#404, #411) plus every low from re-verify 7 (#405–#410). No owner instruction was recorded for this pass, so it follows pass 7's "every finding, lows included". All eight are small and test- or docs-sized.
+  **Issue:** #404–#411
+- **Decision (process):** The plan comment on #404 went up after its first file edits and before any test run or commit. On every other issue the plan was posted before its code.
+  **Issue:** #404
+- **Decision:** #404's independent catalog scan (`catalog_values` / `catalog_residue`) moves from `tests/erasure/test_s_erasure_boundary.py` into `tests/erasure_support.py` and widens to `verify_catalog`'s full scope: `catalog.*`, `personas`, `media_assets`, and the deployment-scoped rows of `idempotency_keys`, `events`, `policies`, `operations` and `config_changes`. It labels tables as `verify` does, so the two compare table by table. The boundary test only checked whether the scan was empty, so it reads the shared helper unchanged. The leak is made by wrapping `erase._catalog_pass`: after the redaction and before `verify`, a bystander's draft is made to name Linda.
+  **Issue:** #404
+- **Decision:** #411: the 2 s `budgets.deadline_ms` override applies only around the scripted-hang turns (2 and 4) and is removed with a merge-patch `null` afterwards; the other turns run under the profile's deadline. The wall-clock assertion `max(others) < min(slow)` is dropped, since it fails the same way on a slow runner. A new test, `test_a_slow_runner_hits_only_the_scripted_deadlines`, uses the stub's `latency_s` (0.8 s per call in the unfaulted minors turns, 2.4 s a turn). It reproduces CI's failure deterministically against the old whole-row override and passes with the fix. A CPU-stress run (48 `yes` processes) did not reproduce the flake on this Mac either way, which is why the deterministic test was written.
+  **Issue:** #411
+- **Decision:** #405: under the docs/05 header, a Decision clause that a later ADR narrows is "now wrong" as written. That is the reasoning #402 applied to ADR-154. So all 18 Decision-line `[revised per` markers become `[superseded by`, keeping their narrowed wording. The header was not amended, because the governance rule is the owner's. 12 ADRs (029, 031, 039, 068, 087, 107, 117, 120, 123, 128, 141 and 146) move from Amended to Partly superseded in the index; their "Read with" columns already listed the later ADRs. The new gate `tests/gates/test_adr_markers.py` checks marker placement and that the index's standing matches the markers.
+  **Issue:** #405
+- **Decision:** #408: each `boundary.OUT_OF_SCOPE` item maps to the docs/03 requirement that states it and a keyed phrase. Old backups map to FR-ADMIN-7 ("restoring a backup that predates an erasure"), the rest to FR-ADMIN-8. docs/03 is unchanged. The map must cover `OUT_OF_SCOPE` exactly.
+  **Issue:** #408
+- **Decision (Rule 1, deviation from the plan comment):** #410: the mention's end extends over the combining marks (`M*`) right after it, but the plan's extra word-boundary check after the marks was dropped. With that check, a name followed by a non-composing mark and more letters ("Quenby" + U+0334 + "s") would stop being a mention at all and survive whole, with `residue: 0`. Today it redacts to "[erased]s". A mark therefore still ends the word, as before.
+  **Issue:** #410
+- **Decision (process):** Every new guard was shown to fail without its fix (10 mutants, all killed):
+  - catalog `verify` returning 0 (#404);
+  - the short deadline set for the whole row in `prepare`, and the override never restored (#411);
+  - one Decision marker put back to `revised per`, and one standing put back to Amended (#405);
+  - no union unwrapping (#406);
+  - the kept-card clause deleted from FR-ADMIN-8 (#408);
+  - no soft-hyphen fold, and no `ı` fold, each killed by its own e2e reply (#409);
+  - no mark extension (#410).
+  **Issue:** #404–#411

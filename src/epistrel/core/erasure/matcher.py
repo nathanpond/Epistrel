@@ -298,6 +298,11 @@ class Matcher:
         found: list[Mention] = []
         for match in self._pattern.finditer(folded):
             a, b = match.span()
+            # A combining mark is not ``\w``, so the match stops before one: the mention takes
+            # the marks after it, so none is left behind ("ΤΑΪ́Σ́ x" is "[erased] x"; #410). A
+            # mark still ends the word, as before: what follows it is not the mention's.
+            while b < len(folded) and unicodedata.category(folded[b]).startswith("M"):
+                b += 1
             if starts is None or ends is None:
                 start, end = a, b
             else:

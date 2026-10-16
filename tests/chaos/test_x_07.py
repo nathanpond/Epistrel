@@ -35,7 +35,7 @@ import httpx2 as httpx
 import pytest
 import yaml
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.api import create_app
@@ -56,6 +56,7 @@ from epistrel.orchestrator.jobs.recurring import (
     RecurringTask,
     recording,
     register_recurring,
+    registered_tasks,
     unregister_recurring,
 )
 from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
@@ -145,12 +146,22 @@ async def _clean(engine: AsyncEngine) -> None:
 
 @pytest.fixture
 async def quiet(engine: AsyncEngine) -> AsyncIterator[Probe]:
-    """Test handlers registered; jobs, timers and heartbeats empty; every seeded recurring row
-    due far in the future. Everything is put back afterwards."""
+    """Test handlers registered; jobs, timers and heartbeats empty; every registered recurring
+    task's row due far in the future. Everything is put back afterwards."""
+    async with _quieted(engine) as probe:
+        yield probe
+
+
+@contextlib.asynccontextmanager
+async def _quieted(engine: AsyncEngine) -> AsyncIterator[Probe]:
+    """``quiet``'s body. It reconciles first, so a task registered since the rows were last
+    written (every task, on a fresh database) has a row to push out; otherwise the test's own
+    ``reconcile`` would create it due now (#318)."""
     global PROBE
     PROBE = Probe()
     for handler in TEST_HANDLERS:
         handlers.register(handler)
+    await timer_api.reconcile(engine)
     async with engine.connect() as conn:
         saved = [dict(r._mapping) for r in (await conn.execute(select(recurring_tasks))).all()]
     await _clean(engine)
@@ -405,6 +416,34 @@ async def _ran(probe: Probe, target: str) -> bool:
 
 
 # -- recurring tasks ---------------------------------------------------------------------------
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M2", "NFR-REL-5")
+async def test_x_07__quiet(engine: AsyncEngine) -> None:
+    """Regression (#318): on a database where no registered recurring task has a row yet (a
+    fresh one), ``quiet`` still leaves none of them due, so a later ``reconcile`` and firing
+    fire nothing. Complement: the rows exist again afterwards, as before."""
+    registered = list(registered_tasks())
+    assert registered  # the shipped tasks are registered
+    async with engine.connect() as conn:
+        before = [dict(r._mapping) for r in (await conn.execute(select(recurring_tasks))).all()]
+    try:
+        await _execute(
+            engine, "DELETE FROM recurring_tasks WHERE name = ANY(:names)", names=registered
+        )
+        async with _quieted(engine):
+            await timer_api.reconcile(engine)
+            assert (await timer_api.fire_due(engine)).recurring == []
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(delete(recurring_tasks))
+            if before:
+                await conn.execute(insert(recurring_tasks), before)
+    async with engine.connect() as conn:
+        names = set((await conn.scalars(select(recurring_tasks.c.name))).all())
+    assert {row["name"] for row in before} == names
 
 
 @pytest.mark.chaos

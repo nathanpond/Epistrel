@@ -6249,3 +6249,9 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** The P-04 rerun itself was not done in this item; it stays the owner's manual reference-host run before 2026-11-10 (the workflow files the reminder from 2026-10-27 21:43 UTC for the current 2026-10-11 report, once it is on `main`).
   **Why:** The owner's decision keeps the rerun manual; a 30-minute compose-stack load run on this machine would contend with the concurrent full-suite runs and skew both, and a run today buys only 5 days over the existing report.
   **Issue:** #283
+- **Decision:** [Rule 1] #318's cause is the `quiet` fixture, not the test body: it pushed out only the `recurring_tasks` rows that already existed, so on a fresh database the test's own `reconcile` created the registered tasks' rows due now. `quiet` now reconciles before it saves and pushes the rows (as `registry` already did); its body moved to the `_quieted` context manager so a test can use it directly. The issue's other suggested fix (filter `fired` to the test's own tasks) was not taken: it would hide the seeded tasks' jobs, which would still run in the test's `_drain` and break its `== 2` counts.
+  **Why:** One fix in the fixture covers every `quiet` test, and the seeded tasks never fire in any of them.
+  **Issue:** #318
+- **Decision:** Regression test `test_x_07__quiet` (part M2/NFR-REL-5, X-07's existing part, `chaos`/`chaos_quick`): it deletes the registered tasks' rows to mimic a fresh database, enters `_quieted`, reconciles and fires, and asserts nothing recurring fires; it puts the original rows back and checks that. It fails without the fix. Every X-07 test was also run on its own: all 12 pass.
+  **Why:** The bug only shows on a fresh session database, which the module-order run never has; the test recreates that state inside the shared one.
+  **Issue:** #318

@@ -144,7 +144,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 080 | Per-turn model budgets and deadlines with ordered degradation; honest claims about leaks and erasure | Partly superseded | 122, 123, 133, 087, 144 |
 | 081 | A versioned character catalog, used by snapshot; every character gets a companion scenario | Partly superseded | 088, 090, 094, 095, 097, 098 |
 | 082 | Scenarios with role slots, a configurable starting-cast limit, deterministic seed merging, and an atomic genesis | Partly superseded | 087, 088, 094, 141, 091 |
-| 083 | Media as immutable assets in a pluggable blob store | Amended | 094, 097, 098, 113 |
+| 083 | Media as immutable assets in a pluggable blob store | Partly superseded | 094, 097, 098, 113 |
 | 084 | Engine profiles: capability modules with validated dependencies, followed live, changed by warn-then-confirm | Partly superseded | 087, 091, 134, 138, 144 |
 | 085 | A Lite pipeline that matches today's roleplay engines, on the same catalog and transcript | Amended | 087 |
 | 086 | Backfill re-derives from the stored transcript, pauses the story, and resolves contradictions by policy | Current | — |
@@ -175,9 +175,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 111 | Players can rate messages; feedback is a flag, never an input | Current | — |
 | 112 | The engine must not degrade prose; voice, plot, repetition, and length are reported, not gated | Amended | 114, 115 |
 | 113 | The general media sweep spares drafts and candidates; the images introduction separates the three sources | Current | — |
-| 114 | Precise wording for age checks and the prose floor; image attempts are fenced | Amended | 116, 117, 125, 115 |
+| 114 | Precise wording for age checks and the prose floor; image attempts are fenced | Partly superseded | 116, 117, 125, 115 |
 | 115 | The prose floor needs enough evidence per intervention type | Current | — |
-| 116 | Fenced image attempts settle their own reservation through a dedicated path | Amended | 117, 119, 121, 124 |
+| 116 | Fenced image attempts settle their own reservation through a dedicated path | Partly superseded | 117, 119, 121, 124 |
 | 117 | After an attempt's horizon, retries wait only when the adapter can confirm completion; overage is the only way past a limit | Partly superseded | 118, 125, 120 |
 | 118 | `confirms_completion` is a declared adapter capability with a strict meaning of "definitive" | Partly superseded | 119, 124, 125, 131 |
 | 119 | A confirmed success is adopted, not retried; `cancel` is part of the confirming contract | Amended | 120 |

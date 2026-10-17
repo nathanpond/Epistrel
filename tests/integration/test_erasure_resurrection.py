@@ -161,11 +161,11 @@ async def resurrection_clauses(erasure_settings: Settings, engine: AsyncEngine) 
             return bool(n)
 
         await _until(erased)
-        # The erasure cleared the held turn's lease itself (#63); the held turn still runs. (The
-        # drainer, which read the queued turn as its head before the erasure, may briefly take
-        # the freed slot for it, find it failed, and give the slot back.)
+        # The erasure cleared the held turn's lease itself (#63); the held turn still runs. The
+        # drainer, which read the queued turn as its head before the erasure, does not take the
+        # freed slot for it: the turn is no longer queued (#329).
         lease = await scalar(engine, "SELECT in_flight_turn FROM stories WHERE id = :s", s=sid)
-        assert lease in (None, queued)
+        assert lease is None
         summarising.release()  # its output names her; its source turns moved under it
         done = await erasing
         generating.release()
@@ -191,13 +191,9 @@ async def resurrection_clauses(erasure_settings: Settings, engine: AsyncEngine) 
         assert record.error["details"]["control_operation_id"] == done["operation_id"]
         assert await _operation(engine, queued) == ("failed", 0)
 
-        async def slot_free() -> bool:
-            held_by = await scalar(
-                engine, "SELECT in_flight_turn FROM stories WHERE id = :s", s=sid
-            )
-            return held_by is None
-
-        await _until(slot_free)
+        assert (
+            await scalar(engine, "SELECT in_flight_turn FROM stories WHERE id = :s", s=sid) is None
+        )
 
         outcomes = await job_run
         assert outcomes[0] == CommitOutcome.DROPPED  # dropped and requeued (#70)

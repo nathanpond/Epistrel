@@ -125,6 +125,7 @@ STORED: dict[str, Any] = {
     "feedback_text_max_chars": 1999,
     "erasure_shared_media": "retire",
     "memory_importance_half_life_turns": 150,
+    "reembed_batch_size": 400,
 }
 """A non-default value of one setting or more in every section of the settings document
 (all of #315's three missing sections' settings among them)."""

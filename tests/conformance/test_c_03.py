@@ -1487,6 +1487,17 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", "/admin/erasure/boundary"),
             lambda e, ids: _erasure_boundary(e),
         ),
+        # -- the re-embed run (#138): no model change yet, so nothing to report or retry
+        Step(
+            "reembed_status",
+            lambda ids: Rest("GET", "/admin/reembed/status"),
+            lambda e, ids: _reembed_status(e),
+        ),
+        Step(
+            "retry_reembed",
+            lambda ids: Rest("POST", "/admin/reembed/retry"),
+            lambda e, ids: _retry_reembed(e),
+        ),
         # -- media assets (#105)
         Step(
             "upload_media",
@@ -2237,6 +2248,18 @@ async def _erasure_status(engine: Engine) -> dict[str, Any]:
     from epistrel.api.routes.admin.erasure import ErasureStatusBody
 
     return dump(ErasureStatusBody.of(await engine.erasure_status(CTX)))
+
+
+async def _reembed_status(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.reembed import ReembedStatusBody
+
+    return dump(ReembedStatusBody.of(await engine.reembed_status(CTX)))
+
+
+async def _retry_reembed(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.reembed import ReembedRetryBody
+
+    return dump(ReembedRetryBody.of(await engine.retry_reembed(CTX)))
 
 
 async def _erasure_boundary(engine: Engine) -> dict[str, Any]:

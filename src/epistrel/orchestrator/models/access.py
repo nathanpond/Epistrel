@@ -46,7 +46,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -95,6 +95,7 @@ from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapt
 from epistrel.orchestrator.models.prompts import payload_fields, render
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
+    PORTS,
     RESERVED,
     InputSchema,
     Purpose,
@@ -107,6 +108,9 @@ from epistrel.orchestrator.models.structured import (
     structured_call,
 )
 from epistrel.orchestrator.models.stub import StubAdapter
+
+if TYPE_CHECKING:
+    from epistrel.orchestrator.embeddings.service import EmbeddingService
 
 log = logging.getLogger(__name__)
 
@@ -175,6 +179,11 @@ def get_delivered(name: str) -> Purpose:
     purpose = DELIVERED.get(name)
     if purpose is not None:
         return purpose
+    if name in PORTS:
+        raise UnknownPurpose(
+            f"{name!r} is a port, not a chat purpose",
+            details={"purpose": name, "reason": "port"},
+        )
     reserved = RESERVED.get(name)
     if reserved is not None:
         raise UnknownPurpose(
@@ -259,6 +268,11 @@ class ModelAccessLayer:
         self.response_format = ResponseFormatMemo()
         self._db: AsyncEngine | None = None
         self.adapter: ModelAdapter = adapter or self._make_adapter(settings)
+        # The embedding port (#138): its own adapter (EPISTREL_EMBEDDING_ADAPTER), row and
+        # accounting. Imported here: the embeddings package imports this one's modules.
+        from epistrel.orchestrator.embeddings.service import EmbeddingService
+
+        self.embeddings: EmbeddingService = EmbeddingService(settings, self.keybox)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> ModelAccessLayer:
@@ -275,6 +289,7 @@ class ModelAccessLayer:
         self._db = db
         self.cache.clear()
         self.response_format.clear()
+        self.embeddings.bind(db)
 
     @property
     def db(self) -> AsyncEngine:
@@ -506,6 +521,7 @@ class ModelAccessLayer:
 
     async def aclose(self) -> None:
         await self.adapter.aclose()
+        await self.embeddings.aclose()
 
 
 __all__ = [

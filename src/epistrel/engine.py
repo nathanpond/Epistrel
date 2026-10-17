@@ -125,6 +125,9 @@ from epistrel.orchestrator.budget import (
     TurnBudget,
     effective_max_calls,
 )
+from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
+from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
+from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs.handlers import erasure_reconcile as erasure_reconcile_job
 from epistrel.orchestrator.jobs.handlers import importance as importance_job
@@ -132,6 +135,7 @@ from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
 from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
+from epistrel.orchestrator.jobs.handlers import reembed as reembed_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
 from epistrel.orchestrator.jobs.handlers.rebuild import (
     REBUILD_KIND,
@@ -139,6 +143,7 @@ from epistrel.orchestrator.jobs.handlers.rebuild import (
     RebuildQueued,
 )
 from epistrel.orchestrator.jobs.handlers.rebuild import coalesce_key as rebuild_coalesce_key
+from epistrel.orchestrator.jobs.handlers.reembed import ReembedRetry
 from epistrel.orchestrator.jobs.worker import (
     Worker,
     WorkerConfig,
@@ -152,7 +157,7 @@ from epistrel.orchestrator.lite.schemas import (
     RespondRequest,
     RespondResult,
 )
-from epistrel.orchestrator.models import ModelAccessLayer
+from epistrel.orchestrator.models import ModelAccessLayer, ModelError, ModelParams
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models import facts as model_facts
 from epistrel.orchestrator.models import metrics as model_metrics
@@ -259,6 +264,7 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "remove_model_api_key": ResultCodec.of(
         model_config.ConfigWrite, status=204, revision_field=_CONFIG
     ),
+    "retry_reembed": ResultCodec.of(ReembedRetry, revision_field=_CONFIG),
     "create_character_draft": ResultCodec.of(
         catalog_characters.DraftWrite, status=201, revision_field=_CONFIG
     ),
@@ -535,6 +541,9 @@ class Engine:
         # EPISTREL_MODEL_ADAPTER. Tests reach the stub through ``engine.models.stub``.
         self.models = models or ModelAccessLayer.from_settings(settings)
         self.models.bind(db)
+        # The embedding jobs and the embedding-model change listener embed through this layer
+        # (#138; the last Engine constructed in a process binds them, like the jobs below).
+        reembed_job.bind(self.models.embeddings)
         # What Core asks of the Orchestrator (#103): the input gate, policy evaluation, model
         # calls and background jobs. The policy evaluation is the Orchestrator's (#111: the
         # catalog validation's input policies); the other no-op defaults stand until a story
@@ -601,6 +610,7 @@ class Engine:
         turn_queue_job.bind(self.drainer.recover)
         lite_summary_job.bind(self.models)
         importance_job.bind(self.models)
+        reembed_job.bind(self.models.embeddings)
         rating_check_job.bind(self.models)
         media_sweep_job.bind(self.media)
         erasure_reconcile_job.bind(self._reconcile_run)
@@ -2271,15 +2281,70 @@ class Engine:
     async def replace_model_config(
         self, ctx: RequestContext, purpose: str, body: model_config.ConfigReplacement
     ) -> model_config.ConfigWrite:
+        """Replace a purpose's own configuration. For the ``embedding`` port (#138) a new
+        model is probed first (422 ``embedding_unreachable`` when it does not answer): the
+        write then moves the embedding pin and enqueues the re-embed jobs in its transaction
+        (``reembed_job.on_embedding_model_changed``)."""
         principal = self.require_principal(ctx)
-        return await self._keyed(
-            ctx,
-            "replace_model_config",
-            lambda _: model_config.replace_config(
-                self.db, purpose, body, keybox=self.models.keybox, principal=principal
-            ),
-            material={"purpose": purpose, "body": _body(body)},
+        probe = await self._probe_embedding_change(purpose, body)
+        with reembed_job.changing(self.models.embeddings, probe):
+            return await self._keyed(
+                ctx,
+                "replace_model_config",
+                lambda _: model_config.replace_config(
+                    self.db, purpose, body, keybox=self.models.keybox, principal=principal
+                ),
+                material={"purpose": purpose, "body": _body(body)},
+            )
+
+    async def _probe_embedding_change(
+        self, purpose: str, body: model_config.ConfigReplacement
+    ) -> EmbeddingProbe | None:
+        """The probe of the embedding model ``body`` names when it is a different one; ``None``
+        for any other purpose, an unset model or the same model."""
+        if purpose != EMBEDDING_PORT or body.model is None:
+            return None
+        if body.params is not None:
+            model_config.check_port_params(purpose, body.params)
+        _, rows = await model_config.snapshot(self.db)
+        own = rows.get(purpose)
+        if own is not None and own.model == body.model:
+            return None
+        candidate = model_config.EffectiveConfig(
+            purpose=purpose,
+            base_url=body.base_url,
+            model=body.model,
+            api_key_ciphertext=None if own is None else own.api_key_ciphertext,
+            params=body.params or ModelParams(),
+            revision=0,
         )
+        try:
+            return await self.models.embeddings.probe(candidate)
+        except ModelError as exc:
+            raise EmbeddingUnreachable(str(exc.details.get("reason", "unknown"))) from None
+
+    # -- the re-embed run (FR-EMBED-3,4; #138) ------------------------------------------------
+
+    @refuses_nul()
+    async def reembed_status(
+        self, ctx: RequestContext, *, limit: int = 50, after: str | None = None
+    ) -> reembed_job.ReembedStatus:
+        """The last embedding-model change's re-embed run: its versions, start and finish, and
+        one page of stories (by id, after ``after``) with their job's status and progress."""
+        async with self.db.connect() as conn:
+            return await reembed_job.status(conn, limit=limit, after=after)
+
+    async def retry_reembed(self, ctx: RequestContext) -> ReembedRetry:
+        """Enqueue a new re-embed job for every story whose latest one failed."""
+        self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> ReembedRetry:
+            async with self.db.begin() as conn:
+                retried = await reembed_job.retry(conn)
+                revision = await model_config.current_revision(conn)
+            return ReembedRetry(retried=retried, config_revision=revision)
+
+        return await self._keyed(ctx, "retry_reembed", run, material={})
 
     async def remove_model_override(
         self, ctx: RequestContext, purpose: str

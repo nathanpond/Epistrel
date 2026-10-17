@@ -179,6 +179,30 @@ Scores one memory's importance, 0 (trivia) to 1 (pivotal) (FR-MEM-7).
 
 **Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`
 
+## Ports delivered
+
+A port is configured like a purpose but called through its own adapter, never as a chat
+completion. Its `model_config` row is its own, with no fallback to the `default` row.
+
+### `embedding`
+
+Embeds memory texts and retrieval queries over the OpenAI-compatible `/embeddings` surface (FR-EMBED-1). One deployment-wide model: its dimension is pinned at the first embedding, and changing the model re-embeds every hot vector in the background (FR-EMBED-3,4).
+
+- **Hot path:** yes
+- **Default model:** the `embedding` row of `model_config` only (an unset model is `model_unavailable` `not_configured`); its `params` take `timeout` only
+- **Capability floor:** inputs of at least 512 tokens; vectors of 64 to 4,096 dimensions; batches of up to 64 texts
+- **Returns:** one vector per text, stamped with the deployment's pinned `embedding_model_version`
+- **Engine profiles:** not routable (one deployment-wide model and dimension, FR-EMBED-3)
+- **Retention:** the memory texts and retrieval queries it embeds leave the deployment when this row names a hosted provider
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `text` | `memory_text` |
+
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`
+
 ## Reserved purposes
 
 Declared now and delivered later (docs/03 §22). Each joins the sections above, with
@@ -195,7 +219,6 @@ its floor and data-flow row, in the milestone that delivers it.
 | `time_estimation` | purpose | M6 | `extraction_backstop` | Best-guess duration of a narrated skip. |
 | `image_prompt` | purpose | M8 | `generation` | Writes image prompts. |
 | `image_check` | purpose | M8 | — | Vision checks of image outputs; no default. |
-| `embedding` | port | M4 | — | The embedding port (FR-EMBED). |
 | `image_generation` | port | M8 | — | The image-generation port (FR-IMG-1). |
 
 ## Content categories
@@ -217,7 +240,7 @@ its floor and data-flow row, in the milestone that delivers it.
 | `scenario_text` | A scenario story's world, seeded facts, relationships, starting places and player persona, as text (#122). |
 | `director_notes` | A scenario story's director notes: plot hooks, objectives, guidance, planned reveals, milestones and endings (#122). |
 | `eval_text` | Text an eval case supplies or an eval's scratch story produced, compared by the quality judge; never a live story's content (#134). |
-| `memory_text` | One memory record of the story: its text (an attributed line of a beat) and its kind, scored by importance scoring (#135). |
+| `memory_text` | One memory record of the story: its text (an attributed line of a beat) and its kind, scored by importance scoring (#135) and embedded by the embedding port, as is a retrieval query (#138). |
 
 ## Hosted providers and retention
 
@@ -225,6 +248,8 @@ Each purpose sends the inputs listed in its row to the endpoint configured for i
 `base_url`, inherited from the `default` row unless the purpose overrides it). When that
 endpoint is a hosted provider, those inputs leave the deployment and are kept under that
 provider's terms, outside Epistrel's erasure boundary (FR-ADMIN-8, FR-IMG-13). This includes the
-true ages `guardrail_check` receives for age-conditioned policies. A deployment that needs any
-of this data kept in-house points the purposes concerned at self-hosted models.
+true ages `guardrail_check` receives for age-conditioned policies, and the memory texts and
+retrieval queries the `embedding` port sends (its own row: it inherits no endpoint). A
+deployment that needs any of this data kept in-house points the purposes concerned at
+self-hosted models.
 `GET /admin/model-config` names the endpoint for every purpose (FR-MODEL-1).

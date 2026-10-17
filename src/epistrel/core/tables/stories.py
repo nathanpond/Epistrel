@@ -34,6 +34,10 @@ lands, M6), and ``predicate_rules``: the author's implication rules (FR-PROP-4,1
 ``{when, then, via}`` predicate ids, written at structured genesis (#149;
 ``core.propositions.registry``). #136 adds ``changes_pruned_through_revision``: the highest
 revision whose ``proposition_changes`` rows the retention sweep removed (``core.readset``).
+#138 adds ``embedding_model_version``: the embedding-model version the story's vectors are in,
+set at its first embedding and advanced by the re-embed job; while it differs from the
+deployment's pin the story's searches are lexical-only (``core.embeddings``). A fork copies it
+with the vectors.
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -166,6 +170,8 @@ stories = Table(
     Column("story_epoch", TIMESTAMP(timezone=True), nullable=True),
     Column("story_minute_zero", BigInteger, nullable=False, server_default=text("0")),
     Column("predicate_rules", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    # FR-EMBED-3, FR-STORE-30 (#138): the embedding-model version the story's vectors are in.
+    Column("embedding_model_version", Text, nullable=True),
     CheckConstraint(STATUS_CHECK, name="status"),
     CheckConstraint(STATUS_BEFORE_BLOCK_CHECK, name="status_before_block"),
     CheckConstraint(SCENARIO_SNAPSHOT_CHECK, name="scenario_snapshot"),

@@ -1,4 +1,5 @@
-"""C-04: model-adapter conformance (docs/04), the M2 parts this Model Access Layer delivers.
+"""C-04: model-adapter conformance (docs/04), the M2 parts this Model Access Layer delivers, and
+the M4 part: the guide's embedding-port row (#138, ``test_c_04__embedding_row``).
 
 Both adapters — the ``openai`` SDK adapter against a local OpenAI-compatible server and the
 deterministic stub — run the same suite (``tests/conformance/suite.py``).
@@ -10,6 +11,7 @@ import json
 import os
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx2 as httpx
@@ -22,7 +24,8 @@ from epistrel.config import Settings
 from epistrel.core.policies.model import Policy
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
-from epistrel.orchestrator.models import metrics
+from epistrel.orchestrator.models import metrics, registry
+from epistrel.orchestrator.models.config import ConfigRow, KeyBox, describe
 from epistrel.orchestrator.models.errors import ModelUnavailable
 from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
 from epistrel.orchestrator.models.prompts import example_instance
@@ -113,10 +116,10 @@ async def test_c_04(model_engine: Engine, adapter_settings: Settings, mock: Mock
     assert observed.results["lite_summary"].model == HOUSE_MODEL
     assert observed.results["guardrail_check"].model == HOUSE_MODEL
 
-    # FR-MODEL-2: the listing names exactly the delivered purposes, keys masked.
+    # FR-MODEL-2: the listing names exactly the delivered purposes and ports, keys masked.
     purposes = observed.listing["purposes"]
     assert isinstance(purposes, dict)
-    assert set(purposes) == {"default", *DELIVERED}
+    assert set(purposes) == {"default", *DELIVERED, *registry.PORTS}
     assert purposes["lite_summary"]["model"] == HOUSE_MODEL
     assert purposes["generation"]["api_key"] == "***"
     assert purposes["generation"]["sources"]["model"] == "own"
@@ -510,3 +513,53 @@ async def test_c_04__call_counts_on_the_response(pg_url: str, engine: AsyncEngin
         assert call["outcome"] == "ok"
         assert call["model"] == "stub"
     assert [c["purpose"] for c in plain.json()["model_calls"]] == ["generation"]
+
+
+@pytest.mark.part("M4", "FR-MODEL-13; FR-EMBED-1")
+def test_c_04__embedding_row() -> None:
+    """The guide gains the embedding port's row (#138): a section under the delivered ports with
+    its capability floor (input tokens, dimension range, batch), its own ``model_config`` row,
+    its data-flow row (``text``: ``memory_text``) and the categories it never receives, and the
+    hosted-retention note covers the texts it embeds. The registry delivers it as a port (its
+    own row, not routable by a profile) and no longer reserves it; resolution gives it its own
+    row only.
+
+    Complements: a port declaring an input it never receives fails the registry's check, and
+    the chat purposes still inherit the ``default`` row that the port does not."""
+    guide = (Path(__file__).resolve().parents[2] / "docs" / "models.md").read_text("utf-8")
+    assert guide == model_guide.render()
+    ports = guide.split("## Ports delivered", 1)[1].split("## Reserved purposes", 1)[0]
+    section = ports.split("### `embedding`", 1)[1]
+    assert "**Capability floor:** inputs of at least 512 tokens" in section
+    assert "vectors of 64 to 4,096 dimensions; batches of up to 64 texts" in section
+    assert "the `embedding` row of `model_config` only" in section
+    assert "| `text` | `memory_text` |" in section
+    never = section.split("**Never receives:**", 1)[1]
+    assert "`player_input`" in never
+    assert "`subject_true_age`" in never
+    assert "`memory_text`" not in never
+    assert "leave the deployment when this row names a hosted provider" in section
+    retention = guide.split("## Hosted providers and retention", 1)[1]
+    assert "retrieval queries the `embedding` port sends" in retention
+    assert "| `embedding` |" not in guide.split("## Reserved purposes", 1)[1]
+
+    port = registry.PORTS["embedding"]
+    assert port.status is registry.PurposeStatus.DELIVERED
+    assert port.default_model_key == "embedding"
+    assert not port.story_scoped
+    assert "embedding" not in registry.RESERVED
+    assert "embedding" not in registry.STORY_PURPOSES
+    with pytest.raises(registry.RegistryError, match="never receives"):
+        registry.validate_port(replace(port, never_receives=frozenset(registry.ContentCategory)))
+
+    stamp = datetime(2026, 10, 17, tzinfo=UTC)
+    rows = {
+        "default": ConfigRow("default", "http://house/v1", "house-model", "k", {}, stamp),
+    }
+    keybox = KeyBox(None)
+    embedding = describe("embedding", rows, keybox)
+    assert (embedding.base_url, embedding.model, embedding.has_api_key) == (None, None, False)
+    assert embedding.sources == {"base_url": "own", "model": "own", "api_key": "own", "params": {}}
+    generation = describe("generation", rows, keybox)
+    assert generation.model == "house-model"
+    assert generation.sources["model"] == "default"

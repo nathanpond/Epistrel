@@ -1,5 +1,6 @@
-"""Helpers for the Model Access Layer tests: a local OpenAI-compatible HTTP server that records
-every request, a throwaway config key, and a context that restores ``model_config``."""
+"""Helpers for the Model Access Layer tests: a local OpenAI-compatible HTTP server (Chat
+Completions, ``/models`` and, #138, ``/embeddings``) that records every request, a throwaway
+config key, and a context that restores ``model_config``."""
 
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.api import create_app
 from epistrel.config import Settings
 from epistrel.engine import Engine
+from epistrel.orchestrator.embeddings.adapter import stub_vector
 from tests.auth_support import bearer
 
 CONFIG_KEY = base64.urlsafe_b64encode(b"epistrel-test-config-key-0000000").decode()
@@ -61,6 +63,28 @@ class MockOpenAI:
         default_factory=lambda: {"ProbeAnswer": '{"colour": "red", "count": 3}'}
     )
     """Answers for structured requests by schema name (the capability probe's schema)."""
+    embedding_dimension: int = 16
+    """The dimension ``POST /v1/embeddings`` answers with (#138): each input's vector is
+    ``stub_vector(text, dimension, "mock")``."""
+
+    def embeddings(self, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """An OpenAI ``/embeddings`` answer for ``body`` (``input`` a string or a list)."""
+        if self.fail_with is not None:
+            return self.fail_with, {"error": {"message": "mock failure"}}
+        texts = body["input"] if isinstance(body["input"], list) else [body["input"]]
+        return 200, {
+            "object": "list",
+            "model": body["model"],
+            "data": [
+                {
+                    "object": "embedding",
+                    "index": i,
+                    "embedding": stub_vector(t, self.embedding_dimension, "mock"),
+                }
+                for i, t in enumerate(texts)
+            ],
+            "usage": {"prompt_tokens": len(texts), "total_tokens": len(texts)},
+        }
 
     @property
     def root(self) -> str:
@@ -132,7 +156,10 @@ def mock_openai(**options: Any) -> Iterator[MockOpenAI]:
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length) or b"{}")
             mock.requests.append(Recorded(self.path, self.headers.get("Authorization"), body))
-            status, payload = mock.reply(body)
+            if self.path.rstrip("/").endswith("/embeddings"):
+                status, payload = mock.embeddings(body)
+            else:
+                status, payload = mock.reply(body)
             encoded, kind = json.dumps(payload).encode(), "application/json"
             if mock.raw_body is not None:
                 status, encoded, kind = 200, mock.raw_body, "text/html"

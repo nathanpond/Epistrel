@@ -19,13 +19,18 @@ moves a story's timeline revision.
 ``list_config_changes`` serves ``GET /admin/config-changes`` and
 ``GET /stories/{id}/config-changes``: newest first, filtered by setting, class and time, with
 secret-bearing values redacted.
+
+**Listeners** (#138): ``register_change_listener(setting, listener)`` runs ``listener`` after
+every recorded change of that setting, in the write's transaction, so the Orchestrator can act
+on a change without core importing it (a change of ``model_config:embedding.model`` moves the
+embedding pin and enqueues the re-embed jobs on the write's own connection).
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -201,7 +206,57 @@ async def record_config_change(
             )
         ],
     )
+    notice = RecordedChange(
+        setting=setting,
+        old=old,
+        new=new,
+        config_revision=config_revision,
+        actor=actor,
+        scope=scope,
+        scope_id=scope_id,
+    )
+    for listener in list(_LISTENERS.get(setting, ())):
+        await listener(conn, notice)
     return change_id
+
+
+# -- listeners (#138) ----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RecordedChange:
+    """One recorded change, as a listener receives it (in the write's transaction)."""
+
+    setting: str
+    old: Any
+    new: Any
+    config_revision: int
+    actor: str
+    scope: ConfigScope
+    scope_id: str | None
+
+
+ChangeListener = Callable[[AsyncConnection, RecordedChange], Awaitable[None]]
+"""Called in the writing transaction after a change of the setting it is registered for."""
+
+_LISTENERS: dict[str, list[ChangeListener]] = {}
+
+
+def register_change_listener(setting: str, listener: ChangeListener) -> ChangeListener:
+    """Run ``listener`` after every recorded change of ``setting`` (the ``config_changes.setting``
+    value, e.g. ``model_config:embedding.model``), in the write's own transaction: what it does
+    commits or rolls back with the write (#138: a change of the embedding model moves the pin
+    and enqueues the re-embed jobs). Registering the same listener twice registers it once."""
+    found = _LISTENERS.setdefault(setting, [])
+    if listener not in found:
+        found.append(listener)
+    return listener
+
+
+def remove_change_listener(setting: str, listener: ChangeListener) -> None:
+    found = _LISTENERS.get(setting, [])
+    if listener in found:
+        found.remove(listener)
 
 
 def _change_id(conn: AsyncConnection) -> str:

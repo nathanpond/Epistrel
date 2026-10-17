@@ -17854,6 +17854,122 @@
         "title": "ReconcileRunBody",
         "type": "object"
       },
+      "ReembedRetryBody": {
+        "additionalProperties": false,
+        "description": "The stories a new re-embed job was enqueued for.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "retried": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Retried",
+            "type": "array"
+          }
+        },
+        "required": [
+          "config_revision",
+          "retried"
+        ],
+        "title": "ReembedRetryBody",
+        "type": "object"
+      },
+      "ReembedStatusBody": {
+        "additionalProperties": false,
+        "description": "The last embedding-model change's re-embed run.",
+        "properties": {
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the last story's job ended; `null` while any is queued or running.",
+            "title": "Finished At"
+          },
+          "from_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Version"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pass as `after` for the next page; `null` at the end.",
+            "title": "Next"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "stories": {
+            "items": {
+              "$ref": "#/components/schemas/StoryReembedBody"
+            },
+            "title": "Stories",
+            "type": "array"
+          },
+          "to_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Version"
+          }
+        },
+        "required": [
+          "from_version",
+          "to_version",
+          "started_at",
+          "finished_at",
+          "stories",
+          "next"
+        ],
+        "title": "ReembedStatusBody",
+        "type": "object"
+      },
       "ReferenceImage": {
         "additionalProperties": false,
         "description": "A reference image of the visual identity: a media asset (a ``live`` image when it is\nadded) and its required ``audience``.",
@@ -21258,6 +21374,27 @@
             "title": "Default Safe Fallback",
             "type": "string"
           },
+          "embedding_batch_max": {
+            "default": 64,
+            "maximum": 256.0,
+            "minimum": 1.0,
+            "title": "Embedding Batch Max",
+            "type": "integer"
+          },
+          "embedding_hnsw_ef_construction": {
+            "default": 64,
+            "maximum": 1000.0,
+            "minimum": 4.0,
+            "title": "Embedding Hnsw Ef Construction",
+            "type": "integer"
+          },
+          "embedding_hnsw_m": {
+            "default": 16,
+            "maximum": 100.0,
+            "minimum": 2.0,
+            "title": "Embedding Hnsw M",
+            "type": "integer"
+          },
           "erasure_shared_media": {
             "default": "purge",
             "enum": [
@@ -21937,6 +22074,13 @@
             "title": "Readset Change Retention Days",
             "type": "integer"
           },
+          "reembed_batch_size": {
+            "default": 500,
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Reembed Batch Size",
+            "type": "integer"
+          },
           "require_primary_image": {
             "default": false,
             "title": "Require Primary Image",
@@ -22051,6 +22195,39 @@
               }
             ],
             "title": "Default Safe Fallback"
+          },
+          "embedding_batch_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Batch Max"
+          },
+          "embedding_hnsw_ef_construction": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Hnsw Ef Construction"
+          },
+          "embedding_hnsw_m": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Hnsw M"
           },
           "erasure_shared_media": {
             "anyOf": [
@@ -22830,6 +23007,17 @@
               }
             ],
             "title": "Readset Change Retention Days"
+          },
+          "reembed_batch_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reembed Batch Size"
           },
           "require_primary_image": {
             "anyOf": [
@@ -23860,6 +24048,52 @@
           "name"
         ],
         "title": "StoryRatingBody",
+        "type": "object"
+      },
+      "StoryReembedBody": {
+        "additionalProperties": false,
+        "description": "One story's re-embed.",
+        "properties": {
+          "done": {
+            "description": "How many of them have a vector in `to_version`.",
+            "title": "Done",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A failed job's exception class; never a message.",
+            "title": "Error"
+          },
+          "status": {
+            "description": "`queued`, `running`, `done` or `failed`.",
+            "title": "Status",
+            "type": "string"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "total": {
+            "description": "The story's hot active memories.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "story_id",
+          "total",
+          "done",
+          "status",
+          "error"
+        ],
+        "title": "StoryReembedBody",
         "type": "object"
       },
       "StoryRelationBody": {
@@ -26056,6 +26290,9 @@
                           "default_content_rating_id",
                           "default_engine_profile_id",
                           "default_safe_fallback",
+                          "embedding_batch_max",
+                          "embedding_hnsw_ef_construction",
+                          "embedding_hnsw_m",
                           "erasure_shared_media",
                           "feedback_export",
                           "feedback_regen_window_s",
@@ -26152,6 +26389,7 @@
                           "rating_check_model_calls_per_record",
                           "rating_check_retention_days",
                           "readset_change_retention_days",
+                          "reembed_batch_size",
                           "require_primary_image",
                           "structured_retry_budget",
                           "timer_lag_alert",
@@ -28501,7 +28739,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`."
+            "description": "Invalid request; nothing was written: `embedding_unreachable`, `validation_error`."
           },
           "503": {
             "content": {
@@ -29796,6 +30034,240 @@
           }
         ],
         "summary": "Replace a policy",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/reembed/retry": {
+      "post": {
+        "operationId": "retry_reembed",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReembedRetryBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Retry the failed re-embed jobs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/reembed/status": {
+      "get": {
+        "operationId": "reembed_status",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReembedStatusBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read the re-embed run",
         "tags": [
           "admin"
         ]

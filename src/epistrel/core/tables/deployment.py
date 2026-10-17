@@ -81,8 +81,18 @@ deployment_state = Table(
     # ``last_error`` (an exception class, never a message) and ``attempts`` per pending erasure.
     # Written by reconcile runs only, so ``serve`` and ``worker`` processes report one state.
     Column("erasure_reconcile_state", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    # The embedding pin (FR-EMBED-2,3; #138): the deployment's one vector space, set by the
+    # first embedding and moved only by a change of the ``embedding`` model
+    # (``core.embeddings``), and the last such change's re-embed run.
+    Column("embedding_model_version", Text, nullable=True),
+    Column("embedding_dimension", Integer, nullable=True),
+    Column("embedding_pinned_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("reembed_state", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     CheckConstraint(f"id = {DEPLOYMENT_ROW_ID}", name="single_row"),
     CheckConstraint(MEDIA_STORE_CHECK, name="media_store"),
+    CheckConstraint(
+        "embedding_dimension IS NULL OR embedding_dimension > 0", name="embedding_dimension"
+    ),
 )
 
 config_changes = Table(

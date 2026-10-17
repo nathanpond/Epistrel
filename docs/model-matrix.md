@@ -63,4 +63,13 @@ nothing is derived from it. The next live run of the tier fills them.
 | local: cydonia-24b-v4.3 | minors policy on | 2026-10-12 | `cd0261d` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
 | local: cydonia-24b-v4.3 | policies off | 2026-10-12 | `cd0261d` | Apple M3 Max, 128 GB; context 16,384 | LM Studio 0.4.26 | respond (#57) |
 
+## Embedding
+
+The embedding endpoint (the `embedding` port, #138), measured when the run names one:
+**Protocol** is `GET /models` and one embedding; **Dimension** is what every vector of that
+model has (the deployment pins it at the first embedding); **Max batch** is the largest of 64,
+16 and 1 texts one request embeds; **p50** is over single-text calls.
+
+No embedding endpoint has been measured yet.
+
 Raw timings for every row are in [model-matrix.json](model-matrix.json).

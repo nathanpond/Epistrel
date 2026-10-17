@@ -16,7 +16,9 @@ catalog validation's model-call budget ``validation_model_calls`` (#111) and its
 text cap and retention (``feedback_text_max_chars``, ``feedback_retention``; #112) and its
 export switch and aggregate window (``feedback_export``, ``feedback_regen_window_s``; #126),
 and what a catalog erasure does with media others still reference (``erasure_shared_media``, #124),
-and how fast memory importance decays (``memory_importance_half_life_turns``, #135).
+and how fast memory importance decays (``memory_importance_half_life_turns``, #135),
+and the embedding port's batches and HNSW index (``embedding_batch_max``,
+``reembed_batch_size``, ``embedding_hnsw_m``, ``embedding_hnsw_ef_construction``; #138).
 ``media_sweep_interval`` also moves its recurring task's ``recurring_tasks`` row
 (``RECURRING_INTERVAL_SETTINGS``).
 
@@ -186,6 +188,10 @@ class SettingsPatch(BaseModel):
     feedback_regen_window_s: StrictInt | None = None
     erasure_shared_media: ErasureSharedMedia | None = None
     memory_importance_half_life_turns: StrictInt | None = None
+    embedding_batch_max: StrictInt | None = None
+    reembed_batch_size: StrictInt | None = None
+    embedding_hnsw_m: StrictInt | None = None
+    embedding_hnsw_ef_construction: StrictInt | None = None
     profile_defaults: SettingsDocument | None = None
 
     @model_validator(mode="before")

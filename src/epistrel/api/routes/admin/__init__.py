@@ -18,6 +18,7 @@ from epistrel.api.routes.admin import (
     offboarding,
     policies,
     ratings,
+    reembed,
     settings,
     stories,
 )
@@ -30,6 +31,7 @@ router.include_router(ratings.router)
 router.include_router(settings.router)
 router.include_router(policies.router)
 router.include_router(model_config.router)
+router.include_router(reembed.router)
 router.include_router(offboarding.router)
 router.include_router(erasure.router)
 router.include_router(feedback_export.router)

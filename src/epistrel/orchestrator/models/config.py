@@ -6,7 +6,10 @@ NFR-SEC-3).
 per field: a purpose's ``base_url``, ``model`` and API key are its own when set, else those of
 the purpose it defaults to when the registry names one (``rating_suggestion`` defaults to
 ``guardrail_check``, FR-MODEL-2; #121), else the ``default`` row's; ``params`` inherit per key
-the same way. A purpose with no row is its parent's row, then the ``default`` row.
+the same way. A purpose with no row is its parent's row, then the ``default`` row. A **port**
+(``embedding``, #138) is its own row only: nothing falls back to ``default`` (a chat model is
+never an embedding model), so an unset field stays unset, and its ``params`` may set only
+``timeout`` (``PORT_PARAMS``; any chat parameter is 422).
 
 **Writes** (FR-MODEL-4) follow every deployment-scoped configuration write (#48): take
 ``lock_deployment``, move ``deployment_state.config_revision`` by exactly one, and record one
@@ -67,7 +70,7 @@ from epistrel.core.tables import deployment_state, model_config
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.trimmed import trim_as_sent
 from epistrel.orchestrator.models.adapter import ModelParams, ModelUnavailable
-from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, DELIVERED
+from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, DELIVERED, PORTS
 
 FINGERPRINT_HEX = 8
 MAX_API_KEY_CHARS = 512
@@ -278,7 +281,7 @@ def describe(purpose: str, rows: Mapping[str, ConfigRow], keybox: KeyBox) -> Con
     effective = resolve(purpose, own, default, 0, parent)
 
     def source(name: str) -> Source:
-        if purpose == DEFAULT_MODEL_KEY:
+        if purpose == DEFAULT_MODEL_KEY or purpose in PORTS:
             return "own"
         if own is not None and getattr(own, name) is not None:
             return "own"
@@ -290,7 +293,7 @@ def describe(purpose: str, rows: Mapping[str, ConfigRow], keybox: KeyBox) -> Con
     parent_params = _params(parent.params, purpose).wire() if parent is not None else {}
 
     def param_source(key: str) -> Source:
-        if purpose == DEFAULT_MODEL_KEY or key in own_params:
+        if purpose == DEFAULT_MODEL_KEY or purpose in PORTS or key in own_params:
             return "own"
         return "inherited" if key in parent_params else "default"
 
@@ -322,7 +325,24 @@ def _row(mapping: RowMapping) -> ConfigRow:
     )
 
 
+PORT_PARAMS = frozenset({"timeout"})
+"""The params a port's row may set (#138): the chat parameters mean nothing to ``/embeddings``."""
+
+
+def _empty_row(purpose: str) -> ConfigRow:
+    return ConfigRow(
+        purpose=purpose,
+        base_url=None,
+        model=None,
+        api_key_ciphertext=None,
+        params={},
+        updated_at=datetime.min,
+    )
+
+
 def _default_row(rows: Mapping[str, ConfigRow], purpose: str) -> ConfigRow:
+    if purpose in PORTS:  # a port never falls back to the default row
+        return _empty_row(purpose)
     default = rows.get(DEFAULT_MODEL_KEY)
     if default is None:  # the migration seeds it; a missing row is a broken deployment
         raise ModelUnavailable(purpose, "not_configured", "the default model row is missing")
@@ -412,8 +432,8 @@ class ConfigCache:
 
 def configurable() -> tuple[str, ...]:
     """The purposes ``/admin/model-config`` lists and writes: ``default`` plus every delivered
-    purpose (reserved ones are not configurable yet, FR-MODEL-2)."""
-    return (DEFAULT_MODEL_KEY, *DELIVERED)
+    purpose and port (reserved ones are not configurable yet, FR-MODEL-2)."""
+    return (DEFAULT_MODEL_KEY, *DELIVERED, *PORTS)
 
 
 async def listing(db: AsyncEngine, keybox: KeyBox) -> tuple[int, dict[str, ConfigEntry]]:
@@ -436,6 +456,23 @@ def check_purpose(purpose: str) -> None:
         raise InvalidRequest(
             f"unknown model purpose {purpose!r}",
             details={"field": "path.purpose", "purpose": purpose, "reason": "unknown"},
+        )
+
+
+def check_port_params(purpose: str, params: ModelParams) -> None:
+    """422 when a port's params set anything but ``PORT_PARAMS`` (a chat parameter)."""
+    if purpose not in PORTS:
+        return
+    refused = sorted(set(params.model_dump(exclude_none=True)) - PORT_PARAMS)
+    if refused:
+        raise InvalidRequest(
+            f"{purpose} takes no chat parameters: {', '.join(refused)}",
+            details={
+                "field": f"body.params.{refused[0]}",
+                "purpose": purpose,
+                "params": refused,
+                "reason": "not_a_port_param",
+            },
         )
 
 
@@ -615,6 +652,8 @@ async def write_config(
     """
     if base_url is not UNSET:
         base_url = _check_base_url(base_url)
+    if params is not UNSET and params is not None:
+        check_port_params(purpose, params)
     if api_key is not UNSET and api_key is not None and not keybox.available:
         raise ConfigKeyMissing
 

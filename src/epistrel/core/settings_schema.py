@@ -741,6 +741,41 @@ class MemorySettings(BaseModel):
     )
 
 
+DEFAULT_EMBEDDING_BATCH_MAX = 64
+"""The most texts one ``/embeddings`` request carries (FR-EMBED-1; #138)."""
+EMBEDDING_BATCH_CEILING = 256
+DEFAULT_REEMBED_BATCH_SIZE = 500
+"""The most memories one embed or re-embed run embeds (FR-EMBED-4; #138)."""
+REEMBED_BATCH_CEILING = 10_000
+DEFAULT_HNSW_M = 16
+DEFAULT_HNSW_EF_CONSTRUCTION = 64
+"""pgvector's own HNSW defaults: the index the first embedding creates (#138; #141 tunes)."""
+
+
+class EmbeddingSettings(BaseModel):
+    """How the embedding port batches its work and indexes its vectors (FR-EMBED-1,4; #138),
+    stored under ``deployment_state.settings``: ``embedding_batch_max`` texts per
+    ``/embeddings`` request, ``reembed_batch_size`` memories per embed or re-embed run, and the
+    HNSW index's ``m`` and ``ef_construction`` (read when the index is built: at the first
+    embedding and when a model change retypes the column). Prospective: a run reads them when
+    it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    embedding_batch_max: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_EMBEDDING_BATCH_MAX, ge=1, le=EMBEDDING_BATCH_CEILING
+    )
+    reembed_batch_size: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_REEMBED_BATCH_SIZE, ge=1, le=REEMBED_BATCH_CEILING
+    )
+    embedding_hnsw_m: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_HNSW_M, ge=2, le=100
+    )
+    embedding_hnsw_ef_construction: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_HNSW_EF_CONSTRUCTION, ge=4, le=1_000
+    )
+
+
 # -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
 
 DEFAULT_MINOR_AGE_THRESHOLD = 18
@@ -831,6 +866,7 @@ class DeploymentSettings(
     FeedbackSettings,
     ErasureSettings,
     MemorySettings,
+    EmbeddingSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

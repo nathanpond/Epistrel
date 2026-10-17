@@ -20,6 +20,7 @@ from epistrel.orchestrator.models.access import (
 from epistrel.orchestrator.models.adapter import UndeclaredInput, UnknownPurpose
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
+    PORTS,
     RESERVED,
     ContentCategory,
     GenerationInputs,
@@ -80,8 +81,11 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
 
 
 def test_registry_enumerates_every_named_purpose() -> None:
-    assert set(DELIVERED) | set(RESERVED) >= FR_MODEL_2
+    # M4 delivers the embedding port (#138): a port, configured like a purpose, never a chat one.
+    assert set(DELIVERED) | set(PORTS) | set(RESERVED) >= FR_MODEL_2
     assert not set(DELIVERED) & set(RESERVED)
+    assert not set(PORTS) & (set(DELIVERED) | set(RESERVED))
+    assert set(PORTS) == {"embedding"}
     for reserved in RESERVED.values():
         assert reserved.milestone in {"M3", "M4", "M5", "M6", "M7", "M8"}
         assert reserved.defaults_to is None or reserved.defaults_to in FR_MODEL_2

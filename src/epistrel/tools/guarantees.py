@@ -94,9 +94,11 @@ def problems(
 ) -> list[str]:
     """Why ``rows`` cannot be published (empty when they can). ``delivered`` and ``known`` are
     the registry's delivered and known purposes (default: read from it)."""
-    delivered = list(registry.DELIVERED) if delivered is None else list(delivered)
+    if delivered is None:
+        delivered = [*registry.DELIVERED, *registry.PORTS]
+    delivered = list(delivered)
     if known is None:
-        known = [*registry.DELIVERED, *registry.RESERVED]
+        known = [*registry.DELIVERED, *registry.PORTS, *registry.RESERVED]
     defined = {d.id for d in load_spec(spec_path).definitions}
     found: list[str] = []
     ids = [row.id for row in rows]

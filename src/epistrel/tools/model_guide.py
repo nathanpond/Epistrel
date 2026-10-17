@@ -6,9 +6,10 @@
 The guide lists every delivered purpose in registry order: what it does, whether it is on the
 hot path, the ``model_config`` row it defaults to, its template, its capability floor, the
 structured result it returns, and its data-flow row (each input field it receives with that
-field's content category, and the categories it never receives). Then come the reserved
-purposes, the content categories, and one hosted-provider retention note. CI runs ``--check``
-in the ``lint`` job, and the comparison is byte for byte.
+field's content category, and the categories it never receives). Then come the delivered
+ports (``embedding``, #138: its own row, floor and data-flow row, and its retention note),
+the reserved purposes, the content categories, and one hosted-provider retention note. CI runs
+``--check`` in the ``lint`` job, and the comparison is byte for byte.
 
 A purpose without a capability floor or without a data-flow row (no declared input) cannot be
 rendered: ``GuideError`` names it, so the generator and the check both fail.
@@ -22,9 +23,11 @@ from collections.abc import Iterable, Mapping, Sequence
 
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
+    PORTS,
     RESERVED,
     CapabilityFloor,
     ContentCategory,
+    Port,
     Purpose,
     ReservedPurpose,
     StructuredOutput,
@@ -69,7 +72,8 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
     ),
     ContentCategory.MEMORY_TEXT: (
         "One memory record of the story: its text (an attributed line of a beat) and its kind, "
-        "scored by importance scoring (#135)."
+        "scored by importance scoring (#135) and embedded by the embedding port, as is a "
+        "retrieval query (#138)."
     ),
 }
 
@@ -109,8 +113,10 @@ Each purpose sends the inputs listed in its row to the endpoint configured for i
 `base_url`, inherited from the `default` row unless the purpose overrides it). When that
 endpoint is a hosted provider, those inputs leave the deployment and are kept under that
 provider's terms, outside Epistrel's erasure boundary (FR-ADMIN-8, FR-IMG-13). This includes the
-true ages `guardrail_check` receives for age-conditioned policies. A deployment that needs any
-of this data kept in-house points the purposes concerned at self-hosted models.
+true ages `guardrail_check` receives for age-conditioned policies, and the memory texts and
+retrieval queries the `embedding` port sends (its own row: it inherits no endpoint). A
+deployment that needs any of this data kept in-house points the purposes concerned at
+self-hosted models.
 `GET /admin/model-config` names the endpoint for every purpose (FR-MODEL-1).
 """
 
@@ -199,6 +205,47 @@ def _purpose(purpose: Purpose) -> list[str]:
     return lines
 
 
+def _ports(ports: Iterable[Port]) -> list[str]:
+    lines = [
+        "## Ports delivered",
+        "",
+        "A port is configured like a purpose but called through its own adapter, never as a chat",
+        "completion. Its `model_config` row is its own, with no fallback to the `default` row.",
+        "",
+    ]
+    for port in ports:
+        floor = port.floor
+        lines += [
+            f"### {_code(port.name)}",
+            "",
+            port.description,
+            "",
+            f"- **Hot path:** {'yes' if port.hot_path else 'no'}",
+            f"- **Default model:** the {_code(port.default_model_key)} row of `model_config` "
+            "only (an unset model is `model_unavailable` `not_configured`); its `params` take "
+            "`timeout` only",
+            "- **Capability floor:** inputs of at least "
+            f"{floor.min_input_tokens:,} tokens; vectors of {floor.min_dimension:,} to "
+            f"{floor.max_dimension:,} dimensions; batches of up to {floor.max_batch} texts",
+            "- **Returns:** one vector per text, stamped with the deployment's pinned "
+            "`embedding_model_version`",
+            f"- **Engine profiles:** {'routable' if port.story_scoped else 'not routable'} "
+            "(one deployment-wide model and dimension, FR-EMBED-3)",
+            "- **Retention:** the memory texts and retrieval queries it embeds leave the "
+            "deployment when this row names a hosted provider",
+            "",
+            "**Receives**",
+            "",
+            "| Field | Content category |",
+            "|---|---|",
+        ]
+        for path, category in _leaf_paths(field_categories(port.input_schema)):
+            lines.append(f"| {_code(path)} | {_code(category)} |")
+        never = ", ".join(_code(c.value) for c in ContentCategory if c in port.never_receives)
+        lines += ["", f"**Never receives:** {never or '—'}", ""]
+    return lines
+
+
 def _reserved(reserved: Iterable[ReservedPurpose]) -> list[str]:
     lines = [
         "## Reserved purposes",
@@ -230,8 +277,10 @@ def _categories() -> list[str]:
 def render(
     delivered: Mapping[str, Purpose] = DELIVERED,
     reserved: Mapping[str, ReservedPurpose] = RESERVED,
+    ports: Mapping[str, Port] = PORTS,
 ) -> str:
-    """The model guide for ``delivered`` and ``reserved`` (the registry's by default)."""
+    """The model guide for ``delivered``, ``ports`` and ``reserved`` (the registry's by
+    default)."""
     purposes = list(delivered.values())
     found = problems(purposes)
     if found:
@@ -239,6 +288,7 @@ def render(
     lines = [BANNER, "", INTRO, *_summary(purposes)]
     for purpose in purposes:
         lines += _purpose(purpose)
+    lines += _ports(ports.values())
     lines += _reserved(reserved.values())
     lines += _categories()
     return "\n".join(lines) + "\n" + RETENTION

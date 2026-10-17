@@ -6,7 +6,7 @@ sweeps ``retention_sweep`` / ``idempotency_purge`` (``retention``) and ``turn_qu
 (``turn_queue``), registered with their recurring tasks (``recurring``; #71). M3 adds the
 recurring ``media_sweep`` (#105), ``offboarding`` (#117), ``rating_check`` (#118) and the
 recurring ``erasure_reconcile_retry`` (#125). M4 adds ``importance_scoring`` (#135, with its daily
-recurring safety net). A kind
+recurring safety net) and the embedding port's ``embed`` and ``reembed`` (#138). A kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -30,6 +30,7 @@ from epistrel.orchestrator.jobs.handlers.media_sweep import (
 from epistrel.orchestrator.jobs.handlers.offboarding import OFFBOARDING_HANDLER
 from epistrel.orchestrator.jobs.handlers.rating_check import RATING_CHECK_HANDLER
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_HANDLER
+from epistrel.orchestrator.jobs.handlers.reembed import EMBED_HANDLER, REEMBED_HANDLER
 from epistrel.orchestrator.jobs.handlers.retention import (
     IDEMPOTENCY_HANDLER,
     IDEMPOTENCY_TASK,
@@ -72,6 +73,8 @@ for _handler in (
     RATING_CHECK_HANDLER,
     ERASURE_RECONCILE_HANDLER,
     IMPORTANCE_HANDLER,
+    EMBED_HANDLER,
+    REEMBED_HANDLER,
 ):
     register(_handler)
 for _task in (

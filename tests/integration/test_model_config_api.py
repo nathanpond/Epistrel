@@ -20,7 +20,7 @@ from epistrel.engine import Engine
 from epistrel.orchestrator.models.adapter import ModelUnavailable
 from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
 from epistrel.orchestrator.models.prompts import example_instance
-from epistrel.orchestrator.models.registry import DELIVERED
+from epistrel.orchestrator.models.registry import DELIVERED, PORTS
 from tests.auth_support import auth_settings, bearer
 from tests.model_support import (
     OPERATOR_HEADERS,
@@ -88,7 +88,7 @@ async def test_listing_shape(client: httpx.AsyncClient) -> None:
     await put(client, "generation", {"params": {"top_p": 0.5}})
     body = await listing(client)
     assert isinstance(body["config_revision"], int)
-    assert set(body["purposes"]) == {"default", *DELIVERED}
+    assert set(body["purposes"]) == {"default", *DELIVERED, *PORTS}
     generation = body["purposes"]["generation"]
     assert generation["model"] == "house"
     assert generation["params"] == {"temperature": 0.7, "top_p": 0.5}

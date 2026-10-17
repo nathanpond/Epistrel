@@ -1091,6 +1091,16 @@
       "method": "GET",
       "path": "/stories/{story_id}/entities/{entity_id}/profile",
       "requirement": "FR-RET-6"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/reembed/status",
+      "requirement": "FR-EMBED-3"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/reembed/retry",
+      "requirement": "FR-EMBED-3"
     }
   ]
 }

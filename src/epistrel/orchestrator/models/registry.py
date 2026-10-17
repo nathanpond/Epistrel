@@ -6,9 +6,12 @@ with a ``ContentCategory``. Prompt templates (``prompts.py``) and the payload bu
 (``access.ModelAccessLayer.call``) use only declared inputs, so a prompt can carry only what its
 purpose declares.
 
-``DELIVERED`` holds the purposes a model call may use today; ``RESERVED`` names every other
-purpose (and the two separate ports) FR-MODEL-2 enumerates, with the milestone that delivers
-it. Purposes join ``DELIVERED`` as the capabilities that use them land (FR-MODEL-13, §22).
+``DELIVERED`` holds the purposes a model call may use today; ``PORTS`` the separate ports
+delivered so far (``embedding``, #138: not a chat completion, so it has no template and no
+response schema, but its own capability floor, input schema and ``model_config`` row);
+``RESERVED`` names every other purpose (and port) FR-MODEL-2 enumerates, with the milestone
+that delivers it. Purposes join ``DELIVERED`` as the capabilities that use them land
+(FR-MODEL-13, §22).
 
 The registry validates itself at import: a field with no category (its own, or one on an
 enclosing field) or a category the purpose ``never_receives`` raises ``RegistryError``.
@@ -47,8 +50,9 @@ class ContentCategory(StrEnum):
     """Text an eval case supplies or an eval's scratch story produced (#134): what the
     ``quality_judge`` compares. Never a live story's content."""
     MEMORY_TEXT = "memory_text"
-    """A memory record's text and kind (#135): what ``importance_scoring`` rates (and #143's
-    consolidation compresses)."""
+    """A memory record's text and kind (#135): what ``importance_scoring`` rates, the
+    ``embedding`` port embeds (#138; a retrieval query is embedded as one) and #143's
+    consolidation compresses."""
 
 
 class StructuredOutput(StrEnum):
@@ -318,6 +322,12 @@ class ImportanceScore(BaseModel):
     importance: float = Field(ge=0.0, le=1.0)
 
 
+class EmbeddingInputs(InputSchema):
+    """One text to embed (FR-EMBED-1; #138): a memory's text, or a retrieval query's."""
+
+    text: Annotated[str, C.MEMORY_TEXT]
+
+
 # -- purposes ---------------------------------------------------------------------------------
 
 
@@ -354,6 +364,37 @@ class ReservedPurpose:
     kind: Literal["purpose", "port"] = "purpose"
     defaults_to: str | None = None
     status: PurposeStatus = field(default=PurposeStatus.RESERVED, init=False)
+
+
+@dataclass(frozen=True)
+class EmbeddingFloor:
+    """The recommended minimum an embedding model must meet (FR-MODEL-10 for the port): it
+    accepts inputs of ``min_input_tokens``, its vectors have ``min_dimension`` to
+    ``max_dimension`` dimensions, and one request may carry up to ``max_batch`` texts."""
+
+    min_input_tokens: int = 512
+    min_dimension: int = 64
+    max_dimension: int = 4_096
+    max_batch: int = 64
+
+
+@dataclass(frozen=True)
+class Port:
+    """A delivered port (FR-MODEL-2's separately ported capability): configured through its
+    own ``model_config`` row (``default_model_key``, its own name, with no fallback to the
+    ``default`` row) and called through its own adapter, never as a chat completion."""
+
+    name: str
+    description: str
+    default_model_key: str
+    floor: EmbeddingFloor
+    input_schema: type[InputSchema]
+    hot_path: bool
+    never_receives: frozenset[ContentCategory]
+    story_scoped: bool = False
+    """A port has one deployment-wide configuration; an engine profile cannot route it."""
+    kind: Literal["port"] = "port"
+    status: PurposeStatus = field(default=PurposeStatus.DELIVERED, init=False)
 
 
 DEFAULT_MODEL_KEY = "default"
@@ -465,7 +506,6 @@ RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ),
     ReservedPurpose("image_prompt", "Writes image prompts.", "M8", defaults_to="generation"),
     ReservedPurpose("image_check", "Vision checks of image outputs; no default.", "M8"),
-    ReservedPurpose("embedding", "The embedding port (FR-EMBED).", "M4", kind="port"),
     ReservedPurpose("image_generation", "The image-generation port (FR-IMG-1).", "M8", kind="port"),
 )
 
@@ -554,12 +594,52 @@ def validate_purpose(purpose: Purpose) -> None:
         raise RegistryError(f"{purpose.name}: history field {purpose.history_field!r} undeclared")
 
 
+EMBEDDING = Port(
+    name="embedding",
+    description=(
+        "Embeds memory texts and retrieval queries over the OpenAI-compatible `/embeddings` "
+        "surface (FR-EMBED-1). One deployment-wide model: its dimension is pinned at the first "
+        "embedding, and changing the model re-embeds every hot vector in the background "
+        "(FR-EMBED-3,4)."
+    ),
+    default_model_key="embedding",
+    floor=EmbeddingFloor(),
+    input_schema=EmbeddingInputs,
+    hot_path=True,
+    # Texts only: a memory's or a query's, of the story being searched. Never a definition, a
+    # policy, an age or eval text.
+    never_receives=_EVERYTHING - {C.MEMORY_TEXT},
+)
+
+PORTS: Mapping[str, Port] = types.MappingProxyType({EMBEDDING.name: EMBEDDING})
+"""The ports delivered so far, by name (configurable like purposes, never chat-completed)."""
+
+
+def validate_port(port: Port) -> None:
+    """Raise ``RegistryError`` unless every input is tagged and none is a forbidden category."""
+    forbidden = schema_categories(port.input_schema) & port.never_receives
+    if forbidden:
+        names = ", ".join(sorted(forbidden))
+        raise RegistryError(f"{port.name}: declares inputs it never receives: {names}")
+    if port.default_model_key != port.name:
+        raise RegistryError(f"{port.name}: a port has its own model_config row")
+
+
+for _port in PORTS.values():
+    validate_port(_port)
+
+
 def _build(purposes: tuple[Purpose, ...]) -> Mapping[str, Purpose]:
     built: dict[str, Purpose] = {}
     reserved = {r.name for r in RESERVED_PURPOSES}
     for purpose in purposes:
         validate_purpose(purpose)
-        if purpose.name in built or purpose.name in reserved or purpose.name == DEFAULT_MODEL_KEY:
+        if (
+            purpose.name in built
+            or purpose.name in reserved
+            or purpose.name in PORTS
+            or purpose.name == DEFAULT_MODEL_KEY
+        ):
             raise RegistryError(f"{purpose.name}: declared twice")
         parent = purpose.default_model_key
         if parent != DEFAULT_MODEL_KEY and (
@@ -606,7 +686,9 @@ def get_purpose(name: str) -> Purpose:
 __all__ = [
     "DEFAULT_MODEL_KEY",
     "DELIVERED",
+    "EMBEDDING",
     "IMPORTANCE_SCORING",
+    "PORTS",
     "QUALITY_JUDGE",
     "RATING_SUGGESTION",
     "RESERVED",
@@ -616,6 +698,8 @@ __all__ = [
     "CharacterDefinition",
     "ContentCategory",
     "ElementKind",
+    "EmbeddingFloor",
+    "EmbeddingInputs",
     "GenerationInputs",
     "GuardrailCheckInputs",
     "GuardrailVerdict",
@@ -625,6 +709,7 @@ __all__ = [
     "KnownHit",
     "LiteSummaryInputs",
     "PlayerInput",
+    "Port",
     "Purpose",
     "PurposeStatus",
     "QualityJudgeInputs",
@@ -645,5 +730,6 @@ __all__ = [
     "field_categories",
     "get_purpose",
     "schema_categories",
+    "validate_port",
     "validate_purpose",
 ]

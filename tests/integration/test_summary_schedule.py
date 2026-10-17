@@ -507,13 +507,27 @@ def _rows_read(plan: dict[str, Any]) -> int:
     return total
 
 
+def _seq_scans(plan: dict[str, Any]) -> set[str]:
+    found = {plan["Relation Name"]} if plan.get("Node Type") == "Seq Scan" else set()
+    for child in plan.get("Plans", ()):
+        found |= _seq_scans(child)
+    return found
+
+
 async def _explained_rows(engine: AsyncEngine, statement: str, parameters: Any) -> int:
+    """The rows ``statement`` reads with sequential scans disabled. A small table's sequential
+    scan reads the whole table, so its count follows the rest of the database (other tests'
+    stories, stale statistics); with them off the planner must use an index, which every
+    statement on the scheduling path has, keyed by the story or a primary key. A statement
+    without one would still scan, and fails here."""
     async with engine.connect() as conn:
+        await conn.exec_driver_sql("SET LOCAL enable_seqscan = off")
         raw = await conn.exec_driver_sql(EXPLAIN + statement, parameters)
         found = raw.scalar_one()
         await conn.rollback()
-    plan = found if isinstance(found, list) else json.loads(found)
-    return _rows_read(dict(plan[0]["Plan"]))
+    plan = dict((found if isinstance(found, list) else json.loads(found))[0]["Plan"])
+    assert not _seq_scans(plan), (statement, plan)
+    return _rows_read(plan)
 
 
 async def _scheduling_cost(engine: AsyncEngine, story: str) -> tuple[bool, list[int]]:
@@ -536,10 +550,17 @@ async def test_scheduling_cost_is_independent_of_story_length(
     """NFR-PERF-3, FR-LITE-2 (#282): with the summary unchanged since the last scheduling, a
     plain turn's scheduling on a 2,052-turn story with 4,095 segments issues the same statements
     as on an 8-turn story with 7 segments, every one of them reads the same number of rows
-    (``EXPLAIN ANALYZE``), and ``included_segments`` is never called. Planner statistics are
-    refreshed first. Complement: computing inclusion, as every scheduling did before, reads
-    every segment: 4,095 against 7."""
-    short, long = await _segmented(engine, 4), await _segmented(engine, 2_048)
+    (``EXPLAIN ANALYZE``, every one through an index), and ``included_segments`` is never
+    called. Unrelated stories are seeded around them (and the session's other tests may have
+    left more), so the counts are independent of the other stories too. Complement: computing
+    inclusion, as every scheduling did before, reads every segment: 4,095 against 7."""
+    for _ in range(20):
+        await _story(engine)  # unrelated stories with their own overrides
+    short = await _segmented(engine, 4)
+    others = [await _segmented(engine, 256) for _ in range(3)]
+    long = await _segmented(engine, 2_048)
+    for story in others:
+        await play_turn(engine, story, "elsewhere")
     for story in (short, long):
         for n in (1, 2, 3):
             await play_turn(engine, story, f"tail {n}")  # their scheduling stores inclusion

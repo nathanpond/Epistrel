@@ -22,6 +22,7 @@ from epistrel.orchestrator.jobs.handlers import lite_summary
 from epistrel.orchestrator.models.access import ModelAccessLayer, routing
 from epistrel.orchestrator.models.adapter import ModelParams
 from epistrel.orchestrator.models.config import Route
+from epistrel.orchestrator.models.registry import STORY_PURPOSES
 from epistrel.orchestrator.models.stub import STUB_MODEL, StubCall
 from tests.auth_support import auth_settings
 from tests.event_support import execute_in_tx, play_turn, rows
@@ -118,10 +119,14 @@ async def test_a_turn_calls_each_purpose_with_its_routed_model(
     Complement: a story on the Lite preset (nothing routed) calls the deployment's models."""
     async with respond_client(stub_settings, engine) as (client, lib):
         stub = lib.models.stub
-        summary_model = (await lib.models.resolve("lite_summary")).model
-        # A purpose the turn does not call (#135's importance_scoring) records its resolved model.
-        scoring_model = (await lib.models.resolve("importance_scoring")).model
-        entailment_model = (await lib.models.resolve("entailment")).model
+        # Every unrouted story purpose (``lite_summary``, and those the turn does not call, such
+        # as #135's importance_scoring) records its resolved model.
+        unrouted = {
+            purpose: {"id": (await lib.models.resolve(purpose)).model, "reported_version": None}
+            for purpose in STORY_PURPOSES
+            if purpose not in ("generation", "guardrail_check")
+        }
+        assert {"lite_summary", "importance_scoring"} <= set(unrouted)
         story, actor = await _routed_story(client, lib)
 
         stub.reset()
@@ -144,9 +149,7 @@ async def test_a_turn_calls_each_purpose_with_its_routed_model(
         assert recorded["models"] == {
             "generation": {"id": "routed-generation", "reported_version": None},
             "guardrail_check": {"id": "routed-guardrail", "reported_version": None},
-            "lite_summary": {"id": summary_model, "reported_version": None},
-            "importance_scoring": {"id": scoring_model, "reported_version": None},
-            "entailment": {"id": entailment_model, "reported_version": None},
+            **unrouted,
         }
         assert turn["fingerprint"] == recorded["fingerprint"] == await _fingerprint(client, story)
         profiled = turn["fingerprint"]

@@ -658,6 +658,8 @@ async def _copy_story_row(
         # The copied chain is checked in full at the fork's first chain check (#281); the
         # chain triggers would set it for the copied turns anyway.
         "chain_unchecked": "true",
+        # The fork's included segments are its own: its first scheduling computes them (#282).
+        "summary_inclusion": "NULL",
     }
     await conn.execute(
         text(_insert_select(stories, overrides, "t.id = :source")),

@@ -29,6 +29,15 @@ Orchestrator's ``lite_summary`` job.
   segment; then the two oldest adjacent segments of the lowest level merge into one of the
   next level (``merge_pair``), across levels when no two adjacent segments share one.
   ``needs_work`` is either; it implies more than ``window_messages`` verbatim rows.
+- **Scheduling** (``needs_work``, #282). After every turn the scheduler asks whether there is
+  work. What inclusion yields (``Inclusion``: where the included run ends, its estimated tokens
+  and its segment count) is kept on the story row (``stories.summary_inclusion``) with the
+  ``stories.summary_epoch`` it was computed at; migration 0046's triggers bump the epoch
+  whenever a segment row, or the committed and active state of an operation, of the story
+  changes. While the epoch is current, ``needs_work`` reads the stored values instead of every
+  segment and every operation they name, so its cost follows the window, not the story; it
+  recomputes them with ``included_segments`` otherwise. The decision is the same function of
+  the same inputs as ``summary_state(...).needs_work``, which the job's run still uses.
 """
 
 from __future__ import annotations
@@ -37,7 +46,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.config_changes import read_lite_defaults
@@ -195,6 +204,71 @@ def covered_to(segments: Sequence[Segment]) -> int:
     return segments[-1].covers_to if segments else 0
 
 
+INCLUSION_CHANGED_SETTING = "epistrel.summary_changed"
+"""Transaction-local: the story whose ``summary_epoch`` this transaction already bumped
+(migration 0046's triggers bump it once per transaction). Storing a cache clears it, so a later
+change in the same transaction bumps the epoch again."""
+
+
+@dataclass(frozen=True, slots=True)
+class Inclusion:
+    """What ``included_segments`` yields, as scheduling needs it (#282)."""
+
+    covered_to: int
+    tokens: int
+    segments: int
+
+    @classmethod
+    def of(cls, segments: Sequence[Segment]) -> Inclusion:
+        return cls(covered_to(segments), sum(s.tokens for s in segments), len(segments))
+
+    def over_cap(self, settings: SummarySettings) -> bool:
+        """``SummaryState.over_cap`` for these segments."""
+        return self.segments > 1 and self.tokens > settings.max_tokens
+
+
+async def inclusion(conn: AsyncConnection, story_id: str) -> Inclusion:
+    """What the story's included segments yield (see the module docstring's **Scheduling**):
+    the stored values while ``stories.summary_epoch`` is the epoch they were computed at, else
+    ``included_segments`` computed now and stored for that epoch. The store never waits: it is
+    skipped when the story row is locked (a commit is running, which may change the inputs) or
+    the epoch moved since it was read (a change committed meanwhile)."""
+    found = (
+        await conn.execute(
+            select(stories.c.summary_epoch, stories.c.summary_inclusion).where(
+                stories.c.id == story_id
+            )
+        )
+    ).one_or_none()
+    if found is None:
+        return Inclusion.of(await included_segments(conn, story_id))
+    epoch = int(found.summary_epoch)
+    cached = found.summary_inclusion
+    if isinstance(cached, dict) and cached.get("epoch") == epoch:
+        return Inclusion(int(cached["covered_to"]), int(cached["tokens"]), int(cached["segments"]))
+    computed = Inclusion.of(await included_segments(conn, story_id))
+    unchanged = (
+        select(stories.c.id)
+        .where(stories.c.id == story_id, stories.c.summary_epoch == epoch)
+        .with_for_update(skip_locked=True)
+        .scalar_subquery()
+    )
+    await conn.execute(
+        update(stories)
+        .where(stories.c.id == unchanged)
+        .values(
+            summary_inclusion={
+                "epoch": epoch,
+                "covered_to": computed.covered_to,
+                "tokens": computed.tokens,
+                "segments": computed.segments,
+            }
+        )
+        .returning(func.set_config(INCLUSION_CHANGED_SETTING, "", True))
+    )
+    return computed
+
+
 @dataclass(frozen=True, slots=True)
 class SourceTurn:
     """A turn a level-0 segment is made from: its active operation and position."""
@@ -233,7 +307,7 @@ class SummaryState:
 
     @property
     def over_cap(self) -> bool:
-        return len(self.segments) > 1 and self.tokens > self.settings.max_tokens
+        return Inclusion.of(self.segments).over_cap(self.settings)
 
     @property
     def needs_work(self) -> bool:
@@ -244,7 +318,14 @@ async def summary_state(conn: AsyncConnection, story_id: str) -> SummaryState:
     """The story's summary state, read on ``conn`` (one snapshot when the caller holds one)."""
     settings = await read_summary_settings(conn, story_id)
     segments = await included_segments(conn, story_id)
-    covered = covered_to(segments)
+    verbatim, chunks = await _pending(conn, story_id, settings, covered_to(segments))
+    return SummaryState(settings, segments, verbatim, chunks)
+
+
+async def _pending(
+    conn: AsyncConnection, story_id: str, settings: SummarySettings, covered: int
+) -> tuple[int, tuple[Chunk, ...]]:
+    """The verbatim row count after turn ``covered`` and the chunks compressible now."""
     t = transcript_messages
     turns_of_rows = [
         int(turn)
@@ -261,7 +342,7 @@ async def summary_state(conn: AsyncConnection, story_id: str) -> SummaryState:
     ]
     verbatim = len(turns_of_rows)
     if verbatim <= settings.window_messages:
-        return SummaryState(settings, segments, verbatim)
+        return verbatim, ()
     window_from = turns_of_rows[verbatim - settings.window_messages]
     found = await conn.execute(
         select(operations.c.operation_id, operations.c.narrative_turn, operations.c.turn_variant)
@@ -289,12 +370,20 @@ async def summary_state(conn: AsyncConnection, story_id: str) -> SummaryState:
             break
         chunks.append(Chunk(start, end, tuple(by_turn[turn] for turn in range(start, end + 1))))
         start = end + 1
-    return SummaryState(settings, segments, verbatim, tuple(chunks))
+    return verbatim, tuple(chunks)
 
 
 async def needs_work(conn: AsyncConnection, story_id: str) -> bool:
-    """Whether the story's summary job has anything to do now."""
-    return (await summary_state(conn, story_id)).needs_work
+    """Whether the story's summary job has anything to do now: ``summary_state(...).needs_work``,
+    from the stored ``Inclusion`` (#282; see the module docstring's **Scheduling**)."""
+    settings = await read_summary_settings(conn, story_id)
+    if not settings.enabled:
+        return False
+    found = await inclusion(conn, story_id)
+    if found.over_cap(settings):
+        return True
+    _, chunks = await _pending(conn, story_id, settings, found.covered_to)
+    return bool(chunks)
 
 
 def merge_pair(segments: Sequence[Segment]) -> int | None:
@@ -311,6 +400,7 @@ def merge_pair(segments: Sequence[Segment]) -> int | None:
 
 
 __all__ = [
+    "INCLUSION_CHANGED_SETTING",
     "MAX_CALLS_PER_RUN",
     "PROMPT_CHANNELS",
     "RESPONSE_MAX_TOKENS",
@@ -318,6 +408,7 @@ __all__ = [
     "TARGET_TOKENS",
     "TEMPERATURE",
     "Chunk",
+    "Inclusion",
     "Segment",
     "SourceTurn",
     "SummarySettings",
@@ -326,6 +417,7 @@ __all__ = [
     "estimate_tokens",
     "grid_end",
     "included_segments",
+    "inclusion",
     "merge_pair",
     "needs_work",
     "read_summary_settings",

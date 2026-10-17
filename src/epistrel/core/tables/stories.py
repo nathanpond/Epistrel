@@ -23,7 +23,10 @@ and that version's whole document as genesis copied it; all three or none
 backup that predates an erasure the ledger holds), restored when its reapply completes; set
 exactly while the story is blocked (``ck_stories_status_before_block``). #281 adds
 ``chain_unchecked``: the story's active turn chain changed in a way a commit's head-only chain
-check cannot see, so the next check is the full one (``Operation._check_chain``).
+check cannot see, so the next check is the full one (``Operation._check_chain``). #282 adds
+``summary_epoch`` and ``summary_inclusion``: a counter that migration 0046's triggers bump when an
+input of the rolling summary's inclusion changes, and what inclusion last yielded at that epoch,
+so scheduling the summary after a turn does not reread every segment (``core.summary``).
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -101,6 +104,12 @@ stories = Table(
     # when the story's active turn set changed outside the commit that checks only the chain's
     # head; the next commit that checks the chain runs the full check and clears it.
     Column("chain_unchecked", Boolean, nullable=False, server_default=text("false")),
+    # FR-LITE-2, NFR-PERF-3 (#282): bumped by the ``summary_inputs_changed_*`` triggers
+    # (migration 0046) when a ``lite_summary_segments`` row, or an operation's committed and
+    # active state, of the story changes; ``summary_inclusion`` is ``{epoch, covered_to, tokens,
+    # segments}`` of the included segments, valid while its epoch is the current one.
+    Column("summary_epoch", BigInteger, nullable=False, server_default=text("0")),
+    Column("summary_inclusion", JSONB, nullable=True),
     # FR-CONC-5 (#63): same-story turn concurrency and the queue's bound (null: the
     # deployment's ``turn_queue_max``), mirrored in ``StorySettings``; and the durable in-flight
     # marker: the turn holding the story's turn slot and its lease (never a lock held across

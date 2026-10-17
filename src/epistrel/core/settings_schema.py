@@ -50,6 +50,7 @@ from pydantic import (
 )
 from pydantic.fields import FieldInfo
 
+from epistrel.core.context import CONTROL_CHARACTERS as _CONTROLS
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
 
@@ -730,8 +731,6 @@ DEFAULT_LISTING_STATUS_VALUES = ("private", "in_review", "public")
 """The listing status values a deployment starts with; a new catalog entry takes the first."""
 LISTING_STATUS_VALUE_MAX = 40
 LISTING_STATUS_VALUES_MAX = 50
-_CONTROLS = r"\x00-\x1f\x7f-\x9f"
-"""Every control character (Unicode ``Cc``: C0, DEL and C1), as a regular expression range."""
 LISTING_STATUS_PATTERN = (
     rf"^[\t ]*[^{_CONTROLS}\t ]([^{_CONTROLS}]{{0,{LISTING_STATUS_VALUE_MAX - 2}}}"
     rf"[^{_CONTROLS}\t ])?[\t ]*$"

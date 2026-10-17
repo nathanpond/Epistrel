@@ -114,6 +114,13 @@ def test_s_trust_boundary__auth(client: TestClient, app: FastAPI, spy: AsyncMock
         assert response.status_code == 400
         assert _code(response) == "principal_required"
         assert client.post(WRITE, json={"value": "nope"}, headers=headers).status_code == 400
+    # A C1 control (U+0080 to U+009F) refuses too (#321): Starlette decodes header bytes as
+    # latin-1, so the byte 0x85 arrives as U+0085.
+    auth = {key.encode(): value.encode() for key, value in bearer().items()}
+    for c1 in (b"p\x85a", b"\x80", b"a\x9f"):
+        response = client.post(WRITE, json=body, headers={**auth, b"X-Epistrel-Principal": c1})
+        assert response.status_code == 400
+        assert _code(response) == "principal_required"
     spy.assert_not_called()
 
     # The principal is opaque: the same call under two principals differs only in attribution.

@@ -1,0 +1,39 @@
+{
+  "id": "r01-04",
+  "note": "two planted memories, both quarantined together",
+  "canary": "VELLOQUORN",
+  "plants": [
+    {
+      "kind": "narration",
+      "text": "The old map labels the hidden cave VELLOQUORN."
+    },
+    {
+      "kind": "say",
+      "text": "The hidden cave on that map? Locals call it VELLOQUORN."
+    }
+  ],
+  "decoys": [],
+  "requests": [
+    "What is the hidden cave on the old map called?"
+  ],
+  "policy": {
+    "words": [
+      "velloquorn"
+    ],
+    "message": "Never repeat planted content."
+  },
+  "dials": {
+    "implication_threshold": 2,
+    "max_regenerations": 2
+  },
+  "expected": {
+    "renders": [
+      3
+    ],
+    "fallback": [
+      false
+    ],
+    "quarantined": 2
+  },
+  "pr": true
+}

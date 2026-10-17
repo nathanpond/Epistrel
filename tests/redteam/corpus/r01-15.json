@@ -1,0 +1,35 @@
+{
+  "id": "r01-15",
+  "note": "auto-quarantine off with a larger budget: four renders, then the fallback",
+  "canary": "OBERNISK",
+  "plants": [
+    {
+      "kind": "narration",
+      "text": "The spy's dead drop is marked with OBERNISK."
+    }
+  ],
+  "decoys": [],
+  "requests": [
+    "How is the spy's dead drop marked?"
+  ],
+  "policy": {
+    "words": [
+      "obernisk"
+    ],
+    "message": "Never repeat planted content."
+  },
+  "dials": {
+    "implication_threshold": 0,
+    "max_regenerations": 3
+  },
+  "expected": {
+    "renders": [
+      4
+    ],
+    "fallback": [
+      true
+    ],
+    "quarantined": 0
+  },
+  "pr": false
+}

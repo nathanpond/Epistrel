@@ -1,6 +1,6 @@
 """The trust boundary: service credential, requesting principal, `/admin`, no MCP (docs/04
 S-TRUST-BOUNDARY, M2): the auth half (#44) and the respond half (#57). M3 (#128): an `/admin`
-erasure succeeds under any principal ID."""
+erasure succeeds under any principal ID. M4 (#145): so does a low-level `commit_fact`."""
 
 from __future__ import annotations
 
@@ -33,7 +33,9 @@ from tests.auth_support import (
     bearer,
     make_test_router,
 )
+from tests.canon_support import at as canon_at
 from tests.conftest import DUMMY_DSN, REPO_ROOT
+from tests.consolidation_support import story as consolidation_story
 from tests.erasure_support import erasure_settings
 from tests.erasure_support import request as erasure_request
 from tests.event_support import rows
@@ -361,6 +363,72 @@ async def test_s_trust_boundary__m3(pg_url: str, engine: AsyncEngine) -> None:
         refused = await client.post(
             f"{ADMIN_PREFIX}/erasure",
             json=erasure_request("character", ids[FIRST], story),
+            headers=bearer(),
+        )
+        assert refused.status_code == 400
+        assert refused.json()["error"]["code"] == "principal_required"
+        assert await count(engine, "SELECT count(*) FROM operations") == before
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-AUTH-1")
+async def test_s_trust_boundary__m4(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A low-level ``commit_fact`` succeeds under any principal ID: two principals each commit
+    the same author fact to their own structured story and get the same answer apart from the
+    ids, each recorded on its own ``control`` operation; a ``commit_fact`` with no principal is
+    refused before anything is written.
+
+    Complement asserted: each fact is in its story's canon only after the call."""
+    async with respond_client(auth_settings(pg_url, model_adapter="stub"), engine) as (client, _):
+        answers: dict[str, dict[str, Any]] = {}
+        for principal in ("u-1", "u-2"):
+            w = await consolidation_story(engine)
+            proposition = canon_at(w.people["Bobby"], w.places["garden"], 0, None)
+            path = f"{ADMIN_PREFIX}/stories/{w.story_id}/facts"
+            assert (
+                await count(engine, "SELECT count(*) FROM facts WHERE story_id = :s", s=w.story_id)
+                == 0
+            )
+            response = await client.post(
+                path,
+                json={"proposition": proposition.model_dump(mode="json")},
+                headers={**bearer(), "X-Epistrel-Principal": principal},
+            )
+            assert response.status_code == 201, response.text
+            answers[principal] = response.json()
+            assert (
+                await count(engine, "SELECT count(*) FROM facts WHERE story_id = :s", s=w.story_id)
+                == 1
+            )
+            recorded = await rows(
+                engine,
+                "SELECT principal, kind::text AS kind FROM operations WHERE operation_id = :o",
+                o=answers[principal]["operation_id"],
+            )
+            assert [(r.principal, r.kind) for r in recorded] == [(principal, "control")]
+        shapes = {
+            principal: (
+                found["fact"]["provenance"],
+                found["fact"]["authority"],
+                found["superseded"],
+                found["warnings"],
+                found["timeline_revision"],
+            )
+            for principal, found in answers.items()
+        }
+        assert shapes["u-1"] == shapes["u-2"] == ("author", "author", [], [], shapes["u-1"][4])
+
+        w = await consolidation_story(engine)
+        before = await count(engine, "SELECT count(*) FROM operations")
+        refused = await client.post(
+            f"{ADMIN_PREFIX}/stories/{w.story_id}/facts",
+            json={
+                "proposition": canon_at(w.people["Bobby"], w.places["garden"], 0, None).model_dump(
+                    mode="json"
+                )
+            },
             headers=bearer(),
         )
         assert refused.status_code == 400

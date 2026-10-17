@@ -7214,3 +7214,66 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - `PATCH /stories/{id}/settings`'s description names the new interpretive setting (C-01 requires every setting to be named there).
   **Why:** The gates (lexicon, C-01, C-15, I-18) cover any new story setting.
   **Issue:** #144
+- **Decision (Discretion, scope):** FR-GUARD-5 lives in the output gate (#68), as a generic hook. `gate_output(implicate=...)` takes the records a `Draft` carries (`Draft.context`, `Draft.pins`). `orchestrator/policies/implication.py` has `Implicator`, `context_of` and `draft_context` over a `RetrievalResult`. The Lite pipeline passes neither, so a Lite turn keeps #68's behaviour. No structured respond path exists yet (#150 builds it), so the loop is proven at library level: `tests/poisoning_support.py` retrieves afresh for every render and calls `generation` through the Model Access Layer. Until #150's structured template exists, it puts the assembled context in the Lite template's `summary_segments` slot. A carried note on #150 asks it to pass `draft_context(...)` and an `Implicator` and to reuse `guardrail_fields`.
+  **Why:** The key link (#68 gate → `implicated_record_ids` → auto-quarantine) is real wiring, and the respond contract is #150's. Building a structured prompt here would pre-empt #150's beats, template and data-flow row.
+  **Issue:** #145, #150
+- **Decision (Discretion):** Canon is append-only, so lock and unlock write a successor version. Each is a supersede of the same proposition with `author_locked` flipped (`canon.supersede(author_locked=...)`); a version already in the asked state answers unchanged with no operation. #136's carried note is already covered: #144's `author_locks` configuration dependency hashes `locked_keys` (version ids), so every lock or unlock moves it (`test_an_author_fact_supersedes_and_its_lock_moves_the_configuration`). This story writes no closed sets (the facts route takes propositions only), so #140's keying note stays open for whichever story first writes canon closed sets.
+  **Why:** The facts guard allows only `tx_to`/`superseded_by` updates, and the two carried notes.
+  **Issue:** #145, #136, #140
+- **Decision (Discretion):** `repair.implication_threshold` (0–10, default 2, 0 = off; behavioral, prospective, quality-relevant) is owned by the `pipeline` module at its `structured` level, like `memory.hot_set`. It is seeded into `profile_defaults` by migration 0059 (`IMPLICATION_DEFAULTS`).
+  **Why:** An unowned leaf is not exposed, and only a structured story's drafts carry records.
+  **Issue:** #145
+- **Decision (Discretion):** What counts as implicated:
+  - every memory and fact the assembled context placed (episode, assessment, memory and canon items), with ledger items and standing profiles excluded;
+  - a pin when the violated deterministic policies flag its own text, or when it shares 4 consecutive words with the rejected text (#49's violations carry no spans).
+
+  Pins are the context items of kind `pin`, by memory id, and every context pin counts as an author pin: it may be quarantined (the owner's round-two decision) and is reported as `warnings: [{kind: pin_quarantined, memory_id}]` on `RespondResult`/`RespondResponse`. That field is left out of the JSON when empty, so Lite responses are unchanged. A carried note on #147 says its pin source must skip quarantined pins (the retrieval filter cannot reach a context source).
+  **Why:** The planner's implication rule, approximated where the data has no spans.
+  **Issue:** #145, #147
+- **Decision (Discretion):** The counter is `memories.implication_count`. It rises in one `system` control operation per rejected render, with no revision bump and a `memories_implicated` event naming the turn's operation and the render. The same operation quarantines whatever reaches the threshold (`memory_quarantined`, `automatic`), committed before the regeneration. "Reset by truncation" is a membership hook (`mutation.follow_implications`) that takes a truncated turn's implications back off the counts (never below 0) and restores them on untruncation; fork joins are skipped because the counts are copied with the rows. A quarantine stays until it is released.
+  **Why:** The planner's counter and reset rule. Since the turn may never commit, the events, rather than the turn's audit rows, are the source.
+  **Issue:** #145
+- **Decision (Discretion):** Payload version 2 of `guardrail_output_rejected` is the field `implicated_record_ids: [{table, id}]`. It is left out of the stored payload when empty (`exclude_if`), so a Lite turn's event is byte-identical to version 1. There is no `version` key, because one would change every stored Lite payload. Building the event moved from the Lite pipeline into `output_gate.rejected_event`, which #150 will reuse.
+  **Why:** Lite must stay untouched; the planner's "payload schema version 2".
+  **Issue:** #145
+- **Decision (Discretion):** How sanitize writes:
+  - Its position-less control operation records a `sanitized` narrative_state event (memory id, surrogate, occurrences; no span) and a `sanitize_original` audit event (span and old text).
+  - The row update runs under `epistrel.sanitize = <memory id>`, which the migration-0059 guard honours for that row's `text` and `inputs_hash` only.
+  - It clears the vector and re-embeds through `records.after_rewrite`. That runs `MEMORY_HOOKS`, so an importance job is scheduled too; it is harmless, because only unscored memories are scored.
+  - The new text passes `guard.check_content` and is re-indexed; the surrogate passes the input gate (`EntryPoint.SANITIZE`).
+  **Why:** The AC's two events and the planner's Discretion. Without a sanitize setting, the guard would reject any text change outside erasure.
+  **Issue:** #145
+- **Decision (Discretion):** An author fact also writes an author memory (`records.write_author`: `semantic`, provenance and trust `author`, position-less, the fact's visibility, its subject and object as participants, source = the fact's event, text = `canon_text`), but only when the episodic module is on. A supersede that changes the proposition or visibility supersedes the old author memory and writes a new one, and so does a version a commit closed. A lock or unlock changes no memory. The check is #140's `check_with` over a throwaway `KeyedLookup` (an author call is no turn, so it has no read set). A functional or polarity contradiction is resolved by `commit_fact`'s own supersede (`superseded`); any other rule is a `contradicted` warning, and `uncertain` is an `uncertain` warning.
+  **Why:** The planner's "auto-supersedes ..., warns on uncertain" and "writes a memory row (retrievable)". Without retiring the old memory, a retcon would leave its stale line retrievable.
+  **Issue:** #145
+- **Decision (Rule 2):** Erasure coverage for the new text. `quarantine_reason` is indexed with the memory (`memory_record`, `read_memories`), redacted by `_erase_memories`, and allowed through the guard under erasure. `core.mutation` is a `DIRECT` path in `CONTENT_WRITE_PATHS` and a `memories` writer in `SUBJECT_WRITERS`. The reason and the sanitize span are also event payloads, which the events writer covers. The test is `test_erasure_reaches_a_quarantine_reason_and_a_fork_keeps_the_quarantine`.
+  **Why:** Any new text write path must be covered (#127, ADR-154..156).
+  **Issue:** #145
+- **Decision (Discretion, deviation):** `fr_api_6_routes.json` gains eight `outside` rows (FR-GUARD-4), one per served route. It gets no `not_yet` rows for `record_utterance`, `mutate` or `ingest_turn`: the `routes` table lists FR-API-6's items, FR-API-6 names none of these, and `outside` holds served routes only. `OPERATOR_PATH_PATTERNS` gains the `facts`, `quarantine` and `sanitize` segments, so the same paths outside `/admin` count as misplaced (C-02 M4's complement).
+  **Why:** The table's documented shape (`test_c_15__api_surface`).
+  **Issue:** #145
+- **Decision (Discretion):** `GET /admin/stories/{id}/facts` is `omniscient` by name (403 otherwise; 409 `module_off` for Lite). It pages by fact id (`cursor` is the last id, `limit` 1–500, default 100), filters with `as_of_story_time`, `as_of_record_time`, `subject` and `predicate`, and `include_superseded` uses the new `canon.versions`. The planner's "history views still show it under omniscient with a `quarantined` flag" is implemented on the reads that show memories: the admin memory answers and `GET /stories/{id}/retrieve?include_quarantined=true`. History beats are events and are untouched by a quarantine.
+  **Why:** Memories have no history view; a beat's history must not change (events are the truth).
+  **Issue:** #145
+- **Decision (Rule 3):** For C-01's schema check, `Granularity`, `LiteralKind` and `Polarity` gain docstrings (the fact routes are the first to expose them), and `FactRequest`/`SupersedeRequest` carry examples. `ERROR_STATUS` gains `span_not_found`, `fact_not_found`, `fact_superseded`, `fact_inactive`, `key_mismatch` and `unknown_predicate`, and `OPERATION_ERRORS` documents each new operation. A missing memory is the generic `not_found`.
+  **Why:** C-01 and C-15 failed on the new components; the AC names `span_not_found` and `module_off`.
+  **Issue:** #145
+- **Decision (Discretion, R-01):** The planner's "5 in the PR subset, all 20 nightly under the `redteam` marker" is split across two markers:
+  - `test_r_01` (`redteam`) runs the five `pr` sequences in PR CI, each with its threshold-0 complement.
+  - `test_r_01__corpus` (`redteam` + the new opt-in `redteam_long`, deselected unless `-m` names it, like `perf_long`) runs all 20 in the new nightly `redteam.yml`, modelled on `perf.yml` with the same pinned actions and uv.
+
+  The corpus schema extends `{id, plant, requests[], policy, expected}` with `canary`, `plants[]` (narration, character say, player say), `decoys`, `dials` (threshold, polish budget), `pr` and `note`. `expected` holds each request's renders, whether it fell back, and the quarantined count. Two threshold-0 sequences end in the fallback with zero emissions, which is the complement inside the corpus.
+  **Why:** The existing `redteam` marker already runs in PR CI.
+  **Issue:** #145
+- **Decision (tests):** The tests are:
+  - `tests/test_u_06.py::test_u_06` (M4, FR-GUARD-4);
+  - `tests/scenario/test_s_selfpolice.py::test_s_selfpolice__quarantine` (M4, FR-GUARD-4,5: the convergence, the audit payload, the pin warning, the threshold-0 complement and the Lite complement);
+  - `tests/redteam/test_r_01.py` (M4, FR-GUARD-5,6) with `tests/redteam/corpus/r01-01..20.json`;
+  - `test_c_02__low_level_calls` (M4, FR-API-1);
+  - `test_s_trust_boundary__m4` (M4, FR-AUTH-1);
+  - C-03 steps for every new operation (409 on the Lite story, then each call on the structured fork, with `MUTATION_ANSWERS`), which C-15 replays;
+  - `tests/integration/test_mutation.py` (module gates, the supersede and the lock dependency, a sanitized consolidation output, the truncation reset, erasure and fork);
+  - the 0059 migration test;
+  - `test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run`.
+  **Why:** The test plan, traceability (one file per test ID and milestone), and the brief's route-test list.
+  **Issue:** #145

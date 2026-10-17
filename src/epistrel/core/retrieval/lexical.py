@@ -18,7 +18,9 @@ proves the swap (C-07 M4).
 
 ``LexicalFilters`` narrows a search by memory kind, by narrative position (``through``: no
 memory positioned after it, #141's "nothing after the query's position") and by retrieval tier
-(``tiers``: hot by default; #141's rehydration searches ``retired`` records, FR-MEM-8).
+(``tiers``: hot by default; #141's rehydration searches ``retired`` records, FR-MEM-8). A
+quarantined memory (#145, FR-GUARD-4) is never found unless ``include_quarantined`` (the
+omniscient debugging read's flag).
 """
 
 from __future__ import annotations
@@ -46,6 +48,13 @@ class LexicalFilters:
     kinds: tuple[MemoryKind, ...] | None = None
     through: tuple[int, int] | None = None
     tiers: tuple[RetrievalTier, ...] = (RetrievalTier.HOT,)
+    include_quarantined: bool = False
+
+
+def quarantine_clause(alias: str) -> str:
+    """The SQL fragment "not quarantined, unless ``:include_quarantined``" over memories
+    aliased ``alias`` (#145)."""
+    return f"(CAST(:include_quarantined AS boolean) OR {alias}.quarantined_at IS NULL)"
 
 
 def position_clause(alias: str) -> str:
@@ -119,6 +128,7 @@ class TsvectorLexicalSearch:
                 "AND (CAST(:kinds AS text[]) IS NULL "
                 "OR m.kind::text = ANY(CAST(:kinds AS text[]))) "
                 f"AND {position_clause('m')} "
+                f"AND {quarantine_clause('m')} "
                 "AND m.search @@ q "
                 "ORDER BY rank DESC, m.id LIMIT :k"
             ),
@@ -128,6 +138,7 @@ class TsvectorLexicalSearch:
                 "k": k,
                 "kinds": kinds,
                 "tiers": tiers,
+                "include_quarantined": filters.include_quarantined,
                 **position_params(filters.through),
             },
         )
@@ -156,4 +167,5 @@ __all__ = [
     "lexical_backend",
     "position_clause",
     "position_params",
+    "quarantine_clause",
 ]

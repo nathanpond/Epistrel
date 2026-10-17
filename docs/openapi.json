@@ -344,6 +344,26 @@
         "title": "BackfillEstimate",
         "type": "object"
       },
+      "Bound": {
+        "additionalProperties": false,
+        "description": "One end of an interval: exact (``inner == outer``) or approximate (see the module\ndocstring for which side is outer).",
+        "properties": {
+          "inner": {
+            "title": "Inner",
+            "type": "integer"
+          },
+          "outer": {
+            "title": "Outer",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inner",
+          "outer"
+        ],
+        "title": "Bound",
+        "type": "object"
+      },
       "BudgetBody": {
         "description": "The turn's model-call budget: its cap, the guardrail calls it reserved\n(`guardrail_input`, `guardrail_output`) and the calls it made, which equal the entries of\n`model_calls`.",
         "properties": {
@@ -4162,6 +4182,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "implication_threshold": {
+                    "default": 2,
+                    "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Implication Threshold",
+                    "type": "integer"
+                  },
                   "max_attempts": {
                     "default": 0,
                     "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
@@ -4669,6 +4697,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "implication_threshold": {
+                    "default": 2,
+                    "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Implication Threshold",
+                    "type": "integer"
+                  },
                   "max_attempts": {
                     "default": 0,
                     "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
@@ -5417,6 +5453,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "implication_threshold": {
+                    "default": 2,
+                    "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Implication Threshold",
+                    "type": "integer"
+                  },
                   "max_attempts": {
                     "default": 0,
                     "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
@@ -6236,6 +6280,381 @@
           "rating_version"
         ],
         "title": "EvaluatedRating",
+        "type": "object"
+      },
+      "FactBody": {
+        "description": "One fact version: its proposition, valid-time (story-minutes; outer and inner bounds),\ntransaction-time, provenance, authority, lock, visibility, lineage and what it closed.",
+        "properties": {
+          "anchored_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchored To"
+          },
+          "author_locked": {
+            "title": "Author Locked",
+            "type": "boolean"
+          },
+          "authority": {
+            "title": "Authority",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lineage_id": {
+            "title": "Lineage Id",
+            "type": "string"
+          },
+          "membership": {
+            "title": "Membership",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narrative Turn"
+          },
+          "proposition": {
+            "$ref": "#/components/schemas/Proposition"
+          },
+          "proposition_id": {
+            "title": "Proposition Id",
+            "type": "string"
+          },
+          "provenance": {
+            "title": "Provenance",
+            "type": "string"
+          },
+          "superseded_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By"
+          },
+          "supersedes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Supersedes",
+            "type": "array"
+          },
+          "tx_from": {
+            "format": "date-time",
+            "title": "Tx From",
+            "type": "string"
+          },
+          "tx_to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tx To"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_from_inner": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From Inner"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          },
+          "valid_to_inner": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To Inner"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/Visibility"
+          }
+        },
+        "required": [
+          "id",
+          "lineage_id",
+          "proposition_id",
+          "proposition",
+          "valid_from",
+          "valid_to",
+          "valid_from_inner",
+          "valid_to_inner",
+          "tx_from",
+          "tx_to",
+          "provenance",
+          "authority",
+          "author_locked",
+          "visibility",
+          "membership",
+          "narrative_turn",
+          "superseded_by",
+          "supersedes",
+          "anchored_to"
+        ],
+        "title": "FactBody",
+        "type": "object"
+      },
+      "FactListBody": {
+        "description": "A page of the story's canon, by id, the story's revision, and the cursor of the next\npage (``null`` on the last).",
+        "properties": {
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/FactBody"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "facts",
+          "timeline_revision",
+          "next_cursor"
+        ],
+        "title": "FactListBody",
+        "type": "object"
+      },
+      "FactRequest": {
+        "additionalProperties": false,
+        "description": "An author fact: #131's normalized proposition (JSON only, never prose), who may read it\n(``visibility``, default ``objective``), optional valid-time bounds replacing the\nproposition's (``valid_from``/``valid_to``, story-minutes, exact), a related fact\n(``anchored_to``) and ``locked`` (``author_locked``: no render may change it, FR-VERIFY-11).",
+        "examples": [
+          {
+            "locked": true,
+            "proposition": {
+              "object_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C4",
+              "predicate_id": "01JPRED0000000000000000015",
+              "subject_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3",
+              "valid_time": {
+                "kind": "interval",
+                "start": {
+                  "inner": 0,
+                  "outer": 0
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "anchored_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchored To"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "proposition": {
+            "$ref": "#/components/schemas/Proposition"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/Visibility"
+          }
+        },
+        "required": [
+          "proposition"
+        ],
+        "title": "FactRequest",
+        "type": "object"
+      },
+      "FactWarning": {
+        "description": "Something an author fact's check found that did not stop it: ``uncertain`` (the\ndeterministic check could not decide; ``reason``) or ``contradicted`` (a rule the write\ndid not resolve by superseding; ``rules``).",
+        "properties": {
+          "kind": {
+            "enum": [
+              "uncertain",
+              "contradicted"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "rules": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Rules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "FactWarning",
+        "type": "object"
+      },
+      "FactWritten": {
+        "description": "The new fact version, the versions it closed (``superseded``), the author memory it\nwrote (``memory_id``, ``null`` when the story keeps no episodic memory or the call changed\nnothing it shows), the deterministic check's warnings, the story's revision and the\n``control`` operation (``null`` when nothing changed).",
+        "properties": {
+          "fact": {
+            "$ref": "#/components/schemas/FactBody"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "memory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Id"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "superseded": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Superseded",
+            "type": "array"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/FactWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "fact",
+          "superseded",
+          "memory_id",
+          "warnings",
+          "operation_id"
+        ],
+        "title": "FactWritten",
         "type": "object"
       },
       "Feedback": {
@@ -7631,6 +8050,18 @@
         "title": "GenerationSettings",
         "type": "object"
       },
+      "Granularity": {
+        "description": "The precision of a punctual time (an ``Instant``'s granule).",
+        "enum": [
+          "minute",
+          "hour",
+          "day",
+          "month",
+          "year"
+        ],
+        "title": "Granularity",
+        "type": "string"
+      },
       "GuaranteeStatus": {
         "description": "One row of the guarantee table under a configuration: the step, whether the engine\nperforms it by rules or a model does (``kind``), the metric that measures a model-dependent\nstep (an NFR-QUAL id, or ``unmeasured``; ``null`` for a deterministic step), what it needs,\nand whether it is ``provided`` (``null`` for a step that runs outside stories).",
         "properties": {
@@ -8928,6 +9359,21 @@
                         "additionalProperties": false,
                         "description": "Repair and polish (FR-PROF-2).",
                         "properties": {
+                          "implication_threshold": {
+                            "anyOf": [
+                              {
+                                "default": 2,
+                                "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                                "maximum": 10.0,
+                                "minimum": 0.0,
+                                "title": "Implication Threshold",
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "max_attempts": {
                             "anyOf": [
                               {
@@ -9485,6 +9931,36 @@
         "title": "IngestedEventBody",
         "type": "object"
       },
+      "Instant": {
+        "additionalProperties": false,
+        "description": "A punctual time: ``at`` (the granule's first minute), its ``granularity`` and the\ngranule's end ``until``. Build one with ``Instant.of``.",
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "integer"
+          },
+          "granularity": {
+            "$ref": "#/components/schemas/Granularity"
+          },
+          "kind": {
+            "const": "instant",
+            "default": "instant",
+            "title": "Kind",
+            "type": "string"
+          },
+          "until": {
+            "title": "Until",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at",
+          "granularity",
+          "until"
+        ],
+        "title": "Instant",
+        "type": "object"
+      },
       "InteractionStyle": {
         "additionalProperties": false,
         "description": "How the character talks: its speech style and vocabulary (required to publish), its\nmannerisms and sample lines of dialogue (each list may be empty).",
@@ -9601,6 +10077,40 @@
           }
         },
         "title": "InteractionStylePatch",
+        "type": "object"
+      },
+      "Interval": {
+        "additionalProperties": false,
+        "description": "``[start, end)``: see the module docstring. ``None`` bounds are open-ended.",
+        "properties": {
+          "end": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Bound"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "const": "interval",
+            "default": "interval",
+            "title": "Kind",
+            "type": "string"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Bound"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "Interval",
         "type": "object"
       },
       "InventoryBody": {
@@ -9807,6 +10317,20 @@
         ],
         "title": "ListingStatusRequest",
         "type": "object"
+      },
+      "LiteralKind": {
+        "description": "The type of a typed literal object.",
+        "enum": [
+          "int",
+          "float",
+          "str",
+          "bool",
+          "date",
+          "duration",
+          "quantity"
+        ],
+        "title": "LiteralKind",
+        "type": "string"
       },
       "MediaAsset": {
         "description": "A media asset's metadata (FR-MEDIA-1): its owner, kind, MIME type (sniffed from the\nbytes), size, dimensions or duration (``null`` when no probe could read them), SHA-256\nchecksum, content rating and the rating's version it was uploaded under, alt text, caption,\ngeneration metadata (as sent), source, state (``live``, or ``retired`` once deleted), the\nsubjects it depicts, who created it when, and, for a video, its poster's id (FR-MEDIA-3;\n``null`` for an image).",
@@ -10392,6 +10916,184 @@
         ],
         "title": "Membership",
         "type": "string"
+      },
+      "MemoryKind": {
+        "description": "A memory record's tier (FR-MEM-1..3; #135): ``episodic`` (one observable beat),\n``semantic`` (a distilled standing fact) or ``reflection`` (a higher-level abstraction; the\nlast two are written by #143's consolidation). Postgres enum ``memory_kind``.",
+        "enum": [
+          "episodic",
+          "semantic",
+          "reflection"
+        ],
+        "title": "MemoryKind",
+        "type": "string"
+      },
+      "MemoryView": {
+        "description": "A memory as the omniscient admin reads it, its quarantine state included.",
+        "properties": {
+          "beat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beat"
+          },
+          "character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Character Id"
+          },
+          "embedded": {
+            "default": false,
+            "title": "Embedded",
+            "type": "boolean"
+          },
+          "holder_character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Holder Character Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "implication_count": {
+            "default": 0,
+            "title": "Implication Count",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MemoryKind"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/Membership"
+          },
+          "narrative_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narrative Turn"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/RecordProvenance"
+          },
+          "quarantine_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantine Reason"
+          },
+          "quarantined": {
+            "default": false,
+            "title": "Quarantined",
+            "type": "boolean"
+          },
+          "quarantined_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantined At"
+          },
+          "quarantined_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quarantined By"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/Visibility"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "text",
+          "provenance",
+          "membership"
+        ],
+        "title": "MemoryView",
+        "type": "object"
+      },
+      "MemoryWritten": {
+        "description": "The memory after the call (its quarantine state included), the story's revision and the\n``control`` operation (``null`` when nothing changed).",
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "memory": {
+            "$ref": "#/components/schemas/MemoryView"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "memory",
+          "operation_id"
+        ],
+        "title": "MemoryWritten",
+        "type": "object"
       },
       "MentionBody": {
         "description": "A mention the resolve stage found: its character span, kind, the entity it resolved to\n(or ``null``) and, when unresolved, the reason code.",
@@ -12316,6 +13018,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "implication_threshold": {
+                    "default": 2,
+                    "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Implication Threshold",
+                    "type": "integer"
+                  },
                   "max_attempts": {
                     "default": 0,
                     "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
@@ -13433,6 +14143,15 @@
         },
         "title": "PlayerInputBody",
         "type": "object"
+      },
+      "Polarity": {
+        "description": "Whether a proposition asserts its relation (``affirmed``) or its absence (``negated``).",
+        "enum": [
+          "affirmed",
+          "negated"
+        ],
+        "title": "Polarity",
+        "type": "string"
       },
       "PolicyBody": {
         "description": "A policy at its current version: scope, targets, kind, effect, rule, age condition,\nmessage and attribution.",
@@ -14734,6 +15453,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "implication_threshold": {
+                    "default": 2,
+                    "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Implication Threshold",
+                    "type": "integer"
+                  },
                   "max_attempts": {
                     "default": 0,
                     "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
@@ -15343,6 +16070,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "implication_threshold": {
+                    "default": 2,
+                    "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Implication Threshold",
+                    "type": "integer"
+                  },
                   "max_attempts": {
                     "default": 0,
                     "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
@@ -16319,6 +17054,21 @@
                     "additionalProperties": false,
                     "description": "Repair and polish (FR-PROF-2).",
                     "properties": {
+                      "implication_threshold": {
+                        "anyOf": [
+                          {
+                            "default": 2,
+                            "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                            "maximum": 10.0,
+                            "minimum": 0.0,
+                            "title": "Implication Threshold",
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "max_attempts": {
                         "anyOf": [
                           {
@@ -17035,6 +17785,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "implication_threshold": {
+                    "default": 2,
+                    "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Implication Threshold",
+                    "type": "integer"
+                  },
                   "max_attempts": {
                     "default": 0,
                     "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
@@ -17575,6 +18333,14 @@
                     "additionalProperties": false,
                     "description": "Repair and polish (FR-PROF-2).",
                     "properties": {
+                      "implication_threshold": {
+                        "default": 2,
+                        "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Implication Threshold",
+                        "type": "integer"
+                      },
                       "max_attempts": {
                         "default": 0,
                         "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
@@ -17958,6 +18724,126 @@
         "title": "ProposalBody",
         "type": "object"
       },
+      "Proposition": {
+        "additionalProperties": false,
+        "description": "A viewpoint-free proposition (FR-PROP-1,2): see the module docstring. At most one of\n``object_id``, ``literal`` and ``object_set`` is given (none: an object-less predicate such\nas ``alive``); an object set is stored sorted and without repeats.",
+        "properties": {
+          "event_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "literal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TypedLiteral"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Id"
+          },
+          "object_set": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Set"
+          },
+          "polarity": {
+            "$ref": "#/components/schemas/Polarity",
+            "default": "affirmed"
+          },
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Predicate Id",
+            "type": "string"
+          },
+          "qualifiers": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              ]
+            },
+            "title": "Qualifiers",
+            "type": "object"
+          },
+          "subject_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "valid_time": {
+            "discriminator": {
+              "mapping": {
+                "instant": "#/components/schemas/Instant",
+                "interval": "#/components/schemas/Interval"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Interval"
+              },
+              {
+                "$ref": "#/components/schemas/Instant"
+              }
+            ],
+            "title": "Valid Time"
+          }
+        },
+        "required": [
+          "subject_id",
+          "predicate_id",
+          "valid_time"
+        ],
+        "title": "Proposition",
+        "type": "object"
+      },
       "PublishRequest": {
         "additionalProperties": false,
         "description": "``POST /catalog/{characters|scenarios}/{id}/publish``: the draft revision being published\n(FR-CAT-3); a stale one is 409 ``draft_stale``.",
@@ -18011,6 +18897,28 @@
         ],
         "title": "QualityStatusValue",
         "type": "string"
+      },
+      "QuarantineRequest": {
+        "additionalProperties": false,
+        "description": "Why the memory is quarantined (free text, at most 500 characters; the author's note).\n``repeated_implication`` is the system's reason and cannot be given.",
+        "examples": [
+          {
+            "reason": "Planted by an injected narration."
+          }
+        ],
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "QuarantineRequest",
+        "type": "object"
       },
       "QueryKeyBody": {
         "description": "One query key of a structured turn's read set: what the lookup asked (ids; `*` for a\nwildcard subject or object) and the hash of what it found.",
@@ -19034,6 +19942,23 @@
         "title": "ReconcileRunBody",
         "type": "object"
       },
+      "RecordProvenance": {
+        "description": "Where a structured record came from (#133; shared by ``facts`` and #135's memories):\nthe author or the scenario's seed, the engine's consolidation, an in-world source, a\nrender, the director or the player, an external authority (with its timestamp in the\nrecord's reference), a resolution, or a backfill. Postgres enum ``record_provenance``.",
+        "enum": [
+          "author",
+          "seed",
+          "system_consolidated",
+          "in_world",
+          "render",
+          "director",
+          "player",
+          "external",
+          "resolution",
+          "backfill"
+        ],
+        "title": "RecordProvenance",
+        "type": "string"
+      },
       "ReembedRetryBody": {
         "additionalProperties": false,
         "description": "The stories a new re-embed job was enqueued for.",
@@ -19539,6 +20464,13 @@
           "variant": {
             "title": "Variant",
             "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/WarningBody"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -20286,6 +21218,13 @@
           "variant": {
             "title": "Variant",
             "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/WarningBody"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -20525,6 +21464,11 @@
             "title": "Participants",
             "type": "array"
           },
+          "quarantined": {
+            "default": false,
+            "title": "Quarantined",
+            "type": "boolean"
+          },
           "recency": {
             "anyOf": [
               {
@@ -20735,6 +21679,35 @@
           "name"
         ],
         "title": "RoleRelationship",
+        "type": "object"
+      },
+      "SanitizeRequest": {
+        "additionalProperties": false,
+        "description": "``span``: an exact substring of the memory's text (every occurrence is replaced);\n``surrogate``: what replaces it (it passes the input gate; ``\"\"`` removes the span).",
+        "examples": [
+          {
+            "span": "the vault code is 4471",
+            "surrogate": "…"
+          }
+        ],
+        "properties": {
+          "span": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Span",
+            "type": "string"
+          },
+          "surrogate": {
+            "maxLength": 2000,
+            "title": "Surrogate",
+            "type": "string"
+          }
+        },
+        "required": [
+          "span",
+          "surrogate"
+        ],
+        "title": "SanitizeRequest",
         "type": "object"
       },
       "ScenarioCard": {
@@ -23617,6 +24590,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "implication_threshold": {
+                    "default": 2,
+                    "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Implication Threshold",
+                    "type": "integer"
+                  },
                   "max_attempts": {
                     "default": 0,
                     "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
@@ -24671,6 +25652,14 @@
                     "additionalProperties": false,
                     "description": "Repair and polish (FR-PROF-2).",
                     "properties": {
+                      "implication_threshold": {
+                        "default": 2,
+                        "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Implication Threshold",
+                        "type": "integer"
+                      },
                       "max_attempts": {
                         "default": 0,
                         "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
@@ -26733,6 +27722,80 @@
         "title": "SummarySegmentModel",
         "type": "object"
       },
+      "SupersedeRequest": {
+        "additionalProperties": false,
+        "description": "The successor of a current fact version: its proposition (same subject, predicate and\nkey qualifiers, else 422 ``key_mismatch``); visibility, valid-time and the lock carry over\nunless given.",
+        "examples": [
+          {
+            "proposition": {
+              "object_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C4",
+              "predicate_id": "01JPRED0000000000000000015",
+              "subject_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3",
+              "valid_time": {
+                "kind": "interval",
+                "start": {
+                  "inner": 0,
+                  "outer": 0
+                }
+              }
+            },
+            "valid_from": 600
+          }
+        ],
+        "properties": {
+          "locked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked"
+          },
+          "proposition": {
+            "$ref": "#/components/schemas/Proposition"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          },
+          "visibility": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Visibility"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "proposition"
+        ],
+        "title": "SupersedeRequest",
+        "type": "object"
+      },
       "SwapRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/swap``: make the chain ``to_variant_chain`` the active one.",
@@ -27021,6 +28084,49 @@
           "message"
         ],
         "title": "TurnSummaryModel",
+        "type": "object"
+      },
+      "TypedLiteral": {
+        "additionalProperties": false,
+        "description": "A literal object: ``{\"kind\": \"int\", \"value\": 40}``; a ``quantity`` also has a\n``unit``; a ``date`` is an ISO date string; a ``duration`` is whole minutes.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/LiteralKind"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "TypedLiteral",
         "type": "object"
       },
       "UnavailableCharacter": {
@@ -27660,6 +28766,39 @@
         "title": "ViolationBody",
         "type": "object"
       },
+      "Visibility": {
+        "additionalProperties": false,
+        "description": "Who may read a fact: ``objective`` (canon narration), ``public`` (publicly known),\n``engine`` (engine-only, e.g. true ages: ``omniscient`` alone) or ``characters`` (only the\ncharacters listed, e.g. a ``latent`` beat's scope, and ``omniscient``).",
+        "properties": {
+          "characters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Characters"
+          },
+          "scope": {
+            "default": "objective",
+            "enum": [
+              "objective",
+              "public",
+              "engine",
+              "characters"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "title": "Visibility",
+        "type": "object"
+      },
       "VisualIdentity": {
         "additionalProperties": false,
         "description": "A character's stored image settings, versioned with the character (FR-CAT-4): the\npreferred image model (free text), a base appearance prompt (always ``perceivable``), a\nnegative prompt, a seed (0 to 2^32 - 1), up to 10 reference images (each with its\n``audience``), adapter-specific parameters kept opaque (a JSON object of at most 8 KiB, every\nnumber finite) and an optional prompt for restricted details. Optional as a whole; when it\nis present, a publish needs every field but ``reference_images``, ``adapter_params`` and\n``restricted_details_prompt``.",
@@ -28031,6 +29170,31 @@
         "title": "WarmthDispositionPatch",
         "type": "object"
       },
+      "WarningBody": {
+        "description": "Something the turn did that the consumer should know: ``pin_quarantined`` names an\nauthor pin the output gate's convergence rule quarantined (#145).",
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "memory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Id"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "WarningBody",
+        "type": "object"
+      },
       "WordlistRule": {
         "additionalProperties": false,
         "description": "Whole words and phrases, compared after NFKC normalisation and case folding.",
@@ -28304,6 +29468,7 @@
                           "profile_defaults.pins.max_pinned",
                           "profile_defaults.pipeline",
                           "profile_defaults.repair",
+                          "profile_defaults.repair.implication_threshold",
                           "profile_defaults.repair.max_attempts",
                           "profile_defaults.repair.polish",
                           "profile_defaults.repair.polish.enabled",
@@ -32592,6 +33757,1534 @@
           }
         ],
         "summary": "Consolidate a window of a story's memories",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/stories/{story_id}/facts": {
+      "get": {
+        "description": "The story's canon facts (FR-BITEMP-3), `omniscient` only (403 `omniscient_required` otherwise): the current versions, or every version with `include_superseded`. `as_of_story_time` (story-minutes) keeps those true then, `as_of_record_time` reads the record as it stood then, `subject` and `predicate` filter. Paged by id: `limit` (1 to 500, default 100) and `cursor` (a page's `next_cursor`). 409 `module_off` for a Lite story (canon exists under every structured profile).",
+        "operationId": "list_facts",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_story_time",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of Story Time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of_record_time",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of Record Time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Subject"
+            }
+          },
+          {
+            "in": "query",
+            "name": "predicate",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Predicate"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_superseded",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Superseded",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactListBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `module_off`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List the story's canon",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Write #131's normalized `proposition` (JSON, never prose) as canon with `provenance = authority = author` (FR-GUARD-4's canonize; FR-BITEMP-1). Optional: `visibility` (default `objective`), `valid_from`/`valid_to` (story-minutes, replacing the proposition's bounds), `anchored_to` (a related fact) and `locked` (`author_locked`: no render may change it). #140's deterministic check runs first. A current fact of the same functional key, or of the opposite polarity, is superseded (the author wins; `superseded` lists them), and an `uncertain` verdict or another contradiction is a warning. The fact is position-less (a truncation never removes it). In a story that keeps episodic memory it is also written as an author memory, so retrieval finds it (`memory_id`). 409 `module_off` for a Lite story (canon exists under every structured profile).\n\nA position-less `control` operation that bumps the story's timeline revision, so a turn generating meanwhile revalidates before it commits. Any principal may call it. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "commit_fact",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `unknown_predicate`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Commit an author fact",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/stories/{story_id}/facts/{fact_id}/lock": {
+      "delete": {
+        "description": "Clear `author_locked` on current version `fact_id` (a successor of the same proposition, as for the lock). An unlocked version answers unchanged. 409 `module_off` for a Lite story (canon exists under every structured profile).\n\nA position-less `control` operation that bumps the story's timeline revision, so a turn generating meanwhile revalidates before it commits. Any principal may call it. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "unlock_fact",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The fact version's id (a ULID).",
+            "in": "path",
+            "name": "fact_id",
+            "required": true,
+            "schema": {
+              "description": "The fact version's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Fact Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `fact_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `fact_inactive`, `fact_superseded`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Unlock a fact version",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Set `author_locked` on current version `fact_id` (FR-VERIFY-11: a render may not change locked canon): canon is append-only, so this writes a successor of the same proposition with the lock set. A locked version answers unchanged (no operation). 409 `module_off` for a Lite story (canon exists under every structured profile).\n\nA position-less `control` operation that bumps the story's timeline revision, so a turn generating meanwhile revalidates before it commits. Any principal may call it. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "lock_fact",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The fact version's id (a ULID).",
+            "in": "path",
+            "name": "fact_id",
+            "required": true,
+            "schema": {
+              "description": "The fact version's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Fact Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `fact_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `fact_inactive`, `fact_superseded`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Lock a fact version",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/stories/{story_id}/facts/{fact_id}/supersede": {
+      "post": {
+        "description": "Close current version `fact_id` in transaction-time and write `proposition` as its successor in the same lineage (FR-BITEMP-2: nothing is deleted). Provenance, authority, visibility, valid-time and the lock carry over unless given. 404 `fact_not_found`; 409 `fact_superseded` (supersede the lineage's current version) or `fact_inactive`; 422 `key_mismatch` when the subject, predicate or key qualifiers change. 409 `module_off` for a Lite story (canon exists under every structured profile).\n\nA position-less `control` operation that bumps the story's timeline revision, so a turn generating meanwhile revalidates before it commits. Any principal may call it. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "supersede_fact",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The fact version's id (a ULID).",
+            "in": "path",
+            "name": "fact_id",
+            "required": true,
+            "schema": {
+              "description": "The fact version's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Fact Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupersedeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactWritten"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `fact_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `fact_inactive`, `fact_superseded`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `key_mismatch`, `unknown_predicate`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Supersede a fact version",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/stories/{story_id}/memories/{memory_id}/quarantine": {
+      "delete": {
+        "description": "Make a quarantined memory retrievable again. A memory that is not quarantined answers unchanged. 404 for an unknown memory; 409 `module_off` when the story's configuration keeps no episodic memory (a Lite story).\n\nA position-less `control` operation that bumps the story's timeline revision, so a turn generating meanwhile revalidates before it commits. Any principal may call it. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "unquarantine_memory",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The memory's id (a ULID).",
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "description": "The memory's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Memory Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryWritten"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reverse a memory's quarantine",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Exclude the memory from retrieval and from every generation context (FR-GUARD-4): it is never retrieved, never a consolidation input, and never in a structured render's context again until the quarantine is reversed. History and working memory (the story's events) are untouched, and the memory keeps its vector. `reason` (1 to 500 characters) is recorded; `repeated_implication` is reserved for the output gate's own quarantines (FR-GUARD-5). A quarantined memory answers unchanged. 404 for an unknown memory; 409 `module_off` when the story's configuration keeps no episodic memory (a Lite story).\n\nA position-less `control` operation that bumps the story's timeline revision, so a turn generating meanwhile revalidates before it commits. Any principal may call it. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "quarantine_memory",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The memory's id (a ULID).",
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "description": "The memory's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Memory Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuarantineRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryWritten"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Quarantine a memory",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/stories/{story_id}/memories/{memory_id}/sanitize": {
+      "post": {
+        "description": "Replace every occurrence of `span` (an exact substring) in the memory's text by `surrogate` (FR-GUARD-4). The surrogate passes the input gate first (422 `guardrail_violation`). The operation records a `sanitized` event with the surrogate. The span and the old text are kept only in a `sanitize_original` audit record. The memory is re-indexed and re-embedded, and its history beat is unchanged. 422 `span_not_found` when the span is not in the text. 404 for an unknown memory; 409 `module_off` when the story's configuration keeps no episodic memory (a Lite story).\n\nA position-less `control` operation that bumps the story's timeline revision, so a turn generating meanwhile revalidates before it commits. Any principal may call it. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "sanitize_memory",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The memory's id (a ULID).",
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "description": "The memory's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C4"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Memory Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SanitizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryWritten"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `guardrail_violation`, `span_not_found`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replace a span of a memory's text with a surrogate",
         "tags": [
           "admin"
         ]
@@ -45917,6 +48610,7 @@
                           "profile_overrides.pins.max_pinned",
                           "profile_overrides.pipeline",
                           "profile_overrides.repair",
+                          "profile_overrides.repair.implication_threshold",
                           "profile_overrides.repair.max_attempts",
                           "profile_overrides.repair.polish",
                           "profile_overrides.repair.polish.enabled",
@@ -50490,7 +53184,7 @@
     },
     "/stories/{story_id}/retrieve": {
       "get": {
-        "description": "Runs the retrieval pipeline for the text `q` asked by `actor_character_id` (default the player) just after turn `as_of` (default the head): resolution of time, entities and event type; the occasion's episodes and the participants' assessments; hybrid vector and lexical search ranked by similarity, recency and decayed importance; standing profiles and canon; and the context assembled within the token budget, with per-stage timings (ms, model calls excluded). `viewpoint` must resolve to `omniscient` (403 `omniscient_required` otherwise). A read: no operation, and no memory's access time moves. A story whose `episodic` module is off answers an empty result with `skipped: [\"episodic\"]`.",
+        "description": "Runs the retrieval pipeline for the text `q` asked by `actor_character_id` (default the player) just after turn `as_of` (default the head): resolution of time, entities and event type; the occasion's episodes and the participants' assessments; hybrid vector and lexical search ranked by similarity, recency and decayed importance; standing profiles and canon; and the context assembled within the token budget, with per-stage timings (ms, model calls excluded). `viewpoint` must resolve to `omniscient` (403 `omniscient_required` otherwise). A read: no operation, and no memory's access time moves. A story whose `episodic` module is off answers an empty result with `skipped: [\"episodic\"]`. A quarantined memory (#145) is never retrieved; `include_quarantined=true` shows it anyway, marked `quarantined`, for debugging.",
         "operationId": "retrieve",
         "parameters": [
           {
@@ -50563,6 +53257,16 @@
                 }
               ],
               "title": "Actor Character Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_quarantined",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Quarantined",
+              "type": "boolean"
             }
           }
         ],

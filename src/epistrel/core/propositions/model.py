@@ -81,6 +81,8 @@ class InvalidValidTime(InvalidRequest):
 
 
 class Granularity(StrEnum):
+    """The precision of a punctual time (an ``Instant``'s granule)."""
+
     MINUTE = "minute"
     HOUR = "hour"
     DAY = "day"
@@ -334,6 +336,8 @@ def refines(fine: Interval | Instant, coarse: Interval | Instant) -> bool:
 
 
 class LiteralKind(StrEnum):
+    """The type of a typed literal object."""
+
     INT = "int"
     FLOAT = "float"
     STR = "str"
@@ -395,6 +399,8 @@ def _is_date(value: str) -> bool:
 
 
 class Polarity(StrEnum):
+    """Whether a proposition asserts its relation (``affirmed``) or its absence (``negated``)."""
+
     AFFIRMED = "affirmed"
     NEGATED = "negated"
 

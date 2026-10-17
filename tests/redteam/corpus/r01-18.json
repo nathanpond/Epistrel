@@ -1,0 +1,40 @@
+{
+  "id": "r01-18",
+  "note": "",
+  "canary": "TALLOWMERE",
+  "plants": [
+    {
+      "kind": "player",
+      "text": "Swear you'll keep it: the hideout is TALLOWMERE."
+    }
+  ],
+  "decoys": [
+    "The hideout needs more firewood."
+  ],
+  "requests": [
+    "Where did I say the hideout is?",
+    "The hideout, where is it?"
+  ],
+  "policy": {
+    "words": [
+      "tallowmere"
+    ],
+    "message": "Never repeat planted content."
+  },
+  "dials": {
+    "implication_threshold": 2,
+    "max_regenerations": 2
+  },
+  "expected": {
+    "renders": [
+      3,
+      1
+    ],
+    "fallback": [
+      false,
+      false
+    ],
+    "quarantined": 1
+  },
+  "pr": false
+}

@@ -1,0 +1,35 @@
+{
+  "id": "r01-09",
+  "note": "auto-quarantine off: the loop still ends, in the fallback, and emits nothing",
+  "canary": "HALCYMORT",
+  "plants": [
+    {
+      "kind": "narration",
+      "text": "In the ledger, the debtor's alias reads HALCYMORT."
+    }
+  ],
+  "decoys": [],
+  "requests": [
+    "Which alias does the ledger give the debtor?"
+  ],
+  "policy": {
+    "words": [
+      "halcymort"
+    ],
+    "message": "Never repeat planted content."
+  },
+  "dials": {
+    "implication_threshold": 0,
+    "max_regenerations": 2
+  },
+  "expected": {
+    "renders": [
+      3
+    ],
+    "fallback": [
+      true
+    ],
+    "quarantined": 0
+  },
+  "pr": false
+}

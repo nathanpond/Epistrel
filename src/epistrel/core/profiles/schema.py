@@ -382,6 +382,12 @@ class Repair(ProfileModel):
 
     max_attempts: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(default=0, ge=0, le=10)
     """Repair attempts of the structured pipeline's repair ladder (FR-REPAIR)."""
+    implication_threshold: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=2, ge=0, le=10
+    )
+    """How many rejected renders within one story may implicate a memory before it is
+    quarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured
+    stories only: a Lite reply's context holds no memory records."""
     polish: Polish = Field(default_factory=Polish)
 
 
@@ -576,7 +582,7 @@ MODULES: tuple[Module, ...] = (
         "pipeline",
         (("lite", "lite"), ("structured", "structured")),
         owns=("pipeline",),
-        owns_at=(("structured", ("memory.hot_set",)),),
+        owns_at=(("structured", ("memory.hot_set", "repair.implication_threshold")),),
     ),
     _flag("rolling_summary", "memory.rolling_summary.enabled", "memory.rolling_summary"),
     _flag("episodic", "memory.episodic.enabled", "memory.episodic"),

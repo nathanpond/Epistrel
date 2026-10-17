@@ -40,6 +40,7 @@ from epistrel.api.routes.admin.model_config import (
     ModelConfigItem,
     ModelConfigMutation,
 )
+from epistrel.api.routes.admin.mutation import FactListBody, FactWritten, MemoryWritten
 from epistrel.api.routes.admin.offboarding import OffboardingPlanBody, OffboardingQueuedBody
 from epistrel.api.routes.admin.policies import PolicyBody, PolicyList, PolicyMutation
 from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, RatingMutation
@@ -150,6 +151,7 @@ from epistrel.core.ingest import IngestRequest
 from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
 from epistrel.core.memory.consolidation import ConsolidateRequest
+from epistrel.core.mutation import FactRequest, QuarantineRequest, SanitizeRequest, SupersedeRequest
 from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
@@ -158,9 +160,9 @@ from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpda
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions import store
-from epistrel.core.propositions.model import Cardinality
+from epistrel.core.propositions.model import Cardinality, Interval, Proposition
 from epistrel.core.propositions.registry import ApproveRequest
-from epistrel.core.propositions.vocabulary import MEMBER_OF
+from epistrel.core.propositions.vocabulary import CORE_BY_NAME, MEMBER_OF
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
@@ -324,6 +326,71 @@ async def _structured_fork(engine: Engine, ids: Ids) -> None:
 async def _consolidate(engine: Engine, story_id: str) -> dict[str, Any]:
     queued = await engine.consolidate(CTX, story_id, ConsolidateRequest(from_turn=1, to_turn=2))
     return dump(ConsolidationQueuedResponse.of(queued))
+
+
+KNOWS_PREDICATE = CORE_BY_NAME["knows"].id
+MUTATION_GROUP = "mutation"
+"""The ``Step.group`` of the mutation-primitive steps (#145)."""
+MUTATION_ANSWERS = [
+    ("commit_fact", 409),
+    ("commit_fact", 201),
+    ("lock_fact", 200),
+    ("unlock_fact", 200),
+    ("list_facts", 200),
+    ("quarantine_memory", 200),
+    ("unquarantine_memory", 200),
+    ("sanitize_memory", 200),
+    ("supersede_fact", 201),
+]
+"""What they answer on both surfaces: 409 ``module_off`` on the Lite story, then each call on
+the structured fork as written."""
+QUARANTINE = {"reason": "Parity quarantine."}
+SANITIZE = {"span": "Ada", "surrogate": "a friend"}
+
+
+async def _fork_cast(engine: Engine, ids: Ids) -> None:
+    """The fork on ``Structured (M4)`` (episodic memory on, so an author fact writes an author
+    memory) and its characters' ids, for the fact calls' propositions (#145)."""
+    await _structured_fork(engine, ids)
+    async with engine.db.connect() as conn:
+        found = await conn.execute(
+            text("SELECT id, name FROM characters WHERE story_id = :s ORDER BY name"),
+            {"s": ids["fork"]},
+        )
+        for row in found:
+            ids[f"fork_{str(row.name).lower()}"] = str(row.id)
+
+
+def _knows(ids: Ids, story: str, *, since: int = 0) -> dict[str, Any]:
+    """Wren knows Ada (#131's ``knows``, a ``multi`` fluent) from story-minute ``since``, in
+    ``story`` (``story``: the Lite story's cast, ``fork``: the fork's)."""
+    prefix = "" if story == "story" else "fork_"
+    return Proposition(
+        subject_id=ids[f"{prefix}wren"],
+        predicate_id=KNOWS_PREDICATE,
+        object_id=ids[f"{prefix}ada"],
+        valid_time=Interval.of(since, None),
+    ).model_dump(mode="json")
+
+
+async def _commit_fact(
+    engine: Engine, story_id: str, proposition: dict[str, Any]
+) -> dict[str, Any]:
+    return await _fact_written(
+        engine.commit_fact(CTX, story_id, FactRequest.model_validate({"proposition": proposition}))
+    )
+
+
+async def _fact_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(FactWritten.of(await call))
+
+
+async def _memory_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(MemoryWritten.of(await call))
+
+
+async def _fact_list(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(FactListBody.of(await engine.list_facts(CTX, story_id, viewpoint="omniscient")))
 
 
 def _keep(name: str, *path: str | int) -> Callable[[dict[str, Any], Ids], None]:
@@ -974,6 +1041,94 @@ def _steps() -> list[Step]:
             ),
             lambda e, ids: _consolidate(e, ids["fork"]),
             prepare=_structured_fork,
+        ),
+        # The mutation primitives and the low-level fact calls (#145): 409 module_off on the Lite
+        # story, then on the structured fork an author fact, its lock and unlock, the canon read,
+        # the quarantine of its author memory and its release, a sanitize and a supersede.
+        Step(
+            "commit_fact",
+            lambda ids: Rest("POST", f"/admin{s}/facts", {"proposition": _knows(ids, "story")}),
+            lambda e, ids: _commit_fact(e, ids["story"], _knows(ids, "story")),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "commit_fact",
+            lambda ids: Rest(
+                "POST", "/admin/stories/{fork}/facts", {"proposition": _knows(ids, "fork")}
+            ),
+            lambda e, ids: _commit_fact(e, ids["fork"], _knows(ids, "fork")),
+            _both(_keep("fork_fact", "fact", "id"), _keep("fork_memory", "memory_id")),
+            prepare=_fork_cast,
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "lock_fact",
+            lambda ids: Rest("POST", "/admin/stories/{fork}/facts/{fork_fact}/lock"),
+            lambda e, ids: _fact_written(e.lock_fact(CTX, ids["fork"], ids["fork_fact"])),
+            _keep("fork_fact", "fact", "id"),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "unlock_fact",
+            lambda ids: Rest("DELETE", "/admin/stories/{fork}/facts/{fork_fact}/lock"),
+            lambda e, ids: _fact_written(e.unlock_fact(CTX, ids["fork"], ids["fork_fact"])),
+            _keep("fork_fact", "fact", "id"),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "list_facts",
+            lambda ids: Rest(
+                "GET", "/admin/stories/{fork}/facts", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _fact_list(e, ids["fork"]),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "quarantine_memory",
+            lambda ids: Rest(
+                "POST", "/admin/stories/{fork}/memories/{fork_memory}/quarantine", QUARANTINE
+            ),
+            lambda e, ids: _memory_written(
+                e.quarantine_memory(
+                    CTX, ids["fork"], ids["fork_memory"], QuarantineRequest(**QUARANTINE)
+                )
+            ),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "unquarantine_memory",
+            lambda ids: Rest("DELETE", "/admin/stories/{fork}/memories/{fork_memory}/quarantine"),
+            lambda e, ids: _memory_written(
+                e.unquarantine_memory(CTX, ids["fork"], ids["fork_memory"])
+            ),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "sanitize_memory",
+            lambda ids: Rest(
+                "POST", "/admin/stories/{fork}/memories/{fork_memory}/sanitize", SANITIZE
+            ),
+            lambda e, ids: _memory_written(
+                e.sanitize_memory(CTX, ids["fork"], ids["fork_memory"], SanitizeRequest(**SANITIZE))
+            ),
+            group=MUTATION_GROUP,
+        ),
+        Step(
+            "supersede_fact",
+            lambda ids: Rest(
+                "POST",
+                "/admin/stories/{fork}/facts/{fork_fact}/supersede",
+                {"proposition": _knows(ids, "fork", since=10)},
+            ),
+            lambda e, ids: _fact_written(
+                e.supersede_fact(
+                    CTX,
+                    ids["fork"],
+                    ids["fork_fact"],
+                    SupersedeRequest(proposition=_knows(ids, "fork", since=10)),
+                )
+            ),
+            group=MUTATION_GROUP,
         ),
         Step(
             "delete_story",
@@ -2678,6 +2833,12 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         for step, (status, _) in zip(steps, rest, strict=True)
         if step.group == REGISTRY_GROUP
     ] == REGISTRY_ANSWERS
+    # #145's mutation steps answered as written (MUTATION_ANSWERS).
+    assert [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == MUTATION_GROUP
+    ] == MUTATION_ANSWERS
     # The character steps (#103) answered what they were written to answer, on both surfaces.
     answered = [
         (step.operation, status)

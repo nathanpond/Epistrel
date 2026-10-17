@@ -48,6 +48,11 @@ are compared with the query too: by their stored vector when it is in the pinned
 re-embedded in one batched call (counted in ``model_calls``), the vector used for this query
 only and never stored (#147's ``retain_retired_vectors`` decides storage).
 
+**Quarantine** (#145, FR-GUARD-4,5): a quarantined memory is no candidate of any stage (the
+occasion and assessment reads, the vector, lexical and alias arms, rehydration), so it is in no
+context; ``include_quarantined`` (the omniscient debugging read's flag) lets it back in, marked
+``quarantined``.
+
 **Read set and access.** With ``read_set`` given, every returned memory is recorded in it as a
 retrieved row (``memories``, its ``membership_tx``), and the canon and profiles it read too:
 semantic retrieval is context, never keyed (#136). With ``touch``, every returned memory's
@@ -120,6 +125,7 @@ from epistrel.core.retrieval.lexical import (
     TsvectorLexicalSearch,
     position_clause,
     position_params,
+    quarantine_clause,
 )
 from epistrel.core.retrieval.search import (
     EMBEDDING_PENDING,
@@ -302,6 +308,8 @@ class RetrievedMemory:
     importance: float | None
     membership_tx: datetime
     arms: tuple[str, ...] = ()
+    quarantined: bool = False
+    """Quarantined (#145): returned only with ``include_quarantined``."""
     score: float | None = None
     similarity: float | None = None
     recency: float | None = None
@@ -455,6 +463,7 @@ _COLUMNS = (
     memories.c.importance,
     memories.c.importance_at,
     memories.c.membership_tx,
+    memories.c.quarantined_at,
 )
 
 
@@ -466,6 +475,11 @@ def _through(through: tuple[int, int]) -> Any:
         m.narrative_turn < turn,
         and_(m.narrative_turn == turn, or_(m.beat.is_(None), m.beat <= beat)),
     )
+
+
+def _not_quarantined(include: bool) -> list[Any]:
+    """The quarantine filter (#145): none unless ``include``."""
+    return [] if include else [memories.c.quarantined_at.is_(None)]
 
 
 def _row(r: Any, arms: tuple[str, ...] = ()) -> RetrievedMemory:
@@ -482,6 +496,7 @@ def _row(r: Any, arms: tuple[str, ...] = ()) -> RetrievedMemory:
         importance=None if r.importance is None else float(r.importance),
         membership_tx=r.membership_tx,
         arms=arms,
+        quarantined=r.quarantined_at is not None,
     )
 
 
@@ -493,6 +508,7 @@ async def _episodes(
     turns: tuple[int | None, int | None] | None,
     event_type: str | None,
     entities: Sequence[str],
+    include_quarantined: bool = False,
 ) -> list[Any]:
     m = memories.c
     where = [
@@ -500,6 +516,7 @@ async def _episodes(
         active_only(memories),
         m.kind == MemoryKind.EPISODIC.value,
         _through(through),
+        *_not_quarantined(include_quarantined),
     ]
     if turns is not None:
         first, last = turns
@@ -529,6 +546,7 @@ async def _assessments(
     since_turn: int | None,
     participants: Sequence[str],
     k: int,
+    include_quarantined: bool = False,
 ) -> list[Any]:
     m = memories.c
     where = [
@@ -537,6 +555,7 @@ async def _assessments(
         m.kind.in_([MemoryKind.SEMANTIC.value, MemoryKind.REFLECTION.value]),
         m.participants.overlap(list(participants)),
         _through(through),
+        *_not_quarantined(include_quarantined),
     ]
     if since_turn is not None:
         where.append(or_(m.narrative_turn.is_(None), m.narrative_turn >= since_turn))
@@ -549,12 +568,17 @@ async def _assessments(
     return list(found)
 
 
-async def _by_id(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> dict[str, Any]:
+async def _by_id(
+    conn: AsyncConnection, story_id: str, ids: Sequence[str], include_quarantined: bool = False
+) -> dict[str, Any]:
     if not ids:
         return {}
     found = await conn.execute(
         select(*_COLUMNS).where(
-            memories.c.story_id == story_id, active_only(memories), memories.c.id.in_(list(ids))
+            memories.c.story_id == story_id,
+            active_only(memories),
+            memories.c.id.in_(list(ids)),
+            *_not_quarantined(include_quarantined),
         )
     )
     return {str(r.id): r for r in found}
@@ -567,9 +591,10 @@ async def _alias_arm(
     *,
     through: tuple[int, int],
     k: int,
+    include_quarantined: bool = False,
 ) -> list[str]:
     """The hot active memories whose text holds one of ``aliases`` as a phrase (any casing),
-    latest first."""
+    latest first (none quarantined unless ``include_quarantined``)."""
     if not aliases or k < 1:
         return []
     phrases = " || ".join(
@@ -581,12 +606,14 @@ async def _alias_arm(
             f"WHERE m.story_id = :story AND {active_only_sql('m')} "
             f"AND m.retrieval_tier = '{RetrievalTier.HOT.value}' "
             f"AND {position_clause('m')} "
+            f"AND {quarantine_clause('m')} "
             f"AND m.search @@ ({phrases}) "
             "ORDER BY m.narrative_turn DESC NULLS LAST, m.beat DESC NULLS LAST, m.id LIMIT :k"
         ),
         {
             "story": story_id,
             "k": k,
+            "include_quarantined": include_quarantined,
             **position_params(through),
             **{f"a{i}": a for i, a in enumerate(aliases)},
         },
@@ -696,9 +723,12 @@ async def retrieve(
     touch: bool = True,
     extra_event_types: Iterable[str] = (),
     kinds: Iterable[MemoryKind] | None = None,
+    include_quarantined: bool = False,
 ) -> RetrievalResult:
     """Retrieve for ``query`` (see the module docstring). ``kinds`` keeps only memories of
-    those kinds (every kind when ``None``): Q-03's arm without the reflection tier (#143)."""
+    those kinds (every kind when ``None``): Q-03's arm without the reflection tier (#143).
+    ``include_quarantined`` lets quarantined memories back in (the debugging read's flag)."""
+    iq = include_quarantined
     wanted = None if kinds is None else frozenset(MemoryKind(k) for k in kinds)
     clk = _Clock()
     if settings is None:
@@ -760,6 +790,7 @@ async def retrieve(
             turns=turns,
             event_type=resolved.event_type,
             entities=resolved.entities,
+            include_quarantined=iq,
         )
         participants = tuple(
             dict.fromkeys(
@@ -779,6 +810,7 @@ async def retrieve(
                 since_turn=None if turns is None else turns[0],
                 participants=participants,
                 k=params.k,
+                include_quarantined=iq,
             )
     if wanted is not None:
         episode_rows = [r for r in episode_rows if MemoryKind(r.kind) in wanted]
@@ -817,6 +849,7 @@ async def retrieve(
                     version=version,
                     k=params.vector_k,
                     through=through,
+                    include_quarantined=iq,
                 )
                 vector_hits = [(h.memory_id, h.score) for h in hits]
     else:
@@ -840,7 +873,11 @@ async def retrieve(
     taken = {str(r.id) for r in (*episode_rows, *assessment_rows)}
     if lexical_on:
         lexical_hits = await lexical.search(
-            conn, story_id, query.text, params.lexical_k, LexicalFilters(through=through)
+            conn,
+            story_id,
+            query.text,
+            params.lexical_k,
+            LexicalFilters(through=through, include_quarantined=iq),
         )
         if rehydrate_left:
             found_retired = await lexical.search(
@@ -848,7 +885,9 @@ async def retrieve(
                 story_id,
                 query.text,
                 rehydrate_left + len(taken),
-                LexicalFilters(through=through, tiers=(RetrievalTier.RETIRED,)),
+                LexicalFilters(
+                    through=through, tiers=(RetrievalTier.RETIRED,), include_quarantined=iq
+                ),
             )
             retired_hits = [h for h in found_retired if h[0] not in taken][:rehydrate_left]
     else:
@@ -861,7 +900,9 @@ async def retrieve(
                 continue
             aliases.extend([entry.canonical_name, *(a for a, _ in entry.aliases)])
         aliases = list(dict.fromkeys(a for a in aliases if a.strip()))[:MAX_ALIASES]
-        alias_ids = await _alias_arm(conn, story_id, aliases, through=through, k=params.lexical_k)
+        alias_ids = await _alias_arm(
+            conn, story_id, aliases, through=through, k=params.lexical_k, include_quarantined=iq
+        )
     else:
         skipped.append(ARM_ALIAS)
     clk.lap("lexical")
@@ -872,7 +913,7 @@ async def retrieve(
         similar = await _stored_similarity(conn, story_id, retired_ids, query_vector, version)
         missing = [i for i in retired_ids if i not in similar]
         if missing and embed_batch is not None:
-            rows = await _by_id(conn, story_id, missing)
+            rows = await _by_id(conn, story_id, missing, iq)
             texts = [rows[i].text for i in missing if i in rows]
             started = time.perf_counter()
             try:
@@ -906,7 +947,7 @@ async def retrieve(
             arms_of.setdefault(memory_id, []).append(arm)
     fused = ranking.fuse(rankings, params.rrf_k)
     candidates = [i for i in fused if i not in taken]
-    details = await _by_id(conn, story_id, candidates)
+    details = await _by_id(conn, story_id, candidates, iq)
     if wanted is not None:
         details = {i: r for i, r in details.items() if MemoryKind(r.kind) in wanted}
     ranked = ranking.rank(
@@ -1046,6 +1087,7 @@ async def read_retrieve(
     embed: Embedder | None = None,
     embed_batch: BatchEmbedder | None = None,
     lexical: LexicalSearch | None = None,
+    include_quarantined: bool = False,
 ) -> RetrievalResult:
     """``retrieve`` as the debugging read (``GET /stories/{id}/retrieve``, ``Engine.retrieve``)
     asks it: the text ``q`` asked by ``actor_character_id`` (one of the cast; default the
@@ -1105,6 +1147,7 @@ async def read_retrieve(
         embed_batch=embed_batch,
         lexical=lexical,
         touch=False,
+        include_quarantined=include_quarantined,
     )
 
 

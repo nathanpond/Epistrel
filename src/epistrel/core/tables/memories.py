@@ -37,6 +37,14 @@ One row is one memory record:
   ``prompt_hash``; on any row, ``covered_by`` (the consolidation outputs that cover it,
   rewritten as outputs are made; an output that is no longer active covers nothing, so readers
   join on its membership; #147's retirement prefers covered records).
+- **quarantine** (#145, migration 0059; FR-GUARD-4,5): ``quarantined_at`` (``NULL``: not
+  quarantined), ``quarantine_reason`` (at most ``QUARANTINE_REASON_MAX`` characters;
+  ``repeated_implication`` is the system's) and ``quarantined_by`` (the principal; ``system``
+  for an auto-quarantine), set and cleared together (CHECK); ``implication_count``, how many
+  rejected renders implicated the memory (the output gate's convergence rule). A quarantined
+  memory is excluded from retrieval (every arm of #141's pipeline) and from consolidation's
+  input windows, never from working memory (events are the truth, FR-MEM-5); it keeps its
+  vector. ``core.mutation`` writes these.
 - **retrieval**: ``retrieval_tier`` (``hot``/``retired``, independent of membership; #147),
   ``embedding`` (a pgvector ``vector``, untyped here: #138 pins the dimension, retypes the
   column and creates the HNSW cosine index; ``NULL`` until the embed job runs) and
@@ -44,9 +52,11 @@ One row is one memory record:
   first retrieval).
 
 Guarded (``epistrel_memories_guard``): an UPDATE may change only ``MUTABLE_MEMORY_COLUMNS``; an
-erasure (``epistrel.erasure = on``) may also rewrite ``text``. A DELETE passes only under an
+erasure (``epistrel.erasure = on``) may also rewrite ``text`` and ``quarantine_reason``, and a
+sanitize (``epistrel.sanitize`` = the memory's id, #145) that one row's ``text`` and
+``inputs_hash``. A DELETE passes only under an
 erasure or the story's deletion (``epistrel.allow_story_delete``); TRUNCATE is refused.
-``core.memory.records`` is the only writer of rows.
+``core.memory.records`` is the only writer of rows; ``core.mutation`` updates them.
 """
 
 from __future__ import annotations
@@ -88,6 +98,8 @@ SEARCH_CONFIGURATION = "english"
 SEARCH_EXPRESSION = f"to_tsvector('{SEARCH_CONFIGURATION}'::regconfig, text)"
 """The generated ``search`` column's expression (migration 0056)."""
 EVENT_TYPE_MAX = 64
+QUARANTINE_REASON_MAX = 500
+"""The longest ``quarantine_reason`` (CHECK)."""
 """The longest ``event_type`` (CHECK)."""
 
 MODALITIES: tuple[str, ...] = ("objective", "attributed_claim", "observation")
@@ -106,6 +118,10 @@ MUTABLE_MEMORY_COLUMNS: tuple[str, ...] = (
     "membership",
     "membership_tx",
     "covered_by",
+    "quarantined_at",
+    "quarantine_reason",
+    "quarantined_by",
+    "implication_count",
 )
 """The columns an UPDATE of ``memories`` may change outside an erasure. (The generated
 ``search`` column is also let through by the guard, since a BEFORE trigger cannot read its new
@@ -194,7 +210,19 @@ memories = Table(
     Column("model", Text, nullable=True),
     Column("model_version", Text, nullable=True),
     Column("prompt_hash", Text, nullable=True),
+    Column("quarantined_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("quarantine_reason", Text, nullable=True),
+    Column("quarantined_by", Text, nullable=True),
+    Column("implication_count", Integer, nullable=False, server_default=text("0")),
     CheckConstraint(f"char_length(text) <= {TEXT_MAX}", name="text_length"),
+    CheckConstraint(
+        "(quarantined_at IS NULL) = (quarantine_reason IS NULL) "
+        "AND (quarantined_at IS NULL) = (quarantined_by IS NULL) "
+        "AND (quarantine_reason IS NULL OR char_length(quarantine_reason) <= "
+        f"{QUARANTINE_REASON_MAX})",
+        name="quarantine",
+    ),
+    CheckConstraint("implication_count >= 0", name="implication_count"),
     CheckConstraint(
         "importance IS NULL OR (importance >= 0 AND importance <= 1)", name="importance"
     ),
@@ -241,6 +269,7 @@ __all__ = [
     "MEMORIES",
     "MODALITIES",
     "MUTABLE_MEMORY_COLUMNS",
+    "QUARANTINE_REASON_MAX",
     "SEARCH_CONFIGURATION",
     "SEARCH_EXPRESSION",
     "TEXT_MAX",

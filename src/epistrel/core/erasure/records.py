@@ -341,14 +341,19 @@ def fact_record(row: Any) -> Record:
 
 
 def memory_record(row: Any) -> Record:
-    """A memory (#135): its ``text``, indexed positionally (ADR-154); its holder a declared
-    subject; its actor (the beat's character) its author."""
+    """A memory (#135): its ``text``, indexed positionally (ADR-154), and its
+    ``quarantine_reason`` (#145, free text) when it has one; its holder a declared subject; its
+    actor (the beat's character) its author."""
     holder = _str(row.holder_character_id)
+    fields = {"text": row.text}
+    reason = getattr(row, "quarantine_reason", None)
+    if reason:
+        fields["quarantine_reason"] = reason
     return Record(
         memories.name,
         str(row.id),
         _str(row.story_id),
-        {"text": row.text},
+        fields,
         ((SubjectKind.CHARACTER, holder, "holder_character_id"),) if holder else (),
         authored_by=_str(row.character_id),
     )
@@ -649,9 +654,9 @@ async def read_memories(conn: AsyncConnection, story_id: str | None) -> list[Rec
         return []
     m = memories.c
     found = await conn.execute(
-        select(m.id, m.story_id, m.text, m.holder_character_id, m.character_id).where(
-            m.story_id == story_id
-        )
+        select(
+            m.id, m.story_id, m.text, m.holder_character_id, m.character_id, m.quarantine_reason
+        ).where(m.story_id == story_id)
     )
     return [memory_record(r) for r in found]
 

@@ -649,6 +649,7 @@ _REGISTRY = "epistrel.core.propositions.registry"
 _PROPOSITIONS = "epistrel.core.propositions.store"
 _FACTS = "epistrel.core.canon.facts"
 _MEMORIES = "epistrel.core.memory.records"
+_MUTATION = "epistrel.core.mutation"
 
 SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
@@ -729,8 +730,9 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter("entity_aliases", (_PROPOSITIONS,), f"{_RECORDS}:read_aliases"),
     # Bitemporal canon (#133): a fact's characters visibility scope names characters.
     SubjectWriter("facts", (_FACTS,), f"{_RECORDS}:read_facts"),
-    # Memory records (#135): a memory's text (positional), its holder and its actor.
-    SubjectWriter("memories", (_MEMORIES,), f"{_RECORDS}:read_memories"),
+    # Memory records (#135): a memory's text (positional), its holder and its actor; #145's
+    # mutation primitives rewrite a sanitized text and write a quarantine's reason.
+    SubjectWriter("memories", (_MEMORIES, _MUTATION), f"{_RECORDS}:read_memories"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 

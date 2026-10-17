@@ -1092,3 +1092,20 @@ class ScopeMismatch(EpistrelError):
 
     code = "scope_mismatch"
     http_status = 422
+
+
+class MemoryNotFound(EpistrelError):
+    """The memory a call names is not one of the story's (FR-GUARD-4; #145). ``details``:
+    ``story_id`` and ``memory_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class SpanNotFound(EpistrelError):
+    """A sanitize's ``span`` does not occur in the memory's text (FR-GUARD-4; #145): it is an
+    exact substring, every occurrence of which is replaced. ``details``: ``memory_id``.
+    Nothing is written."""
+
+    code = "span_not_found"
+    http_status = 422

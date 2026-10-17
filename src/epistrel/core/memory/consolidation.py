@@ -569,6 +569,8 @@ async def collect(
         m.narrative_turn <= window.to_turn,
         active_only(memories),
         m.retrieval_tier == RetrievalTier.HOT.value,
+        # A quarantined memory is in no input window (#145, FR-GUARD-4).
+        m.quarantined_at.is_(None),
         _scope_clause(scope),
     ]
     if level == 2:

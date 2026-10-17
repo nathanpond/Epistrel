@@ -954,13 +954,15 @@ async def supersede(
     beat: int | None = None,
     slot_k: int | None = None,
     registry: Registry | None = None,
+    author_locked: bool | None = None,
 ) -> Fact:
     """Close version ``fact_id`` in transaction-time and write ``new_proposition`` as its
     successor in the same lineage (never a delete, FR-BITEMP-2). Provenance, visibility,
-    ``anchored_to`` and the lock carry over unless given; ``authority`` defaults to the given
-    provenance's, else the old version's. 404 ``fact_not_found``; 409 ``fact_inactive`` for a
-    discarded or dormant version; 409 ``fact_superseded`` for a closed one (supersede the
-    lineage's current version); 422 ``key_mismatch`` when the uniqueness key changes."""
+    ``anchored_to`` and the lock (``author_locked``; #145's lock and unlock flip it) carry over
+    unless given; ``authority`` defaults to the given provenance's, else the old version's.
+    404 ``fact_not_found``; 409 ``fact_inactive`` for a discarded or dormant version; 409
+    ``fact_superseded`` for a closed one (supersede the lineage's current version); 422
+    ``key_mismatch`` when the uniqueness key changes."""
     old, current = await _load(conn, story_id, fact_id)
     if old.membership is not Membership.ACTIVE:
         raise FactInactive(
@@ -993,7 +995,7 @@ async def supersede(
             source_event_ids=tuple(source_event_ids),
             beat=beat,
             slot_k=slot_k,
-            author_locked=old.author_locked,
+            author_locked=old.author_locked if author_locked is None else author_locked,
             commit_state=old.commit_state,
             replaces=old,
         ),
@@ -1126,6 +1128,34 @@ async def hidden_from(
     return [fact for fact in every if not visible_to(fact.visibility, viewpoint)]
 
 
+async def read_version(conn: AsyncConnection, story_id: str, fact_id: str) -> Fact:
+    """Version ``fact_id`` of the story (any state); 404 ``fact_not_found`` when there is none."""
+    found, _ = await _load(conn, story_id, fact_id)
+    return found
+
+
+async def versions(
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    subject: str | None = None,
+    predicate: str | None = None,
+    story_time: int | None = None,
+) -> list[Fact]:
+    """Every version in the story's active timeline, current or closed (the omniscient audit
+    of a fact's history, #145's ``include_superseded``), optionally about ``subject``, of
+    ``predicate``, or covering ``story_time`` (possibly). Ordered by id."""
+    f = facts.alias("f")
+    where: list[ColumnElement[bool]] = [f.c.story_id == story_id, active_only(f)]
+    if subject is not None:
+        where.append(f.c.subject_id == subject)
+    if predicate is not None:
+        where.append(f.c.predicate_id == predicate)
+    if story_time is not None:
+        where.append(f.c.valid_span.op("@>")(literal(story_time, BigInteger)))
+    return [_fact_of(r) for r in await conn.execute(_select(f).where(*where).order_by(f.c.id))]
+
+
 async def locked_keys(conn: AsyncConnection, story_id: str) -> list[tuple[str, str, str]]:
     """The current ``author_locked`` versions as ``(fact id, subject, predicate)``, ordered:
     the locks a structured turn's permission checks depend on (FR-VERIFY-11, FR-CONC-16;
@@ -1158,9 +1188,11 @@ __all__ = [
     "default_authority",
     "hidden_from",
     "locked_keys",
+    "read_version",
     "register_fact_hook",
     "remove_fact_hook",
     "supersede",
+    "versions",
     "visible_clause",
     "visible_to",
 ]

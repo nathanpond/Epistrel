@@ -18,6 +18,10 @@ as case ``case_id`` (their ``X-Eval-Case`` line, #134; only ``purpose``'s, and o
 ``bad_body`` raise the ``openai`` SDK's own exception types; ``garbage`` answers unparseable
 text, ``empty`` answers nothing, ``refusal`` and ``length`` answer with the provider's refusal
 flag or a ``length`` finish; ``hang`` never answers (the Model Access Layer's timeout ends it).
+``parrot(pattern, purpose=None, template="{canary}")`` (#145's poisoning-loop tests) answers a
+request whose messages hold a match of the regular expression ``pattern`` (a canary planted in
+the story's records) with ``template`` filled with the first match, as a model that repeats
+what its context says would; a request with no match falls through to the default.
 ``fault_hook`` (a callable of the purpose) is consulted on every call with no queued fault,
 so a chaos test can draw faults at random. ``hold(purpose)`` latches calls until released, and
 ``calls`` records every request (purpose, messages, params, declared field paths, model).
@@ -38,6 +42,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import types
 import typing
 from collections import defaultdict, deque
@@ -221,6 +226,7 @@ class StubAdapter:
         self._when: list[tuple[tuple[str, ...], str, str | None]] = []
         self._cases: dict[tuple[str, str | None, int | None], str] = {}
         self._latches: dict[str, StubLatch] = {}
+        self._parrots: list[tuple[re.Pattern[str], str, str | None]] = []
         self.fault_hook: Callable[[str], FaultKind | None] | None = None
         """Consulted on every call with no queued fault (chaos tests draw faults at random)."""
 
@@ -265,6 +271,23 @@ class StubAdapter:
                 return self._cases[key]
         return None
 
+    def parrot(
+        self, pattern: str, *, purpose: str | None = None, template: str = "{canary}"
+    ) -> None:
+        """Echo a canary (see the module docstring): requests (of ``purpose``, when given) whose
+        messages match ``pattern`` are answered ``template.format(canary=<first match>)``."""
+        self._parrots.append((re.compile(pattern), template, purpose))
+
+    def _parroted(self, purpose: str, messages: Sequence[Message]) -> str | None:
+        for pattern, template, only in self._parrots:
+            if only not in (None, purpose):
+                continue
+            for message in messages:
+                found = pattern.search(message.content)
+                if found is not None:
+                    return template.format(canary=found.group(0))
+        return None
+
     def fault(self, purpose: str, kind: FaultKind = "timeout", n: int = 1) -> None:
         self._faults[purpose].extend([kind] * n)
 
@@ -281,6 +304,7 @@ class StubAdapter:
         self._when.clear()
         self._cases.clear()
         self._latches.clear()
+        self._parrots.clear()
         self.fault_hook = None
         self.nondeterministic = False
 
@@ -309,6 +333,9 @@ class StubAdapter:
                 continue
             if all(any(n in m.content for m in messages) for n in needles):
                 return response
+        parroted = self._parroted(purpose, messages)
+        if parroted is not None:
+            return parroted
         if purpose == IMPORTANCE_SCORING.name and response_schema in (
             None,
             IMPORTANCE_SCORING.response_schema,

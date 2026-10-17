@@ -44,6 +44,8 @@ class RetrievedMemoryBody(BaseModel):
     retrieval_tier: str
     importance: float | None
     arms: list[str]
+    quarantined: bool = False
+    """Quarantined (#145): returned only with ``include_quarantined=true``."""
     score: float | None
     similarity: float | None
     recency: float | None
@@ -63,6 +65,7 @@ class RetrievedMemoryBody(BaseModel):
             retrieval_tier=m.retrieval_tier.value,
             importance=m.importance,
             arms=list(m.arms),
+            quarantined=m.quarantined,
             score=m.score,
             similarity=m.similarity,
             recency=m.recency,
@@ -245,7 +248,8 @@ class RetrievalBody(BaseModel):
         "timings (ms, model calls excluded). `viewpoint` must resolve to `omniscient` (403 "
         "`omniscient_required` otherwise). A read: no operation, and no memory's access time "
         "moves. A story whose `episodic` module is off answers an empty result with "
-        '`skipped: ["episodic"]`.'
+        '`skipped: ["episodic"]`. A quarantined memory (#145) is never retrieved; '
+        "`include_quarantined=true` shows it anyway, marked `quarantined`, for debugging."
     ),
 )
 async def get_retrieve(
@@ -256,6 +260,7 @@ async def get_retrieve(
     viewpoint: str | None = None,
     as_of: int | None = None,
     actor_character_id: str | None = None,
+    include_quarantined: bool = False,
 ) -> RetrievalBody:
     return RetrievalBody.of(
         await engine.retrieve(
@@ -265,5 +270,6 @@ async def get_retrieve(
             viewpoint=viewpoint,
             as_of=as_of,
             actor_character_id=actor_character_id,
+            include_quarantined=include_quarantined,
         )
     )

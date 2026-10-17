@@ -37,6 +37,7 @@ from epistrel.core import (
     fork,
     idempotency,
     ingest,
+    mutation,
     offboarding,
     operation_view,
     ownership,
@@ -120,7 +121,12 @@ from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turn_gate import Concurrency, QueueItem
-from epistrel.core.viewpoint import is_omniscient, resolve_viewpoint, with_requested
+from epistrel.core.viewpoint import (
+    is_omniscient,
+    require_omniscient,
+    resolve_viewpoint,
+    with_requested,
+)
 from epistrel.observability import instrument
 from epistrel.orchestrator import queue_drainer
 from epistrel.orchestrator.budget import (
@@ -197,6 +203,14 @@ CODECS: dict[str, ResultCodec[Any]] = {
         status=lambda result: 202 if isinstance(result, RebuildQueued) else 200,
     ),
     "consolidate_story": ResultCodec.of(consolidation_job.ConsolidationQueued, status=202),
+    # The mutation primitives and the low-level fact calls (#145): story-scoped control writes.
+    "quarantine_memory": ResultCodec.of(mutation.MemoryWrite),
+    "unquarantine_memory": ResultCodec.of(mutation.MemoryWrite),
+    "sanitize_memory": ResultCodec.of(mutation.MemoryWrite),
+    "commit_fact": ResultCodec.of(mutation.FactWrite, status=201),
+    "supersede_fact": ResultCodec.of(mutation.FactWrite, status=201),
+    "lock_fact": ResultCodec.of(mutation.FactWrite),
+    "unlock_fact": ResultCodec.of(mutation.FactWrite),
     # A blank story or one from a scenario (201); a scenario creation #109's two stages held
     # back (200, nothing written).
     "create_story": ResultCodec.of(
@@ -1002,6 +1016,226 @@ class Engine:
             material={"story_id": story_id, **request.model_dump(mode="json")},
         )
 
+    # -- the mutation primitives and the low-level fact calls (FR-GUARD-4,5; #145) -----------
+
+    async def quarantine_memory(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        memory_id: str,
+        request: mutation.QuarantineRequest,
+    ) -> mutation.MemoryWrite:
+        """Quarantine a memory (FR-GUARD-4; #145): it leaves retrieval and every generation
+        context (working memory and history are untouched). A ``control`` operation that bumps
+        the revision; a quarantined memory answers unchanged. 404 for an unknown memory, 409
+        ``module_off`` when the story keeps no episodic memory."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.MemoryWrite:
+            return await mutation.quarantine(
+                self.db,
+                story_id,
+                memory_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "quarantine_memory",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "memory_id": memory_id, "body": _body(request)},
+        )
+
+    async def unquarantine_memory(
+        self, ctx: RequestContext, story_id: str, memory_id: str
+    ) -> mutation.MemoryWrite:
+        """Reverse a quarantine (#145): the memory is retrievable again (unchanged when it is
+        not quarantined)."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.MemoryWrite:
+            return await mutation.unquarantine(
+                self.db,
+                story_id,
+                memory_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "unquarantine_memory",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "memory_id": memory_id},
+        )
+
+    async def sanitize_memory(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        memory_id: str,
+        request: mutation.SanitizeRequest,
+    ) -> mutation.MemoryWrite:
+        """Replace every occurrence of ``span`` in a memory's text by ``surrogate`` (FR-GUARD-4;
+        #145): the surrogate passes the input gate, the original stays in an audit event only,
+        and the memory is re-indexed and re-embedded. 422 ``span_not_found`` when the span is
+        not in the text."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.MemoryWrite:
+            return await mutation.sanitize(
+                self.db,
+                story_id,
+                memory_id,
+                request,
+                principal=principal,
+                gate=self._text_gate(ctx, story_id, EntryPoint.SANITIZE),
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "sanitize_memory",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "memory_id": memory_id, "body": _body(request)},
+        )
+
+    async def commit_fact(
+        self, ctx: RequestContext, story_id: str, request: mutation.FactRequest
+    ) -> mutation.FactWrite:
+        """Commit an author fact (FR-GUARD-4's canonize; #133's ``commit_fact`` with
+        ``provenance = authority = author``; #145): #140's check runs first, a conflicting
+        functional fact is superseded (``superseded``), an ``uncertain`` verdict is a warning,
+        ``locked`` sets ``author_locked``, and an author memory makes it retrievable. A
+        position-less ``control`` operation that bumps the revision (201). 409 ``module_off``
+        for a Lite story."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.FactWrite:
+            return await mutation.commit_fact(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "commit_fact",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def supersede_fact(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        fact_id: str,
+        request: mutation.SupersedeRequest,
+    ) -> mutation.FactWrite:
+        """Supersede a current fact version (#133's ``supersede``; #145): the successor keeps
+        the lineage, provenance, authority and lock unless given (201). 404 ``fact_not_found``,
+        409 ``fact_superseded``/``fact_inactive``, 422 ``key_mismatch``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> mutation.FactWrite:
+            return await mutation.supersede_fact(
+                self.db,
+                story_id,
+                fact_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "supersede_fact",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "fact_id": fact_id, "body": _body(request)},
+        )
+
+    async def lock_fact(
+        self, ctx: RequestContext, story_id: str, fact_id: str
+    ) -> mutation.FactWrite:
+        """Lock a current fact version (``author_locked``, FR-VERIFY-11; #145): a supersede of
+        the same proposition with the lock set; a locked version answers unchanged."""
+        return await self._lock(ctx, story_id, fact_id, locked=True)
+
+    async def unlock_fact(
+        self, ctx: RequestContext, story_id: str, fact_id: str
+    ) -> mutation.FactWrite:
+        """Unlock a current fact version (#145; see ``lock_fact``)."""
+        return await self._lock(ctx, story_id, fact_id, locked=False)
+
+    async def _lock(
+        self, ctx: RequestContext, story_id: str, fact_id: str, *, locked: bool
+    ) -> mutation.FactWrite:
+        principal = self.require_principal(ctx)
+        name = "lock_fact" if locked else "unlock_fact"
+
+        async def run(ctx: RequestContext) -> mutation.FactWrite:
+            return await mutation.set_lock(
+                self.db,
+                story_id,
+                fact_id,
+                locked=locked,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx, name, run, story_id=story_id, material={"story_id": story_id, "fact_id": fact_id}
+        )
+
+    @refuses_nul()
+    async def list_facts(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        as_of_story_time: int | None = None,
+        as_of_record_time: datetime | None = None,
+        subject: str | None = None,
+        predicate: str | None = None,
+        include_superseded: bool = False,
+        limit: int = mutation.DEFAULT_LIST_LIMIT,
+        cursor: str | None = None,
+    ) -> mutation.FactPage:
+        """The story's canon (FR-BITEMP-3; #145), ``omniscient`` only (403
+        ``omniscient_required`` otherwise): the current versions (every version with
+        ``include_superseded``), true at ``as_of_story_time``, as recorded at
+        ``as_of_record_time``, about ``subject`` and of ``predicate`` when given; a page of
+        ``limit`` by id, ``cursor`` continuing. 409 ``module_off`` for a Lite story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        return await mutation.list_facts(
+            self.db,
+            story_id,
+            as_of_story_time=as_of_story_time,
+            as_of_record_time=as_of_record_time,
+            subject=subject,
+            predicate=predicate,
+            include_superseded=include_superseded,
+            limit=limit,
+            cursor=cursor,
+        )
+
     @library_only("a precondition every story mutation runs (`X-Epistrel-Expected-Revision`)")
     async def check_expected_revision(self, ctx: RequestContext, story_id: str) -> int:
         """Every story-scoped mutation starts here: a stale ``ctx.expected_revision`` is 409
@@ -1493,6 +1727,7 @@ class Engine:
         viewpoint: str | None = None,
         as_of: int | None = None,
         actor_character_id: str | None = None,
+        include_quarantined: bool = False,
     ) -> retrieval_pipeline.RetrievalResult:
         """What a structured render's context would retrieve for ``q`` asked by
         ``actor_character_id`` (default the player) just after turn ``as_of`` (default the
@@ -1500,7 +1735,8 @@ class Engine:
         their scores, the profiles and canon, the assembled context and the per-stage timings.
         ``omniscient`` only (403 ``omniscient_required`` for a character viewpoint: it shows
         ranking over private records). A read: no operation, no memory touched. A story whose
-        ``episodic`` module is off answers an empty result (``skipped: ["episodic"]``)."""
+        ``episodic`` module is off answers an empty result (``skipped: ["episodic"]``). A
+        quarantined memory (#145) is never retrieved unless ``include_quarantined``."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         embedder = self.models.embeddings
         async with self.db.connect() as conn:
@@ -1514,6 +1750,7 @@ class Engine:
                 embed=embedder.query_embedder(),
                 embed_batch=embedder.batch_embedder(),
                 lexical=lexical_backend(self.settings.lexical_backend),
+                include_quarantined=include_quarantined,
             )
 
     # -- the predicate registry (FR-PROP-3,4; #131) ---------------------------------------------

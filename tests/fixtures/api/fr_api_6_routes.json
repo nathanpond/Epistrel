@@ -1003,6 +1003,46 @@
       "requirement": "FR-MEM-3"
     },
     {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/memories/{memory_id}/quarantine",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/stories/{story_id}/memories/{memory_id}/quarantine",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/memories/{memory_id}/sanitize",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/stories/{story_id}/facts",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/facts",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/facts/{fact_id}/supersede",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/facts/{fact_id}/lock",
+      "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/stories/{story_id}/facts/{fact_id}/lock",
+      "requirement": "FR-GUARD-4"
+    },
+    {
       "method": "GET",
       "path": "/admin/model-config",
       "requirement": "FR-MODEL-1"

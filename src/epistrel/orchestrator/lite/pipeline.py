@@ -98,7 +98,6 @@ from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import operation_record
 from epistrel.core.errors import RevisionConflict, StoryArchived, TimelineChanged
 from epistrel.core.events import Operation
-from epistrel.core.events.types import GuardrailOutputRejected, RejectedViolation
 from epistrel.core.history import turn_beats
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
 from epistrel.core.profiles.fingerprint import Stamp
@@ -128,6 +127,8 @@ from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, plan_lite
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
 from epistrel.orchestrator.lite.schemas import (
+    PIN_QUARANTINED,
+    QUARANTINED_CONTEXT,
     SAFE_FALLBACK,
     BudgetOverride,
     BudgetReport,
@@ -140,6 +141,7 @@ from epistrel.orchestrator.lite.schemas import (
     RegenerateResult,
     RespondRequest,
     RespondResult,
+    TurnWarning,
 )
 from epistrel.orchestrator.models.access import ModelAccessLayer, routing
 from epistrel.orchestrator.models.adapter import ModelResult
@@ -152,12 +154,12 @@ from epistrel.orchestrator.policies.output_gate import (
     Draft,
     FallbackLines,
     Gated,
-    Rejected,
     gate_output,
     output_policies,
     output_reservation,
     raised_temperature,
     regeneration_cost,
+    rejected_event,
 )
 from epistrel.orchestrator.policies.rebase import output_recheck
 from epistrel.orchestrator.policies.store import guard_context
@@ -636,7 +638,7 @@ async def _play(
             prompt_hash=outcome.draft.prompt_hash,
             finish_reason=outcome.draft.finish_reason,
             fallback_used=outcome.fallback_used,
-            rejected=[_audit_record(r) for r in outcome.rejected],
+            rejected=[rejected_event(r) for r in outcome.rejected],
         )
         if regenerating is not None:
             op.add_commit_step(fail_queue)
@@ -709,7 +711,7 @@ async def _play(
             "budget": BudgetReport(**budget.report()),
             "queued_ms": timing.queued_ms,
             "first_call_offset_ms": timing.first_call_offset_ms(calls),
-            **_guardrail_fields(gated[0] if gated else None),
+            **guardrail_fields(gated[0] if gated else None),
             **_stamp_fields(stamped[0] if stamped else None),
             "profile": ProfileVersionRef(id=captured.profile_id, version=captured.version),
             "config_revision": configuration.config_revision,
@@ -750,26 +752,10 @@ def _fallback_lines(inputs: TurnInputs, cast: ResolvedCast) -> FallbackLines:
     )
 
 
-def _audit_record(rejected: Rejected) -> GuardrailOutputRejected:
-    """A rejected text as its ``guardrail_output_rejected`` audit event."""
-    violations = rejected.check.violations
-    return GuardrailOutputRejected(
-        text=rejected.text,
-        reason=rejected.reason,
-        attempt=rejected.attempt,
-        policy_ids=tuple(v.policy_id for v in violations),
-        violations=tuple(
-            RejectedViolation(
-                policy_id=v.policy_id, name=v.name, message=v.message, kind=v.kind.value
-            )
-            for v in violations
-        ),
-        confidence=rejected.check.confidence,
-    )
-
-
-def _guardrail_fields(outcome: Gated | None) -> dict[str, Any]:
-    """The result's ``guardrail`` report and ``degradation`` for the released reply."""
+def guardrail_fields(outcome: Gated | None) -> dict[str, Any]:
+    """The result's ``guardrail`` report, ``degradation`` and ``warnings`` for the released
+    reply (#68; #145 adds ``quarantined_context`` and the ``pin_quarantined`` warnings, which a
+    Lite reply never has). #150's structured respond builds its fields with it too."""
     if outcome is None:  # pragma: no cover - a committed turn always went through the gate
         return {}
     report = GuardrailReport(
@@ -783,8 +769,11 @@ def _guardrail_fields(outcome: Gated | None) -> dict[str, Any]:
     )
     return {
         "guardrail": report,
-        "degradation": [SAFE_FALLBACK] if outcome.fallback_used else [],
+        "degradation": [d.step for d in _degradation_details(outcome)],
         "degradation_details": _degradation_details(outcome),
+        "warnings": [
+            TurnWarning(kind=PIN_QUARANTINED, memory_id=m) for m in outcome.pins_quarantined
+        ],
     }
 
 
@@ -800,9 +789,19 @@ def _stamp_fields(stamped: Stamp | None) -> dict[str, Any]:
 
 
 def _degradation_details(outcome: Gated | None) -> list[DegradationStep]:
-    if outcome is None or not outcome.fallback_used:
+    """The degradation steps of the released reply: the records its rejections quarantined
+    (``quarantined_context``, FR-GUARD-5; never for a Lite story, whose replies carry no
+    records) and the safe fallback, each with its cause."""
+    if outcome is None:
         return []
-    return [DegradationStep(step=SAFE_FALLBACK, cause=outcome.fallback_cause or "retry_budget")]
+    steps: list[DegradationStep] = []
+    if outcome.quarantined:
+        steps.append(DegradationStep(step=QUARANTINED_CONTEXT, cause="repeated_implication"))
+    if outcome.fallback_used:
+        steps.append(
+            DegradationStep(step=SAFE_FALLBACK, cause=outcome.fallback_cause or "retry_budget")
+        )
+    return steps
 
 
 def turn_report(
@@ -905,6 +904,7 @@ __all__ = [
     "Gate",
     "QueueTurn",
     "TurnTiming",
+    "guardrail_fields",
     "plan_budget",
     "polish_budget",
     "queued_ms",

@@ -281,6 +281,14 @@ class RejectedViolation(EventPayload):
     kind: str
 
 
+class RecordRef(EventPayload):
+    """A structured record a render's context held (FR-GUARD-5; #145): its ``table``
+    (``memories`` or ``facts``) and id."""
+
+    table: str
+    id: str
+
+
 @register("guardrail_output_rejected", category=EventCategory.AUDIT)
 class GuardrailOutputRejected(EventPayload):
     """A text an output policy rejected (FR-GUARD-6, FR-STORE-25; #68): a generated draft
@@ -288,7 +296,12 @@ class GuardrailOutputRejected(EventPayload):
     line that itself broke a policy (``reason`` ``fallback_policy``). Audit only: it holds the
     text, but no story view and no prompt reads it; it is written with its turn, so it follows
     the turn's membership (discarded with it on truncation). ``confidence`` is the guardrail
-    model's, when a model-assisted check decided."""
+    model's, when a model-assisted check decided.
+
+    Payload version 2 (#145, FR-GUARD-5) adds ``implicated_record_ids``: the memories and facts
+    the rejected draft's context held. It is left out of the stored payload when empty (a Lite
+    reply and a fallback line hold none), so a Lite turn's event is byte-identical to version
+    1's, and a version-1 payload reads as empty."""
 
     text: str
     reason: str
@@ -296,6 +309,9 @@ class GuardrailOutputRejected(EventPayload):
     policy_ids: tuple[str, ...] = ()
     violations: tuple[RejectedViolation, ...] = ()
     confidence: float | None = None
+    implicated_record_ids: tuple[RecordRef, ...] = Field(
+        default=(), exclude_if=lambda refs: not refs
+    )
 
 
 class SummarySource(EventPayload):
@@ -384,3 +400,62 @@ class FactSuperseded(EventPayload):
     authority: str
     supersedes: tuple[str, ...] = ()
     remainders: tuple[str, ...] = ()
+
+
+# -- the mutation primitives (FR-GUARD-4,5; #145) --------------------------------------------------
+
+
+@register("memory_quarantined", category=EventCategory.CONTROL)
+class MemoryQuarantined(EventPayload):
+    """A memory was quarantined (FR-GUARD-4; #145): excluded from retrieval and from every
+    generation context from this operation on. ``reason`` is the author's (at most 500
+    characters) or ``repeated_implication`` when the output gate's convergence rule
+    quarantined it (``automatic``, FR-GUARD-5; ``pinned`` when it was an author pin). Written by
+    a position-less ``control`` operation, so a truncation never discards it."""
+
+    memory_id: str
+    reason: str
+    automatic: bool = False
+    pinned: bool = False
+
+
+@register("memory_unquarantined", category=EventCategory.CONTROL)
+class MemoryUnquarantined(EventPayload):
+    """A quarantine was reversed (#145): the memory is retrievable again."""
+
+    memory_id: str
+
+
+@register("sanitized", category=EventCategory.NARRATIVE_STATE)
+class Sanitized(EventPayload):
+    """A memory's text had every occurrence of a span replaced by ``surrogate`` (FR-GUARD-4;
+    #145): the replacement as narrative state. The span itself is only in the paired
+    ``sanitize_original`` audit event. History views are unchanged (sanitize rewrites the memory
+    record, never the beat)."""
+
+    memory_id: str
+    surrogate: str
+    occurrences: int = Field(ge=1)
+
+
+@register("sanitize_original", category=EventCategory.AUDIT)
+class SanitizeOriginal(EventPayload):
+    """What a sanitize replaced (#145): the span and the memory's text before the rewrite.
+    Audit only: no story view, retrieval or prompt reads it."""
+
+    memory_id: str
+    span: str
+    text: str
+
+
+@register("memories_implicated", category=EventCategory.CONTROL)
+class MemoriesImplicated(EventPayload):
+    """A rejected render's context implicated these records (FR-GUARD-5; #145): each memory's
+    ``implication_count`` went up by one; ``fact_ids`` are reported, never changed. ``turn``
+    is the operation whose render was rejected, and ``attempt`` the render. Identifiers
+    only; written by a ``system`` control operation before the regeneration."""
+
+    turn: str
+    attempt: int = Field(ge=0)
+    memory_ids: tuple[str, ...] = ()
+    fact_ids: tuple[str, ...] = ()

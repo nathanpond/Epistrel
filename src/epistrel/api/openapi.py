@@ -214,6 +214,7 @@ ERROR_STATUS: dict[str, int] = {
     "url_expired": 403,
     "feedback_export_disabled": 403,
     "not_found": 404,
+    "fact_not_found": 404,
     "client_event_conflict": 409,
     "idempotency_conflict": 409,
     "nothing_to_undo": 409,
@@ -232,6 +233,8 @@ ERROR_STATUS: dict[str, int] = {
     "upload_closed": 409,
     "upload_incomplete": 409,
     "module_off": 409,
+    "fact_superseded": 409,
+    "fact_inactive": 409,
     "length_required": 411,
     "draft_too_large": 413,
     "media_too_large": 413,
@@ -273,6 +276,9 @@ ERROR_STATUS: dict[str, int] = {
     "rating_check_failed": 422,
     "rating_retired": 422,
     "scope_mismatch": 422,
+    "span_not_found": 422,
+    "key_mismatch": 422,
+    "unknown_predicate": 422,
     "slot_required": 422,
     "subjects_required": 422,
     "transfer_target_invalid": 422,
@@ -346,6 +352,10 @@ _SCENARIO_SAVE = (
 )
 """What a scenario's create or save can answer besides the rules' ``validation_error`` (#108)."""
 _ADMIN_CONFIG = ("config_conflict",)
+_MUTATION = ("story_archived", "story_paused", "erased_subject_referenced")
+"""A mutation primitive's precheck and guard (#145)."""
+_FACT_VERSION = (*_MUTATION, "module_off", "fact_not_found", "fact_superseded", "fact_inactive")
+"""A call on one fact version (#145)."""
 _TEXT_EDIT = ("story_archived", "story_paused", "timeline_changed", "erased_subject_referenced")
 """A pinned-memory or custom-instruction edit (#127: one prepared before an erasure that names
 the erased subject is refused)."""
@@ -435,6 +445,15 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "set_content_rating": ("story_archived", "story_paused", "rating_retired"),
     "rebuild_projections": ("story_busy",),
     "consolidate_story": ("module_off", "scope_mismatch"),
+    # The mutation primitives and the low-level fact calls (#145).
+    "quarantine_memory": (*_MUTATION, "module_off"),
+    "unquarantine_memory": (*_MUTATION, "module_off"),
+    "sanitize_memory": (*_MUTATION, "module_off", "span_not_found", "guardrail_violation"),
+    "commit_fact": (*_MUTATION, "module_off", "unknown_predicate"),
+    "supersede_fact": (*_FACT_VERSION, "unknown_predicate", "key_mismatch"),
+    "lock_fact": _FACT_VERSION,
+    "unlock_fact": _FACT_VERSION,
+    "list_facts": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
     "retrieve": ("omniscient_required", "viewpoint_unresolved"),
     "get_story": ("viewpoint_unresolved",),

@@ -236,6 +236,27 @@ def test_perf_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
     assert "Nightly perf run failed" in report["run"]
 
 
+def test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
+    """#145: R-01's full corpus (`redteam_long`) and the PR subset every night (03:30 UTC) and
+    on dispatch, with the log uploaded; a red run files or comments on an issue. PR CI names
+    no `redteam_long`, so the conftest deselects the full corpus there (the complement)."""
+    wf = _workflow("redteam.yml")
+    triggers = _on(wf)
+    assert triggers["schedule"] == [{"cron": "30 3 * * *"}]
+    assert "workflow_dispatch" in triggers
+    assert wf["permissions"] == {"contents": "read"}
+    job = wf["jobs"]["redteam"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
+    run = next(s for s in _steps(wf, "redteam") if s.get("id") == "redteam")
+    assert '-m "redteam or redteam_long"' in run["run"]
+    report = next(s for s in _steps(wf, "redteam") if s.get("name") == "Report a red run")
+    assert "Nightly red-team run failed" in report["run"]
+    (pytest_step,) = [
+        s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
+    ]
+    assert "redteam_long" not in pytest_step["run"]
+
+
 def test_pr_ci_runs_only_the_quick_chaos_tests() -> None:
     """Complement of the weekly run: the gate deselects `chaos` tests not marked `chaos_quick`,
     and (#76) `perf_long` tests not marked `perf_quick`."""

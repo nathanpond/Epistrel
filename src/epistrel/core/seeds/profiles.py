@@ -203,18 +203,29 @@ CONSOLIDATION_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
 yet."""
 
 
+IMPLICATION_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
+    {"repair": {"implication_threshold": 2}}
+)
+"""The auto-quarantine dial (#145, FR-GUARD-5), at the schema's default: migration
+``0059_mutation_primitives`` adds it to a deployment's ``profile_defaults`` that does not name
+it yet."""
+
+
 def profile_defaults() -> dict[str, Any]:
     """A deployment's seeded ``profile_defaults``: Lite's settings with ``M4_PROFILE_DEFAULTS``,
-    ``VERIFY_DEPTH_DEFAULTS``, ``RETRIEVAL_DEFAULTS``, ``ESCALATION_DEFAULTS`` and
-    ``CONSOLIDATION_DEFAULTS`` under them (a complete document of every delivered setting)."""
+    ``VERIFY_DEPTH_DEFAULTS``, ``RETRIEVAL_DEFAULTS``, ``ESCALATION_DEFAULTS``,
+    ``CONSOLIDATION_DEFAULTS`` and ``IMPLICATION_DEFAULTS`` under them (a complete document of
+    every delivered setting)."""
     base = _merged(_merged(_thaw(M4_PROFILE_DEFAULTS), VERIFY_DEPTH_DEFAULTS), RETRIEVAL_DEFAULTS)
     base = _merged(_merged(base, ESCALATION_DEFAULTS), CONSOLIDATION_DEFAULTS)
+    base = _merged(base, IMPLICATION_DEFAULTS)
     return _merged(base, LITE_SETTINGS)
 
 
 __all__ = [
     "CONSOLIDATION_DEFAULTS",
     "ESCALATION_DEFAULTS",
+    "IMPLICATION_DEFAULTS",
     "LITE_NAME",
     "LITE_PRESET_ID",
     "LITE_SETTINGS",

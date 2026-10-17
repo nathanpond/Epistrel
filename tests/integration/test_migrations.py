@@ -802,3 +802,57 @@ def test_the_consolidation_columns_and_dial(scratch_database: str) -> None:
         assert "'covered_by'" not in str(guard)
     finally:
         engine.dispose()
+
+
+def test_the_quarantine_columns_guard_and_dial(scratch_database: str) -> None:
+    """0059 (#145): ``memories`` gains ``quarantined_at``, ``quarantine_reason``,
+    ``quarantined_by`` and ``implication_count`` (``0`` for existing rows) with their checks; the
+    guard lets them change and, under ``epistrel.sanitize``, one row's text;
+    ``repair.implication_threshold`` (2) joins the profile defaults and the rest of the document
+    is kept; the downgrade removes all of it again."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0058")
+    engine = make_sync_engine(scratch_database)
+    added = {"quarantined_at", "quarantine_reason", "quarantined_by", "implication_count"}
+
+    def columns() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'memories'"
+                    )
+                )
+            )
+
+    def defaults() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+
+    def guard() -> str:
+        with engine.connect() as conn:
+            return str(
+                conn.scalar(
+                    text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_memories_guard'")
+                )
+            )
+
+    try:
+        before = defaults()
+        assert not added & columns()
+        command.upgrade(cfg, "0059")
+        assert added <= columns()
+        after = defaults()
+        assert after["repair"].pop("implication_threshold") == 2
+        assert after == before
+        assert "'quarantine_reason'" in guard()
+        assert "epistrel.sanitize" in guard()
+        assert "'covered_by'" in guard()
+        command.downgrade(cfg, "0058")
+        assert not added & columns()
+        assert defaults() == before
+        assert "epistrel.sanitize" not in guard()
+        assert "'covered_by'" in guard()
+    finally:
+        engine.dispose()

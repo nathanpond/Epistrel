@@ -41,14 +41,29 @@ breaks, and its violations are reported.
 
 ``Gated.violations`` are the violations of the released text only (empty unless the last
 resort broke a policy); ``fallback_used`` says the reply is a fallback line.
+
+**Implication** (FR-GUARD-5; #145). A draft may carry the records its context held
+(``Draft.context``: the memories and facts retrieval ranked into it; ``Draft.pins``: the pins it
+showed). With an ``implicate`` hook, every rejected draft's records are handed to it before the
+next attempt: the hook (``orchestrator.policies.implication``) records them as the draft's
+``implicated`` set (stored on its ``guardrail_output_rejected`` event as
+``implicated_record_ids``), counts them, and quarantines a memory implicated in
+``repair.implication_threshold`` rejected renders of the story, so the next ``produce`` (which
+retrieves again) no longer sees it and the loop converges. ``Gated.quarantined`` lists what was
+quarantined during the turn (the response's ``degradation`` then names
+``quarantined_context``) and ``Gated.pins_quarantined`` the author pins among them. A Lite
+draft carries no records and no hook is passed: #68's behaviour is unchanged.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
+from epistrel.core.events.types import GuardrailOutputRejected, RejectedViolation
+from epistrel.core.events.types import RecordRef as EventRecordRef
+from epistrel.core.mutation import RecordRef
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import ModelAssistedRule, Policy, Scope, Target, Violation
 from epistrel.core.settings_schema import DEFAULT_SAFE_FALLBACK, NAME_PLACEHOLDER
@@ -167,13 +182,24 @@ def deterministic_check(text: str, policies: Sequence[Policy]) -> OutputCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class PinText:
+    """A pin a draft's context showed: its memory id and text (#145)."""
+
+    memory_id: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class Draft:
-    """A candidate reply and where it came from."""
+    """A candidate reply and where it came from: ``context``, the records retrieval ranked into
+    its prompt, and ``pins``, the pins it showed (#145; both empty for a Lite reply)."""
 
     text: str
     model: str | None = None
     prompt_hash: str | None = None
     finish_reason: str | None = None
+    context: tuple[RecordRef, ...] = ()
+    pins: tuple[PinText, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +211,8 @@ class Rejected:
     check: OutputCheck
     reason: RejectReason
     attempt: int | None
+    implicated: tuple[RecordRef, ...] = ()
+    """The records the rejected draft's context held that it implicated (FR-GUARD-5)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,11 +248,29 @@ class Gated:
     fallback_cause: FallbackCause | None = None
     """Why the fallback was released (#69): the polish budget was spent, the call
     budget could not afford another attempt, or the deadline passed."""
+    quarantined: tuple[str, ...] = ()
+    """The memories the turn's rejections quarantined (#145)."""
+    pins_quarantined: tuple[str, ...] = ()
+    """The author pins among them (each a ``pin_quarantined`` warning)."""
 
 
 Produce = Callable[[tuple[str, ...], int], Awaitable[Draft]]
 """``produce(constraints, attempt)``: one generation with the constraint lines so far
 (``attempt`` 0 is the first generation)."""
+
+
+@dataclass(frozen=True, slots=True)
+class Implicated:
+    """What an ``implicate`` hook did with one rejected draft: the records it implicated, the
+    memories it quarantined, and the author pins among them."""
+
+    refs: tuple[RecordRef, ...] = ()
+    quarantined: tuple[str, ...] = ()
+    pins: tuple[str, ...] = ()
+
+
+Implicate = Callable[[Draft, OutputCheck, int], Awaitable[Implicated]]
+"""``implicate(draft, check, attempt)``: FR-GUARD-5's feedback for a rejected draft."""
 
 
 def _reject(rejected: list[Rejected], record: Rejected, stage: str) -> None:
@@ -253,9 +299,12 @@ async def gate_output(
     budget: TurnBudget,
     retry_budget: int,
     fallback: FallbackLines,
+    implicate: Implicate | None = None,
 ) -> Gated:
     """Generate, check, and regenerate or fall back; see the module docstring."""
     rejected: list[Rejected] = []
+    quarantined: list[str] = []
+    pins: list[str] = []
     constraints: list[str] = []
     constrained: set[str] = set()
     attempt = 0
@@ -276,8 +325,23 @@ async def gate_output(
         finally:
             budget.release_to(0)
         if check.passed:
-            return Gated(draft=draft, rejected=tuple(rejected), attempts=attempt + 1)
-        _reject(rejected, Rejected(draft.text, check, OUTPUT_POLICY, attempt), STAGE)
+            return Gated(
+                draft=draft,
+                rejected=tuple(rejected),
+                attempts=attempt + 1,
+                quarantined=tuple(quarantined),
+                pins_quarantined=tuple(pins),
+            )
+        implicated = Implicated()
+        if implicate is not None and (draft.context or draft.pins):
+            implicated = await implicate(draft, check, attempt)
+            quarantined.extend(i for i in implicated.quarantined if i not in quarantined)
+            pins.extend(i for i in implicated.pins if i not in pins)
+        _reject(
+            rejected,
+            Rejected(draft.text, check, OUTPUT_POLICY, attempt, implicated=implicated.refs),
+            STAGE,
+        )
         for violation in check.violations:
             if violation.policy_id not in constrained:
                 constrained.add(violation.policy_id)
@@ -302,7 +366,8 @@ async def gate_output(
                 raise
             cause = out
             break
-    return _fall_back(policies, fallback, rejected, attempts=attempt + 1, cause=cause)
+    fell = _fall_back(policies, fallback, rejected, attempts=attempt + 1, cause=cause)
+    return replace(fell, quarantined=tuple(quarantined), pins_quarantined=tuple(pins))
 
 
 def _fall_back(
@@ -332,6 +397,28 @@ def _fall_back(
     raise AssertionError("unreachable: the last resort is always released")  # pragma: no cover
 
 
+def rejected_event(rejected: Rejected) -> GuardrailOutputRejected:
+    """A rejected text as its ``guardrail_output_rejected`` audit event (payload version 2: the
+    records the draft's context held that it implicated, #145)."""
+    violations = rejected.check.violations
+    return GuardrailOutputRejected(
+        text=rejected.text,
+        reason=rejected.reason,
+        attempt=rejected.attempt,
+        policy_ids=tuple(v.policy_id for v in violations),
+        violations=tuple(
+            RejectedViolation(
+                policy_id=v.policy_id, name=v.name, message=v.message, kind=v.kind.value
+            )
+            for v in violations
+        ),
+        confidence=rejected.check.confidence,
+        implicated_record_ids=tuple(
+            EventRecordRef(table=r.table, id=r.id) for r in rejected.implicated
+        ),
+    )
+
+
 def raised_temperature(temperature: float | None, attempt: int) -> float | None:
     """A regeneration's temperature: ``TEMPERATURE_STEP`` higher per attempt, capped at
     ``TEMPERATURE_CAP`` (``None``, the provider's default, stays ``None``)."""
@@ -353,7 +440,10 @@ __all__ = [
     "FallbackCause",
     "FallbackLines",
     "Gated",
+    "Implicate",
+    "Implicated",
     "OutputCheck",
+    "PinText",
     "Produce",
     "Rejected",
     "check_output",
@@ -363,4 +453,5 @@ __all__ = [
     "output_reservation",
     "raised_temperature",
     "regeneration_cost",
+    "rejected_event",
 ]

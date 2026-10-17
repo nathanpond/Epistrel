@@ -69,6 +69,8 @@ class EntryPoint(StrEnum):
     STORY_CREATE = "story_create"
     STORY_CHARACTER = "story_character"
     """A character added to a running story (FR-CAT-7; #114)."""
+    SANITIZE = "sanitize"
+    """A sanitize's surrogate (FR-GUARD-4; #145)."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -141,3 +141,17 @@ A structured story with `memory.consolidation.enabled` compresses old episodic m
 The `consolidation` purpose inherits the deployment's `default` model unless it has a `model_config` row of its own, and the Lite rolling summary (`lite_summary`) now inherits from `consolidation` before `default`: configuring a consolidation model moves the rolling summary onto it too, unless `lite_summary` has its own row.
 
 `POST /admin/stories/{id}/consolidate {from_turn, to_turn, scope}` consolidates a window now, rerunning one already consolidated (the earlier outputs are kept, `superseded`). It answers 202 with the job, 409 `module_off` when the story has consolidation off, and 422 `scope_mismatch` when the window's private memories belong to characters no single output may serve. Without such a request a window is consolidated once: forks, undo and reconstruction reuse the stored outputs and make no model call.
+
+## Quarantine, sanitize and author facts
+
+Use the low-level calls under `/admin/stories/{id}` to correct a structured story's records directly. Like every `/admin` route, they need the service credential and a principal, and any principal may call them.
+
+- `POST …/memories/{memory_id}/quarantine {reason}` takes a memory out of retrieval and consolidation, so no render's context holds it again. `DELETE` on the same path releases it. History and the story's events are untouched.
+- `POST …/memories/{memory_id}/sanitize {span, surrogate}` replaces every occurrence of an exact span of a memory's text. The memory is re-indexed and re-embedded. The old text stays only in the `sanitize_original` audit event.
+- `POST …/facts` commits an author fact (`provenance = authority = author`, optionally `locked`). `POST …/facts/{fact_id}/supersede` replaces one, and `POST`/`DELETE …/facts/{fact_id}/lock` locks or unlocks one. `GET …/facts?viewpoint=omniscient` lists canon.
+
+Each write bumps the story's timeline revision. A Lite story answers 409 `module_off`.
+
+The output gate quarantines on its own as well. A memory that the contexts of `repair.implication_threshold` rejected renders held (default 2; `0` turns this off) is quarantined with reason `repeated_implication` by `system`, and the regeneration runs without it. An author pin can be quarantined the same way, and the turn then reports a `pin_quarantined` warning. Watch `epistrel_quarantines_total{reason}` and `epistrel_sanitizes_total`. Release a memory quarantined by mistake with the `DELETE` above.
+
+The nightly `redteam.yml` workflow runs R-01's 20 poisoning sequences (`-m "redteam or redteam_long"`). A red run opens a "Nightly red-team run failed" issue.

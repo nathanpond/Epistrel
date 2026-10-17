@@ -45,6 +45,13 @@ guard over their texts and speakers, indexes them for erasure, adds their ids to
 ``covered_by`` of the inputs they compress, and runs ``MEMORY_HOOKS`` (embedding, importance).
 ``EPISODIC_HOOKS`` run only after an episodic write (consolidation's scheduler).
 
+**Author memories** (#145). ``write_author(conn, operation, fact, text)`` writes the memory of
+an author fact (``core.mutation``'s ``commit_fact``): a position-less ``semantic`` row,
+provenance and trust tier ``author``, wrapping the fact's proposition with its visibility, so
+retrieval finds author canon. ``after_rewrite`` runs ``MEMORY_HOOKS`` for a memory whose text a
+sanitize rewrote (its vector was cleared). A memory's quarantine (``quarantined_at`` and
+the rest, #145) is read into ``Memory`` but written by ``core.mutation`` only.
+
 **Working memory** (FR-MEM-5) is a function over events, never a table:
 ``working_memory(conn, story_id, character_id, through_position, n)`` answers the last ``n``
 beats of the active timeline at or before the position, as the character perceives them. M4
@@ -93,7 +100,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from epistrel.core.canon.facts import Visibility
+from epistrel.core.canon.facts import Fact, Visibility
 from epistrel.core.config_changes import read_section
 from epistrel.core.enums import (
     EventCategory,
@@ -220,6 +227,10 @@ class Memory(BaseModel):
     model: str | None = None
     model_version: str | None = None
     prompt_hash: str | None = None
+    quarantined_at: datetime | None = None
+    quarantine_reason: str | None = None
+    quarantined_by: str | None = None
+    implication_count: int = 0
 
 
 def _memory(row: Any) -> Memory:
@@ -259,6 +270,10 @@ def _memory(row: Any) -> Memory:
         model=row.model,
         model_version=row.model_version,
         prompt_hash=row.prompt_hash,
+        quarantined_at=row.quarantined_at,
+        quarantine_reason=row.quarantine_reason,
+        quarantined_by=row.quarantined_by,
+        implication_count=int(row.implication_count or 0),
     )
 
 
@@ -548,6 +563,77 @@ async def write_consolidated(
     for hook in list(MEMORY_HOOKS):
         await hook(conn, story_id, ids)
     return await memories_by_id(conn, story_id, ids)
+
+
+async def write_author(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    fact: Fact,
+    text: str,
+    *,
+    settings: ProfileSettings | None = None,
+) -> Memory | None:
+    """The author memory of an author fact (#145; FR-GUARD-4's canonize): a ``semantic`` row,
+    provenance ``author`` (trust tier ``author``), position-less like the fact, wrapping the
+    fact's proposition with the fact's visibility and its subject and object as participants,
+    sourced from the fact's own event; ``text`` is the fact's context line. Inert (``None``)
+    unless the story keeps episodic memory. Runs the resurrection guard, the erasure index and
+    ``MEMORY_HOOKS`` (embedding, importance) like every writer."""
+    story_id = operation.story_id
+    if story_id is None:
+        raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
+    if not await episodic_on(conn, story_id, settings):
+        return None
+    line = text.strip()[:TEXT_MAX]
+    if not line:
+        return None
+    p = fact.proposition
+    named = [i for i in (p.subject_id, p.object_id, *(p.object_set or ())) if i is not None]
+    known = {
+        str(e)
+        for e in await conn.scalars(
+            select(entities.c.id).where(entities.c.story_id == story_id, entities.c.id.in_(named))
+        )
+    }
+    provenance = RecordProvenance.AUTHOR
+    row: dict[str, Any] = {
+        "id": new_ulid(),
+        "story_id": story_id,
+        "kind": MemoryKind.SEMANTIC.value,
+        "text": line,
+        "holder_character_id": None,
+        "character_id": None,
+        "visibility": fact.visibility.document(),
+        "provenance": provenance.value,
+        "trust_tier": trust_tier_of(provenance).value,
+        "operation_id": operation.operation_id,
+        "source_event_ids": list(fact.source_event_ids),
+        "narrative_turn": None,
+        "turn_variant": None,
+        "beat": None,
+        "proposition_ids": [fact.proposition_id],
+        "participants": list(dict.fromkeys(i for i in named if i in known)),
+    }
+    await guard.check_content(
+        conn,
+        story_id,
+        [guard.Content((line,), frozenset(fact.visibility.characters or ()))],
+        base_revision=operation.base_revision,
+        path=__name__,
+    )
+    await insert_derived(conn, memories, [row])
+    await index_records(conn, [memory_record(SimpleNamespace(**row))])
+    ids = (str(row["id"]),)
+    for hook in list(MEMORY_HOOKS):
+        await hook(conn, story_id, ids)
+    return (await memories_by_id(conn, story_id, ids))[0]
+
+
+async def after_rewrite(conn: AsyncConnection, story_id: str, ids: tuple[str, ...]) -> None:
+    """Run ``MEMORY_HOOKS`` for memories whose text was rewritten (#145's sanitize): their
+    vectors were cleared, so the embed job re-embeds them."""
+    for hook in list(MEMORY_HOOKS):
+        await hook(conn, story_id, ids)
 
 
 def _beat_parts(
@@ -909,6 +995,7 @@ __all__ = [
     "MemoryOperation",
     "Position",
     "WorkingBeat",
+    "after_rewrite",
     "beats_of_operation",
     "committed_turns",
     "decayed_importance",
@@ -927,5 +1014,6 @@ __all__ = [
     "trust_tier_of",
     "unscored",
     "working_memory",
+    "write_author",
     "write_consolidated",
 ]

@@ -39,6 +39,7 @@ from epistrel.core.retrieval.lexical import (
     LexicalSearch,
     position_clause,
     position_params,
+    quarantine_clause,
 )
 from epistrel.core.tables.memories import Vector
 
@@ -81,9 +82,11 @@ async def vector_search(
     version: str,
     k: int,
     through: tuple[int, int] | None = None,
+    include_quarantined: bool = False,
 ) -> list[Hit]:
     """Up to ``k`` of the story's active hot memories nearest ``vector``, among those stamped
-    ``version`` only, and none positioned after ``through`` (``(turn, beat)``, when given).
+    ``version`` only, none positioned after ``through`` (``(turn, beat)``, when given) and none
+    quarantined (#145) unless ``include_quarantined``.
     Ordered by the HNSW index (cosine distance) in a materialized step, then re-sorted
     exactly: with pgvector's iterative scan in ``relaxed_order`` (#141 sets it) the index may
     answer slightly out of order."""
@@ -97,6 +100,7 @@ async def vector_search(
             f"AND m.retrieval_tier = '{RetrievalTier.HOT.value}' "
             "AND m.embedding IS NOT NULL AND m.embedding_model_version = :version "
             f"AND {position_clause('m')} "
+            f"AND {quarantine_clause('m')} "
             "ORDER BY distance LIMIT :k) "
             "SELECT id, distance FROM nearest ORDER BY distance, id"
         ),
@@ -105,6 +109,7 @@ async def vector_search(
             "story": story_id,
             "version": version,
             "k": k,
+            "include_quarantined": include_quarantined,
             **position_params(through),
         },
     )

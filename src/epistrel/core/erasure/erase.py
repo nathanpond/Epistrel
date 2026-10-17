@@ -1383,19 +1383,28 @@ async def _erase_memories(
     if not wanted:
         return
     rows = await conn.execute(
-        select(m.id, m.text).where(m.story_id == story_id, m.id.in_(wanted)).order_by(m.id)
+        select(m.id, m.text, m.quarantine_reason)
+        .where(m.story_id == story_id, m.id.in_(wanted))
+        .order_by(m.id)
     )
     for row in rows:
         new = redactor.text(row.text, (memories.name, str(row.id), "text"))
-        if new == row.text:
+        # A quarantine's reason is free text too (#145).
+        reason = (
+            None
+            if row.quarantine_reason is None
+            else redactor.text(
+                row.quarantine_reason, (memories.name, str(row.id), "quarantine_reason")
+            )
+        )
+        if new == row.text and reason == row.quarantine_reason:
             continue
         tally.record(memories.name, 1)
         if run.write:
-            await conn.execute(
-                update(memories)
-                .where(m.id == row.id)
-                .values(text=new, embedding=None, embedding_model_version=None)
-            )
+            values: dict[str, Any] = {"quarantine_reason": reason}
+            if new != row.text:
+                values.update(text=new, embedding=None, embedding_model_version=None)
+            await conn.execute(update(memories).where(m.id == row.id).values(**values))
 
 
 async def _purge_results(

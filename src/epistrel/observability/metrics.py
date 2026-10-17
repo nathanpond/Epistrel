@@ -18,7 +18,9 @@ The registry holds:
   ``worker_heartbeat_timeout``) and ``epistrel_turn_queue_depth{story_id}`` (turns waiting
   behind the running one, per story with any; #76);
 - ``epistrel_turn_stage_seconds{stage}`` (``observability.stages``, #76): Lite turn latency by
-  stage.
+  stage;
+- ``epistrel_quarantines_total{reason}`` (``author`` or ``repeated_implication``) and
+  ``epistrel_sanitizes_total``: #145's mutation primitives (``core.mutation``).
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -70,6 +72,14 @@ OPERATIONS = Counter(
     "Engine calls, jobs and queued turns by kind and outcome (ok, rejected or error).",
     ("kind", "outcome"),
 )
+
+QUARANTINES = Counter(
+    "epistrel_quarantines",
+    "Memories quarantined, by reason (author: an author's call; repeated_implication: the "
+    "output gate's convergence rule).",
+    ("reason",),
+)
+SANITIZES = Counter("epistrel_sanitizes", "Memory texts sanitized by a surrogate.")
 
 _GAUGES_SQL = text(
     """
@@ -205,7 +215,9 @@ __all__ = [
     "GAUGES",
     "HTTP_DURATION",
     "OPERATIONS",
+    "QUARANTINES",
     "REQUEST_BUCKETS",
+    "SANITIZES",
     "SchedulerGauges",
     "render_metrics",
     "router",

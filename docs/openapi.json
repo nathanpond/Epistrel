@@ -11019,6 +11019,16 @@
             ],
             "title": "Queued Ms"
           },
+          "read_set": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReadSetBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "result": {
             "anyOf": [
               {
@@ -16648,6 +16658,73 @@
         "title": "QualityStatusValue",
         "type": "string"
       },
+      "QueryKeyBody": {
+        "description": "One query key of a structured turn's read set: what the lookup asked (ids; `*` for a\nwildcard subject or object) and the hash of what it found.",
+        "properties": {
+          "holder": {
+            "title": "Holder",
+            "type": "string"
+          },
+          "object": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            ],
+            "title": "Object"
+          },
+          "predicate": {
+            "title": "Predicate",
+            "type": "string"
+          },
+          "result_hash": {
+            "title": "Result Hash",
+            "type": "string"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Subject"
+          },
+          "window": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Window",
+            "type": "array"
+          }
+        },
+        "required": [
+          "subject",
+          "predicate",
+          "object",
+          "holder",
+          "window",
+          "result_hash"
+        ],
+        "title": "QueryKeyBody",
+        "type": "object"
+      },
       "QueuedTurn": {
         "description": "A turn that waits in the story's queue (FR-CONC-5): its operation and its place in the\nqueue. ``GET /operations/{id}`` (the ``Location``) reports it once it has played.",
         "properties": {
@@ -17437,6 +17514,39 @@
           "rows"
         ],
         "title": "RatingSuggestion",
+        "type": "object"
+      },
+      "ReadSetBody": {
+        "description": "An operation's read set: counts, and the keys to an omniscient read only.",
+        "properties": {
+          "keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/QueryKeyBody"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keys"
+          },
+          "keys_count": {
+            "title": "Keys Count",
+            "type": "integer"
+          },
+          "retrieved_count": {
+            "title": "Retrieved Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "keys_count",
+          "retrieved_count"
+        ],
+        "title": "ReadSetBody",
         "type": "object"
       },
       "RebuildQueuedResponse": {
@@ -21526,6 +21636,13 @@
             "title": "Rating Check Retention Days",
             "type": "integer"
           },
+          "readset_change_retention_days": {
+            "default": 7,
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Readset Change Retention Days",
+            "type": "integer"
+          },
           "require_primary_image": {
             "default": false,
             "title": "Require Primary Image",
@@ -22408,6 +22525,17 @@
               }
             ],
             "title": "Rating Check Retention Days"
+          },
+          "readset_change_retention_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readset Change Retention Days"
           },
           "require_primary_image": {
             "anyOf": [
@@ -25729,6 +25857,7 @@
                           "public_base_url",
                           "rating_check_model_calls_per_record",
                           "rating_check_retention_days",
+                          "readset_change_retention_days",
                           "require_primary_image",
                           "structured_retry_budget",
                           "timer_lag_alert",
@@ -29450,7 +29579,7 @@
         ]
       },
       "put": {
-        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` accept `null` (unset: no hook, no base URL, no ceiling); no other key does. A list replaces the stored one. `profile_defaults` holds the engine profiles' defaults (FR-PROF-5): the bottom layer of every story's configuration, under its profile's version and its own overrides, seeded from the Lite preset. A write is laid over them (an object merges into an object; any other value replaces, `null` included, so `budgets.model_calls: null` is the formula `9 + G`), and must leave a document every profile in use and every story can run under (422 `validation_error` at the setting, or `invalid_profile` naming `details.profiles` or `details.stories`); each changed setting is recorded as `profile_defaults.<path>`. The engine dials that moved there (`lite_generation_defaults`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`) are 422 with `details.reason: superseded` and their replacement in `details.replacement`. `listing_status_values` lists the catalog's listing status values in order (a new entry takes the first; distinct, case-sensitive, 1 to 40 printable characters each); removing a value a catalog entry still holds is 409 `listing_status_in_use` (`details.value`, `details.count`). `validation_model_calls` (0 to 1000, default 0) is how many model calls one catalog validation (a publish, or a dry run) may spend on model-assisted input policies; those it does not reach are listed `unavailable` in the report. `require_primary_image` (default `false`) makes a primary image required to publish a catalog character (422 `publish_invalid`, `primary_image_required`); off, a character publishes with no image. `feedback_tags` lists the reason tags a message rating may carry (FR-FB-1's nine to start; distinct, 1 to 40 of `a-z 0-9 _` each, up to 50; may be empty); removing a tag a rating or its history still carries is 409 `feedback_tag_in_use` (`details.in_use`: each tag with its `current` and `history` counts). `feedback_text_max_chars` (1 to 20000, default 2000) caps a rating's free text, and `feedback_retention` keeps ratings for the story's life (`story_lifetime`, the default) or a number of days (1 to 3650). `rating_check_model_calls_per_record` (0 to 100, default 2) is how many model calls a rating tightening's history check may spend on one record's model-assisted policies (one it cannot afford follows its `on_uncertain`), and `rating_check_retention_days` (1 to 3650, default 30) how long a finished check is kept.",
+        "description": "Change any of the deployment settings; omitted keys keep their values. Every change is recorded as a configuration change and moves `config_revision`; a write that changes nothing writes nothing. `media_moderation_webhook_url`, `public_base_url` and `max_characters_at_start_ceiling` accept `null` (unset: no hook, no base URL, no ceiling); no other key does. A list replaces the stored one. `profile_defaults` holds the engine profiles' defaults (FR-PROF-5): the bottom layer of every story's configuration, under its profile's version and its own overrides, seeded from the Lite preset. A write is laid over them (an object merges into an object; any other value replaces, `null` included, so `budgets.model_calls: null` is the formula `9 + G`), and must leave a document every profile in use and every story can run under (422 `validation_error` at the setting, or `invalid_profile` naming `details.profiles` or `details.stories`); each changed setting is recorded as `profile_defaults.<path>`. The engine dials that moved there (`lite_generation_defaults`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`) are 422 with `details.reason: superseded` and their replacement in `details.replacement`. `listing_status_values` lists the catalog's listing status values in order (a new entry takes the first; distinct, case-sensitive, 1 to 40 printable characters each); removing a value a catalog entry still holds is 409 `listing_status_in_use` (`details.value`, `details.count`). `validation_model_calls` (0 to 1000, default 0) is how many model calls one catalog validation (a publish, or a dry run) may spend on model-assisted input policies; those it does not reach are listed `unavailable` in the report. `require_primary_image` (default `false`) makes a primary image required to publish a catalog character (422 `publish_invalid`, `primary_image_required`); off, a character publishes with no image. `feedback_tags` lists the reason tags a message rating may carry (FR-FB-1's nine to start; distinct, 1 to 40 of `a-z 0-9 _` each, up to 50; may be empty); removing a tag a rating or its history still carries is 409 `feedback_tag_in_use` (`details.in_use`: each tag with its `current` and `history` counts). `feedback_text_max_chars` (1 to 20000, default 2000) caps a rating's free text, and `feedback_retention` keeps ratings for the story's life (`story_lifetime`, the default) or a number of days (1 to 3650). `rating_check_model_calls_per_record` (0 to 100, default 2) is how many model calls a rating tightening's history check may spend on one record's model-assisted policies (one it cannot afford follows its `on_uncertain`), and `rating_check_retention_days` (1 to 3650, default 30) how long a finished check is kept. `readset_change_retention_days` (1 to 3650, default 7) is how long the structured read set's change index keeps a committed change: a structured turn whose base is older conflicts instead of rebasing.",
         "operationId": "update_deployment_settings",
         "parameters": [
           {
@@ -39877,7 +40006,7 @@
     },
     "/operations/{operation_id}": {
       "get": {
-        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when it was not queued) and `first_call_offset_ms` (from reaching the front to its first model call). A story's `genesis` operation from a scenario carries its full `creation_report` (every entry, deferred item and inactive setting) to a read with `?viewpoint=omniscient` only; otherwise it is null.\n\nA long-running operation names what it was for in `label` and lists its `stages`, each `{name, status, at}` with `status` one of `pending`, `running`, `done`, `failed`, `skipped` (or `partial`, for an erasure's summary regeneration that rewrote only some windows) and `at` null while pending: a story's `genesis` (`validated`, `snapshotted`, `skipped` for a blank story, `materialized`); a rating change's `rating_check` or an edit's `reactivation_check` (`checking`, then `applied`/`reactivated` or `refused`); an `offboarding` (one stage per entity type, in processing order); and an `erasure` (`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last two). Every other operation has a null `label` and no stages.\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
+        "description": "An operation's kind, status (`in_flight`, `committed`, `abandoned` or `failed`), position (`narrative_turn`, `turn_variant`), the story's `timeline_revision` once it committed, the requesting principal, its timestamps, revalidation `attempts`, `config_revisions`, `origin` (`generated` or `ingested`) and, for an ingested batch, `batch_operation_ids`. A committed Lite turn reports `queued_ms` (its wait in the story's turn queue, null when it was not queued) and `first_call_offset_ms` (from reaching the front to its first model call). A story's `genesis` operation from a scenario carries its full `creation_report` (every entry, deferred item and inactive setting) to a read with `?viewpoint=omniscient` only; otherwise it is null.\n\nA long-running operation names what it was for in `label` and lists its `stages`, each `{name, status, at}` with `status` one of `pending`, `running`, `done`, `failed`, `skipped` (or `partial`, for an erasure's summary regeneration that rewrote only some windows) and `at` null while pending: a story's `genesis` (`validated`, `snapshotted`, `skipped` for a blank story, `materialized`); a rating change's `rating_check` or an edit's `reactivation_check` (`checking`, then `applied`/`reactivated` or `refused`); an `offboarding` (one stage per entity type, in processing order); and an `erasure` (`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last two). Every other operation has a null `label` and no stages.\n\nAn operation that captured a read set reports `read_set`: `keys_count` (the query keys a structured turn's verdict, precondition and blocker lookups recorded, empty results included; 0 for a Lite turn), `retrieved_count` (rows read as generation context only) and, with `?viewpoint=omniscient` only, the `keys` themselves (`subject`, `predicate`, `object`, `holder`, `window`, `result_hash`); otherwise `keys` is null. `read_set` is null for an operation with no read set.\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the operation is the reference a retry receives. Unknown ids are 404.",
         "operationId": "get_operation",
         "parameters": [
           {

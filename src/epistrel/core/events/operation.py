@@ -10,10 +10,15 @@ revisions, the story rating's version and the interpretive settings its kind dep
 (FR-CONC-2). ``commit()`` runs
 one transaction that does all of the following:
 
-1. takes ``SELECT … FOR UPDATE`` on the story row, with ``lock_timeout`` 5 s;
+1. takes ``SELECT … FOR UPDATE`` on the story row, with ``lock_timeout`` 5 s, and in the same
+   statement sets the revision this commit leaves (``core.readset.COMMIT_REVISION_SETTING``),
+   which the read set's change index stamps on what the commit's canon writes record (#136);
 2. with ``decide``, revalidates against the base (``epistrel.core.concurrency``), including
    whether a configuration dependency changed (``ConfigRecheck``, FR-CONC-16): ``Regenerate``,
-   ``Abandon`` and ``ConfigRecheck`` roll back and raise ``RevalidationRequired``;
+   ``Abandon`` and ``ConfigRecheck`` roll back and raise ``RevalidationRequired``. A structured
+   turn (a keyed read set, #136) is also touched when a change since its base matches one of its
+   query keys (one query over ``proposition_changes``) or its base is below the story's pruning
+   watermark, and its rebase re-runs ``core.readset.REBASE_CHECKS`` under the lock;
 3. positions the operation: only ``turn`` operations allocate a turn index (FR-STORE-8,24),
    as variant ``max(existing) + 1`` at it, recording the active variant of the turn before it
    as ``parent_variant`` (the variant tree, #66); a ``turn`` at the head's index (regenerate)
@@ -56,7 +61,20 @@ from datetime import datetime
 from types import SimpleNamespace, TracebackType
 from typing import Any, Literal, Self
 
-from sqlalchemy import Integer, Select, and_, delete, func, insert, literal, select, text, update
+from sqlalchemy import (
+    Integer,
+    Select,
+    Text,
+    and_,
+    cast,
+    delete,
+    func,
+    insert,
+    literal,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
@@ -67,6 +85,7 @@ from epistrel.core import (
     idempotency,
     pause,
     projections,
+    readset,
     summary_port,
     turn_gate,
 )
@@ -75,8 +94,10 @@ from epistrel.core.concurrency import (
     Abandon,
     ConfigRecheck,
     Decide,
+    KeyedReadSetSource,
     ReadSet,
     ReadSetSource,
+    Rebase,
     Regenerate,
     RevalidationRequired,
     RevalidationState,
@@ -407,7 +428,7 @@ class Operation:
                         kind=self.kind.value,
                         principal=self.principal,
                         base_revision=self.base_revision,
-                        read_set=self.read_set,
+                        read_set=self._read_set_document(),
                         config_revisions=self.config_revisions,
                         idempotency_key=self.idempotency_key,
                         viewpoint=self.viewpoint,
@@ -456,7 +477,7 @@ class Operation:
                 kind=self.kind.value,
                 principal=self.principal,
                 base_revision=self.base_revision,
-                read_set=self.read_set,
+                read_set=self._read_set_document(),
                 config_revisions=self.config_revisions,
                 idempotency_key=self.idempotency_key,
                 viewpoint=self.viewpoint,
@@ -486,7 +507,7 @@ class Operation:
             .values(
                 status=OperationStatus.IN_FLIGHT.value,
                 base_revision=self.base_revision,
-                read_set=self.read_set,
+                read_set=self._read_set_document(),
                 config_revisions=self.config_revisions,
             )
             .returning(operations.c.operation_id)
@@ -512,7 +533,7 @@ class Operation:
                     .where(operations.c.operation_id == self.operation_id)
                     .values(
                         base_revision=self.base_revision,
-                        read_set=self.read_set,
+                        read_set=self._read_set_document(),
                         config_revisions=self.config_revisions,
                     )
                 )
@@ -546,6 +567,9 @@ class Operation:
                 conn, self.story_id, self.config_captured
             )
             if self.read_set_source is not None:
+                keyed = self._keyed()
+                if keyed is not None:
+                    keyed.start_attempt()  # each attempt reads afresh (#136)
                 self.read_set = await self.read_set_source.hashes(conn, self.story_id)
         return await read(conn) if read is not None else None
 
@@ -568,6 +592,36 @@ class Operation:
                 .values(config_revisions=self.config_revisions)
             )
         return moved
+
+    def use_read_set(self, source: ReadSetSource) -> None:
+        """Compute the operation's read set with ``source`` (``run_with_revalidation``). A
+        structured turn's (a ``KeyedReadSetSource``, #136) also depends on the story's
+        predicate registry and the interpretive verification settings (FR-CONC-16, M4)."""
+        self.read_set_source = source
+        if isinstance(source, KeyedReadSetSource) and self.kind is OperationKind.TURN:
+            self.config_captured = config_dependencies.captured_for(
+                self.kind, self.origin, structured=True
+            )
+            self.config_dependencies = config_dependencies.dependencies_for(
+                self.kind, self.origin, structured=True
+            )
+
+    def _keyed(self) -> KeyedReadSetSource | None:
+        source = self.read_set_source
+        return source if isinstance(source, KeyedReadSetSource) else None
+
+    def _read_set_document(self) -> Any:
+        """``operations.read_set``: the Lite hashes, or a structured turn's ``{lite, keys,
+        retrieved}`` (#136)."""
+        keyed = self._keyed()
+        return self.read_set if keyed is None else keyed.document(self.read_set)
+
+    async def rebase_recheck(self) -> bool:
+        """A structured turn's ``REBASE_CHECKS`` (#140's verify, #144's permission checks) on
+        its own connection, after an interpretive configuration change (FR-CONC-16)."""
+        self._require_in_flight("re-check")
+        async with self._connection() as conn, conn.begin():
+            return await readset.run_rebase_checks(conn, self)
 
     def append(
         self,
@@ -723,9 +777,20 @@ class Operation:
                         stories.c.last_control_revision,
                         stories.c.last_control_operation_id,
                         stories.c.status,
+                        stories.c.changes_pruned_through_revision,
                         # The chain triggers leave this operation's own finalising update to
                         # the head check (#281).
                         func.set_config(CHAIN_OPERATION_SETTING, self.operation_id, True),
+                        # The revision this commit leaves, which the change index stamps
+                        # (#136): no extra statement.
+                        func.set_config(
+                            readset.COMMIT_REVISION_SETTING,
+                            cast(
+                                stories.c.timeline_revision + (1 if self.bumps_revision else 0),
+                                Text,
+                            ),
+                            True,
+                        ),
                     )
                     .where(stories.c.id == self.story_id)
                     .with_for_update()
@@ -838,6 +903,14 @@ class Operation:
             assert self.read_set_source is not None  # noqa: S101 - set together
             now = await self.read_set_source.hashes(conn, self.story_id)
             touched = touched_members(self.read_set, now)
+        keyed = self._keyed()
+        if keyed is not None and not control and current != base and not touched:
+            # FR-CONC-12 (#136): a change since the base matching a query key touches the read
+            # set; a base the change index no longer covers counts as touched.
+            if base < int(locked.changes_pruned_through_revision):
+                touched = ("changes_pruned",)
+            else:
+                touched = tuple(await keyed.touched(conn, self.story_id, base))
         config_changed: tuple[str, ...] = ()
         if not control and not touched and self.config_dependencies:
             current_config = await config_dependencies.capture(
@@ -856,7 +929,17 @@ class Operation:
             config_changed=config_changed,
         )
         outcome = decide(state)
-        self.attempts.append(attempt_record(state, outcome))
+        if keyed is not None and isinstance(outcome, Rebase):
+            # A structured turn's rebase re-runs its deterministic checks against current state
+            # (#140's verify, #144's permission checks) and re-stamps its read set.
+            if await readset.run_rebase_checks(conn, self):
+                keyed.rebased_to = current
+            else:
+                outcome = Regenerate(reason="rebase_failed")
+        record = attempt_record(state, outcome)
+        if keyed is not None:
+            record.update(keyed.counts())
+        self.attempts.append(record)
         if isinstance(outcome, Regenerate | Abandon | ConfigRecheck):
             raise RevalidationRequired(outcome, state)
 
@@ -1116,6 +1199,7 @@ class Operation:
                 attempts=self.attempts,
                 timeline_revision=self.timeline_revision,
                 **({"stage_log": list(self._stages)} if self._stages else {}),
+                **({"read_set": self._read_set_document()} if self._keyed() is not None else {}),
             )
             .returning(operations.c.membership_tx)
         )
@@ -1187,7 +1271,14 @@ class Operation:
                 await conn.execute(
                     update(operations)
                     .where(operations.c.operation_id == self.operation_id)
-                    .values(attempts=self.attempts)
+                    .values(
+                        attempts=self.attempts,
+                        **(
+                            {"read_set": self._read_set_document()}
+                            if self._keyed() is not None
+                            else {}
+                        ),
+                    )
                 )
         except Exception as exc:
             logger.warning(

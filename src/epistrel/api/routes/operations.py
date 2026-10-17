@@ -37,6 +37,12 @@ OPERATION_DESCRIPTION = (
     "`offboarding` (one stage per entity type, in processing order); and an `erasure` "
     "(`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last "
     "two). Every other operation has a null `label` and no stages."
+    "\n\nAn operation that captured a read set reports `read_set`: `keys_count` (the query "
+    "keys a structured turn's verdict, precondition and blocker lookups recorded, empty "
+    "results included; 0 for a Lite turn), `retrieved_count` (rows read as generation context "
+    "only) and, with `?viewpoint=omniscient` only, the `keys` themselves (`subject`, "
+    "`predicate`, `object`, `holder`, `window`, `result_hash`); otherwise `keys` is null. "
+    "`read_set` is null for an operation with no read set."
     "\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored "
     "response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an "
     "output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another "
@@ -63,6 +69,26 @@ class StageBody(BaseModel):
     @classmethod
     def of(cls, stage: Stage) -> StageBody:
         return cls(name=stage.name, status=stage.status, at=stage.at)
+
+
+class QueryKeyBody(BaseModel):
+    """One query key of a structured turn's read set: what the lookup asked (ids; `*` for a
+    wildcard subject or object) and the hash of what it found."""
+
+    subject: str | list[str]
+    predicate: str
+    object: str | dict[str, Any]
+    holder: str
+    window: list[int | None]
+    result_hash: str
+
+
+class ReadSetBody(BaseModel):
+    """An operation's read set: counts, and the keys to an omniscient read only."""
+
+    keys_count: int
+    retrieved_count: int
+    keys: list[QueryKeyBody] | None = None
 
 
 class OperationBody(BaseModel):
@@ -93,6 +119,7 @@ class OperationBody(BaseModel):
     creation_report: CreationReport | None = None
     label: OperationLabel | None = None
     stages: list[StageBody] = []
+    read_set: ReadSetBody | None = None
 
     @classmethod
     def of(cls, view: OperationView) -> OperationBody:
@@ -120,6 +147,15 @@ class OperationBody(BaseModel):
             else CreationReport.model_validate(view.creation_report),
             label=view.label,
             stages=[StageBody.of(stage) for stage in view.stages],
+            read_set=None
+            if view.read_set is None
+            else ReadSetBody(
+                keys_count=view.read_set.keys_count,
+                retrieved_count=view.read_set.retrieved_count,
+                keys=None
+                if view.read_set.keys is None
+                else [QueryKeyBody.model_validate(k) for k in view.read_set.keys],
+            ),
             result=(
                 StoredResultBody(status=view.result.status, body=view.result.body)
                 if view.result is not None

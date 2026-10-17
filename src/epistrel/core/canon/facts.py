@@ -77,6 +77,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, INT8RANGE, Range, array
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core import readset
 from epistrel.core.canon.errors import (
     FactInactive,
     FactNotFound,
@@ -255,8 +256,8 @@ FactHook = Callable[[AsyncConnection, FactChange], Awaitable[None]]
 
 FACT_HOOKS: list[FactHook] = []
 """Run in registration order after every fact write, on the write's connection (its
-transaction): #136's ``proposition_changes`` writer and #137's projection apply register here.
-Empty by default (no-op)."""
+transaction): #136's ``proposition_changes`` writer (``core.readset.record_fact_change``,
+registered below) and #137's projection apply register here."""
 
 
 def register_fact_hook(hook: FactHook) -> FactHook:
@@ -269,6 +270,10 @@ def register_fact_hook(hook: FactHook) -> FactHook:
 def remove_fact_hook(hook: FactHook) -> None:
     if hook in FACT_HOOKS:
         FACT_HOOKS.remove(hook)
+
+
+register_fact_hook(readset.record_fact_change)
+"""#136's change index: every write's added and closed propositions, in its transaction."""
 
 
 def default_authority(provenance: RecordProvenance) -> FactAuthority:

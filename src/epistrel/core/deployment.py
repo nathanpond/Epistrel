@@ -164,6 +164,7 @@ class SettingsPatch(BaseModel):
     job_retention_days: StrictInt | None = None
     offboarding_report_retention_days: StrictInt | None = None
     rating_check_retention_days: StrictInt | None = None
+    readset_change_retention_days: StrictInt | None = None
     worker_heartbeat_timeout: StrictFloat | None = None
     timer_lag_alert: StrictFloat | None = None
     media_allowed_types: list[str] | None = None

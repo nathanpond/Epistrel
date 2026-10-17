@@ -749,6 +749,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "story_profile_overrides": "engine-profile dial values (numbers and enums)",
     "rating_check_jobs": "a rating check's progress and verdicts by record key and policy id",
     "guardrail_check_results": "verdicts by record key and policy id",
+    "proposition_changes": "the read set's change index: ids, hashes, windows and visibility "
+    "scopes of committed proposition changes (#136)",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",

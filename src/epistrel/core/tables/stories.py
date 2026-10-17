@@ -32,7 +32,8 @@ an unanchored story, whose granules use ``core.propositions.model.DEFAULT_EPOCH`
 ``story_minute_zero`` (the story-minute the story starts at, M4's "now" at turn 0 until the clock
 lands, M6), and ``predicate_rules``: the author's implication rules (FR-PROP-4,11), as
 ``{when, then, via}`` predicate ids, written at structured genesis (#149;
-``core.propositions.registry``).
+``core.propositions.registry``). #136 adds ``changes_pruned_through_revision``: the highest
+revision whose ``proposition_changes`` rows the retention sweep removed (``core.readset``).
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -116,6 +117,10 @@ stories = Table(
     # segments}`` of the included segments, valid while its epoch is the current one.
     Column("summary_epoch", BigInteger, nullable=False, server_default=text("0")),
     Column("summary_inclusion", JSONB, nullable=True),
+    # FR-CONC-12 (#136): the highest timeline revision whose ``proposition_changes`` rows the
+    # retention sweep pruned; a structured turn whose base is below it cannot be checked against
+    # the change index, so it conflicts instead of rebasing.
+    Column("changes_pruned_through_revision", BigInteger, nullable=False, server_default=text("0")),
     # FR-CONC-5 (#63): same-story turn concurrency and the queue's bound (null: the
     # deployment's ``turn_queue_max``), mirrored in ``StorySettings``; and the durable in-flight
     # marker: the turn holding the story's turn slot and its lease (never a lock held across

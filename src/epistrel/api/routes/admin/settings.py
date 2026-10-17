@@ -80,7 +80,9 @@ async def read_settings(ctx: ContextDep, engine: EngineDep) -> SettingsBody:
         "(0 to 100, default 2) is how many model calls a rating tightening's history check may "
         "spend on one record's model-assisted policies (one it cannot afford follows its "
         "`on_uncertain`), and `rating_check_retention_days` (1 to 3650, default 30) how long a "
-        "finished check is kept."
+        "finished check is kept. `readset_change_retention_days` (1 to 3650, default 7) is how "
+        "long the structured read set's change index keeps a committed change: a structured turn "
+        "whose base is older conflicts instead of rebasing."
     ),
 )
 async def update_settings(

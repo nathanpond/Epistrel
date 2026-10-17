@@ -404,6 +404,9 @@ DEFAULT_OFFBOARDING_REPORT_RETENTION_DAYS = 90
 """How long a finished offboarding's report is kept (#117)."""
 DEFAULT_RATING_CHECK_RETENTION_DAYS = 30
 """How long a finished rating check's status and violations are kept (#118)."""
+DEFAULT_READSET_CHANGE_RETENTION_DAYS = 7
+"""How long the structured read set's change index keeps a row (#136): a turn whose base is older
+than that cannot rebase and conflicts instead."""
 
 
 class RetentionSettings(BaseModel):
@@ -413,8 +416,10 @@ class RetentionSettings(BaseModel):
     finished (``done``/``failed``) job rows for ``job_retention_days``, and a finished principal
     offboarding's status and report (``offboarding_jobs``, #117) for
     ``offboarding_report_retention_days``, and a finished rating check's status and violations
-    (``rating_check_jobs``, #118) for ``rating_check_retention_days``. Prospective: each sweep
-    applies the values in force when it runs; story history never expires."""
+    (``rating_check_jobs``, #118) for ``rating_check_retention_days``, and the structured read
+    set's change index (``proposition_changes``, #136) for ``readset_change_retention_days``.
+    Prospective: each sweep applies the values in force when it runs; story history never
+    expires."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -431,6 +436,9 @@ class RetentionSettings(BaseModel):
     )
     rating_check_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_RATING_CHECK_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
+    )
+    readset_change_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_READSET_CHANGE_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
 
 

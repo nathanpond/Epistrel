@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from epistrel.core import feedback, ratings, stories
+from epistrel.core import feedback, mutation, ratings, stories
 from epistrel.core.catalog import models as catalog_models
 from epistrel.core.catalog import personas
 from epistrel.core.policies import model as policy_model
@@ -42,6 +42,7 @@ TYPES: dict[str, Any] = {
     "policies.Word": policy_model.Word,
     "policy_schemas.Name": policy_schemas.Name,
     "policy_schemas.Message": policy_schemas.Message,
+    "mutation.Reason": mutation.Reason,
 }
 
 

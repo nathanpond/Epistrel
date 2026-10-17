@@ -58,7 +58,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 from sqlalchemy import and_, bindparam, func, select, update
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -101,6 +101,7 @@ from epistrel.core.tables import events
 from epistrel.core.tables.base import ulid_type
 from epistrel.core.tables.facts import facts as facts_table
 from epistrel.core.tables.memories import QUARANTINE_REASON_MAX, TEXT_MAX, memories
+from epistrel.core.trimmed import trim_as_sent
 from epistrel.core.verify.rules import Rule, VerdictKind, check_with
 from epistrel.observability.metrics import QUARANTINES, SANITIZES
 
@@ -119,7 +120,9 @@ LIST_LIMIT_MAX = 500
 DEFAULT_LIST_LIMIT = 100
 
 Reason = Annotated[
-    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=QUARANTINE_REASON_MAX)
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=QUARANTINE_REASON_MAX),
+    BeforeValidator(trim_as_sent(QUARANTINE_REASON_MAX)),
 ]
 
 

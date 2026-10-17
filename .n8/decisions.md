@@ -6651,3 +6651,6 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** `fingerprint.GUARANTEES`/`Guarantee`/`guarantees()` are removed, not left as aliases. Impact and the tests import `core.profiles.guarantees`, and the four FR-VERIFY-15 strings are now the matching rows' `label`s. The Console surface is filed as nathanpond/Epistrel-Console#57. The #134 cross-check against eval reports is left to #134's `--check`, which reads `metric_ids()`, as the planner said.
   **Why:** One source for the table. Nothing else imported the old names.
   **Issue:** #132
+- **Decision (Rule 1, CI fix for fc70f77):** `ownership_fixtures.CALLS` gains the three predicate routes, so `test_every_delivered_type_is_covered` and the I-21 nothing-gates matrix cover them. `GET …/predicates` is prepared with one idempotent pending proposal (`sails with`), so every requester reads the same body. `approve` and `reject` each get a fresh auto predicate with a pending proposal (`_fresh_proposal`), so the owner and non-owner cases all exercise a real 200 rather than a 404. The proposals are seeded through the core API on the app's own database (`client._transport.app.state.epistrel.db`), because no public call files one.
+  **Why:** #131 added routes under an owned entity without matrix entries (the same miss as #326 in M3).
+  **Issue:** #131

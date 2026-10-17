@@ -420,6 +420,33 @@ async def _checking(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> di
     return {"job_id": started["job_id"]}
 
 
+async def _propose(client: httpx.AsyncClient, story_id: str, relation: str) -> str:
+    """An auto predicate of the story with a pending ``functional`` proposal (#131), written
+    as the structured pipeline does (no public call files one) on the app's own database;
+    idempotent for one relation (the same predicate and pending proposal)."""
+    from epistrel.core.propositions import registry
+    from epistrel.core.propositions.model import Cardinality
+
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    async with db.begin() as conn:
+        found = await registry.auto_register(conn, story_id, relation)
+        await registry.file_proposal(
+            conn, story_id, found.id, registry.ProposedChanges(cardinality=Cardinality.FUNCTIONAL)
+        )
+    return str(found.id)
+
+
+async def _proposed(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The story's registry with one pending proposal, the same for every requester."""
+    await _propose(client, entity.id, "sails with")
+    return {}
+
+
+async def _fresh_proposal(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A new auto predicate with a pending proposal, for one approval or rejection."""
+    return {"predicate_id": await _propose(client, entity.id, f"rides with {new_ulid()}")}
+
+
 @dataclass(frozen=True)
 class Call:
     """A request that succeeds (``expected``) when the entity's owner sends it. ``json`` is the
@@ -506,6 +533,10 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/relations"): Call(200, prepare=_related),
     ("GET", f"{S}/effective-config"): Call(200, prepare=_played),
     ("GET", f"{S}/guarantees"): Call(200, prepare=_played),
+    # The predicate registry (#131): listed, and a fresh proposal approved or rejected.
+    ("GET", f"{S}/predicates"): Call(200, prepare=_proposed),
+    ("POST", f"{S}/predicates/{{predicate_id}}/approve"): Call(200, {}, prepare=_fresh_proposal),
+    ("POST", f"{S}/predicates/{{predicate_id}}/reject"): Call(200, prepare=_fresh_proposal),
     # -- stories: message ratings (#112). Each requester rates a fresh story's reply, retracts
     # the owner's rating (none of its own: still 204), and reads its own rating of a reply all
     # three rated alike.

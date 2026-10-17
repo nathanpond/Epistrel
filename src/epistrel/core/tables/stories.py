@@ -26,7 +26,13 @@ exactly while the story is blocked (``ck_stories_status_before_block``). #281 ad
 check cannot see, so the next check is the full one (``Operation._check_chain``). #282 adds
 ``summary_epoch`` and ``summary_inclusion``: a counter that migration 0046's triggers bump when an
 input of the rolling summary's inclusion changes, and what inclusion last yielded at that epoch,
-so scheduling the summary after a turn does not reread every segment (``core.summary``).
+so scheduling the summary after a turn does not reread every segment (``core.summary``). #131
+adds the story-time columns: ``story_epoch`` (the calendar instant of story-minute 0; ``NULL`` for
+an unanchored story, whose granules use ``core.propositions.model.DEFAULT_EPOCH``) and
+``story_minute_zero`` (the story-minute the story starts at, M4's "now" at turn 0 until the clock
+lands, M6), and ``predicate_rules``: the author's implication rules (FR-PROP-4,11), as
+``{when, then, via}`` predicate ids, written at structured genesis (#149;
+``core.propositions.registry``).
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -151,6 +157,10 @@ stories = Table(
     Column("scenario_id", ulid_type(), nullable=True),
     Column("scenario_version", Integer, nullable=True),
     Column("scenario_snapshot", JSONB, nullable=True),
+    # FR-PROP-1, FR-PROP-4 (#131): story-time and the author's implication rules.
+    Column("story_epoch", TIMESTAMP(timezone=True), nullable=True),
+    Column("story_minute_zero", BigInteger, nullable=False, server_default=text("0")),
+    Column("predicate_rules", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     CheckConstraint(STATUS_CHECK, name="status"),
     CheckConstraint(STATUS_BEFORE_BLOCK_CHECK, name="status_before_block"),
     CheckConstraint(SCENARIO_SNAPSHOT_CHECK, name="scenario_snapshot"),

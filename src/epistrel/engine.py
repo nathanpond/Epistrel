@@ -105,6 +105,7 @@ from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
+from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.ratings import change as rating_change
 from epistrel.core.ratings import reactivation
 from epistrel.core.ratings import suggest as rating_suggestion
@@ -221,6 +222,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     "regenerate": ResultCodec.of(RegenerateResult),
     "archive_story": ResultCodec.of(stories.StatusChange),
+    # A predicate proposal's decision (#131): approving is a configuration change.
+    "approve_predicate": ResultCodec.of(predicate_registry.Decision, revision_field=_CONFIG),
+    "reject_predicate": ResultCodec.of(predicate_registry.Decision, revision_field=_CONFIG),
     "unarchive_story": ResultCodec.of(stories.StatusChange),
     "delete_story": ResultCodec.of(stories.DeletedStory, status=204),
     # A story's characters (#114): one added to a running story (story-scoped, like the edits),
@@ -1374,6 +1378,68 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
+        )
+
+    # -- the predicate registry (FR-PROP-3,4; #131) ---------------------------------------------
+
+    @library_only("lifecycle: the REST app runs it at start-up")
+    async def sync_vocabulary(self) -> int:
+        """Re-sync the core vocabulary's rows from ``vocabulary`` (new predicates and doc
+        changes reach an existing deployment); answers how many rows changed."""
+        return await predicate_registry.sync_core(self.db)
+
+    @refuses_nul()
+    async def list_predicates(
+        self, ctx: RequestContext, story_id: str
+    ) -> predicate_registry.PredicateList:
+        """The story's predicate registry: the core vocabulary, its author and auto predicates
+        with their pending proposals, and its implication rules."""
+        return await predicate_registry.list_predicates(self.db, story_id)
+
+    async def approve_predicate(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        predicate_id: str,
+        request: predicate_registry.ApproveRequest,
+    ) -> predicate_registry.Decision:
+        """Apply the predicate's pending strengthening proposal (or the fields
+        ``request.changes`` names): an interpretive configuration change. The answer reports
+        the story's propositions the new semantics would flag; none is changed."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> predicate_registry.Decision:
+            await self.check_expected_revision(ctx, story_id)
+            return await predicate_registry.approve(
+                self.db, story_id, predicate_id, request.changes, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "approve_predicate",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "predicate_id": predicate_id, "body": _body(request)},
+        )
+
+    async def reject_predicate(
+        self, ctx: RequestContext, story_id: str, predicate_id: str
+    ) -> predicate_registry.Decision:
+        """Close the predicate's pending proposal unapplied."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> predicate_registry.Decision:
+            await self.check_expected_revision(ctx, story_id)
+            return await predicate_registry.reject(
+                self.db, story_id, predicate_id, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "reject_predicate",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "predicate_id": predicate_id},
         )
 
     @refuses_nul()

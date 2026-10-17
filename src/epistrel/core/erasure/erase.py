@@ -148,6 +148,7 @@ from epistrel.core.erasure.records import (
     idempotency_id,
     media_record,
     persona_record,
+    predicate_words,
     upload_session_record,
 )
 from epistrel.core.erasure.redact import ERASED, Candidate, Redactor, regenerate_summaries
@@ -195,6 +196,14 @@ from epistrel.core.tables.media import (
     subject_references,
 )
 from epistrel.core.tables.ownership import EntityType
+from epistrel.core.tables.propositions import (
+    closed_sets,
+    entities,
+    entity_aliases,
+    predicate_proposals,
+    predicates,
+    propositions,
+)
 from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -775,6 +784,7 @@ async def _story_pass(conn: AsyncConnection, run: _StoryRun) -> _Tally:
         tally,
         write=write,
     )
+    await _redact_structured(conn, story_id, refs, removed, redactor, tally, run)
     await _purge_story_results(conn, story_id, refs, redactor, tally, write=write)
     await _redact_transient(conn, story_id, redactor, tally, write=write)
     for target in ERASURE_TARGETS:
@@ -1193,6 +1203,74 @@ async def _redact_policies(
         tally,
         write=run.write,
     )
+
+
+async def _redact_structured(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    redactor: Redactor,
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """The structured stores (#131): an erased character's entity loses its aliases (deleted,
+    each with a marker); every other record naming the subject is redacted in place. A story
+    predicate's name keeps its id as a suffix when redacted, so names stay unique per story."""
+    owned = list(
+        await conn.scalars(
+            select(entity_aliases.c.id)
+            .join(entities, entities.c.id == entity_aliases.c.entity_id)
+            .where(
+                entity_aliases.c.story_id == story_id,
+                entities.c.character_id.in_(sorted(removed)),
+            )
+        )
+    )
+    for alias_id in owned:
+        await _delete(
+            conn,
+            run,
+            tally,
+            entity_aliases.name,
+            str(alias_id),
+            delete(entity_aliases).where(entity_aliases.c.id == alias_id),
+        )
+    for table, columns, others in (
+        (entity_aliases, ("alias",), {str(a) for a in owned}),
+        (entities, ("canonical_name",), set()),
+        (propositions, ("literal", "qualifiers"), set()),
+        (closed_sets, ("key",), set()),
+        (predicate_proposals, ("proposed", "decision"), set()),
+        (predicates, ("docs",), set()),
+    ):
+        await _redact_json_rows(
+            conn,
+            table,
+            table.c.id,
+            set(refs.get(table.name, set())) - others,
+            columns,
+            redactor,
+            tally,
+            write=run.write,
+        )
+    wanted = sorted(refs.get(predicates.name, set()))
+    rows = await conn.execute(
+        select(predicates.c.id, predicates.c.name).where(predicates.c.id.in_(wanted))
+    )
+    for row in rows:
+        words = predicate_words(str(row.name))
+        new = redactor.text(words, (predicates.name, str(row.id), "name"))
+        if new == words:
+            continue
+        tally.record(predicates.name, 1)
+        if run.write:
+            renamed = "_".join(new.replace("[", "").replace("]", "").split())
+            await conn.execute(
+                update(predicates)
+                .where(predicates.c.id == row.id)
+                .values(name=f"{renamed}_{str(row.id).lower()}")
+            )
 
 
 async def _purge_results(

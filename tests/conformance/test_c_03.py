@@ -84,6 +84,7 @@ from epistrel.api.routes.ownership import (
     StoryRelationBody,
 )
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
+from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.stories import (
     IngestResponse,
@@ -147,6 +148,10 @@ from epistrel.core.policies.model import Scope
 from epistrel.core.profiles.impact import ImpactPreviewRequest
 from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpdate, ProfileValidate
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
+from epistrel.core.propositions import registry as predicate_registry
+from epistrel.core.propositions.model import Cardinality
+from epistrel.core.propositions.registry import ApproveRequest
+from epistrel.core.propositions.vocabulary import MEMBER_OF
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
@@ -226,6 +231,9 @@ class Step:
     status: Callable[[dict[str, Any]], int] | None = None
     """The library result's REST status, when the route's own status is not it (a 202 the
     route answers beside its 200, #117)."""
+    prepare: Callable[[Engine, Ids], Awaitable[None]] | None = None
+    """Engine-side state the step needs that no public call creates (#131: a proposal the
+    structured pipeline files), written on each surface's database before the call."""
 
     @property
     def label(self) -> str:
@@ -664,6 +672,42 @@ def _steps() -> list[Step]:
             "custom_instructions",
             lambda ids: Rest("GET", f"{s}/custom-instructions"),
             lambda e, ids: _read_instructions(e, ids["story"]),
+        ),
+        # -- the predicate registry (#131): two auto predicates with an engine proposal each
+        # (seeded on both surfaces: no public call files one), listed; one proposal approved,
+        # the other rejected; a core predicate takes no decision (404 on both surfaces).
+        Step(
+            "list_predicates",
+            lambda ids: Rest("GET", f"{s}/predicates"),
+            lambda e, ids: _predicates(e, ids["story"]),
+            prepare=_proposals,
+            group=REGISTRY_GROUP,
+        ),
+        Step(
+            "approve_predicate",
+            lambda ids: Rest(
+                "POST", f"{s}/predicates/{{approved}}/approve", {"changes": ["cardinality"]}
+            ),
+            lambda e, ids: _predicate_decision(
+                e.approve_predicate(
+                    CTX, ids["story"], ids["approved"], ApproveRequest(changes=["cardinality"])
+                )
+            ),
+            group=REGISTRY_GROUP,
+        ),
+        Step(
+            "reject_predicate",
+            lambda ids: Rest("POST", f"{s}/predicates/{{rejected}}/reject"),
+            lambda e, ids: _predicate_decision(
+                e.reject_predicate(CTX, ids["story"], ids["rejected"])
+            ),
+            group=REGISTRY_GROUP,
+        ),
+        Step(
+            "reject_predicate",
+            lambda ids: Rest("POST", f"{s}/predicates/{MEMBER_OF}/reject"),
+            lambda e, ids: _predicate_decision(e.reject_predicate(CTX, ids["story"], MEMBER_OF)),
+            group=REGISTRY_GROUP,
         ),
         # -- turns
         Step(
@@ -1940,6 +1984,41 @@ async def _rating_check(engine: Engine, story_id: str, job_id: str) -> dict[str,
     return dump(RatingCheckBody.of(await engine.get_rating_check(CTX, story_id, job_id)))
 
 
+REGISTRY_GROUP = "registry"
+"""The ``Step.group`` of the predicate-registry steps (#131)."""
+REGISTRY_ANSWERS = [
+    ("list_predicates", 200),
+    ("approve_predicate", 200),
+    ("reject_predicate", 200),
+    ("reject_predicate", 404),
+]
+"""What the registry steps answer on both surfaces: the registry listed with two pending
+proposals, one approved, one rejected, and a core predicate's (none) refused."""
+
+
+async def _proposals(engine: Engine, ids: Ids) -> None:
+    """Two auto predicates of the story, each with a pending ``functional`` proposal, written
+    as the structured pipeline would (#131)."""
+    async with engine.db.begin() as conn:
+        for key, relation in (("approved", "apprenticed with"), ("rejected", "rides with")):
+            found = await predicate_registry.auto_register(conn, ids["story"], relation)
+            await predicate_registry.file_proposal(
+                conn,
+                ids["story"],
+                found.id,
+                predicate_registry.ProposedChanges(cardinality=Cardinality.FUNCTIONAL),
+            )
+            ids[key] = found.id
+
+
+async def _predicates(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(PredicateListBody.of(await engine.list_predicates(CTX, story_id)))
+
+
+async def _predicate_decision(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(PredicateDecisionBody.of(await call))
+
+
 async def _no_content(call: Awaitable[Any]) -> dict[str, Any]:
     await call
     return {}
@@ -2304,10 +2383,12 @@ async def run_rest(settings: Settings, steps: list[Step]) -> list[Rendered]:
     out: list[Rendered] = []
     ids: Ids = {}
     headers = bearer() | {"X-Epistrel-Principal": PRINCIPAL}
-    async with surface_engine(settings) as (_, app):
+    async with surface_engine(settings) as (lib, app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             for step in steps:
+                if step.prepare is not None:
+                    await step.prepare(lib, ids)
                 call = step.rest(ids)
                 response = await client.request(
                     call.method,
@@ -2335,6 +2416,8 @@ async def run_library(settings: Settings, steps: list[Step]) -> list[Rendered]:
     async with surface_engine(settings) as (engine, app):
         statuses = _statuses(app)
         for step in steps:
+            if step.prepare is not None:
+                await step.prepare(engine, ids)
             try:
                 body = await step.library(engine, ids)
             except EpistrelError as error:
@@ -2446,6 +2529,12 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         if step.operation in ("set_content_rating", "get_rating_check")
     ]
     assert rating == [("set_content_rating", 200), ("get_rating_check", 404)]
+    # #131's registry steps answered as written (REGISTRY_ANSWERS).
+    assert [
+        (step.operation, status)
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.group == REGISTRY_GROUP
+    ] == REGISTRY_ANSWERS
     # The character steps (#103) answered what they were written to answer, on both surfaces.
     answered = [
         (step.operation, status)

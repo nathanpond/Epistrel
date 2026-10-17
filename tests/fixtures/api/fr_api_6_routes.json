@@ -1056,6 +1056,21 @@
       "method": "GET",
       "path": "/admin/content-ratings/{rating_id}/versions",
       "requirement": "FR-RATE-1"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/predicates",
+      "requirement": "FR-PROP-4"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/predicates/{predicate_id}/approve",
+      "requirement": "FR-PROP-4"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/predicates/{predicate_id}/reject",
+      "requirement": "FR-PROP-4"
     }
   ]
 }

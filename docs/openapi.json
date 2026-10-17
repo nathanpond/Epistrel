@@ -256,6 +256,37 @@
         "title": "ApiKeyBody",
         "type": "object"
       },
+      "ApproveRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/predicates/{predicate_id}/approve``: approve the whole pending\nproposal (``changes`` omitted) or the fields it names.",
+        "examples": [
+          {},
+          {
+            "changes": [
+              "cardinality"
+            ]
+          }
+        ],
+        "properties": {
+          "changes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changes"
+          }
+        },
+        "title": "ApproveRequest",
+        "type": "object"
+      },
       "Audience": {
         "description": "Who may see a reference image's subject: ``perceivable`` (only what anyone who meets the\ncharacter can see) or ``restricted`` (hidden details, a true form, the real face behind a\ndisguise). There is no default.",
         "enum": [
@@ -8403,6 +8434,36 @@
         "title": "ImpactReport",
         "type": "object"
       },
+      "ImplicationBody": {
+        "description": "A declared rule: ``when(s, o) ⇒ then(s, o')``, the object carried over or mapped\nthrough one ``via`` join.",
+        "properties": {
+          "then": {
+            "title": "Then",
+            "type": "string"
+          },
+          "via": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Via"
+          },
+          "when": {
+            "title": "When",
+            "type": "string"
+          }
+        },
+        "required": [
+          "when",
+          "then"
+        ],
+        "title": "ImplicationBody",
+        "type": "object"
+      },
       "InactiveItem": {
         "additionalProperties": false,
         "description": "A setting the story keeps for a capability it lacks (``stories.settings.inactive``): its\nname, value, the capability it waits for, its class and location.",
@@ -12838,6 +12899,272 @@
         "title": "PolicyReplacement",
         "type": "object"
       },
+      "PredicateBody": {
+        "description": "A registered predicate and its semantics (FR-PROP-3): its layer (``core``, ``author``\nor ``auto``), argument types, cardinality over its uniqueness key (the subject plus\n``key_qualifiers``), declared qualifiers (``null``: undeclared, an auto predicate's),\ntemporal kind, exclusions, containment, implications, symmetry or inverse, owner and\ndocumentation.",
+        "properties": {
+          "cardinality": {
+            "title": "Cardinality",
+            "type": "string"
+          },
+          "containment_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Containment Of"
+          },
+          "docs": {
+            "title": "Docs",
+            "type": "string"
+          },
+          "exclusions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Exclusions",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "implications": {
+            "items": {
+              "$ref": "#/components/schemas/ImplicationBody"
+            },
+            "title": "Implications",
+            "type": "array"
+          },
+          "inverse_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inverse Of"
+          },
+          "key_qualifiers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Key Qualifiers",
+            "type": "array"
+          },
+          "layer": {
+            "title": "Layer",
+            "type": "string"
+          },
+          "max_cardinality": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cardinality"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "object_type": {
+            "title": "Object Type",
+            "type": "string"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "pending_proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProposalBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "projection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projection"
+          },
+          "qualifiers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualifiers"
+          },
+          "set_object": {
+            "title": "Set Object",
+            "type": "boolean"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
+          },
+          "subject_type": {
+            "title": "Subject Type",
+            "type": "string"
+          },
+          "symmetric": {
+            "title": "Symmetric",
+            "type": "boolean"
+          },
+          "temporal_kind": {
+            "title": "Temporal Kind",
+            "type": "string"
+          },
+          "weak": {
+            "title": "Weak",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "story_id",
+          "name",
+          "layer",
+          "subject_type",
+          "object_type",
+          "cardinality",
+          "max_cardinality",
+          "key_qualifiers",
+          "qualifiers",
+          "set_object",
+          "temporal_kind",
+          "exclusions",
+          "containment_of",
+          "implications",
+          "symmetric",
+          "inverse_of",
+          "owner",
+          "projection",
+          "docs",
+          "weak"
+        ],
+        "title": "PredicateBody",
+        "type": "object"
+      },
+      "PredicateDecisionBody": {
+        "description": "A proposal's decision: the predicate as it now is, the proposal and its status, the\nfields applied, the propositions the new semantics would flag, and the story's revisions\n(approval moves ``config_revision``; rejection moves nothing).",
+        "properties": {
+          "applied": {
+            "additionalProperties": true,
+            "title": "Applied",
+            "type": "object"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "predicate": {
+            "$ref": "#/components/schemas/PredicateBody"
+          },
+          "proposal_id": {
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          },
+          "violations": {
+            "items": {
+              "$ref": "#/components/schemas/ViolationBody"
+            },
+            "title": "Violations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "predicate",
+          "proposal_id",
+          "status",
+          "applied",
+          "violations",
+          "config_revision"
+        ],
+        "title": "PredicateDecisionBody",
+        "type": "object"
+      },
+      "PredicateListBody": {
+        "description": "The story's registry: the core vocabulary first, then the story's predicates by name;\nthe story's implication rules; its configuration revision.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "predicates": {
+            "items": {
+              "$ref": "#/components/schemas/PredicateBody"
+            },
+            "title": "Predicates",
+            "type": "array"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/ImplicationBody"
+            },
+            "title": "Rules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "predicates",
+          "rules",
+          "config_revision"
+        ],
+        "title": "PredicateListBody",
+        "type": "object"
+      },
       "PrincipalLookup": {
         "additionalProperties": false,
         "description": "Every entity linked to ``principal`` (FR-AUTH-7), owned and related, by type.",
@@ -16100,6 +16427,36 @@
           "warnings"
         ],
         "title": "PromotionBody",
+        "type": "object"
+      },
+      "ProposalBody": {
+        "description": "A pending proposal: what it would change.",
+        "properties": {
+          "changes": {
+            "additionalProperties": true,
+            "title": "Changes",
+            "type": "object"
+          },
+          "filed_by": {
+            "title": "Filed By",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "changes",
+          "filed_by"
+        ],
+        "title": "ProposalBody",
         "type": "object"
       },
       "PublishRequest": {
@@ -24581,6 +24938,33 @@
           "items"
         ],
         "title": "VariantsBody",
+        "type": "object"
+      },
+      "ViolationBody": {
+        "description": "A key the approved semantics find with too many objects over overlapping time: the\npropositions are reported, never changed.",
+        "properties": {
+          "proposition_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Proposition Ids",
+            "type": "array"
+          },
+          "rule": {
+            "title": "Rule",
+            "type": "string"
+          },
+          "subject_id": {
+            "title": "Subject Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_id",
+          "proposition_ids",
+          "rule"
+        ],
+        "title": "ViolationBody",
         "type": "object"
       },
       "VisualIdentity": {
@@ -44904,6 +45288,484 @@
           }
         ],
         "summary": "Replace the story's pinned memories",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/predicates": {
+      "get": {
+        "operationId": "list_predicates",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PredicateListBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List the story's predicate registry",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/predicates/{predicate_id}/approve": {
+      "post": {
+        "description": "Applies the predicate's pending proposal, or the fields `changes` names (each must be one the proposal holds; 422 otherwise), as an interpretive configuration change: the story's `config_revision` moves by one and a turn generating meanwhile is checked again at commit. Existing propositions the new semantics would flag are listed in `violations` and never changed. Only a predicate the engine auto-registered takes proposals; a proposal is inert until approved. 404 `not_found` when the predicate is not one of the story's or has no pending proposal. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "approve_predicate",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The predicate's id (a ULID).",
+            "in": "path",
+            "name": "predicate_id",
+            "required": true,
+            "schema": {
+              "description": "The predicate's id (a ULID).",
+              "examples": [
+                "01JPRED0000000000000000018"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Predicate Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApproveRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PredicateDecisionBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Approve a predicate's strengthening proposal",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/predicates/{predicate_id}/reject": {
+      "post": {
+        "description": "Closes the predicate's pending proposal unapplied; nothing else changes. Only a predicate the engine auto-registered takes proposals; a proposal is inert until approved. 404 `not_found` when the predicate is not one of the story's or has no pending proposal. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "operationId": "reject_predicate",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The predicate's id (a ULID).",
+            "in": "path",
+            "name": "predicate_id",
+            "required": true,
+            "schema": {
+              "description": "The predicate's id (a ULID).",
+              "examples": [
+                "01JPRED0000000000000000018"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Predicate Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PredicateDecisionBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reject a predicate's strengthening proposal",
         "tags": [
           "stories"
         ]

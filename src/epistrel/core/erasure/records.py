@@ -44,6 +44,14 @@ from epistrel.core.tables import (
     stories,
 )
 from epistrel.core.tables.media import SubjectKind, media_upload_sessions
+from epistrel.core.tables.propositions import (
+    closed_sets,
+    entities,
+    entity_aliases,
+    predicate_proposals,
+    predicates,
+    propositions,
+)
 
 STORY_SCOPE = "story"
 """The ``scope`` of a story's configuration change, stored result and policy."""
@@ -247,6 +255,70 @@ def idempotency_record(row: Any) -> Record:
         text_fields(row.result, "result"),
         tuple(character_ids(row.result, "result")) if story_id is not None else (),
     )
+
+
+# -- propositions and the predicate registry (#131) --------------------------------------------
+
+
+def predicate_words(name: str) -> str:
+    """A predicate name as the matcher reads it: its ``_`` as spaces, so the words of a name an
+    auto predicate took from a render ("visits_marisol") are whole words."""
+    return name.replace("_", " ")
+
+
+def predicate_record(row: Any) -> Record:
+    """A story's predicate (an author's or an auto one): its name, as words, and its
+    documentation."""
+    return Record(
+        predicates.name,
+        str(row.id),
+        _str(row.story_id),
+        {"name": predicate_words(str(row.name)), "docs": row.docs},
+    )
+
+
+def proposal_record(row: Any) -> Record:
+    """A predicate proposal: every text of what it proposes and of its decision."""
+    return Record(
+        predicate_proposals.name,
+        str(row.id),
+        _str(row.story_id),
+        {**text_fields(row.proposed, "proposed"), **text_fields(row.decision, "decision")},
+    )
+
+
+def proposition_record(row: Any) -> Record:
+    """A proposition: its literal's and its qualifiers' texts (its ids name entities)."""
+    return Record(
+        propositions.name,
+        str(row.id),
+        _str(row.story_id),
+        {**text_fields(row.literal, "literal"), **text_fields(row.qualifiers, "qualifiers")},
+    )
+
+
+def closed_set_record(row: Any) -> Record:
+    """A closed set: the texts of its key (the key qualifiers' values)."""
+    return Record(closed_sets.name, str(row.id), _str(row.story_id), text_fields(row.key, "key"))
+
+
+def entity_record(row: Any) -> Record:
+    """An entity: its canonical name, declaring the character it is (if any)."""
+    subjects: tuple[Declared, ...] = ()
+    if row.character_id is not None:
+        subjects = ((SubjectKind.CHARACTER, str(row.character_id), "character_id"),)
+    return Record(
+        entities.name,
+        str(row.id),
+        _str(row.story_id),
+        {"canonical_name": row.canonical_name},
+        subjects,
+    )
+
+
+def alias_record(row: Any) -> Record:
+    """An entity alias: its text."""
+    return Record(entity_aliases.name, str(row.id), _str(row.story_id), {"alias": row.alias})
 
 
 # -- catalog records ---------------------------------------------------------------------------
@@ -498,6 +570,41 @@ async def read_upload_sessions(conn: AsyncConnection, story_id: str | None) -> l
     return [upload_session_record(r) for r in found]
 
 
+async def _story_rows(
+    conn: AsyncConnection, table: Any, story_id: str | None, build: Any
+) -> list[Record]:
+    """Every row of a story-only table in the scope (the catalog scope has none)."""
+    if story_id is None:
+        return []
+    found = await conn.execute(select(table).where(table.c.story_id == story_id))
+    return [build(r) for r in found]
+
+
+async def read_predicates(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's own predicates (the core vocabulary is the engine's text, never indexed)."""
+    return await _story_rows(conn, predicates, story_id, predicate_record)
+
+
+async def read_proposals(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    return await _story_rows(conn, predicate_proposals, story_id, proposal_record)
+
+
+async def read_propositions(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    return await _story_rows(conn, propositions, story_id, proposition_record)
+
+
+async def read_closed_sets(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    return await _story_rows(conn, closed_sets, story_id, closed_set_record)
+
+
+async def read_entities(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    return await _story_rows(conn, entities, story_id, entity_record)
+
+
+async def read_aliases(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    return await _story_rows(conn, entity_aliases, story_id, alias_record)
+
+
 async def index_rows(conn: AsyncConnection, table: Any, where: Any, build: Any) -> int:
     """Index the rows of ``table`` matching ``where`` with ``build`` (a ``*_record`` function):
     for a writer that changed rows in place by a statement."""
@@ -508,12 +615,15 @@ async def index_rows(conn: AsyncConnection, table: Any, where: Any, build: Any) 
 
 
 __all__ = [
+    "alias_record",
     "character_draft_record",
     "character_ids",
     "character_record",
     "character_version_record",
+    "closed_set_record",
     "config_change_record",
     "deferred_record",
+    "entity_record",
     "event_record",
     "idempotency_id",
     "idempotency_record",
@@ -522,6 +632,10 @@ __all__ = [
     "operation_record",
     "persona_record",
     "policy_record",
+    "predicate_record",
+    "predicate_words",
+    "proposal_record",
+    "proposition_record",
     "rating_record_id",
     "snapshot_record",
     "story_record",

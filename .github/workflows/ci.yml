@@ -50,6 +50,10 @@ jobs:
       - name: capability-map
         run: uv run python -m epistrel.tools.capability_map --check
         if: always()
+      # Core vocabulary (#131, FR-PROP-5): docs/predicates.md is exactly what the vocabulary renders.
+      - name: predicates
+        run: uv run python -m epistrel.tools.predicates --check
+        if: always()
       # Milestone gate (#37): every requirement in docs/03 is assigned to exactly one milestone in §22.
       - run: uv run python -m tools.gates check-assignment
         if: always()

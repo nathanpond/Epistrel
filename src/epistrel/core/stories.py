@@ -146,6 +146,14 @@ from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.core.tables.media import MediaKind
 from epistrel.core.tables.ownership import EntityType
+from epistrel.core.tables.propositions import (
+    closed_sets,
+    entities,
+    entity_aliases,
+    predicate_proposals,
+    predicates,
+    propositions,
+)
 from epistrel.core.trimmed import trim_as_sent
 
 Database = AsyncEngine | AsyncConnection
@@ -177,6 +185,13 @@ STORY_TABLES: tuple[Table, ...] = (
     rating_check_jobs,
     guardrail_check_results,
     timers,
+    # The structured stores (#131): story rows only (core predicates have no story).
+    predicate_proposals,
+    closed_sets,
+    propositions,
+    predicates,
+    entity_aliases,
+    entities,
     operations,
 )
 """Every table with a ``story_id`` column, in the order deletion empties them (events before the

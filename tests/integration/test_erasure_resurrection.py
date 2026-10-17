@@ -315,7 +315,8 @@ def test_every_content_write_path_is_guarded() -> None:
     """``CONTENT_WRITE_PATHS`` is exactly the subject index's writer modules plus ingest and the
     job commit, and each entry's claim holds in its module's source: an ``OPERATION`` path
     writes through ``Operation`` (whose ``_write`` runs ``check_content``), a catalog path calls
-    ``assert_not_erased``, the fork runs its ledger fence, and an exemption gives its reason."""
+    ``assert_not_erased``, the fork runs its ledger fence, a direct path (#131's structured
+    stores) calls ``check_content`` itself, and an exemption gives its reason."""
     registered = {p.module for p in guard.CONTENT_WRITE_PATHS}
     writers = {module for entry in SUBJECT_WRITERS for module in entry.writers}
     assert registered == writers | {"epistrel.core.ingest", "epistrel.orchestrator.jobs.queue"}
@@ -332,6 +333,8 @@ def test_every_content_write_path_is_guarded() -> None:
             assert "assert_not_erased(" in source, path.module
         elif path.how == guard.FORK_FENCE:
             assert "_erasure_fence(" in source, path.module
+        elif path.how == guard.DIRECT:
+            assert "check_content(" in source, path.module
         else:
             assert path.how == guard.EXEMPT, path.module
             assert path.why, path.module

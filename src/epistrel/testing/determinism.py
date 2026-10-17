@@ -134,12 +134,22 @@ ORDER: dict[str, str] = {
     "feedback_history": (
         f"{_STORY_RANK}, t.turn, t.variant, t.principal, t.replaced_at, t.rated_at, t.kind"
     ),
+    # The structured stores (#131): entities by name, story predicates by name, propositions,
+    # closed sets and proposals in the order they were written.
+    "entities": f"{_STORY_RANK}, t.kind, t.canonical_name",
+    "entity_aliases": f"{_STORY_RANK}, t.alias, t.created_at",
+    "predicates": f"{_STORY_RANK}, t.name",
+    "propositions": f"{_STORY_RANK}, t.created_at, t.valid_span, t.polarity",
+    "closed_sets": f"{_STORY_RANK}, t.created_at, t.valid_from NULLS FIRST",
+    "predicate_proposals": f"{_STORY_RANK}, t.created_at, t.status",
 }
 """Each compared table's ``ORDER BY`` (``t`` is the table): natural keys, never an id."""
 
 WHERE: dict[str, str] = {
     "config_changes": "t.scope = 'story'",
     "subject_references": "t.scope = 'story'",
+    # The core vocabulary is the engine's, not a story's.
+    "predicates": "t.story_id IS NOT NULL",
 }
 """Rows of a compared table that are not story state are left out."""
 

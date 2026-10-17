@@ -55,9 +55,10 @@ the terms) delete the record's rows and write them again:
 (each calls ``index_references``/``index_records``) and the reader the rebuild enumerates it
 with (``core.erasure.records``). ``tests/integration/test_subject_index.py`` checks it against
 ``information_schema``: a new story-content table without a registration (or a registered
-writer that never calls the indexer) fails it. Tables M4+ adds (memories, reflections, beliefs,
-States, the outbox) register here when they land. ``EXEMPT_TABLES`` names the story and catalog
-tables that are not indexed, and why.
+writer that never calls the indexer) fails it. Tables M4+ adds register here when they land
+(#131's predicate registry, propositions and entities did; memories, reflections, beliefs,
+States and the outbox will). ``EXEMPT_TABLES`` names the story and catalog tables that are not
+indexed, and why.
 
 ``drop_references``/``drop_many`` remove a record's rows; every delete path of an indexed record
 calls one. ``reindex_story`` recomputes one story's rows (a fork after its copy; an ad-hoc
@@ -644,6 +645,8 @@ class SubjectWriter:
 
 
 _RECORDS = "epistrel.core.erasure.records"
+_REGISTRY = "epistrel.core.propositions.registry"
+_PROPOSITIONS = "epistrel.core.propositions.store"
 
 SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
@@ -715,6 +718,13 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
         ("epistrel.core.media.uploads",),
         f"{_RECORDS}:read_upload_sessions",
     ),
+    # The structured stores (#131): the predicate registry, propositions and entities.
+    SubjectWriter("predicates", (_REGISTRY,), f"{_RECORDS}:read_predicates"),
+    SubjectWriter("predicate_proposals", (_REGISTRY,), f"{_RECORDS}:read_proposals"),
+    SubjectWriter("propositions", (_PROPOSITIONS,), f"{_RECORDS}:read_propositions"),
+    SubjectWriter("closed_sets", (_PROPOSITIONS,), f"{_RECORDS}:read_closed_sets"),
+    SubjectWriter("entities", (_PROPOSITIONS,), f"{_RECORDS}:read_entities"),
+    SubjectWriter("entity_aliases", (_PROPOSITIONS,), f"{_RECORDS}:read_aliases"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 

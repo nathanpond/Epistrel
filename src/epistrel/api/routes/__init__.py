@@ -22,6 +22,7 @@ from epistrel.api.routes import (
     media,
     operations,
     personas,
+    predicates,
     principals,
     respond,
     stories,
@@ -41,6 +42,7 @@ router.include_router(stories.router)
 router.include_router(history.router)
 router.include_router(respond.router)
 router.include_router(story_texts.router)
+router.include_router(predicates.router)
 router.include_router(timeline.router)
 router.include_router(operations.router)
 router.include_router(catalog_characters.router)

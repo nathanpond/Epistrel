@@ -17,6 +17,9 @@ from epistrel.core.errors import GuardrailViolation
 from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
+from epistrel.core.propositions import registry as predicate_registry
+from epistrel.core.propositions import store
+from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
 from epistrel.core.tables.ownership import EntityType
 from epistrel.orchestrator.jobs import queue as job_queue
@@ -140,6 +143,25 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
                 "'starting_state.rules[0]', 'story_rule', '{}', 'structured', '{}')"
             ),
             {"id": new_ulid(), "s": story_id, "o": new_ulid()},
+        )
+        # The structured stores (#131): an entity with an alias, an auto predicate (a
+        # configuration change) with a proposal, a proposition and an author's closed set.
+        ann = await store.add_entity(conn, story_id, "person", "Ann", aliases=["Annie"])
+        auto = await predicate_registry.auto_register(conn, story_id, "sails with")
+        await predicate_registry.file_proposal(
+            conn, story_id, auto.id, predicate_registry.ProposedChanges(symmetric=True)
+        )
+        found = await predicate_registry.load(conn, story_id)
+        await store.write_proposition(
+            conn,
+            story_id,
+            Proposition(
+                subject_id=ann, predicate_id=auto.id, object_id=ann, valid_time=Interval.of(0, 9)
+            ),
+            found,
+        )
+        await store.declare_closed_set(
+            conn, story_id, store.ClosedSet(auto.id, ann, (ann,)), found, asserted_by="author"
         )
 
 

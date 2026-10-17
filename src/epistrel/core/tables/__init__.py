@@ -41,6 +41,14 @@ from epistrel.core.tables.projections import (
     story_texts,
     transcript_messages,
 )
+from epistrel.core.tables.propositions import (
+    closed_sets,
+    entities,
+    entity_aliases,
+    predicate_proposals,
+    predicates,
+    propositions,
+)
 from epistrel.core.tables.rating_checks import guardrail_check_results, rating_check_jobs
 from epistrel.core.tables.ratings import content_rating_versions, content_ratings
 from epistrel.core.tables.stories import stories
@@ -55,12 +63,15 @@ __all__ = [
     "character_versions",
     "characters",
     "client_events",
+    "closed_sets",
     "config_changes",
     "content_rating_versions",
     "content_ratings",
     "deployment_state",
     "engine_profile_versions",
     "engine_profiles",
+    "entities",
+    "entity_aliases",
     "entity_relations",
     "erasure_ledger",
     "events",
@@ -77,6 +88,9 @@ __all__ = [
     "ownership_events",
     "personas",
     "policies",
+    "predicate_proposals",
+    "predicates",
+    "propositions",
     "rating_check_jobs",
     "recurring_tasks",
     "scenario_catalog",

@@ -398,6 +398,9 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "unsupported_event_kind",
         "erased_subject_referenced",
     ),
+    # A predicate proposal's decision (#131): an archived story's registry is read-only.
+    "approve_predicate": ("story_archived",),
+    "reject_predicate": ("story_archived",),
     "set_pinned_memories": (*_GATED, *_TEXT_EDIT),
     "set_custom_instructions": (*_GATED, *_TEXT_EDIT),
     "truncate": ("story_archived", "story_paused", "story_busy"),

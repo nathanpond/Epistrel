@@ -1,8 +1,10 @@
 """check-licenses: every runtime dependency's license is Apache-2.0-compatible (invariant 2).
 
 Records come from `pip-licenses --format=json --from=mixed` run against a runtime-only
-environment; only packages in #41's runtime closure are judged. Unknown spellings normalise to
-UNKNOWN, which fails — the safe direction. An exception admits an UNKNOWN or not-allowed
+environment; only packages in #41's runtime closure are judged. A value is read as an SPDX
+expression (parentheses, AND tighter than OR, WITH keeping its left-hand id; #310). Unknown
+spellings, and expressions that do not parse, normalise to UNKNOWN, which fails — the safe
+direction. An exception admits an UNKNOWN or not-allowed
 license, never one that names a deny family (#94): by an id that starts with the family, after
 any leading `LicenseRef-` or `GNU` (`GPL-3.0-only`, `GPLv3`, `GNU-GPL`, `GPL.v3`,
 `LicenseRef-GPL-3.0`), or by its long name with any separators or none (`GNU Public License`,
@@ -249,26 +251,118 @@ def _is_text(raw: str) -> bool:
     return len(raw.strip().splitlines()) > 1
 
 
+# One `;`-part of a value, as tokens: a parenthesis or a run of non-space text. `AND`, `OR` and
+# `WITH` (upper case, as SPDX writes them) are operators; consecutive other tokens form one term,
+# so a classifier spelling such as `Apache Software License` stays a single term.
+SPDX_TOKEN_RE = re.compile(r"[()]|[^\s()]+")
+SPDX_OPERATORS = frozenset({"AND", "OR", "WITH"})
+# Fail-closed bounds: a deeper nesting, or an AND of ORs that expands to more alternatives, reads
+# UNKNOWN rather than being judged in part.
+MAX_DEPTH = 16
+MAX_ALTERNATIVES = 64
+
+
+class _Malformed(Exception):
+    """The part is not a well-formed SPDX expression; it reads UNKNOWN as a whole."""
+
+
+class _SpdxParser:
+    """Recursive descent over one part, to an OR of ANDs (#310):
+
+        or   := and ("OR" and)*
+        and  := with ("AND" with)*
+        with := term ("WITH" term)? | "(" or ")"
+
+    `AND` binds tighter than `OR`, so `MIT OR Apache-2.0 AND GPL-3.0-only` is
+    `MIT OR (Apache-2.0 AND GPL-3.0-only)`. `WITH` keeps its left-hand id, as the split it
+    replaces did, and only follows a term (`(MIT OR BSD) WITH x` is malformed, as in SPDX). A
+    term is read by `normalise_id`. Anything else is `_Malformed`: an unbalanced parenthesis, a
+    missing operand, two terms or a term and a parenthesis with no operator between them
+    (`GPL (>= 2)`, `LGPL (Library GPL)`), a trailing operator, or a part past the bounds.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.tokens = [(m.start(), m.end(), m[0]) for m in SPDX_TOKEN_RE.finditer(text)]
+        self.pos = 0
+
+    def parse(self) -> list[list[str]]:
+        result = self._or(0)
+        if self.pos != len(self.tokens):
+            raise _Malformed  # a `)` without its `(`, or a term right after a `)`
+        return result
+
+    def _peek(self) -> str | None:
+        return self.tokens[self.pos][2] if self.pos < len(self.tokens) else None
+
+    def _or(self, depth: int) -> list[list[str]]:
+        alternatives = self._and(depth)
+        while self._peek() == "OR":
+            self.pos += 1
+            alternatives = alternatives + self._and(depth)
+            if len(alternatives) > MAX_ALTERNATIVES:
+                raise _Malformed
+        return alternatives
+
+    def _and(self, depth: int) -> list[list[str]]:
+        alternatives = self._with(depth)
+        while self._peek() == "AND":
+            self.pos += 1
+            right = self._with(depth)
+            if len(alternatives) * len(right) > MAX_ALTERNATIVES:
+                raise _Malformed
+            alternatives = [left + more for left in alternatives for more in right]
+        return alternatives
+
+    def _with(self, depth: int) -> list[list[str]]:
+        if self._peek() == "(":
+            if depth >= MAX_DEPTH:
+                raise _Malformed
+            self.pos += 1
+            inner = self._or(depth + 1)
+            if self._peek() != ")":
+                raise _Malformed
+            self.pos += 1
+            return inner
+        spdx = self._term()
+        if self._peek() == "WITH":
+            self.pos += 1
+            self._term()  # the exception; the left-hand id is what allow and deny judge
+        return [[spdx]]
+
+    def _term(self) -> str:
+        start = self.pos
+        while self.pos < len(self.tokens) and self.tokens[self.pos][2] not in (
+            SPDX_OPERATORS | {"(", ")"}
+        ):
+            self.pos += 1
+        if self.pos == start:
+            raise _Malformed  # an operator, a parenthesis or the end where a license belongs
+        return normalise_id(self.text[self.tokens[start][0] : self.tokens[self.pos - 1][1]])
+
+
 def _parse_part(part: str) -> list[list[str]]:
     """One `;`-part: a name found whole in the table is that id (a classifier such as `GNU General
-    Public License v3 (GPLv3)`); other parentheses → UNKNOWN; the rest splits on OR/AND/WITH."""
+    Public License v3 (GPLv3)`); the rest is an SPDX expression (`_SpdxParser`), and a part that
+    is not one reads UNKNOWN as a whole, never in part (#310)."""
     text = part.strip()
     if text.lower() in NORMALISATION:
         return [[NORMALISATION[text.lower()]]]
-    if "(" in text or ")" in text:
+    try:
+        return _SpdxParser(text).parse()
+    except _Malformed:
         return [[UNKNOWN]]
-    return [
-        [normalise_id(re.split(r"\s+WITH\s+", term)[0]) for term in re.split(r"\s+AND\s+", alt)]
-        for alt in re.split(r"\s+OR\s+", text)
-    ]
 
 
 def parse_expression(raw: str) -> list[list[str]]:
     """OR of ANDs: `GPL-2.0 OR MIT` → [[GPL-2.0], [MIT]]; `MIT AND PSF-2.0` → [[MIT, PSF-2.0]].
 
     `;` is OR and is split first: pip-licenses `--from=mixed` joins a package's license
-    classifiers with `"; "`, so each part is looked up whole before the parenthesis rule applies
-    to it (#94). `WITH` keeps the left-hand id. A license text (several lines) is UNKNOWN.
+    classifiers with `"; "`, so each part is looked up whole before it is parsed as an SPDX
+    expression (#94): `(MIT OR GPL-2.0-only)` → [[MIT], [GPL-2.0-only]], and
+    `GPL-3.0-only AND (MIT OR Apache-2.0)` → [[GPL-3.0-only, MIT], [GPL-3.0-only, Apache-2.0]]
+    (#310). `WITH` keeps the left-hand id. A part that does not parse, or a license text (several
+    lines), is UNKNOWN.
     """
     if _is_text(raw):
         return [[UNKNOWN]]
@@ -314,8 +408,8 @@ def named_family(text: str, deny: tuple[str, ...]) -> str | None:
 def unread_family(raw: str, deny: tuple[str, ...]) -> str | None:
     """A deny family named where `parse_expression` reads UNKNOWN, so no exception can admit it.
 
-    Searched: each `;`-part that is not in the table and does not parse (free text, an SPDX
-    expression with parentheses, an unlisted classifier), and a license text's title line. A
+    Searched: each `;`-part that is not in the table and does not parse (free text, a malformed
+    SPDX expression, an unlisted classifier), and a license text's title line. A
     table entry is authoritative for its spelling. A text's body is not searched: permissive
     texts name the GPL in passing (MPL-2.0's "Secondary License"), and numpy's and scipy's
     `License` fields carry the GPL notice of the runtime library bundled in their wheels.

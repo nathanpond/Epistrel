@@ -117,7 +117,7 @@ def test_closure_package_missing_from_env_warns_and_extras_are_ignored() -> None
         ("MIT AND PSF-2.0", "ok"),
         ("Apache Software License; MIT License", "ok"),
         ("GPL-2.0-or-later WITH Classpath-exception-2.0", "denied"),
-        ("(MIT OR Apache-2.0)", "unknown"),
+        ("(MIT OR Apache-2.0)", "ok"),
         ("Artistic-2.0", "not allowed"),
     ],
 )
@@ -136,10 +136,126 @@ def test_classifier_spellings_normalise() -> None:
 
 def test_parenthesised_classifier_is_looked_up_whole() -> None:
     """certifi's metadata reads `Mozilla Public License 2.0 (MPL 2.0)`: a known whole value is
-    its id (#74). Complement: other parentheses are still UNKNOWN."""
+    its id (#74). Complement: other parentheses are read as an SPDX expression (#310), and an
+    unlisted classifier with parentheses, which is not one, is UNKNOWN."""
     assert parse_expression("Mozilla Public License 2.0 (MPL 2.0)") == [["MPL-2.0"]]
     assert judge("certifi", "Mozilla Public License 2.0 (MPL 2.0)", CONFIG).status == "ok"
-    assert parse_expression("(MIT OR GPL-3.0)") == [["UNKNOWN"]]
+    assert parse_expression("(MIT OR GPL-3.0)") == [["MIT"], ["GPL-3.0"]]
+    assert parse_expression("Some Other License (SOL)") == [[UNKNOWN]]
+
+
+@pytest.mark.parametrize(
+    ("raw", "alternatives"),
+    [
+        ("(MIT OR GPL-2.0-only)", [["MIT"], ["GPL-2.0-only"]]),
+        (
+            "Apache-2.0 AND (MIT OR BSD-3-Clause)",
+            [["Apache-2.0", "MIT"], ["Apache-2.0", "BSD-3-Clause"]],
+        ),
+        (
+            "GPL-3.0-only AND (MIT OR Apache-2.0)",
+            [["GPL-3.0-only", "MIT"], ["GPL-3.0-only", "Apache-2.0"]],
+        ),
+        # AND binds tighter than OR, with or without parentheses.
+        ("MIT OR Apache-2.0 AND GPL-3.0-only", [["MIT"], ["Apache-2.0", "GPL-3.0-only"]]),
+        (
+            "(MIT OR Apache-2.0) AND GPL-3.0-only",
+            [["MIT", "GPL-3.0-only"], ["Apache-2.0", "GPL-3.0-only"]],
+        ),
+        ("(MIT OR (BSD-3-Clause AND GPL-3.0-only))", [["MIT"], ["BSD-3-Clause", "GPL-3.0-only"]]),
+        ("((MIT))", [["MIT"]]),
+        ("(MIT)OR(Apache-2.0)", [["MIT"], ["Apache-2.0"]]),
+        # `WITH` keeps its left-hand id, inside parentheses too.
+        ("(GPL-2.0-or-later WITH Classpath-exception-2.0) OR MIT", [["GPL-2.0-or-later"], ["MIT"]]),
+        ("MIT AND (Apache-2.0 WITH LLVM-exception)", [["MIT", "Apache-2.0"]]),
+        # Terms are normalised as before: a classifier spelling is one term.
+        ("(MIT License OR Apache Software License)", [["MIT"], ["Apache-2.0"]]),
+        ("Apache Software License AND MIT", [["Apache-2.0", "MIT"]]),
+    ],
+)
+def test_spdx_expressions_with_parentheses_parse(raw: str, alternatives: list[list[str]]) -> None:
+    """A real SPDX expression parser: parentheses, AND tighter than OR, and WITH, to the OR of
+    ANDs `judge` reads (#310)."""
+    assert parse_expression(raw) == alternatives
+
+
+@pytest.mark.parametrize(
+    ("raw", "status", "detail"),
+    [
+        # OR passes when any branch is allowed, as `GPL-2.0 OR MIT` does (user decision on #42).
+        ("(MIT OR GPL-2.0-only)", "ok", ""),
+        ("(GPL-2.0-only OR MIT)", "ok", ""),
+        ("(GPL-2.0-or-later WITH Classpath-exception-2.0) OR MIT", "ok", ""),
+        ("Apache-2.0 AND (MIT OR BSD-3-Clause)", "ok", ""),
+        ("MIT OR Apache-2.0 AND GPL-3.0-only", "ok", ""),
+        # AND is denied when any branch it needs is: by id, not by name (#310).
+        ("GPL-3.0-only AND (MIT OR Apache-2.0)", "denied", "GPL"),
+        ("(MIT OR Apache-2.0) AND GPL-3.0-only", "denied", "GPL"),
+        ("MIT AND (GPL-3.0-only OR AGPL-3.0-only)", "denied", "GPL"),
+        ("(MIT AND SSPL-1.0) OR (Apache-2.0 AND EUPL-1.2)", "denied", "SSPL"),
+        ("(GPL-2.0-or-later WITH Classpath-exception-2.0)", "denied", "GPL"),
+        ("(Artistic-2.0 OR Zlib)", "ok", ""),
+        ("(Artistic-2.0 OR MPL-1.1)", "not allowed", ""),
+    ],
+)
+def test_parenthesised_expressions_judge_by_branch(raw: str, status: str, detail: str) -> None:
+    verdict = judge("pkg", raw, CONFIG)
+    assert (verdict.status, verdict.detail) == (status, detail)
+    if status == "denied":
+        cfg = LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "vendor says fine"})
+        verdict = judge("pkg", raw, cfg)
+        assert (verdict.status, verdict.detail) == (
+            "denied",
+            f"exception refused: {detail} family",
+        )
+
+
+DEEP = "(" * 17 + "MIT" + ")" * 17
+WIDE = " AND ".join(f"(MIT OR Apache-2.0 OR BSD-{n}-Clause)" for n in range(2, 6))
+
+
+@pytest.mark.parametrize(
+    ("raw", "status"),
+    [
+        ("(MIT OR Apache-2.0", "unknown"),
+        ("MIT OR Apache-2.0)", "unknown"),
+        ("()", "unknown"),
+        ("(MIT OR)", "unknown"),
+        ("(OR MIT)", "unknown"),
+        ("(MIT OR OR Apache-2.0)", "unknown"),
+        ("(MIT AND) OR Apache-2.0", "unknown"),
+        ("(MIT) Apache-2.0", "unknown"),
+        ("MIT (Apache-2.0)", "unknown"),
+        ("(MIT OR Apache-2.0) WITH LLVM-exception", "unknown"),
+        ("(MIT WITH) OR Apache-2.0", "unknown"),
+        ("(MIT WITH OR Apache-2.0)", "unknown"),
+        ("MIT OR Apache-2.0 OR", "unknown"),
+        (DEEP, "unknown"),
+        (WIDE, "unknown"),
+        # Malformed and naming a deny family: denied, whichever branch would have been allowed.
+        ("(MIT OR GPL-3.0-only", "denied"),
+        ("(MIT) GPL-3.0-only", "denied"),
+        ("MIT OR (GPL (>= 2))", "denied"),
+        ("(MIT OR Apache-2.0) WITH GPL-3.0-only", "denied"),
+    ],
+)
+def test_a_malformed_expression_fails_closed(raw: str, status: str) -> None:
+    """An expression that does not parse reads UNKNOWN as a whole, so no allowed branch inside it
+    passes the value; a deny family named in it denies it, and its exception is refused (#310).
+    Complement: within the bounds, the same shapes parse (`test_spdx_expressions_with_...`)."""
+    assert parse_expression(raw) == [[UNKNOWN]]
+    verdict = judge("pkg", raw, CONFIG)
+    assert verdict.status == status
+    cfg = LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "vendor says fine"})
+    expected = "excepted" if status == "unknown" else "denied"
+    assert judge("pkg", raw, cfg).status == expected
+
+
+def test_expression_bounds_are_inclusive() -> None:
+    """Complement of `DEEP` and `WIDE`: 16 levels of parentheses and 64 alternatives parse."""
+    assert parse_expression("(" * 16 + "MIT" + ")" * 16) == [["MIT"]]
+    wide = " AND ".join(f"(MIT OR BSD-{n}-Clause)" for n in range(2, 8))
+    assert len(parse_expression(wide)) == 64
 
 
 @pytest.mark.parametrize(("spelling", "spdx"), sorted(NORMALISATION.items()))
@@ -281,8 +397,8 @@ def test_an_exception_never_admits_a_denied_family_whatever_the_spelling(
     """A deny family is found whether it is a table spelling (alone, `;`-joined, any case), an
     SPDX-like id (`GNU-GPL`, `GPL.v3`, `LicenseRef-GPL-3.0`, a long name joined by hyphens), or
     named where the parser reads UNKNOWN: free text (`GNU Public License`, `Affero GPL`,
-    `ServerSide Public License`), an SPDX expression with parentheses, the title line of a
-    license text (#94)."""
+    `ServerSide Public License`), an SPDX expression with parentheses (read by id since #310), the
+    title line of a license text (#94)."""
     verdict = judge("pkg", raw, CONFIG)
     assert (verdict.status, verdict.detail) == ("denied", family)
     cfg = LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "vendor says fine"})
@@ -321,7 +437,7 @@ NUMPY_TEXT = (
     [
         ("Artistic-2.0", "not allowed"),
         ("Other/Proprietary License", "unknown"),
-        ("(MIT OR Apache-2.0)", "unknown"),
+        ("(MIT OR Apache-2.0", "unknown"),
         ("GNU Lesser General Public License v2 (LGPLv2)", "not allowed"),
         ("LGPLv2+", "not allowed"),
         ("GNU Lesser General Public License v2.1", "unknown"),

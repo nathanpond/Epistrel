@@ -276,6 +276,11 @@ class Verification(ProfileModel):
     )
     """The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3)."""
     contradiction_checking: Annotated[bool, BEHAVIORAL, INTERPRETIVE, RELEVANT] = False
+    implication_max_depth: Annotated[int, BEHAVIORAL, INTERPRETIVE, RELEVANT] = Field(
+        default=3, ge=1, le=10
+    )
+    """How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops
+    there and flags the stop in the verdict's evidence."""
 
 
 class Commitment(ProfileModel):

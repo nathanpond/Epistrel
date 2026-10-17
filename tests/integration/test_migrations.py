@@ -586,3 +586,48 @@ def test_every_character_gets_an_entity(scratch_database: str) -> None:
         (npc, "person", "Tom", npc, None, [], "Tom", "canonical"),
     ]
     assert kept == 2
+
+
+def test_the_implication_depth_joins_the_profile_defaults(scratch_database: str) -> None:
+    """0055 (#140): ``verification.implication_max_depth`` is added to the deployment's
+    ``profile_defaults`` at the schema's default (3) and the rest of the document is kept; a
+    value already there is kept; the downgrade removes it again."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0054")
+    engine = make_sync_engine(scratch_database)
+
+    def depth() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(
+                text(
+                    "SELECT profile_defaults->'verification'->'implication_max_depth' "
+                    "FROM deployment_state"
+                )
+            )
+
+    def defaults() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+
+    try:
+        before = defaults()
+        assert depth() is None
+        command.upgrade(cfg, "0055")
+        assert depth() == 3
+        after = defaults()
+        after["verification"].pop("implication_max_depth")
+        assert after == before
+        command.downgrade(cfg, "0054")
+        assert depth() is None
+        assert defaults() == before
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE deployment_state SET profile_defaults = jsonb_set(profile_defaults, "
+                    "'{verification,implication_max_depth}', '5')"
+                )
+            )
+        command.upgrade(cfg, "0055")
+        assert depth() == 5
+    finally:
+        engine.dispose()

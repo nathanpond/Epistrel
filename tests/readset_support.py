@@ -1,11 +1,14 @@
 """The test-only keyed reader of the structured read set tests (#136) and its scripted turn.
 
-Until #140's ``verify`` and #150's structured turn land, nothing in the engine makes a keyed
-lookup, so these tests drive a stand-in: a turn whose read phase makes its precondition lookups
-through ``KeyedLookup`` (and records its semantic context as retrieved rows), and whose model is
-a scripted reply held on a latch inside its call, the way #47's concurrency tests hold Lite
-turns (``tests.concurrency_support``). Its prompt is captured, so a test can see what the
-regenerated attempt was given.
+Until #150's structured turn lands, these tests drive a stand-in turn:
+
+- its read phase makes its precondition lookups through ``KeyedLookup``, or calls #140's
+  ``verify``, which does;
+- it records its semantic context as retrieved rows;
+- its model is a scripted reply held on a latch inside its call, the way #47's concurrency
+  tests hold Lite turns (``tests.concurrency_support``).
+
+Its prompt is captured, so a test can see what the regenerated attempt was given.
 
 This module is a keyed reader: it reads ``facts`` only through ``KeyedLookup``, which
 ``tests/gates/test_keyed_readers.py`` checks with ``tools.gates check-keyed-readers``.
@@ -14,7 +17,7 @@ This module is a keyed reader: it reads ``facts`` only through ``KeyedLookup``, 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,6 +31,9 @@ from epistrel.core.propositions.model import TypedLiteral
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.settings_schema import OMNISCIENT
 from tests.concurrency_support import TURN_PRINCIPAL
+
+Read = Callable[[AsyncConnection, StructuredReadSet], Awaitable[list[list[str]]]]
+"""A turn's own read phase: what it found, per check, as the fact ids its prompt holds."""
 
 
 @dataclass(frozen=True)
@@ -114,16 +120,18 @@ async def start_keyed_turn(
     context: Sequence[Context] = (),
     budget: int | None = None,
     model: KeyedModel | None = None,
+    read: Read | None = None,
 ) -> KeyedTurn:
-    """Begin a structured turn whose read phase makes ``lookups`` through ``KeyedLookup`` and
-    records ``context`` as retrieved rows; hold it inside its first model call."""
+    """Begin a structured turn whose read phase makes ``lookups`` through ``KeyedLookup`` (or
+    runs ``read``, e.g. #140's ``verify``, on its connection and read set) and records
+    ``context`` as retrieved rows; hold it inside its first model call."""
     model = model or KeyedModel(lookups)
     source = StructuredReadSet()
     op = Operation(engine, story_id=story_id, kind=OperationKind.TURN, principal=TURN_PRINCIPAL)
 
     async def begin(conn: AsyncConnection) -> list[list[str]]:
         lookup = KeyedLookup(conn, source)
-        found = []
+        found = [] if read is None else await read(conn, source)
         for asked in lookups:
             facts = await lookup.canon_at(
                 story_id,
@@ -175,6 +183,7 @@ __all__ = [
     "KeyedModel",
     "KeyedTurn",
     "Lookup",
+    "Read",
     "reply_of",
     "start_keyed_turn",
     "stored_read_set",

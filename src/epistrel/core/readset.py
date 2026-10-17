@@ -69,12 +69,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-KEYED_READERS: tuple[str, ...] = ("epistrel.core.resolution.context",)
+KEYED_READERS: tuple[str, ...] = (
+    "epistrel.core.resolution.context",
+    "epistrel.core.verify.rules",
+    "epistrel.core.verify.normalize",
+    "epistrel.core.verify.merge",
+)
 """Modules whose ``facts``/``propositions`` reads decide a verdict, a precondition or a blocker:
 each reads them only through ``KeyedLookup`` (``tools.gates check-keyed-readers``). #139's
-resolution context (a subject's ``born``/``age`` for "when he was seven") is the first; #140's
-``epistrel.core.verify.rules``, #144's permission check and #146's ledger lookups add
-themselves when they land."""
+resolution context (a subject's ``born``/``age`` for "when he was seven") and #140's verify
+modules (``rules``, ``normalize``, ``merge``) are listed; #144's permission check and #146's
+ledger lookups add themselves when they land."""
 
 READSET_MAX_KEYS = 2_000
 """``readset_max_keys``: a turn recording more keys than this conflicts (409

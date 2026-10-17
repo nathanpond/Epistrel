@@ -4,8 +4,9 @@
 the character's id, its name and its registered aliases (the role's name overrides, the persona's
 name), a gender and descriptors; mentions resolve through names and aliases; an ambiguous
 mention ("he said it", with two candidate referents) is ``uncertain`` with both candidates and
-never a guess. #140 asserts the verdict on top (no contradiction arises from it); M5's part is
-``same_as`` as a held fact, M7's the history side-channel.
+never a guess. #140 asserts the verdict on top: a claim about that "he" is
+``uncertain(unresolved_entity)`` and no contradiction arises, while the same claim about Tom by
+name contradicts canon. M5's part is ``same_as`` as a held fact, M7's the history side-channel.
 """
 
 from __future__ import annotations
@@ -16,9 +17,14 @@ import httpx2 as httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.core.resolution.context import load_context, load_index
-from epistrel.core.resolution.entities import resolve_mentions
+from epistrel.core.propositions import registry
+from epistrel.core.propositions.model import Interval, Proposition
+from epistrel.core.propositions.vocabulary import ALIVE
+from epistrel.core.resolution.context import load_context, load_index, load_time_basis
+from epistrel.core.resolution.entities import ContextBeat, resolve_mentions
 from epistrel.core.resolution.types import MentionKind, ReasonCode
+from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize
+from epistrel.core.verify.rules import Record, VerdictKind, VerdictReason, check
 from tests import genesis_support as g
 from tests.auth_support import auth_settings
 from tests.event_support import rows
@@ -105,6 +111,32 @@ async def test_s_entity_identity__m4(client: httpx.AsyncClient, engine: AsyncEng
     assert uncertain is not None
     assert uncertain.reason.code is ReasonCode.AMBIGUOUS
     assert uncertain.reason.gate == "unresolved_entity"
+    # #140's verdict on top: a claim whose subject is that ambiguous "he" never normalizes, so
+    # it is uncertain(unresolved_entity), never a contradiction, though canon has Tom alive.
+    async with engine.connect() as conn:
+        reg = await registry.load(conn, story)
+        basis = await load_time_basis(conn, story)
+    told = type(context)(index, beats=[ContextBeat("Then Tom told Ada.", None)])
+    he_died = ClaimSketch(subject_text="he", relation_text="is dead")
+    unresolved = normalize(he_died, sam, (1, 0), registry=reg, context=told, basis=basis)
+    assert isinstance(unresolved, Unnormalizable)
+    assert unresolved.reason is VerdictReason.UNRESOLVED_ENTITY
+    assert unresolved.resolution is not None
+    assert unresolved.resolution.reason.code is ReasonCode.AMBIGUOUS
+    assert unresolved.verdict().kind is VerdictKind.UNCERTAIN
+    alive = Proposition(subject_id=tom, predicate_id=ALIVE, valid_time=Interval.of(None, None))
+    canon = [Record(alive, "01JR0000000000000000000001")]
+    # Complement: had "he" been guessed as Tom, the claim would have contradicted canon.
+    named = normalize(
+        ClaimSketch(subject_text="Tom", relation_text="is dead"),
+        sam,
+        (1, 0),
+        registry=reg,
+        context=told,
+        basis=basis,
+    )
+    assert isinstance(named, Proposition)
+    assert check(named, canon, registry=reg).kind is VerdictKind.CONTRADICTED
     # Complement: one compatible antecedent resolves the same pronoun.
     found = resolve_mentions("Then Tom came in. He said it.", sam, context)
     assert next(m.entity_id for m in found if m.kind is MentionKind.PRONOUN) == tom

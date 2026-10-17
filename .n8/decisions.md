@@ -6870,3 +6870,76 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (scope):** The structured projections (#137) still treat "now" as `story_minute_zero` for every turn. Filed as #438 rather than changed here.
   **Why:** Changing it alters #137's fold and its tests.
   **Issue:** #139, #438
+- **Decision (orchestrator):** One exception to "one subagent in the checkout": #139's fix for `test_i_27__lite` (the full suite at `312f623`: 1 failed, 2515 passed; I-27's per-table snapshot lacks #139's planned Lite character entities, `entities` 4 / `entity_aliases` 6) runs alongside #140's implementation. It touches only test files, stages by path, and rebases on a rejected push. It must keep the snapshot exact and still assert that no structured data enters the Lite prompt.
+  **Why:** The files don't overlap. Waiting for #140 (about an hour) would hold #138's and #139's evidence for no benefit.
+  **Issue:** #138, #139
+- **Decision (Discretion):** `core/verify/rules.py` holds two layers. `check(claim, records, *, registry, closed_sets, holder, position, options)` is pure over `Record`s (a proposition, its id and its fact id) and `ClosedSetRecord`s. `check_with(lookup, story_id, claim, ...)` makes the `KeyedLookup.canon_at` fetches. Rules run in FR-PROP-10's listed order and the first conclusive one wins: coverage, then polarity, functional key, closed set, max cardinality, exclusion, implication, instant identity. `Verdict` is a frozen dataclass: kind, `VerdictReason`, evidence `[{rule, proposition_id, fact_id, closed_set_id, depth_capped}]`, covered/uncovered spans, `remainder_claims` and their verdicts, and confidence (1.0 for rule verdicts and for `partial_coverage`/`granularity_refinement`, 0.5 for `approximate_bounds`/`world_knowledge`, 0.0 for the rest).
+  **Why:** The AC's signature, plus the planner's pass-1 shape.
+  **Issue:** #140
+- **Decision (deviation):** Each uncovered sub-interval is its own remainder claim, checked once. The planner described one claim carrying every sub-interval.
+  **Why:** A `Proposition` holds one valid-time. The Ohio counterexample has two uncovered parts.
+  **Issue:** #140
+- **Decision (Rule 1):** "Uncovered" is the claim's **definite** span outside the records' possible union, not its possible span. The CONTRADICTION-SOUNDNESS property found the bug: an approximate claim's remainder had claimed time the claim itself only might cover, so a polarity conflict was reported where none overlapped in every reading. The property is the regression test.
+  **Why:** A remainder must never say more than the claim did.
+  **Issue:** #140
+- **Decision (Discretion):** "Same proposition" for support means subject, predicate and object, with the claimed object set a subset of (or one member of) the record's. The key qualifiers must be equal, and every other qualifier the claim names must match the record's. A polarity conflict needs the identical normalized proposition, every qualifier included, as FR-PROP-4 words it. Strings compare casefolded.
+  **Why:** The planner's "non-key qualifiers ignored" would let a claim add an unrecorded detail (a role) and still be supported.
+  **Issue:** #140
+- **Decision (deviation):** A permanent predicate ignores valid-time for coverage, polarity and the functional key. Exclusion compares each side's own valid-time, and a claim with no stated time holds from its position on, not over all time.
+  **Why:** `dead` is permanent "from then on". With all-time defaults, "Bobby is dead" said today would contradict a childhood `alive`. The planner's all-time default breaks that case.
+  **Issue:** #140
+- **Decision (Discretion):** Four more readings:
+  - An event predicate's functional key ignores time (same key = one event: deg_A awarded by {Florida} contradicts {OSU} whenever stated).
+  - An event claimed over an interval is supported by a matching event inside it.
+  - An instant claim that an interval only partly covers is `approximate_bounds`, not `partial_coverage`.
+  - `max_cardinality` counts the distinct objects concurrent at any instant of the overlap.
+  **Why:** FR-PROP-1/10's event identity and instant semantics. The planner was silent on these cases.
+  **Issue:** #140
+- **Decision (Discretion):** On a functional predicate that declares `containment_of` (`located_at`), two entity objects that are unrelated, where some object has no containment fact at all, are `uncertain(world_knowledge)`, not `contradicted`. Two quantities in different units are `world_knowledge` too. Objects that a containment fact places are compared, and contradict when unrelated (the kitchen and garden of one house). Related objects never conflict, in either direction, up to `Options.containment_max_depth`.
+  **Why:** That Paris is not in France is world knowledge the records do not hold. FR-VERIFY-3 says to escalate it rather than guess.
+  **Issue:** #140
+- **Decision (Discretion):** `containment_max_depth` is `rules.CONTAINMENT_MAX_DEPTH = 3` (an `Options` field), not a profile dial. Only `implication_max_depth` became a dial, which is what #131's carried obligation asks for.
+  **Why:** One dial was requested. A second dial is more schema for no requirement.
+  **Issue:** #131, #140
+- **Decision (obligation #131):** `verification.implication_max_depth` (behavioral, interpretive, quality-relevant, default 3, from 1 to 10) is read by `rules.options_for` and passed to `registry.imply`. A depth stop adds `Evidence(rule=implication, depth_capped=True)` to the verdict. `check_with` fetches the antecedent predicates to one level past the cap, so the closure can tell it was stopped. Under **Rule 3**, `deployment_state.profile_defaults` must name every delivered setting (#113, checked in `test_capability_map`). So the dial joins `seeds.profiles.VERIFY_DEPTH_DEFAULTS` and migration `0055_implication_depth_default`, a data-only rewrite of the JSON document in 0047's pattern with no schema change. A migration test covers it, and `docs/openapi.json` is regenerated.
+  **Why:** #131's comment on #140. An existing deployment's defaults would otherwise lack a delivered leaf.
+  **Issue:** #131, #140
+- **Decision (Discretion):** Declared rules apply whatever the predicate's weakness. `enrolled_at` is "weak" by `Predicate.weak`, yet the author's varsity rule must contradict a negated enrollment. A weak predicate still never contradicts from cardinality, exclusion or containment, because it has none of them. Exclusions are read in both directions (`alive`↔`dead`).
+  **Why:** FR-PROP-4 forbids **inferred** exclusivity. A declared rule or closed set is not inferred.
+  **Issue:** #140
+- **Decision (deviation):** Closed sets are read from `closed_sets` directly, not keyed. In M4 only the author writes them, at genesis, before any turn, and no change-index row exists for them. Canon closed sets (#145) will need a keyed read when they land; this is noted on #145.
+  **Why:** `KeyedLookup` reads facts. Extending the change index to closed sets is #145's change, not this story's.
+  **Issue:** #140, #145
+- **Decision (deviation):** Predicate aliases are a code-level table, `normalize.RELATION_ALIASES` (everyday relation names → core predicates). The planner assumed an `aliases text[]` column from #131, which does not exist. Author predicates match by exact name.
+  **Why:** No migration is needed. #149 maps role relationship names through the same table.
+  **Issue:** #140, #149
+- **Decision (Discretion):** `normalize(sketch, speaker, position, *, registry, context, basis)` answers a `Proposition`, an `Unnormalizable(reason, detail, resolution)`, or a `RegisterPredicate` (a declared claim's unregistered relation). `normalize_declared` applies the registration in the caller's transaction through `registry.auto_register`, then normalizes again. Argument-type and literal mismatches are `argument_type`.
+  **Why:** The planner's "returned instruction the caller applies", plus a helper so #148 and #149 need no loop of their own.
+  **Issue:** #140
+- **Decision (Discretion):** `check_with` reads canon only. It raises for an utterance holder (#150 fetches those records and calls `check`, the one shape for both holders, U-15 `test_u_15__holders`). A belief holder is `uncertain(unresolved_predicate)` until M5.
+  **Why:** No utterance store exists before #150.
+  **Issue:** #140, #150
+- **Decision (obligation #136):** `epistrel.core.verify.rules`, `.normalize` and `.merge` are in `KEYED_READERS`. `rules.recheck` is registered with `register_rebase_check`: `verify` records each verdict per read set and attempt, and the re-check re-runs them on a scratch read set. A changed kind, or verification turned off, regenerates the turn. `tests/readset_support.start_keyed_turn` gains a `read=` hook, and `test_s_absent_fact__verify` is the variant in which the lock is checked by verify's precondition rule.
+  **Why:** #136's comment on #140.
+  **Issue:** #136, #140
+- **Decision (#129 gating):** `verify` is inert (no verdict, no lookup) unless the pipeline is `structured` and `verification` is on. With `contradiction_checking` off, only coverage runs, so nothing is ever `contradicted`. Both cases are tested in `tests/integration/test_verify.py`. Lite is untouched: no Lite code path calls verify.
+  **Why:** #129's module gating.
+  **Issue:** #129, #140
+- **Decision (obligation #130):** `test_dormant_facts_are_never_evidence` covers both inactive states. A fact of a truncated turn (`discarded`) and one shelved by regenerating its turn (`dormant`) both give `novel`, with no evidence, and contradict nothing. The complement is the same fact supporting the claim while active, and again after untruncation. The guarantee comes from `canon` reading `active_only` through `KeyedLookup`.
+  **Why:** #130's carried obligation. A truncation discards rather than shelves, so the dormant case needed the regeneration path.
+  **Issue:** #130, #140
+- **Decision (Discretion):** `merge_layers` (`core/verify/merge.py`) goes world → role → character and checks both directions with `check`. A closed set conflicts with another closed set of the same key that lists different members over overlapping time. A loser to a higher layer is dropped with the deciding rule; a loser to a seed of its own layer is dropped with `same_layer_order` (#149's pass-1 rule); an undecidable pair keeps both and is reported `merge_uncertain`. "Only child" is a `ClosedSetRecord` with no members. Symmetric predicates match a closed set in either direction.
+  **Why:** The planner's merge, plus #149's same-layer rule.
+  **Issue:** #140, #149
+- **Decision (Discretion):** `weak_semantics` is reported only when the caller sets `Options(strict_weak=True)`. A plain different object on a weak predicate stays `novel`.
+  **Why:** The planner: "only when the caller asks for conflict beyond polarity".
+  **Issue:** #140
+- **Decision (tests):** CONTRADICTION-SOUNDNESS's "a direct conflict always yields `contradicted`" is asserted when no identical record of the claim's own polarity overlaps the claim, over canon generated consistent (as `commit_fact` keeps it). In the excluded case coverage answers first, in FR-PROP-10's order. Under consistent canon that happens only when an instant claim's granule straddles both records. Hypothesis runs 300 examples with `deadline=None`, plus pinned `@example`s, so the "every rule exercised" complement holds whatever the seed. A local stress run of 3 seeds × 5,000 examples was green.
+  **Why:** The AC fixes the rule order. Without the pins, the complement failed on some random seeds while the properties themselves held.
+  **Issue:** #140
+- **Decision (NFR-PERF-2):** The implementation bound is deterministic: `test_verify_cost_is_bounded` asserts that one `check_with` issues the same number of statements and query keys when 40 unrelated facts (other subjects and predicates) are added. There is no wall-clock assertion (#430, #432). P-02's p95 is #153's.
+  **Why:** The orchestrator's instruction and #153's ownership of P-02.
+  **Issue:** #140, #153
+- **Decision (tests):** `test_u_15__weak_predicate` is marked `FR-PROP-10` alone, because docs/04 §15 does not plan U-15 for FR-PROP-4; CONTRADICTION-SOUNDNESS covers FR-PROP-4. The belief-holder check moved out of the M4 part into `tests/integration/test_verify.py::test_other_holders_wait_for_their_stores`, because "belief" is an M5 lexicon term.
+  **Why:** The lexicon and traceability gates.
+  **Issue:** #140

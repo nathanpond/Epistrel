@@ -12,23 +12,32 @@ semantic context is a retrieved row, never a key. The negative run
 intersection off (``epistrel.testing.faults``): the turn rebases and narrates opening a locked
 door, which is the failure this story removes.
 
-The #140 variant (the lock checked by ``verify``'s precondition rule) lands with #140.
+The #140 variant (``test_s_absent_fact__verify``): the lock is checked by ``verify``'s
+precondition rule rather than by a bare lookup. The story runs on ``Structured (M4)``, and the
+turn's read phase asks ``verify`` whether the door has the padlock. The answer is ``novel``
+(none), and its keyed fetch reads every lock on the door (object ``*``). A lock committed during
+generation touches that key, the turn regenerates, and the regenerated attempt's verdict is
+``supported``, so it narrates the lock. Complement: an unrelated commit rebases, and the rebase
+re-runs the verdict (``REBASE_CHECKS``), which is unchanged, so the turn commits.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.canon.facts import Visibility
 from epistrel.core.enums import OperationKind
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
-from epistrel.core.readset import EMPTY_RESULT
+from epistrel.core.readset import EMPTY_RESULT, StructuredReadSet
+from epistrel.core.verify import rules
 from epistrel.testing.faults import readset_intersection_disabled
 from tests.canon_support import LOCATED_AT, World, at, auto_predicate, commit, world
+from tests.memory_support import use_structured
 from tests.readset_support import (
     Context,
     KeyedTurn,
@@ -196,3 +205,53 @@ async def test_s_absent_fact__without_intersection(engine: AsyncEngine) -> None:
         await commit(engine, d.story_id, d.lock(), kind=OperationKind.CONTROL)
         assert await _finish(engine, held) == OPENS
     assert [a["outcome"] for a in held.op.attempts] == ["rebase"]
+
+
+def _verify_read(d: Door) -> Any:
+    """The turn's read phase: ``verify`` the precondition "the door has the padlock"; its
+    prompt holds the evidence (nothing while the verdict is ``novel``)."""
+
+    async def read(conn: AsyncConnection, source: StructuredReadSet) -> list[list[str]]:
+        verdict = await rules.verify(conn, source, d.story_id, d.lock())
+        assert verdict is not None  # Structured (M4) verifies
+        return [[e.fact_id for e in verdict.evidence if e.fact_id is not None]]
+
+    return read
+
+
+@pytest.mark.part("M4", "FR-CONC-11,12")
+async def test_s_absent_fact__verify(engine: AsyncEngine) -> None:
+    """The #140 variant: the lock checked by ``verify``'s precondition rule. Its empty keyed
+    fetch is a dependency: a lock added during generation regenerates the turn, whose
+    regenerated verdict is ``supported`` and narrates the lock. Complement: an unrelated commit
+    rebases, the rebase re-runs the verdict unchanged, and the door opens."""
+    d = await _door(engine)
+    await use_structured(engine, d.story_id)
+    held = await start_keyed_turn(engine, d.story_id, [], read=_verify_read(d))
+    keys = held.read_set.query_keys
+    (lock_key,) = [k for k in keys if k.predicate_id == d.has_lock]
+    assert lock_key.result_hash == EMPTY_RESULT
+    assert lock_key.object_id is None  # any lock on the door
+    assert [c.kind for c in rules.recorded(held.read_set)] == [rules.VerdictKind.NOVEL]
+    lock = await commit(engine, d.story_id, d.lock(), kind=OperationKind.CONTROL)
+    await held.release()
+    first = held.op.attempts[0]
+    assert (first["outcome"], first["reason"]) == ("regenerate", "read_set_touched")
+    assert held.model.found[1] == [[lock.id]]
+    assert await _finish(engine, held) == LOCKED
+    assert [c.kind for c in rules.recorded(held.read_set)] == [rules.VerdictKind.SUPPORTED]
+
+    calm = await _door(engine)
+    await use_structured(engine, calm.story_id)
+    quiet = await start_keyed_turn(engine, calm.story_id, [], read=_verify_read(calm))
+    checks = len(rules.recorded(quiet.read_set))
+    await commit(
+        engine,
+        calm.story_id,
+        at(calm.world.people["Ann"], calm.world.places["garden"], 0, None),
+        kind=OperationKind.CONTROL,
+    )
+    assert await _finish(engine, quiet) == OPENS
+    assert [a["outcome"] for a in quiet.op.attempts] == ["rebase"]
+    assert quiet.model.calls == 1
+    assert checks == 1

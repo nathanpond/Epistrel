@@ -3923,6 +3923,14 @@
                     "title": "Extraction Mode",
                     "type": "string"
                   },
+                  "implication_max_depth": {
+                    "default": 3,
+                    "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                    "maximum": 10.0,
+                    "minimum": 1.0,
+                    "title": "Implication Max Depth",
+                    "type": "integer"
+                  },
                   "level": {
                     "default": "off",
                     "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
@@ -4353,6 +4361,14 @@
                     ],
                     "title": "Extraction Mode",
                     "type": "string"
+                  },
+                  "implication_max_depth": {
+                    "default": 3,
+                    "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                    "maximum": 10.0,
+                    "minimum": 1.0,
+                    "title": "Implication Max Depth",
+                    "type": "integer"
                   },
                   "level": {
                     "default": "off",
@@ -5025,6 +5041,14 @@
                     ],
                     "title": "Extraction Mode",
                     "type": "string"
+                  },
+                  "implication_max_depth": {
+                    "default": 3,
+                    "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                    "maximum": 10.0,
+                    "minimum": 1.0,
+                    "title": "Implication Max Depth",
+                    "type": "integer"
                   },
                   "level": {
                     "default": "off",
@@ -8475,6 +8499,21 @@
                               }
                             ]
                           },
+                          "implication_max_depth": {
+                            "anyOf": [
+                              {
+                                "default": 3,
+                                "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                                "maximum": 10.0,
+                                "minimum": 1.0,
+                                "title": "Implication Max Depth",
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "level": {
                             "anyOf": [
                               {
@@ -11664,6 +11703,14 @@
                     "title": "Extraction Mode",
                     "type": "string"
                   },
+                  "implication_max_depth": {
+                    "default": 3,
+                    "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                    "maximum": 10.0,
+                    "minimum": 1.0,
+                    "title": "Implication Max Depth",
+                    "type": "integer"
+                  },
                   "level": {
                     "default": "off",
                     "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
@@ -14006,6 +14053,14 @@
                     "title": "Extraction Mode",
                     "type": "string"
                   },
+                  "implication_max_depth": {
+                    "default": 3,
+                    "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                    "maximum": 10.0,
+                    "minimum": 1.0,
+                    "title": "Implication Max Depth",
+                    "type": "integer"
+                  },
                   "level": {
                     "default": "off",
                     "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
@@ -14538,6 +14593,14 @@
                     ],
                     "title": "Extraction Mode",
                     "type": "string"
+                  },
+                  "implication_max_depth": {
+                    "default": 3,
+                    "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                    "maximum": 10.0,
+                    "minimum": 1.0,
+                    "title": "Implication Max Depth",
+                    "type": "integer"
                   },
                   "level": {
                     "default": "off",
@@ -15453,6 +15516,21 @@
                           }
                         ]
                       },
+                      "implication_max_depth": {
+                        "anyOf": [
+                          {
+                            "default": 3,
+                            "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                            "maximum": 10.0,
+                            "minimum": 1.0,
+                            "title": "Implication Max Depth",
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "level": {
                         "anyOf": [
                           {
@@ -16016,6 +16094,14 @@
                     "title": "Extraction Mode",
                     "type": "string"
                   },
+                  "implication_max_depth": {
+                    "default": 3,
+                    "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                    "maximum": 10.0,
+                    "minimum": 1.0,
+                    "title": "Implication Max Depth",
+                    "type": "integer"
+                  },
                   "level": {
                     "default": "off",
                     "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
@@ -16479,6 +16565,14 @@
                         ],
                         "title": "Extraction Mode",
                         "type": "string"
+                      },
+                      "implication_max_depth": {
+                        "default": 3,
+                        "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                        "maximum": 10.0,
+                        "minimum": 1.0,
+                        "title": "Implication Max Depth",
+                        "type": "integer"
                       },
                       "level": {
                         "default": "off",
@@ -22057,6 +22151,14 @@
                     "title": "Extraction Mode",
                     "type": "string"
                   },
+                  "implication_max_depth": {
+                    "default": 3,
+                    "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                    "maximum": 10.0,
+                    "minimum": 1.0,
+                    "title": "Implication Max Depth",
+                    "type": "integer"
+                  },
                   "level": {
                     "default": "off",
                     "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
@@ -22973,6 +23075,14 @@
                         ],
                         "title": "Extraction Mode",
                         "type": "string"
+                      },
+                      "implication_max_depth": {
+                        "default": 3,
+                        "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                        "maximum": 10.0,
+                        "minimum": 1.0,
+                        "title": "Implication Max Depth",
+                        "type": "integer"
                       },
                       "level": {
                         "default": "off",
@@ -26420,6 +26530,7 @@
                           "profile_defaults.verification.contradiction_checking",
                           "profile_defaults.verification.entailment_gate",
                           "profile_defaults.verification.extraction_mode",
+                          "profile_defaults.verification.implication_max_depth",
                           "profile_defaults.verification.level",
                           "public_base_url",
                           "rating_check_model_calls_per_record",
@@ -43843,6 +43954,7 @@
                           "profile_overrides.verification.contradiction_checking",
                           "profile_overrides.verification.entailment_gate",
                           "profile_overrides.verification.extraction_mode",
+                          "profile_overrides.verification.implication_max_depth",
                           "profile_overrides.verification.level",
                           "regenerate_retry_budget",
                           "turn_concurrency",

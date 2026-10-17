@@ -1,22 +1,29 @@
-"""U-27: facts from the scenario, personality from the character (docs/04 §3), its M3 part.
+"""U-27: facts from the scenario, personality from the character (docs/04 §3), its M3 and M4
+parts.
 
-Every U-27 (M3) part lives in this file (traceability counts a test ID per milestone in one
-file). #122's ``test_u_27__lite`` covers the merge rule under Lite (FR-SCN-7) and the
-character's own definition in the prompt (FR-CAT-2); the renderer's details are in
-``tests/test_genesis_render.py``.
+Every U-27 part lives in this file (traceability counts a test ID per milestone in one file).
+#122's ``test_u_27__lite`` (M3) covers the merge rule under Lite (FR-SCN-7) and the character's
+own definition in the prompt (FR-CAT-2); the renderer's details are in
+``tests/test_genesis_render.py``. #140's ``test_u_27__world_facts`` (M4) is the fact merge by
+seed layer under the contradiction rules (FR-SCN-7, FR-PROP-10), over fixture seeds; #149 calls
+the same ``merge_layers`` at structured genesis.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.verify.merge import SeedFact, SeedLayer, merge_layers
+from epistrel.core.verify.rules import ClosedSetRecord
 from tests import genesis_support as g
 from tests import lite_genesis_support as lg
 from tests import scenario_support as scenarios
+from tests import verify_support as vs
 from tests.auth_support import auth_settings
 from tests.character_support import DISPOSITIONS
 from tests.respond_support import body as body_of
@@ -145,3 +152,93 @@ async def test_u_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert lg.section(system, "### Author notes: Linda", "## Your part") != lg.section(
             changed, "### Author notes: Rhea", "## Your part"
         )
+
+
+LINDA = "01JA0000000000000000000101"
+SISTER = "01JA0000000000000000000100"
+"""The role's sister has the lower id, so ``sibling_of`` is stored with her as its subject: the
+closed set on Linda must still apply (symmetric predicates match either direction)."""
+FATHER = "01JA0000000000000000000102"
+HOUSE = "01JA0000000000000000000103"
+
+
+@pytest.mark.part("M4", "FR-SCN-7; FR-PROP-10")
+def test_u_27__world_facts() -> None:
+    """In a structured story the fact merge is decided by the contradiction rules, layer by
+    layer (#140's ``merge_layers``, which #149 calls at genesis): Linda's background flavor
+    "only child" (a closed set of no siblings) loses to the role's "has a sister" and is dropped
+    entirely (rule ``closed_set``); the world's "the father is dead" overrides the role's "the
+    father is alive" (rule ``exclusion``); both are reported with winner and loser. Complement:
+    seeds that do not conflict are all kept; a conflict within one layer goes to document order;
+    a pair the rules cannot decide keeps both and is reported ``merge_uncertain``."""
+    registry = vs.REGISTRY
+    world_dead = SeedFact(
+        "seed-world-dead", SeedLayer.WORLD, vs.prop(FATHER, vs.DEAD, when=vs.span(0, None))
+    )
+    world_house = SeedFact(
+        "seed-world-house", SeedLayer.WORLD, vs.prop(LINDA, vs.LOCATED_AT, HOUSE, vs.span(0, None))
+    )
+    role_sister = SeedFact(
+        "seed-role-sister", SeedLayer.ROLE, vs.prop(LINDA, vs.SIBLING_OF, SISTER)
+    )
+    role_alive = SeedFact(
+        "seed-role-alive", SeedLayer.ROLE, vs.prop(FATHER, vs.ALIVE, when=vs.span(0, None))
+    )
+    only_child = SeedFact(
+        "seed-character-only-child",
+        SeedLayer.CHARACTER,
+        closed_set=ClosedSetRecord("seed-character-only-child", vs.SIBLING_OF, LINDA, ()),
+    )
+    result = merge_layers(
+        {
+            SeedLayer.CHARACTER: [only_child],
+            SeedLayer.ROLE: [role_sister, role_alive],
+            SeedLayer.WORLD: [world_dead, world_house],
+        },
+        registry=registry,
+    )
+    assert [s.seed_id for s in result.kept] == [
+        "seed-world-dead",
+        "seed-world-house",
+        "seed-role-sister",
+    ]
+    decided = {(c.loser.seed_id, c.winner.seed_id, c.rule, c.outcome) for c in result.dropped}
+    assert decided == {
+        ("seed-role-alive", "seed-world-dead", "exclusion", "dropped"),
+        ("seed-character-only-child", "seed-role-sister", "closed_set", "dropped"),
+    }
+    assert all(
+        c.verdict is not None and c.verdict.kind.value == "contradicted" for c in result.dropped
+    )
+    assert result.uncertain == ()
+    # Complement: without the conflicting seeds, everything is kept.
+    calm = merge_layers(
+        {SeedLayer.WORLD: [world_house], SeedLayer.ROLE: [role_sister]}, registry=registry
+    )
+    assert (len(calm.kept), calm.dropped, calm.uncertain) == (2, (), ())
+    # Within one layer, document order wins.
+    same = merge_layers(
+        {SeedLayer.ROLE: [role_alive, replace(world_dead, layer=SeedLayer.ROLE)]}, registry=registry
+    )
+    ((conflict),) = same.dropped
+    assert (conflict.winner.seed_id, conflict.loser.seed_id, conflict.rule) == (
+        "seed-role-alive",
+        "seed-world-dead",
+        "same_layer_order",
+    )
+    # Two places no containment fact relates: world knowledge, so both stay and it is reported.
+    elsewhere = SeedFact(
+        "seed-role-elsewhere",
+        SeedLayer.ROLE,
+        vs.prop(LINDA, vs.LOCATED_AT, vs.OHIO, vs.span(0, None)),
+    )
+    doubtful = merge_layers(
+        {SeedLayer.WORLD: [world_house], SeedLayer.ROLE: [elsewhere]}, registry=registry
+    )
+    assert len(doubtful.kept) == 2
+    ((pair),) = doubtful.uncertain
+    assert (pair.winner.seed_id, pair.loser.seed_id, pair.outcome) == (
+        "seed-world-house",
+        "seed-role-elsewhere",
+        "merge_uncertain",
+    )

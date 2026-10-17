@@ -156,10 +156,18 @@ M4_PROFILE_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
 name yet, so the document stays complete (it names every delivered setting)."""
 
 
+VERIFY_DEPTH_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
+    {"verification": {"implication_max_depth": 3}}
+)
+"""The implication closure's depth dial (#140), at the schema's default: migration
+``0055_implication_depth_default`` adds it to a deployment's ``profile_defaults`` that does not
+name it yet."""
+
+
 def profile_defaults() -> dict[str, Any]:
     """A deployment's seeded ``profile_defaults``: Lite's settings with ``M4_PROFILE_DEFAULTS``
-    under them (a complete document of every delivered setting)."""
-    return _merged(_thaw(M4_PROFILE_DEFAULTS), LITE_SETTINGS)
+    and ``VERIFY_DEPTH_DEFAULTS`` under them (a complete document of every delivered setting)."""
+    return _merged(_merged(_thaw(M4_PROFILE_DEFAULTS), VERIFY_DEPTH_DEFAULTS), LITE_SETTINGS)
 
 
 __all__ = [
@@ -171,6 +179,7 @@ __all__ = [
     "STRUCTURED_M4_NAME",
     "STRUCTURED_M4_PROFILE_ID",
     "STRUCTURED_M4_SETTINGS",
+    "VERIFY_DEPTH_DEFAULTS",
     "lite_settings",
     "profile_defaults",
     "structured_m4_settings",

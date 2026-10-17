@@ -407,6 +407,42 @@ def test_classifier_values_are_read_per_classifier(raw: str, status: str, detail
         ("MIT AND GNU", "GPL"),
         ("MIT; GNU License", "GPL"),
         ("GNU LICENSE\n   Version 3\n", "GPL"),
+        # A `LicenseRef-` body is read as words, so a family after a prefix is found (#320,
+        # option 2): ScanCode LicenseDB's `LicenseRef-scancode-<key>` ids, KDE's policy ids, and
+        # other vendor schemes; the issue's values.
+        ("LicenseRef-scancode-gpl-2.0-classpath", "GPL"),
+        ("LicenseRef-scancode-gpl-2.0-plus-openssl", "GPL"),
+        ("LicenseRef-scancode-agpl-3.0-plus", "AGPL"),
+        ("LicenseRef-scancode-sspl-1.0", "SSPL"),
+        ("LicenseRef-scancode-eupl-1.2", "EUPL"),
+        ("LicenseRef-KDE-Accepted-GPL", "GPL"),
+        ("LicenseRef-MongoDB-SSPL", "SSPL"),
+        ("LicenseRef-Modified-GPL-3.0", "GPL"),
+        ("LicenseRef-Qt-GPL", "GPL"),
+        ("LicenseRef-FSF-GPL", "GPL"),
+        ("LicenseRef-Dual-GPL-Commercial", "GPL"),
+        ("MIT AND LicenseRef-scancode-gpl-2.0-plus-openssl", "GPL"),
+        ("licenseref-kde-accepted-gpl", "GPL"),
+        ("DocumentRef-spdx:LicenseRef-KDE-Accepted-GPL", "GPL"),
+        ("LicenseRef-KDE-Accepted-GPLv3", "GPL"),
+        ("LicenseRef-scancode-gnu-gpl-2.0", "GPL"),
+        ("LicenseRef-Vendor-Affero-GPL", "AGPL"),
+        # The cost the issue names: a `LicenseRef-` copy of an SPDX id with `GPL` inside it is
+        # read as the GPL. The bare SPDX ids keep their verdicts (the complement below).
+        ("LicenseRef-CNRI-Python-GPL-Compatible", "GPL"),
+        ("LicenseRef-SMAIL-GPL", "GPL"),
+        ("LicenseRef-Qt-GPL-exception-1.0", "GPL"),
+        ("LicenseRef-i2p-gpl-java-exception", "GPL"),
+        # An id that starts with the family is the family, `ver` and a `.` before the version
+        # included (#320).
+        ("GPLver3", "GPL"),
+        ("GPLv.3", "GPL"),
+        ("GPLver.3", "GPL"),
+        ("GPLVersion.3", "GPL"),
+        ("AGPLver3", "AGPL"),
+        ("EUPLv.1.2", "EUPL"),
+        ("GNU-GPLver.2", "GPL"),
+        ("LicenseRef-GPLver3", "GPL"),
     ],
 )
 def test_an_exception_never_admits_a_denied_family_whatever_the_spelling(
@@ -479,7 +515,18 @@ NUMPY_TEXT = (
         ("NetHack General Public License (NGPL)", "unknown"),
         # Only a leading `LicenseRef-` is dropped, as `GNU` is.
         ("LicenseRef-LGPL-2.1", "not allowed"),
-        ("LicenseRef-CNRI-Python-GPL-Compatible", "not allowed"),
+        # A `LicenseRef-` body read as words (#320) keeps a qualified GPL another license:
+        # `Library` right after `LicenseRef` starts the license's name, as at a phrase start.
+        ("LicenseRef-Library-GPL", "not allowed"),
+        ("LicenseRef-Lesser-GPL-3.0", "not allowed"),
+        ("LicenseRef-Nethack-GPL", "not allowed"),
+        ("LicenseRef-KDE-Accepted-LGPL", "not allowed"),
+        ("LicenseRef-scancode-lgpl-2.1-plus", "not allowed"),
+        ("LicenseRef-scancode-gfdl-1.3", "not allowed"),
+        ("LicenseRef-scancode-gnuplot", "not allowed"),
+        ("LicenseRef-scancode-mit-old-style", "not allowed"),
+        ("SMAIL-GPL", "not allowed"),
+        ("Qt-GPL-exception-1.0", "not allowed"),
         # `licensed` is not `license`.
         ("Free for the general public, licensed as MIT", "unknown"),
         # A value that names a specific GNU license other than the GPL is not a bare GNU (#313),

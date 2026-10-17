@@ -324,13 +324,17 @@ async def test_a_publish_without_the_orchestrator_lists_the_policies(
 
 async def test_the_document_check_gates_the_others(settings: Any, engine: Any) -> None:
     """A stored draft the scenario model no longer accepts (planted past the save) is refused at
-    the field, and no other check runs on it (its emptied cast is not reported); the checks this
-    deployment cannot run are still listed.
+    the field, and no other check runs on it (its emptied cast is not reported, and no
+    capability-gated check the deployment can run lists itself, which each does when it runs);
+    the checks this deployment cannot run are still listed, exactly those (FR-SCN-5).
 
-    Complement asserted: the draft as it was saved validates."""
+    Complement asserted: the draft as it was saved validates, every capability-gated check
+    listed."""
     async with rest(settings, engine) as client:
         created = await scenarios.create(client, scenarios.scenario("Planted"))
-        assert (await validate(client, created["id"])).json()["valid"] is True
+        whole = (await validate(client, created["id"])).json()
+        assert whole["valid"] is True
+        assert set(whole["report"]["unavailable"]) >= set(scenarios.M3_UNAVAILABLE)
         async with engine.begin() as conn:
             await conn.execute(
                 text(
@@ -342,7 +346,9 @@ async def test_the_document_check_gates_the_others(settings: Any, engine: Any) -
         report = (await validate(client, created["id"])).json()["report"]
         assert codes(report["errors"]) == [("extra_forbidden", "retired_group")]
         assert report["warnings"] == []
-        assert set(report["unavailable"]) >= set(scenarios.M3_UNAVAILABLE)
+        assert sorted(report["unavailable"]) == scenarios.undeliverable_checks()
+        assert scenarios.runnable_gated_checks()  # M4 on: the structured checks can run
+        assert not set(report["unavailable"]) & set(scenarios.runnable_gated_checks())
 
 
 async def test_a_retired_rating_is_an_error(settings: Any, engine: Any) -> None:

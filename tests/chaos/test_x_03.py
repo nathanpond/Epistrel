@@ -192,7 +192,7 @@ async def test_x_03(pg_url: str) -> None:
     Complements asserted: crash points fired (more than one point when the run is long enough),
     interrupted requests were retried under their keys and answered, forks joined the pool, and
     every key the client was answered for maps to exactly one committed operation."""
-    print(f"X-03 seed={SEED} iterations={ITERATIONS} ops={OPS}")
+    print(f"\nX-03 seed={SEED} iterations={ITERATIONS} ops={OPS}")
     rng = random.Random(SEED)  # noqa: S311 - a replayable seed, not a secret
     tally = Tally()
     with migrated_database(pg_url, f"epistrel_x03_{secrets.token_hex(4)}") as url:

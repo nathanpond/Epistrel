@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -125,6 +128,95 @@ def test_chaos_runs_weekly_and_on_dispatch_and_reports_a_red_run() -> None:
     assert run["env"]["EPISTREL_CHAOS_ITERATIONS"] == "${{ inputs.iterations || '500' }}"
     report = next(s for s in _steps(wf, "chaos") if s.get("name") == "Report a red run")
     assert "Weekly chaos run failed" in report["run"]
+
+
+CHAOS_SEEDED = ("test_x_03.py", "test_x_04.py", "test_x_05.py")
+
+
+def _seed_print_leads() -> dict[str, list[str]]:
+    """Per seeded chaos file, the whitespace each `seed=` print starts with. Each seed print
+    must also be the first print in its function (asserted here): it is the line pytest's `-s`
+    output prefixes."""
+    leads: dict[str, list[str]] = {}
+    for name in CHAOS_SEEDED:
+        tree = ast.parse((REPO_ROOT / "tests" / "chaos" / name).read_text())
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            prints = sorted(
+                (
+                    c
+                    for c in ast.walk(fn)
+                    if isinstance(c, ast.Call)
+                    and isinstance(c.func, ast.Name)
+                    and c.func.id == "print"
+                    and isinstance(c.args[0], ast.JoinedStr)
+                ),
+                key=lambda c: c.lineno,
+            )
+            for i, call in enumerate(prints):
+                fstring = call.args[0]
+                assert isinstance(fstring, ast.JoinedStr)
+                parts = [v.value for v in fstring.values if isinstance(v, ast.Constant)]
+                if not any("seed=" in str(p) for p in parts):
+                    continue
+                assert i == 0, f"{name}:{call.lineno}: the seed print is not {fn.name}'s first"
+                first = fstring.values[0]
+                text = str(first.value) if isinstance(first, ast.Constant) else ""
+                leads.setdefault(name, []).append(text[: len(text) - len(text.lstrip())])
+    return leads
+
+
+def test_chaos_seed_lines_start_a_line_of_their_own() -> None:
+    """#309: under `-s` pytest writes the file path or progress dots ahead of a test's first
+    print, so each seed print starts with a newline to stand on a line of its own."""
+    leads = _seed_print_leads()
+    assert set(leads) == set(CHAOS_SEEDED)
+    late = {n: ls for n, ls in leads.items() if not all(lead.startswith("\n") for lead in ls)}
+    assert late == {}, "a chaos seed print does not start with a newline"
+
+
+def _chaos_greps() -> dict[str, str]:
+    """The `grep -E` pattern of each chaos.yml step that reads the seed lines, by step name."""
+    steps = {s.get("name"): s.get("run", "") for s in _steps(_workflow("chaos.yml"), "chaos")}
+    found = {}
+    for name, needle in (("Summarise", "X-0"), ("Report a red run", "seed=")):
+        (pattern,) = [
+            p
+            for p in re.findall(r"grep -E '([^']+)' build/chaos/chaos.log", steps[name])
+            if needle in p
+        ]
+        found[name] = pattern
+    return found
+
+
+def test_chaos_greps_find_the_seeds_in_pytest_s_output() -> None:
+    """#309: the step summary and a red run's issue list every seed, whatever pytest writes
+    before a test's first print, and the summary leaves out a failed test's source lines."""
+    leads = _seed_print_leads()
+    seeds = [
+        ("tests/chaos/test_x_03.py ", "test_x_03.py", "X-03 seed=1883324247 iterations=500 ops=10"),
+        ("..", "test_x_04.py", "X-04 seed=1869950226 iterations=500 keys=20"),
+        (".", "test_x_04.py", "X-04 slow-engine seed=1869950226 iterations=500 keys=6"),
+        ("tests/chaos/test_x_05.py ", "test_x_05.py", "X-05 seed=1072740067 iterations=500"),
+    ]
+    lines = [
+        (p, n, seed, seed.split(" seed=")[0] + " outcomes={'ok': 500}") for p, n, seed in seeds
+    ]
+    log = "".join(f"{p}{leads[n][0]}{seed}\n{tally}\n" for p, n, seed, tally in lines)
+    log += '>       print(f"X-03 seed={SEED} iterations={ITERATIONS} ops={OPS}")\n'
+    log += "E       AssertionError: seed=1883324247: no crash point fired\n"
+    expected = {
+        "Summarise": [line for _, _, seed, tally in lines for line in (seed, tally)],
+        "Report a red run": [seed for _, _, seed, _ in lines],
+    }
+    grep = shutil.which("grep")
+    assert grep is not None, "the workflow's greps need a grep on PATH"
+    for step, pattern in _chaos_greps().items():
+        out = subprocess.run(
+            [grep, "-E", pattern], input=log, capture_output=True, text=True, check=False
+        ).stdout.splitlines()
+        assert out == expected[step], f"{step}: {pattern!r} printed {out}"
 
 
 def test_perf_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:

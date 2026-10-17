@@ -60,7 +60,7 @@ async def test_x_05(pg_url: str, engine: AsyncEngine) -> None:
     Complements asserted: the run produced both clean 503s and committed replies (the faults
     were real and the path still works), and a committed reply's event is found by the same
     per-operation search that finds none for a failed one."""
-    print(f"X-05 seed={SEED} iterations={ITERATIONS}")
+    print(f"\nX-05 seed={SEED} iterations={ITERATIONS}")
     rng = random.Random(SEED)  # noqa: S311 - a replayable seed, not a secret
     settings: Settings = auth_settings(pg_url, model_adapter="stub")
     stories = [await new_story(engine) for _ in range(STORIES)]

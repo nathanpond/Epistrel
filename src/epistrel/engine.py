@@ -8,6 +8,7 @@ the database it was bound to (the REST app binds it for the life of the server).
 from __future__ import annotations
 
 import asyncio
+import collections.abc
 import contextlib
 import dataclasses
 import functools
@@ -15,6 +16,8 @@ import hashlib
 import inspect
 import logging
 import time
+import types
+import typing
 from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol, overload
@@ -1155,7 +1158,7 @@ class Engine:
         actor: str | None = None,
         budget: TurnBudget | None = None,
         reserved: int = 0,
-        reserve_output_for: Sequence[str] | None = None,
+        reserve_output_for: str | Sequence[str] | None = None,
     ) -> InputPass:
         """The input gate of a truth-changing path that accepts text (FR-GUARD-9,10): run it
         after the call's other prechecks (#44's order) and before its ``Operation`` opens. A
@@ -1792,7 +1795,7 @@ class Engine:
         *,
         status: StoryStatus | None = None,
         owner: str | None = None,
-        relation: Sequence[str] = (),
+        relation: str | Sequence[str] = (),
     ) -> list[stories.StoryView]:
         """Every story, newest first, unless the request filters: by ``status``, by ``owner``
         (a principal), or by ``relation`` (each ``name:principal``, or ``name:`` for any
@@ -2018,7 +2021,7 @@ class Engine:
         *,
         scope: config_log.ConfigScope,
         story_id: str | None = None,
-        settings: Sequence[str] = (),
+        settings: str | Sequence[str] = (),
         change_class: ConfigClass | None = None,
         since: datetime | None = None,
         after: str | None = None,
@@ -3276,7 +3279,7 @@ class Engine:
         exp: int | None = None,
         sig: str | None = None,
         byte_range: media.ByteRange | None = None,
-        if_none_match: Sequence[str] = (),
+        if_none_match: str | Sequence[str] = (),
         if_range: str | None = None,
         with_bytes: bool = True,
     ) -> media.MediaContent:
@@ -3326,7 +3329,7 @@ class Engine:
         ctx: RequestContext,
         *,
         owner: str | None = None,
-        relation: Sequence[str] = (),
+        relation: str | Sequence[str] = (),
         kind: MediaKind | None = None,
         state: MediaState = MediaState.LIVE,
         limit: int = media.DEFAULT_PAGE,
@@ -3516,7 +3519,7 @@ class Engine:
         ctx: RequestContext,
         *,
         owner: str | None = None,
-        relation: Sequence[str] = (),
+        relation: str | Sequence[str] = (),
         include_deleted: bool = False,
         limit: int = profiles.DEFAULT_PAGE,
         cursor: str | None = None,
@@ -4113,6 +4116,77 @@ def guard_nul_methods(engine_class: type) -> None:
             setattr(engine_class, name, _nul_guarded(member, checked))
 
 
+REPEATED_ATTRIBUTE = "__epistrel_repeated__"
+
+_STRING_COLLECTIONS: tuple[Any, ...] = (
+    Sequence,
+    collections.abc.Iterable,
+    collections.abc.Collection,
+    collections.abc.Set,
+    list,
+    tuple,
+    set,
+    frozenset,
+)
+
+
+def _is_strings(annotation: Any) -> bool:
+    """Whether ``annotation`` (or a member of its union) is a collection of ``str``:
+    ``Sequence[str]``, ``Iterable[str]``, ``list[str]``, ``tuple[str, ...]`` and the like."""
+    if isinstance(annotation, types.UnionType) or typing.get_origin(annotation) is typing.Union:
+        return any(_is_strings(member) for member in typing.get_args(annotation))
+    arguments = typing.get_args(annotation)
+    return (
+        typing.get_origin(annotation) in _STRING_COLLECTIONS
+        and bool(arguments)
+        and all(argument is str or argument is Ellipsis for argument in arguments)
+    )
+
+
+def repeated_parameters(method: Callable[..., Any]) -> tuple[str, ...]:
+    """The parameters of ``method`` typed as a collection of strings (a repeatable filter, or
+    a list of ids): the ones ``normalise_repeated_methods`` takes a plain string in as one
+    value."""
+    hints = typing.get_type_hints(inspect.unwrap(method))
+    return tuple(
+        name
+        for name in inspect.signature(method).parameters
+        if name in hints and _is_strings(hints[name])
+    )
+
+
+def _repeated_normalised[F: Callable[..., Awaitable[Any]]](method: F, names: Sequence[str]) -> F:
+    signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    async def normalised(*args: Any, **kwargs: Any) -> Any:
+        try:
+            bound = signature.bind(*args, **kwargs)
+        except TypeError:
+            return await method(*args, **kwargs)  # the call's own TypeError
+        for name in names:
+            if isinstance(bound.arguments.get(name), str):
+                bound.arguments[name] = (bound.arguments[name],)
+        return await method(*bound.args, **bound.kwargs)
+
+    setattr(normalised, REPEATED_ATTRIBUTE, tuple(names))
+    return normalised  # type: ignore[return-value]
+
+
+def normalise_repeated_methods(engine_class: type) -> None:
+    """Take a plain string as one value in every collection-of-strings parameter of every
+    public coroutine method of ``engine_class`` (#324, as #110 made it for the catalog search):
+    a ``str`` is itself a ``Sequence[str]``, so ``relation="editor:p-c"`` was read one character
+    at a time. One query parameter is one value over REST; the library now agrees. Run first,
+    so the method's body (and nothing in front of it) sees the value as given."""
+    for name, member in list(vars(engine_class).items()):
+        if name.startswith("_") or not inspect.iscoroutinefunction(member):
+            continue
+        if names := repeated_parameters(member):
+            setattr(engine_class, name, _repeated_normalised(member, names))
+
+
+normalise_repeated_methods(Engine)
 gate_story_methods(Engine)
 gate_catalog_methods(Engine)
 guard_nul_methods(Engine)

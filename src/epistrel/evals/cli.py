@@ -106,7 +106,11 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--new-run", action="store_true", help="never merge into an earlier run")
     run.add_argument("--hardware", default="", help="where the model ran, e.g. 'Apple M3 Max'")
     run.add_argument("--server-version", default="", help="the model server and its version")
-    run.add_argument("--host", help="the host label (default: ci under CI, else local)")
+    run.add_argument(
+        "--host",
+        choices=("ci", "local"),
+        help="the host's kind (default: ci under CI, else local); never a machine name",
+    )
     run.add_argument(
         "--fail-on-gate",
         action="store_true",

@@ -4,10 +4,11 @@ person reads, and the index of the committed ones.
 **JSON** (``version: 1``, one file per run under ``build/evals/``, never committed): the run's
 ``sample_size`` (cases per seed, every suite's together), ``seed_count`` and seeds, ``model``
 and ``model_version`` (the completion's own ``model`` field; ``null`` when it reported none),
-``fingerprint`` (FR-PROF-16, #109), ``host`` (``ci``/``local``/a host name, with #54's hardware
-and server-version fields and the endpoint), and per suite, per metric: ``mean``, ``stdev``,
-``floor``, ``rule``, ``direction``, ``sample_size``, ``seed_count``, ``verdict``, and for a
-zero-tolerance metric its ``violations`` and ``upper_bound_95``. Values are fractions 0-1.
+``fingerprint`` (FR-PROF-16, #109), ``host`` (``ci`` or ``local``, with #54's hardware and
+server-version fields and the endpoint; never the machine's name), and per suite, per metric:
+``mean``, ``stdev``, ``floor``, ``rule``, ``direction``, ``sample_size``, ``seed_count``,
+``verdict``, and for a zero-tolerance metric its ``violations`` and ``upper_bound_95``.
+Values are fractions 0-1.
 
 **Markdown** (``docs/evals/<fingerprint[:12]>-<YYYY-MM-DD>.md`` for a real model, committed
 whatever its verdict as the honest record; ``build/evals/stub-report.md`` for a stub run):
@@ -59,8 +60,10 @@ VERDICT_TEXT: Mapping[Verdict, str] = {
 
 
 class Host(BaseModel):
-    kind: str
-    hostname: str
+    """Where a run ran: its kind and #54's hardware and server-version description, and the
+    endpoint. No machine name: reports are committed to a public repository (#134)."""
+
+    kind: Literal["ci", "local"]
     hardware: str = ""
     server_version: str = ""
     endpoint: str | None = None
@@ -297,7 +300,7 @@ def render_markdown(report: Report) -> str:
         f"{len(seeds)} ({seeds[0]}-{seeds[-1]})" if len(seeds) > 1 else f"{len(seeds)} {seeds}"
     )
     host = report.host
-    host_bits = [host.kind, host.hostname]
+    host_bits: list[str] = [host.kind]
     host_bits += [bit for bit in (host.hardware, host.server_version) if bit]
     endpoint = f"`{report.adapter}`" + (f" at `{host.endpoint}`" if host.endpoint else "")
     lines = [

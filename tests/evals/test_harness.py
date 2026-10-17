@@ -4,7 +4,9 @@ registered suite against the stub adapter through the real code paths."""
 from __future__ import annotations
 
 import json
+import platform
 import re
+import socket
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,7 @@ from epistrel.evals import (
     cli,
     gate,
     judge,
+    render_index,
     run,
     run_suites,
     seeds_from,
@@ -36,6 +39,7 @@ from epistrel.evals.report import (
     INDEX_NAME,
     read_summary,
     render_markdown,
+    summary,
     unique_run_id,
     write_index,
     write_markdown,
@@ -46,6 +50,7 @@ from epistrel.evals.runner import (
     CaseContext,
     NotScratch,
     Scratch,
+    host_of,
     run_fingerprint,
     scratch_story_ids,
     story_rows,
@@ -260,12 +265,41 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
         for metric in suite.metrics:
             assert f"`{metric.id}`" in markdown
     assert "verified" not in markdown.lower()
+    assert_no_machine_name(markdown, json.dumps(report.as_json()))
     assert not (tmp_path / "f.jsonl").exists()  # the stub floors held: no failed case
     assert checks.problems(suites=list(SUITES.values()), reports_dir=_index_dir(tmp_path)) == []
     found = checks.problems(
         suites=[*SUITES.values(), FloorlessSuite()], reports_dir=_index_dir(tmp_path)
     )
     assert found == ["suite floorless: floorless.rate: rule rate but no floor"]
+
+
+def assert_no_machine_name(*texts: str) -> None:
+    """Reports are committed to a public repository: none names the machine it ran on."""
+    names = {socket.gethostname(), platform.node()}
+    names |= {name.split(".", 1)[0] for name in names}
+    names = {name for name in names if len(name) >= 3}
+    for text_ in texts:
+        for name in names:
+            assert name not in text_, f"a report names the machine ({name!r})"
+
+
+def test_a_report_never_names_the_machine() -> None:
+    """The host is its kind and the hardware and server-version description given, never the
+    machine's name, in the JSON, the Markdown and the index. Complement: the description given
+    is kept."""
+    config = AdapterConfig(hardware="Apple M3 Max, 128 GB", server_version="LM Studio 0.4.26")
+    host = host_of(config)
+    assert set(host.model_dump()) == {"kind", "hardware", "server_version", "endpoint"}
+    report = _report("m", "2026-10-17", {"x.rate": Verdict.passed})
+    report.host = host
+    markdown = render_markdown(report)
+    assert "Apple M3 Max, 128 GB; LM Studio 0.4.26" in markdown
+    index = render_index([("r.md", summary(report))])
+    assert_no_machine_name(markdown, json.dumps(report.as_json()), index)
+    committed = sorted(checks.REPORTS_DIR.glob("*.md"))
+    assert committed
+    assert_no_machine_name(*(path.read_text(encoding="utf-8") for path in committed))
 
 
 def _index_dir(tmp_path: Path) -> Path:
@@ -401,7 +435,7 @@ def _report(model: str, day: str, verdicts: dict[str, Verdict]) -> Report:
         fingerprint_profile="Structured (M4) v1",
         adapter="openai",
         engine_sha="abc",
-        host=Host(kind="local", hostname="h"),
+        host=Host(kind="local"),
         seed_base=SEEDS[0],
         seeds=SEEDS,
     )

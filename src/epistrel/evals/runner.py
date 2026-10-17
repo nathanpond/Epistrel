@@ -42,7 +42,6 @@ import asyncio
 import contextlib
 import json
 import os
-import platform
 import random
 import secrets
 import time
@@ -127,8 +126,10 @@ class AdapterConfig:
     database_url: str | None = None
     hardware: str = ""
     server_version: str = ""
-    host: str | None = None
-    """``ci``, ``local`` or a host name; ``None``: ``ci`` under CI, else ``local``."""
+    host: Literal["ci", "local"] | None = None
+    """``ci`` or ``local``; ``None``: ``ci`` under CI, else ``local``. Never the machine's
+    name: reports are committed to a public repository, so a host is described only by its
+    kind and #54's hardware and server-version fields."""
 
     @property
     def model_name(self) -> str:
@@ -305,7 +306,6 @@ def host_of(config: AdapterConfig) -> Host:
     kind = config.host or ("ci" if os.environ.get("CI") else "local")
     return Host(
         kind=kind,
-        hostname=platform.node() or "unknown",
         hardware=config.hardware,
         server_version=config.server_version,
         endpoint=config.base_url if config.adapter == "openai" else None,
@@ -599,6 +599,7 @@ __all__ = [
     "NotScratch",
     "Scratch",
     "default_run_id",
+    "host_of",
     "isolation_problems",
     "run",
     "run_fingerprint",

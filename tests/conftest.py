@@ -279,11 +279,13 @@ def _shared_jobs_db(pg_url: str) -> Iterator[Any]:
 def _no_embedding_jobs_left(request: pytest.FixtureRequest) -> Iterator[None]:
     """After every test that uses the shared database, fail it if an ``embed`` or ``reembed``
     job is left queued or running there (M3's rule: deployment-scope state is rolled back). A
-    test that writes memories there drains its jobs with ``drained_embedding_jobs``."""
+    test that writes memories there drains its jobs with ``drained_embedding_jobs``. The
+    database is requested before the test runs (only for a test that uses ``pg_url``, so a unit
+    test starts no container): pytest refuses fixture requests during teardown."""
+    sync = request.getfixturevalue("_shared_jobs_db") if "pg_url" in request.fixturenames else None
     yield
-    if "pg_url" not in request.fixturenames:
+    if sync is None:
         return
-    sync = request.getfixturevalue("_shared_jobs_db")
     with sync.connect() as conn:
         left = int(conn.execute(_LEFTOVER, {"kinds": list(EMBEDDING_JOB_KINDS)}).scalar() or 0)
     if left:

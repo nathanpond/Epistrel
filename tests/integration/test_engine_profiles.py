@@ -111,7 +111,12 @@ from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
 from epistrel.core.settings_schema import ConfigClass
 from epistrel.core.stories import delete_story
 from epistrel.orchestrator.jobs.handlers import retention
-from epistrel.orchestrator.models.registry import ENTAILMENT, IMPORTANCE_SCORING, STORY_PURPOSES
+from epistrel.orchestrator.models.registry import (
+    CONSOLIDATION,
+    ENTAILMENT,
+    IMPORTANCE_SCORING,
+    STORY_PURPOSES,
+)
 from epistrel.orchestrator.models.registry import RESERVED as RESERVED_PURPOSES
 from epistrel.testing import pauses
 from epistrel.testing.profiles import TEST_CLAUSE, extra_rule
@@ -156,11 +161,12 @@ A = "p-profiles-a"
 B = "p-profiles-b"
 PURPOSES = Purposes.of(list(STORY_PURPOSES), list(RESERVED_PURPOSES))
 
-LITE_ROUTED = set(STORY_PURPOSES) - {IMPORTANCE_SCORING.name, ENTAILMENT.name}
+LITE_ROUTED = set(STORY_PURPOSES) - {IMPORTANCE_SCORING.name, ENTAILMENT.name, CONSOLIDATION.name}
 """The story purposes the Lite preset names in ``models.purposes``: every one a Lite story calls.
-``importance_scoring`` (#135) needs episodic memory and ``entailment`` (#142) verification at
-``entailment``, which Lite has off; unnamed, each inherits the deployment's model configuration,
-as every purpose does under ``Structured (M4)``."""
+``importance_scoring`` (#135) needs episodic memory, ``entailment`` (#142) verification at
+``entailment`` and ``consolidation`` (#143) the consolidation module, which Lite has off;
+unnamed, each inherits the deployment's model configuration, as every purpose does under
+``Structured (M4)``."""
 
 
 def headers(principal: str, key: str | None = None) -> dict[str, str]:
@@ -1285,7 +1291,7 @@ async def test_settings_are_checked_at_the_boundary(
             "validation_error",
             "body.settings.models.purposes.generation.base_url",
         ),
-        ({"models": {"purposes": {"consolidation": {"model": "m"}}}}, "invalid_profile", ""),
+        ({"models": {"purposes": {"time_estimation": {"model": "m"}}}}, "invalid_profile", ""),
         (
             nest("models.purposes.generation.model", "a\x00b"),
             "validation_error",
@@ -1306,7 +1312,11 @@ async def test_settings_are_checked_at_the_boundary(
                 assert error["details"]["field"] == field, (settings, error)
             else:
                 assert error["details"]["undelivered"] == [
-                    {"module": "models", "level": None, "setting": "models.purposes.consolidation"}
+                    {
+                        "module": "models",
+                        "level": None,
+                        "setting": "models.purposes.time_estimation",
+                    }
                 ]
             with pytest.raises((InvalidRequest, InvalidProfile)):
                 await lib.create_profile(

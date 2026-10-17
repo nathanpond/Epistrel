@@ -71,6 +71,7 @@ from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.errors import (
     InvalidRequest,
     LedgerUnavailable,
+    ModuleOff,
     PrincipalRequired,
     StoryNotFound,
     SubjectNotFound,
@@ -96,6 +97,8 @@ from epistrel.core.media.poster import FfmpegTools, PosterExtractor
 from epistrel.core.media.signing import Signer
 from epistrel.core.media.store import BlobStore
 from epistrel.core.media.stores import make_store
+from epistrel.core.memory import consolidation as consolidation_core
+from epistrel.core.memory.consolidation import ConsolidateRequest
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.ports import Ports
 from epistrel.core.profiles import effective, guarantees, impact
@@ -131,6 +134,7 @@ from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
 from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
 from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.orchestrator.jobs.handlers import consolidation as consolidation_job
 from epistrel.orchestrator.jobs.handlers import erasure_reconcile as erasure_reconcile_job
 from epistrel.orchestrator.jobs.handlers import importance as importance_job
 from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
@@ -192,6 +196,7 @@ CODECS: dict[str, ResultCodec[Any]] = {
         projections.RebuildResult | RebuildQueued,
         status=lambda result: 202 if isinstance(result, RebuildQueued) else 200,
     ),
+    "consolidate_story": ResultCodec.of(consolidation_job.ConsolidationQueued, status=202),
     # A blank story or one from a scenario (201); a scenario creation #109's two stages held
     # back (200, nothing written).
     "create_story": ResultCodec.of(
@@ -612,6 +617,7 @@ class Engine:
         turn_queue_job.bind(self.drainer.recover)
         lite_summary_job.bind(self.models)
         importance_job.bind(self.models)
+        consolidation_job.bind(self.models)
         reembed_job.bind(self.models.embeddings)
         rating_check_job.bind(self.models)
         media_sweep_job.bind(self.media)
@@ -655,6 +661,8 @@ class Engine:
             turn_queue_job.bind(None)
         if lite_summary_job.bound() is self.models:
             lite_summary_job.bind(None)
+        if consolidation_job.bound() is self.models:
+            consolidation_job.bind(None)
         if rating_check_job.bound() is self.models:
             rating_check_job.bind(None)
         if media_sweep_job.bound() is self.media:
@@ -955,6 +963,43 @@ class Engine:
 
         return await self._keyed(
             ctx, "rebuild_projections", run, story_id=story_id, material={"story_id": story_id}
+        )
+
+    async def consolidate(
+        self, ctx: RequestContext, story_id: str, request: ConsolidateRequest
+    ) -> consolidation_job.ConsolidationQueued:
+        """Consolidate turns ``from_turn``..``to_turn`` of ``request.scope`` now (FR-MEM-3,10;
+        #143): an explicit request, so a window already consolidated is rerun with new
+        provenance and its earlier outputs superseded. Handed to a worker as a
+        ``consolidation`` job (REST 202 ``{job_id, timeline_revision}``; the same request while
+        it waits is that job). 409 ``module_off`` when the story's configuration has
+        consolidation off; 422 ``scope_mismatch`` when the window's inputs span scopes no
+        output may combine (FR-MEM-9), refused before anything is queued."""
+        self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> consolidation_job.ConsolidationQueued:
+            revision = await self.check_expected_revision(ctx, story_id)
+            scope = request.scope or consolidation_core.Scope()
+            window = consolidation_core.Window(request.from_turn, request.to_turn)
+            async with self.db.begin() as conn:
+                dials = await consolidation_core.settings_of(conn, story_id)
+                if not dials.enabled:
+                    raise ModuleOff(
+                        "the story's configuration has consolidation off",
+                        {"story_id": story_id, "module": consolidation_core.CONSOLIDATION_MODULE},
+                    )
+                await consolidation_core.plan(conn, story_id, window, scope)
+                job_id = await consolidation_job.enqueue_window(
+                    conn, story_id, window, scope, explicit=True
+                )
+            return consolidation_job.ConsolidationQueued(job_id=job_id, timeline_revision=revision)
+
+        return await self._keyed(
+            ctx,
+            "consolidate_story",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, **request.model_dump(mode="json")},
         )
 
     @library_only("a precondition every story mutation runs (`X-Epistrel-Expected-Revision`)")

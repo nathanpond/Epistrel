@@ -323,6 +323,22 @@ class LiteSummarySegment(EventPayload):
     prompt_hash: str | None = None
 
 
+@register("consolidation_output", category=EventCategory.DERIVED)
+class ConsolidationOutput(EventPayload):
+    """A consolidation window's outputs (FR-MEM-2,3,6, FR-STORE-27; #143): the semantic
+    memories and reflections it wrote (``memory_ids``, possibly none) over turns
+    ``from_turn``..``to_turn`` of ``scope`` at ``level``, and the earlier outputs it replaced
+    (``superseded_ids``: a rerun's). Its operation (``consolidation``) is positioned at
+    ``to_turn``, so the outputs follow that turn's membership. Identifiers and counts only."""
+
+    memory_ids: tuple[str, ...] = ()
+    superseded_ids: tuple[str, ...] = ()
+    from_turn: int = Field(ge=1)
+    to_turn: int = Field(ge=1)
+    scope: str = "shared"
+    level: int = Field(default=1, ge=1, le=2)
+
+
 @register("erasure_marker", category=EventCategory.CONTROL)
 class ErasureMarker(EventPayload):
     """Where erasure (FR-ADMIN-2,6; #124) deleted a structured record of the story: the

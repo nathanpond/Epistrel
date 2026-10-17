@@ -6,6 +6,10 @@ FR-STORE-24,27). Two slices in one file (the parts gate allows one file per test
   tests/integration/test_jobs.py;
 - test_s_consolidation_race (#72): the real ``lite_summary`` job over turns 701-900,
   truncated to 800 while it calls the model.
+
+and the M4 part (#143): ``test_s_consolidation_race__structured``, the ``consolidation`` job
+over turns 700-900 truncated to 800 before it commits, and ``test_s_consolidation_race__bounded``,
+the retrieved context of a consolidated story within its budget (FR-MEM-6).
 """
 
 from __future__ import annotations
@@ -18,12 +22,17 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core import clock, summary_port
+from epistrel.core.enums import MemoryKind
 from epistrel.core.input_versions import input_key
+from epistrel.core.memory import records
+from epistrel.core.memory.consolidation import Window
+from epistrel.core.retrieval.pipeline import RetrievalQuery, retrieve
 from epistrel.core.tables import operations
 from epistrel.orchestrator.jobs import handlers, queue
-from epistrel.orchestrator.jobs.handlers import lite_summary
+from epistrel.orchestrator.jobs.handlers import consolidation, lite_summary
 from epistrel.orchestrator.jobs.worker import Worker
 from epistrel.orchestrator.models.access import ModelAccessLayer
+from tests import consolidation_support as cs
 from tests.auth_support import auth_settings
 from tests.event_support import execute_in_tx, new_story, play_turn, rows, scalar
 from tests.integration import test_jobs as jt
@@ -249,3 +258,148 @@ async def test_s_consolidation_race__jobs(
     assert row.result["through_turn"] == 1
     assert set(row.input_versions) == set(registry.declared[-1])
     assert await _segments(engine, story) == ["derived"]
+
+
+@pytest.mark.part("M4", "FR-MEM-6; FR-STORE-24,27")
+async def test_s_consolidation_race__structured(
+    engine: AsyncEngine, models: ModelAccessLayer, drained_embedding_jobs: None
+) -> None:
+    """Turns 1-699 are consolidated; a ``consolidation`` job over turns 700-900 declares every
+    input (each memory and its turn's operation) and, while it calls the model, the story is
+    truncated to 800. Its commit drops the output (no window, no outputs, its operations
+    abandoned) and puts the same job back, due now, with no failure counted. The truncation
+    enqueued a fresh consolidation of the surviving 700-800 window, which commits; the
+    re-queued job then finds that window consolidated with the same inputs and does nothing.
+    Every output's sources are at or before 800, so it is in the view through 800. The
+    consolidation operations, positioned at their windows' ends, never move a turn: every
+    turn's position is what it was. Complement: the 1-699 window, with nothing rewound, commits
+    at once."""
+    w = await cs.story(engine, cs.dials(window_memories=10_000, cadence_turns=1_000))
+    story, bobby = w.story_id, w.characters["Bobby"]
+    await cs.bulk_turns(engine, story, 900, actor=bobby, name="Bobby", does=True)
+    early = await consolidation.consolidate_window(engine, story, Window(1, 699), models=models)
+    assert str(early.outcome) == "committed"
+    before = await _positions(engine, story)
+
+    async with engine.begin() as conn:
+        await consolidation.enqueue_window(conn, story, Window(700, 900))
+    job = await cs.claim(engine, story)
+    assert job is not None
+    consolidation.bind(models)
+    latch = models.stub.hold("consolidation")
+    run = asyncio.create_task(worker(engine).execute(job))
+    await asyncio.wait_for(latch.entered.wait(), 10)
+    over = await _turn_ops(engine, story, 700, 900)
+    await truncate(engine, story, 800)
+    latch.release()
+    models.stub.reset()
+    assert await run is queue.CommitOutcome.DROPPED
+
+    (row,) = await rows(engine, "SELECT * FROM jobs WHERE id = :j", j=job.id)
+    assert (row.status, row.attempt, row.failures) == ("queued", job.attempt, 0)
+    assert _declared_turns(row.input_versions, over) == {
+        input_key(operations.name, op) for op in over
+    }
+    assert sum(1 for k in row.input_versions if k.startswith("memories:")) == 201
+    assert [r.source_window["to_turn"] for r in await cs.windows(engine, story)] == [699]
+    assert await cs.outputs(engine, story) == []
+    dropped = await rows(
+        engine,
+        "SELECT status FROM operations WHERE story_id = :s AND kind = 'consolidation' "
+        "AND status <> 'committed'",
+        s=story,
+    )
+    assert [r.status for r in dropped] == ["abandoned", "abandoned"]
+
+    queued = await cs.jobs(engine, story, "queued")
+    assert sorted((j.payload["from_turn"], j.payload["to_turn"]) for j in queued) == [
+        (700, 800),
+        (700, 900),
+    ]
+    models.stub.script(
+        "consolidation",
+        [cs.answer(facts=[("Bobby keeps busy.", "observation", [0, 50, 100])])],
+    )
+    assert await cs.run_jobs(engine, models, story) == ["committed", "committed"]
+    results = {j.id: j.result for j in await cs.jobs(engine, story)}
+    assert results[job.id]["noop"] == "replayed"
+    windows = [
+        (r.source_window["from_turn"], r.source_window["to_turn"])
+        for r in await cs.windows(engine, story)
+        if r.membership == "active"
+    ]
+    assert windows == [(1, 699), (700, 800)]
+    (made,) = await cs.outputs(engine, story)
+    assert (made.text, made.narrative_turn, made.membership_text) == (
+        "Bobby keeps busy.",
+        800,
+        "active",
+    )
+    async with engine.connect() as conn:
+        view = await records.memories_through(conn, story, 800)
+    assert made.id in {m.id for m in view}
+    assert len(made.source_event_ids) == 101
+    after = await _positions(engine, story)
+    assert {op: after[op] for op in before if op in after} == before
+
+
+@pytest.mark.part("M4", "FR-MEM-6")
+async def test_s_consolidation_race__bounded(
+    engine: AsyncEngine, models: ModelAccessLayer, drained_embedding_jobs: None
+) -> None:
+    """FR-MEM-6: on a 300-turn story (#153's 5,000-turn fixture runs in the weekly suite) with
+    consolidation on, every window consolidated into a standing fact and a reflection, the
+    context a retrieval assembles at each of six positions never exceeds the
+    ``retrieval_token_budget`` (300 tokens), and the reflections reach it. Complement: the same
+    queries without the reflection tier (``kinds`` episodic only) stay within the budget too,
+    and hold no reflection."""
+    budget = 300
+    overrides = {
+        "memory": {
+            "consolidation": {"window_memories": 50, "cadence_turns": 1_000},
+            "episodic": {"retrieval_token_budget": budget},
+        },
+    }
+    w = await cs.story(engine, overrides)
+    story, bobby = w.story_id, w.characters["Bobby"]
+    await cs.bulk_turns(
+        engine,
+        story,
+        300,
+        actor=bobby,
+        name="Bobby",
+        line=lambda n: f"the rain on day {n} soaked the fields again",
+    )
+    for start in range(1, 301, 50):
+        models.stub.script(
+            "consolidation",
+            [
+                cs.answer(
+                    facts=[(f"Rain fell on days {start} to {start + 49}.", "observation", [0])],
+                    reflections=[("Rain keeps soaking the bridge.", "observation", [1, 2])],
+                )
+            ],
+        )
+        made = await consolidation.consolidate_window(
+            engine, story, Window(start, start + 49), models=models
+        )
+        assert str(made.outcome) == "committed"
+    for with_reflections in (True, False):
+        kinds = None if with_reflections else (MemoryKind.EPISODIC,)
+        seen_reflection = False
+        for turn in (60, 110, 160, 210, 260, 301):
+            async with engine.connect() as conn:
+                found = await retrieve(
+                    conn,
+                    story,
+                    RetrievalQuery("Did the rain reach the bridge?", position=(turn, 0)),
+                    touch=False,
+                    kinds=kinds,
+                )
+            assert found.context.budget == budget
+            assert found.context.used <= budget, (turn, found.context.used)
+            kinds_seen = {m.kind for m in found.memories}
+            seen_reflection = seen_reflection or "reflection" in kinds_seen
+            if not with_reflections:
+                assert kinds_seen <= {"episodic"}
+        assert seen_reflection is with_reflections

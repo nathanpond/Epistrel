@@ -312,6 +312,30 @@ async def flip_by_sources(
     return changed
 
 
+async def supersede(
+    conn: AsyncConnection, table: Table, row_ids: Iterable[str], *, story_id: str
+) -> int:
+    """Mark the ``active`` rows ``row_ids`` of registered derived ``table`` ``superseded`` (a
+    newer derivation replaced them: #143's explicit rerun, or a reactivated original winning over
+    a rerun), stamping ``membership_tx``. A superseded row is never flipped again (the flips
+    skip it) and never read as active. Returns the rows changed."""
+    entry = derived_entry(table)
+    ids = _ids(row_ids)
+    if not ids:
+        return 0
+    t = entry.table
+    result = await conn.execute(
+        update(t)
+        .where(
+            t.c.story_id == story_id,
+            t.c.id.in_(ids),
+            t.c.membership == Membership.ACTIVE.value,
+        )
+        .values(membership=Membership.SUPERSEDED.value, membership_tx=func.transaction_timestamp())
+    )
+    return int(result.rowcount)
+
+
 async def follow_membership_change(conn: AsyncConnection, change: MembershipChange) -> None:
     """``core.timeline``'s first in-transaction membership hook: the derived rows of the
     changed operations take their new membership in the edit's transaction."""
@@ -394,6 +418,7 @@ __all__ = [
     "insert_derived",
     "position_of",
     "register_derived",
+    "supersede",
     "tx_time_of",
     "valid_time_of",
 ]

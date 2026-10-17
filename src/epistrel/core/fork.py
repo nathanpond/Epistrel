@@ -618,9 +618,15 @@ OVERRIDES: dict[str, dict[str, str]] = {
             "ORDER BY s.n) AS char(26)[])"
         ),
     },
-    # Memory records (#135): the propositions a memory wraps are the fork's copies, and (#141)
-    # its participants the fork's entities.
+    # Memory records (#135): the propositions a memory wraps are the fork's copies, (#141)
+    # its participants the fork's entities and (#143) the outputs that cover it the fork's
+    # copies of them (an output positioned after N is not copied, so it covers nothing there).
     "memories": {
+        "covered_by": (
+            f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.covered_by) "  # noqa: S608
+            f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
+            "ORDER BY s.n) AS char(26)[])"
+        ),
         "proposition_ids": (
             f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.proposition_ids) "  # noqa: S608
             f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "

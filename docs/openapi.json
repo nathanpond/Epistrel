@@ -2834,6 +2834,79 @@
         "title": "ConfigReplacement",
         "type": "object"
       },
+      "ConsolidateRequest": {
+        "additionalProperties": false,
+        "description": "``POST /admin/stories/{id}/consolidate`` (``Engine.consolidate``): consolidate turns\n``from_turn``..``to_turn`` of ``scope`` (the shared scope when omitted) now, rerunning a\nwindow already consolidated (FR-MEM-10's explicit request).",
+        "examples": [
+          {
+            "from_turn": 1,
+            "to_turn": 20
+          }
+        ],
+        "properties": {
+          "from_turn": {
+            "description": "The window's first turn.",
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "From Turn",
+            "type": "integer"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/epistrel__core__memory__consolidation__Scope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`{characters: [...]}` for memories private to those characters; the shared scope when omitted."
+          },
+          "to_turn": {
+            "description": "The window's last turn (at or after `from_turn`).",
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "To Turn",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from_turn",
+          "to_turn"
+        ],
+        "title": "ConsolidateRequest",
+        "type": "object"
+      },
+      "ConsolidationQueuedResponse": {
+        "description": "The ``consolidation`` job a requested consolidation was handed to (202), with the story's\nrevision when it was queued.",
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "job_id"
+        ],
+        "title": "ConsolidationQueuedResponse",
+        "type": "object"
+      },
       "ContextBody": {
         "description": "The assembled context within the token budget.",
         "properties": {
@@ -3747,7 +3820,7 @@
                     "properties": {
                       "cadence_turns": {
                         "default": 20,
-                        "description": "Turns between consolidation runs.",
+                        "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                         "maximum": 1000.0,
                         "minimum": 1.0,
                         "title": "Cadence Turns",
@@ -3757,6 +3830,14 @@
                         "default": false,
                         "title": "Enabled",
                         "type": "boolean"
+                      },
+                      "window_memories": {
+                        "default": 50,
+                        "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                        "maximum": 10000.0,
+                        "minimum": 1.0,
+                        "title": "Window Memories",
+                        "type": "integer"
                       }
                     },
                     "title": "Consolidation",
@@ -4246,7 +4327,7 @@
                     "properties": {
                       "cadence_turns": {
                         "default": 20,
-                        "description": "Turns between consolidation runs.",
+                        "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                         "maximum": 1000.0,
                         "minimum": 1.0,
                         "title": "Cadence Turns",
@@ -4256,6 +4337,14 @@
                         "default": false,
                         "title": "Enabled",
                         "type": "boolean"
+                      },
+                      "window_memories": {
+                        "default": 50,
+                        "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                        "maximum": 10000.0,
+                        "minimum": 1.0,
+                        "title": "Window Memories",
+                        "type": "integer"
                       }
                     },
                     "title": "Consolidation",
@@ -4762,7 +4851,7 @@
             "type": "string"
           },
           "scope": {
-            "$ref": "#/components/schemas/Scope"
+            "$ref": "#/components/schemas/Scope-Output"
           },
           "source": {
             "title": "Source",
@@ -4986,7 +5075,7 @@
                     "properties": {
                       "cadence_turns": {
                         "default": 20,
-                        "description": "Turns between consolidation runs.",
+                        "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                         "maximum": 1000.0,
                         "minimum": 1.0,
                         "title": "Cadence Turns",
@@ -4996,6 +5085,14 @@
                         "default": false,
                         "title": "Enabled",
                         "type": "boolean"
+                      },
+                      "window_memories": {
+                        "default": 50,
+                        "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                        "maximum": 10000.0,
+                        "minimum": 1.0,
+                        "title": "Window Memories",
+                        "type": "integer"
                       }
                     },
                     "title": "Consolidation",
@@ -8248,7 +8345,7 @@
                                     "anyOf": [
                                       {
                                         "default": 20,
-                                        "description": "Turns between consolidation runs.",
+                                        "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                                         "maximum": 1000.0,
                                         "minimum": 1.0,
                                         "title": "Cadence Turns",
@@ -8265,6 +8362,21 @@
                                         "default": false,
                                         "title": "Enabled",
                                         "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "window_memories": {
+                                    "anyOf": [
+                                      {
+                                        "default": 50,
+                                        "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                                        "maximum": 10000.0,
+                                        "minimum": 1.0,
+                                        "title": "Window Memories",
+                                        "type": "integer"
                                       },
                                       {
                                         "type": "null"
@@ -11862,7 +11974,7 @@
                     "properties": {
                       "cadence_turns": {
                         "default": 20,
-                        "description": "Turns between consolidation runs.",
+                        "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                         "maximum": 1000.0,
                         "minimum": 1.0,
                         "title": "Cadence Turns",
@@ -11872,6 +11984,14 @@
                         "default": false,
                         "title": "Enabled",
                         "type": "boolean"
+                      },
+                      "window_memories": {
+                        "default": 50,
+                        "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                        "maximum": 10000.0,
+                        "minimum": 1.0,
+                        "title": "Window Memories",
+                        "type": "integer"
                       }
                     },
                     "title": "Consolidation",
@@ -13375,7 +13495,7 @@
             "type": "object"
           },
           "scope": {
-            "$ref": "#/components/schemas/Scope"
+            "$ref": "#/components/schemas/Scope-Output"
           },
           "scope_id": {
             "anyOf": [
@@ -13674,7 +13794,7 @@
             "type": "object"
           },
           "scope": {
-            "$ref": "#/components/schemas/Scope"
+            "$ref": "#/components/schemas/Scope-Output"
           },
           "scope_id": {
             "anyOf": [
@@ -14272,7 +14392,7 @@
                     "properties": {
                       "cadence_turns": {
                         "default": 20,
-                        "description": "Turns between consolidation runs.",
+                        "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                         "maximum": 1000.0,
                         "minimum": 1.0,
                         "title": "Cadence Turns",
@@ -14282,6 +14402,14 @@
                         "default": false,
                         "title": "Enabled",
                         "type": "boolean"
+                      },
+                      "window_memories": {
+                        "default": 50,
+                        "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                        "maximum": 10000.0,
+                        "minimum": 1.0,
+                        "title": "Window Memories",
+                        "type": "integer"
                       }
                     },
                     "title": "Consolidation",
@@ -14873,7 +15001,7 @@
                     "properties": {
                       "cadence_turns": {
                         "default": 20,
-                        "description": "Turns between consolidation runs.",
+                        "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                         "maximum": 1000.0,
                         "minimum": 1.0,
                         "title": "Cadence Turns",
@@ -14883,6 +15011,14 @@
                         "default": false,
                         "title": "Enabled",
                         "type": "boolean"
+                      },
+                      "window_memories": {
+                        "default": 50,
+                        "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                        "maximum": 10000.0,
+                        "minimum": 1.0,
+                        "title": "Window Memories",
+                        "type": "integer"
                       }
                     },
                     "title": "Consolidation",
@@ -15600,7 +15736,7 @@
                                 "anyOf": [
                                   {
                                     "default": 20,
-                                    "description": "Turns between consolidation runs.",
+                                    "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                                     "maximum": 1000.0,
                                     "minimum": 1.0,
                                     "title": "Cadence Turns",
@@ -15617,6 +15753,21 @@
                                     "default": false,
                                     "title": "Enabled",
                                     "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "window_memories": {
+                                "anyOf": [
+                                  {
+                                    "default": 50,
+                                    "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                                    "maximum": 10000.0,
+                                    "minimum": 1.0,
+                                    "title": "Window Memories",
+                                    "type": "integer"
                                   },
                                   {
                                     "type": "null"
@@ -16542,7 +16693,7 @@
                     "properties": {
                       "cadence_turns": {
                         "default": 20,
-                        "description": "Turns between consolidation runs.",
+                        "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                         "maximum": 1000.0,
                         "minimum": 1.0,
                         "title": "Cadence Turns",
@@ -16552,6 +16703,14 @@
                         "default": false,
                         "title": "Enabled",
                         "type": "boolean"
+                      },
+                      "window_memories": {
+                        "default": 50,
+                        "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                        "maximum": 10000.0,
+                        "minimum": 1.0,
+                        "title": "Window Memories",
+                        "type": "integer"
                       }
                     },
                     "title": "Consolidation",
@@ -17074,7 +17233,7 @@
                         "properties": {
                           "cadence_turns": {
                             "default": 20,
-                            "description": "Turns between consolidation runs.",
+                            "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                             "maximum": 1000.0,
                             "minimum": 1.0,
                             "title": "Cadence Turns",
@@ -17084,6 +17243,14 @@
                             "default": false,
                             "title": "Enabled",
                             "type": "boolean"
+                          },
+                          "window_memories": {
+                            "default": 50,
+                            "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                            "maximum": 10000.0,
+                            "minimum": 1.0,
+                            "title": "Window Memories",
+                            "type": "integer"
                           }
                         },
                         "title": "Consolidation",
@@ -22615,7 +22782,7 @@
         "title": "SceneContext",
         "type": "object"
       },
-      "Scope": {
+      "Scope-Output": {
         "description": "Where a policy applies: the deployment, a rating, a story, or one character.",
         "enum": [
           "global",
@@ -23108,7 +23275,7 @@
                     "properties": {
                       "cadence_turns": {
                         "default": 20,
-                        "description": "Turns between consolidation runs.",
+                        "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                         "maximum": 1000.0,
                         "minimum": 1.0,
                         "title": "Cadence Turns",
@@ -23118,6 +23285,14 @@
                         "default": false,
                         "title": "Enabled",
                         "type": "boolean"
+                      },
+                      "window_memories": {
+                        "default": 50,
+                        "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                        "maximum": 10000.0,
+                        "minimum": 1.0,
+                        "title": "Window Memories",
+                        "type": "integer"
                       }
                     },
                     "title": "Consolidation",
@@ -24154,7 +24329,7 @@
                         "properties": {
                           "cadence_turns": {
                             "default": 20,
-                            "description": "Turns between consolidation runs.",
+                            "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
                             "maximum": 1000.0,
                             "minimum": 1.0,
                             "title": "Cadence Turns",
@@ -24164,6 +24339,14 @@
                             "default": false,
                             "title": "Enabled",
                             "type": "boolean"
+                          },
+                          "window_memories": {
+                            "default": 50,
+                            "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                            "maximum": 10000.0,
+                            "minimum": 1.0,
+                            "title": "Window Memories",
+                            "type": "integer"
                           }
                         },
                         "title": "Consolidation",
@@ -27875,6 +28058,41 @@
         "title": "WorkersCheck",
         "type": "object"
       },
+      "epistrel__core__memory__consolidation__Scope": {
+        "additionalProperties": false,
+        "description": "One viewpoint scope: shared (``characters`` ``None``) or the characters named.",
+        "properties": {
+          "characters": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Characters"
+          }
+        },
+        "title": "Scope",
+        "type": "object"
+      },
+      "epistrel__core__policies__model__Scope": {
+        "description": "Where a policy applies: the deployment, a rating, a story, or one character.",
+        "enum": [
+          "global",
+          "rating",
+          "story",
+          "character"
+        ],
+        "title": "Scope",
+        "type": "string"
+      },
       "epistrel__core__profiles__guarantees__RequiredModule": {
         "description": "A module a step needs: on at ``level`` or above (any level when ``null``; exactly\n``level`` when ``exact``).",
         "properties": {
@@ -28023,6 +28241,7 @@
                           "profile_defaults.memory.consolidation",
                           "profile_defaults.memory.consolidation.cadence_turns",
                           "profile_defaults.memory.consolidation.enabled",
+                          "profile_defaults.memory.consolidation.window_memories",
                           "profile_defaults.memory.episodic",
                           "profile_defaults.memory.episodic.enabled",
                           "profile_defaults.memory.episodic.hybrid_search",
@@ -31048,7 +31267,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "$ref": "#/components/schemas/Scope"
+                  "$ref": "#/components/schemas/epistrel__core__policies__model__Scope"
                 },
                 {
                   "type": "null"
@@ -32167,6 +32386,182 @@
           }
         ],
         "summary": "Change deployment settings",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/stories/{story_id}/consolidate": {
+      "post": {
+        "description": "Compress turns `from_turn`..`to_turn` of one viewpoint `scope` (the shared scope when omitted; `{characters: [...]}` for memories private to those characters) into semantic facts and reflections (FR-MEM-3,6,9,10). An explicit request: a window already consolidated is rerun with new provenance, and its earlier outputs are superseded. Handed to a worker: 202 `{job_id, timeline_revision}` (the same request while it waits is that job). 409 `module_off` when the story's configuration has consolidation off; 422 `scope_mismatch` when the window's inputs span scopes no output may combine.",
+        "operationId": "consolidate_story",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsolidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsolidationQueuedResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `scope_mismatch`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Consolidate a window of a story's memories",
         "tags": [
           "admin"
         ]
@@ -45458,6 +45853,7 @@
                           "profile_overrides.memory.consolidation",
                           "profile_overrides.memory.consolidation.cadence_turns",
                           "profile_overrides.memory.consolidation.enabled",
+                          "profile_overrides.memory.consolidation.window_memories",
                           "profile_overrides.memory.episodic",
                           "profile_overrides.memory.episodic.enabled",
                           "profile_overrides.memory.episodic.hybrid_search",

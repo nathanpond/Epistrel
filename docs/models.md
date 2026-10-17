@@ -19,7 +19,8 @@ per model tier are in [model-matrix.md](model-matrix.md).
 |---|---|---|---|---|
 | `generation` | yes | `default` | `none` | 8,192 tokens |
 | `guardrail_check` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
-| `lite_summary` | no | `default` | `none` | 8,192 tokens |
+| `consolidation` | no | `default` | `parse_validate_retry` | 8,192 tokens |
+| `lite_summary` | no | `consolidation` | `none` | 8,192 tokens |
 | `rating_suggestion` | no | `guardrail_check` | `parse_validate_retry` | 8,192 tokens |
 | `quality_judge` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 | `importance_scoring` | no | `default` | `parse_validate_retry` | 8,192 tokens |
@@ -80,14 +81,41 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 | `subjects.label` | `policy_text` |
 | `subjects.age` | `subject_true_age` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `claim_text`, `canon_record`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`
+
+### `consolidation`
+
+Compresses one window of episodic memories (and the canon in it) into standing facts and reflections, in the background (FR-MEM-3,6,9,10).
+
+- **Hot path:** no
+- **Default model:** the `default` row of `model_config`, unless the purpose has its own
+- **Template:** `consolidation.j2`
+- **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
+- **Returns:** `ConsolidationResult` (`facts`, `reflections`), validated strictly; its free text is author-facing
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `records.index` | `record_meta` |
+| `records.text` | `memory_text` |
+| `records.kind` | `record_meta` |
+| `records.holder` | `record_meta` |
+| `records.visibility` | `record_meta` |
+| `records.position` | `record_meta` |
+| `records.speaker` | `record_meta` |
+| `scope` | `scope_meta` |
+| `level` | `scope_meta` |
+| `covers` | `scope_meta` |
+
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `claim_text`, `canon_record`
 
 ### `lite_summary`
 
 Folds old messages into a Lite story's rolling summary (FR-LITE-2).
 
 - **Hot path:** no
-- **Default model:** the `default` row of `model_config`, unless the purpose has its own
+- **Default model:** the `consolidation` row of `model_config`, then the `default` row, per field, unless the purpose has its own
 - **Template:** `lite_summary.j2`
 - **Capability floor:** structured output: not required; minimum context 8,192 tokens
 - **Returns:** free text
@@ -139,7 +167,7 @@ Reviews one catalog entry against one rating's content policy: its description, 
 | `elements.location` | `catalog_text` |
 | `elements.text` | `catalog_text` |
 
-**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `claim_text`, `canon_record`
+**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`
 
 ### `quality_judge`
 
@@ -159,7 +187,7 @@ Pairwise prose comparisons (eval only, never in a turn; NFR-QUAL-14,15).
 | `second` | `eval_text` |
 | `criteria` | `eval_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `memory_text`, `claim_text`, `canon_record`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`
 
 ### `importance_scoring`
 
@@ -178,7 +206,7 @@ Scores one memory's importance, 0 (trivia) to 1 (pivotal) (FR-MEM-7).
 | `text` | `memory_text` |
 | `kind` | `memory_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `claim_text`, `canon_record`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`
 
 ### `entailment`
 
@@ -199,7 +227,7 @@ Judges the fuzzy residual of verify: one claim the deterministic check left unce
 | `records.holder` | `canon_record` |
 | `records.valid_time` | `canon_record` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`
 
 ## Ports delivered
 
@@ -223,7 +251,7 @@ Embeds memory texts and retrieval queries over the OpenAI-compatible `/embedding
 |---|---|
 | `text` | `memory_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `claim_text`, `canon_record`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`
 
 ## Reserved purposes
 
@@ -233,7 +261,6 @@ its floor and data-flow row, in the milestone that delivers it.
 | Purpose | Kind | Milestone | Defaults to | Description |
 |---|---|---|---|---|
 | `regeneration` | purpose | M4 | — | Regenerates a span under corrected constraints. |
-| `consolidation` | purpose | M4 | — | Summaries and reflections (worker). |
 | `salience_detection` | purpose | M4 | — | Detects signals that need commitment. |
 | `extraction_backstop` | purpose | M4 | — | Model layer of claim detection. |
 | `belief_adjudication` | purpose | M5 | `entailment` | Adjudicated belief transitions. |
@@ -261,7 +288,9 @@ its floor and data-flow row, in the milestone that delivers it.
 | `scenario_text` | A scenario story's world, seeded facts, relationships, starting places and player persona, as text (#122). |
 | `director_notes` | A scenario story's director notes: plot hooks, objectives, guidance, planned reveals, milestones and endings (#122). |
 | `eval_text` | Text an eval case supplies or an eval's scratch story produced, compared by the quality judge; never a live story's content (#134). |
-| `memory_text` | One memory record of the story: its text (an attributed line of a beat) and its kind, scored by importance scoring (#135) and embedded by the embedding port, as is a retrieval query (#138). |
+| `memory_text` | One memory record of the story: its text (an attributed line of a beat) and its kind, scored by importance scoring (#135) and embedded by the embedding port, as is a retrieval query (#138); compressed by consolidation with the canon facts of its window, each rendered as one line (#143). |
+| `record_meta` | The labels of each record consolidation compresses: its index, kind, holder, visibility, position and speaker; never other text (#143). |
+| `scope_meta` | The viewpoint scope, level and turns one consolidation call covers (#143). |
 | `claim_text` | One claim the deterministic check left uncertain, normalized and rendered with entity names and its valid-time in story-minutes, judged by entailment (#142). |
 | `canon_record` | One of the claim holder's records, rendered the same way with its holder and valid-time: only those the check fetched for the claim and the claim subject's own facts (#142). |
 

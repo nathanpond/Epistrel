@@ -231,6 +231,7 @@ ERROR_STATUS: dict[str, int] = {
     "persona_name_taken": 409,
     "upload_closed": 409,
     "upload_incomplete": 409,
+    "module_off": 409,
     "length_required": 411,
     "draft_too_large": 413,
     "media_too_large": 413,
@@ -271,6 +272,7 @@ ERROR_STATUS: dict[str, int] = {
     "publish_invalid": 422,
     "rating_check_failed": 422,
     "rating_retired": 422,
+    "scope_mismatch": 422,
     "slot_required": 422,
     "subjects_required": 422,
     "transfer_target_invalid": 422,
@@ -432,6 +434,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # A story's rating (#118): a tightening pauses the story, so a second change waits.
     "set_content_rating": ("story_archived", "story_paused", "rating_retired"),
     "rebuild_projections": ("story_busy",),
+    "consolidate_story": ("module_off", "scope_mismatch"),
     "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
     "retrieve": ("omniscient_required", "viewpoint_unresolved"),
     "get_story": ("viewpoint_unresolved",),

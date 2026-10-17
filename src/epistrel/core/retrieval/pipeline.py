@@ -695,8 +695,11 @@ async def retrieve(
     settings: ProfileSettings | None = None,
     touch: bool = True,
     extra_event_types: Iterable[str] = (),
+    kinds: Iterable[MemoryKind] | None = None,
 ) -> RetrievalResult:
-    """Retrieve for ``query`` (see the module docstring)."""
+    """Retrieve for ``query`` (see the module docstring). ``kinds`` keeps only memories of
+    those kinds (every kind when ``None``): Q-03's arm without the reflection tier (#143)."""
+    wanted = None if kinds is None else frozenset(MemoryKind(k) for k in kinds)
     clk = _Clock()
     if settings is None:
         settings = (await effective_configuration(conn, story_id, validate=False)).settings
@@ -777,6 +780,9 @@ async def retrieve(
                 participants=participants,
                 k=params.k,
             )
+    if wanted is not None:
+        episode_rows = [r for r in episode_rows if MemoryKind(r.kind) in wanted]
+        assessment_rows = [r for r in assessment_rows if MemoryKind(r.kind) in wanted]
     clk.lap("occasion")
 
     # 3. the hybrid arms
@@ -901,6 +907,8 @@ async def retrieve(
     fused = ranking.fuse(rankings, params.rrf_k)
     candidates = [i for i in fused if i not in taken]
     details = await _by_id(conn, story_id, candidates)
+    if wanted is not None:
+        details = {i: r for i, r in details.items() if MemoryKind(r.kind) in wanted}
     ranked = ranking.rank(
         (
             ranking.Candidate(i, r.narrative_turn, r.importance, r.importance_at)

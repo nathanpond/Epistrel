@@ -38,11 +38,15 @@ from epistrel.core.enums import OperationKind
 from epistrel.core.erasure import boundary, guard
 from epistrel.core.erasure.ledger import LedgerFile
 from epistrel.core.media.sweep import collect_blob
+from epistrel.core.memory.consolidation import Window
 from epistrel.observability import logging as telemetry_logging
+from epistrel.orchestrator.jobs.handlers import consolidation
+from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
 from epistrel.testing import pauses
 from epistrel.testing.determinism import differences, state
 from epistrel.tools import backup
 from tests import character_support as characters
+from tests import consolidation_support as cs
 from tests import erasure_support as e
 from tests import genesis_support as g
 from tests import ledger_support as ledger
@@ -55,12 +59,14 @@ from tests.determinism.test_determinism import Run
 from tests.event_support import rows, scalar
 from tests.idempotency_support import KEY
 from tests.integration.test_erasure_resurrection import resurrection_clauses
+from tests.memory_support import turn, use_structured
 from tests.model_support import config_key
 from tests.projection_support import snapshot
 from tests.respond_support import FIRST as ADA
 from tests.respond_support import SECOND as BRANN
 from tests.respond_support import body, respond, respond_client
-from tests.summary_support import run_due_jobs, segment_rows, summary_jobs
+from tests.respond_support import new_story as new_rest_story
+from tests.summary_support import run_due_jobs, segment_rows, summary_jobs, worker
 
 pytestmark = pytest.mark.integration
 
@@ -761,3 +767,80 @@ async def test_s_erasure_boundary__in_flight(
     result replays as the reference only. The clauses and their complements are
     ``tests/integration/test_erasure_resurrection.resurrection_clauses``."""
     await resurrection_clauses(erasure_settings, engine)
+
+
+LINDA = "Linda May"
+"""#143's subject (a cast member of the structured story)."""
+
+
+@pytest.mark.part("M4", "FR-ADMIN-6,9")
+async def test_s_erasure_boundary__consolidation(
+    erasure_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """S-ERASURE-BOUNDARY's M4 consolidation clause (#143). Wren's lines name Linda May and a
+    consolidation of turns 1-2 left a reflection naming her. A second consolidation, over turns
+    3-4 (also naming her), is calling the model when Linda is erased: the erasure redacts the
+    reflection in place (residue 0 in memories) and the job's inputs (their text digests and
+    their operations moved), so its commit drops its output and the job goes back to the queue:
+    nothing naming her is written. Re-run, it reads the redacted inputs and commits; a model
+    answer that still names her is refused by the resurrection guard (nothing written).
+    Complement: the reflection that never named her is kept as it was."""
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story, cast = await new_rest_story(client, "Wren", LINDA, "Ty")
+        await use_structured(engine, story)
+        linda, wren, ty = cast[LINDA], cast["Wren"], cast["Ty"]
+        await turn(engine, story, actor=wren, say=f"I saw {LINDA} at the well.", reply=None)
+        await turn(engine, story, actor=ty, do="waters the garden", reply=None)
+        stub = lib.models.stub
+        stub.script(
+            "consolidation",
+            [
+                cs.answer(
+                    facts=[(f"{LINDA} was at the well.", "attributed_claim", [0])],
+                    reflections=[("Ty tends the garden.", "observation", [1])],
+                )
+            ],
+        )
+        first = await consolidate_window(engine, story, Window(1, 2), models=lib.models)
+        assert str(first.outcome) == "committed"
+        kept = {r.text: r for r in await cs.outputs(engine, story)}
+        assert f"Wren said {LINDA} was at the well." in kept
+        await turn(engine, story, actor=wren, say=f"{LINDA} left early.", reply=None)
+        await turn(engine, story, actor=ty, say="The gate creaks.", reply=None)
+
+        async with engine.begin() as conn:
+            await consolidation.enqueue_window(conn, story, Window(3, 4))
+        job = await cs.claim(engine, story)
+        assert job is not None
+        consolidation.bind(lib.models)
+        latch = stub.hold("consolidation")
+        run = asyncio.create_task(worker(engine).execute(job))
+        await asyncio.wait_for(latch.entered.wait(), 10)
+        done = await e.erase(client, "character", linda, story, confirm_all=True)
+        latch.release()
+        assert await run == "dropped"
+        stub.reset()
+        assert done["residue"] == 0
+        after = {r.id: r for r in await cs.outputs(engine, story)}
+        assert {r.narrative_turn for r in after.values()} == {2}
+        redacted = after[kept[f"Wren said {LINDA} was at the well."].id]
+        assert "[erased]" in redacted.text
+        assert redacted.embedding is None
+        untouched = after[kept["Ty tends the garden."].id]
+        assert untouched.text == "Ty tends the garden."
+        residue = await e.residue(engine, story, ["Linda", "linda", LINDA])
+        assert residue.get("memories", 0) == 0
+        (requeued,) = await cs.jobs(engine, story, "queued")
+        assert (requeued.id, requeued.failures) == (job.id, 0)
+
+        stub.script("consolidation", [cs.answer(facts=[(f"{LINDA} left.", "observation", [1])])])
+        assert await cs.run_jobs(engine, lib.models, story) == ["failed"]
+        (refused,) = [j for j in await cs.jobs(engine, story) if j.id == job.id]
+        assert refused.result == {"error": "ErasedSubjectReferenced"}
+        assert {r.narrative_turn for r in await cs.outputs(engine, story)} == {2}
+        stub.script("consolidation", [cs.answer(facts=[("The gate creaks.", "observation", [1])])])
+        rerun = await consolidate_window(engine, story, Window(3, 4), models=lib.models)
+        assert str(rerun.outcome) == "committed"
+        latest = [r for r in await cs.outputs(engine, story) if r.narrative_turn == 4]
+        assert [r.text for r in latest] == ["Ty said the gate creaks."]
+        assert not any("linda" in r.text.casefold() for r in await cs.outputs(engine, story))

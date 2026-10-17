@@ -29,6 +29,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import BaseModel, SecretStr
+from sqlalchemy import text
 
 from epistrel.api import create_app
 from epistrel.api.config_changes import ConfigChangesBody
@@ -43,7 +44,11 @@ from epistrel.api.routes.admin.offboarding import OffboardingPlanBody, Offboardi
 from epistrel.api.routes.admin.policies import PolicyBody, PolicyList, PolicyMutation
 from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, RatingMutation
 from epistrel.api.routes.admin.settings import SettingsBody
-from epistrel.api.routes.admin.stories import RebuildQueuedResponse, RebuildResponse
+from epistrel.api.routes.admin.stories import (
+    ConsolidationQueuedResponse,
+    RebuildQueuedResponse,
+    RebuildResponse,
+)
 from epistrel.api.routes.catalog_characters import (
     CharacterDraftBody,
     CharacterListBody,
@@ -144,6 +149,7 @@ from epistrel.core.fork import Forked, ForkRequest
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
+from epistrel.core.memory.consolidation import ConsolidateRequest
 from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
@@ -158,7 +164,7 @@ from epistrel.core.propositions.vocabulary import MEMBER_OF
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
-from epistrel.core.seeds.profiles import LITE_PRESET_ID
+from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
 from epistrel.core.stories import AdHocCharacter, StorySpec
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
@@ -298,6 +304,26 @@ async def _rebuild(engine: Engine, story_id: str) -> dict[str, Any]:
     if isinstance(result, RebuildQueued):
         return dump(RebuildQueuedResponse.of(result))
     return dump(RebuildResponse.of(result))
+
+
+WINDOW_ONE = {"from_turn": 1, "to_turn": 1}
+
+
+async def _structured_fork(engine: Engine, ids: Ids) -> None:
+    """The fork on the seeded ``Structured (M4)`` profile, consolidation on (#143)."""
+    async with engine.db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE stories SET engine_profile_id = :p, engine_profile_version_pin = NULL "
+                "WHERE id = :s"
+            ),
+            {"s": ids["fork"], "p": STRUCTURED_M4_PROFILE_ID},
+        )
+
+
+async def _consolidate(engine: Engine, story_id: str) -> dict[str, Any]:
+    queued = await engine.consolidate(CTX, story_id, ConsolidateRequest(from_turn=1, to_turn=2))
+    return dump(ConsolidationQueuedResponse.of(queued))
 
 
 def _keep(name: str, *path: str | int) -> Callable[[dict[str, Any], Ids], None]:
@@ -923,6 +949,12 @@ def _steps() -> list[Step]:
             lambda ids: Rest("POST", f"/admin{s}/rebuild"),
             lambda e, ids: _rebuild(e, ids["story"]),
         ),
+        # A Lite story has consolidation off: 409 module_off on both surfaces (#143).
+        Step(
+            "consolidate",
+            lambda ids: Rest("POST", f"/admin{s}/consolidate", {"from_turn": 1, "to_turn": 2}),
+            lambda e, ids: _consolidate(e, ids["story"]),
+        ),
         Step(
             "archive_story",
             lambda ids: Rest("POST", f"{s}/archive"),
@@ -932,6 +964,16 @@ def _steps() -> list[Step]:
             "unarchive_story",
             lambda ids: Rest("POST", f"{s}/unarchive"),
             lambda e, ids: _status(e.unarchive_story(CTX, ids["story"])),
+        ),
+        # The fork, on the Structured (M4) profile, consolidates (202, replayed by C-15), and is
+        # deleted next.
+        Step(
+            "consolidate",
+            lambda ids: Rest(
+                "POST", "/admin/stories/{fork}/consolidate", {"from_turn": 1, "to_turn": 1}
+            ),
+            lambda e, ids: _consolidate(e, ids["fork"]),
+            prepare=_structured_fork,
         ),
         Step(
             "delete_story",

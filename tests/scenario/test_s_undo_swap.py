@@ -1,5 +1,6 @@
 """S-UNDO-SWAP, M2 part: undo a rewind after new turns were written (docs/04 §7; #66). One
-turn per message: player-only turns written through ``Operation``."""
+turn per message: player-only turns written through ``Operation``. M4's consolidation clause
+is ``test_s_undo_swap__consolidation`` (#143)."""
 
 from __future__ import annotations
 
@@ -12,11 +13,16 @@ from epistrel.core import timeline, variants
 from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.events import Operation
+from epistrel.core.memory.consolidation import Window
 from epistrel.core.variants import ChainRef, SwapRequest
+from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
+from epistrel.orchestrator.models.access import ModelAccessLayer
+from tests import consolidation_support as cs
+from tests.auth_support import auth_settings
 from tests.concurrency_support import assert_single_chain, chain
 from tests.event_support import new_story, rows
 from tests.fork_support import fork, owned_rows
-from tests.projection_support import snapshot
+from tests.projection_support import snapshot, truncate, untruncate
 
 MESSAGES = 1_000
 CHECKPOINT = 800
@@ -189,3 +195,67 @@ async def test_s_undo_swap(engine: AsyncEngine) -> None:
     )
     await assert_single_chain(engine, story)
     assert await _operations(engine, story) == primes_ops
+
+
+async def _consolidate(
+    engine: AsyncEngine, models: ModelAccessLayer, story: str, first: int, last: int, line: str
+) -> None:
+    models.stub.script("consolidation", [cs.answer(facts=[(line, "observation", [0])])])
+    done = await consolidate_window(engine, story, Window(first, last), models=models)
+    assert str(done.outcome) == "committed"
+
+
+async def _active(engine: AsyncEngine, story: str) -> set[str]:
+    return {r.text for r in await cs.outputs(engine, story, membership="active")}
+
+
+@pytest.mark.part("M4", "FR-STORE-29")
+async def test_s_undo_swap__consolidation(
+    engine: AsyncEngine, pg_url: str, drained_embedding_jobs: None
+) -> None:
+    """S-UNDO-SWAP's M4 consolidation clause (#143; docs/04 §7, shared with #130/#133/#154).
+    Twenty turns, windows 1-5, 6-10 and 11-15 consolidated; truncate to 10, write 11'-15' and
+    consolidate them; undo the truncation (a swap): the original chain's 11-15 output is active
+    again, the 11'-15' output dormant with its chain, and consolidation reruns for the restored
+    chain: its uncovered 16-20 is consolidated. Then a plain reactivation: with 11-15
+    consolidated, truncating to 12 enqueues 11-12, which commits; undoing the truncation
+    restores the original 11-15 output, which wins over the rerun (superseded, FR-MEM-10)."""
+    models = ModelAccessLayer.from_settings(auth_settings(pg_url, model_adapter="stub"))
+    models.bind(engine)
+    quiet = cs.dials(window_memories=1_000, cadence_turns=1_000)
+    w = await cs.story(engine, quiet)
+    story, bobby = w.story_id, w.characters["Bobby"]
+    await cs.bulk_turns(engine, story, 20, actor=bobby, name="Bobby", does=True)
+    for first, line in ((1, "Early days."), (6, "Middle days."), (11, "Late days.")):
+        await _consolidate(engine, models, story, first, first + 4, line)
+    await truncate(engine, story, 10)
+    assert await _active(engine, story) == {"Early days.", "Middle days."}
+    await cs.bulk_turns(engine, story, 5, actor=bobby, name="Bobby", does=True)
+    await _consolidate(engine, models, story, 11, 15, "Other days.")
+    assert await _active(engine, story) == {"Early days.", "Middle days.", "Other days."}
+    await untruncate(engine, story)  # a swap: new turns were written over the tail
+    assert await _active(engine, story) == {"Early days.", "Middle days.", "Late days."}
+    assert [
+        r.membership_text for r in await cs.outputs(engine, story) if r.text == "Other days."
+    ] == ["dormant"]
+    (job,) = await cs.jobs(engine, story, "queued")
+    assert (job.payload["from_turn"], job.payload["to_turn"]) == (16, 20)
+    models.stub.script("consolidation", [cs.answer(facts=[("Last days.", "observation", [0])])])
+    assert await cs.run_jobs(engine, models, story) == ["committed"]
+    assert "Last days." in await _active(engine, story)
+
+    v = await cs.story(engine, quiet)
+    other = v.story_id
+    await cs.bulk_turns(engine, other, 15, actor=v.characters["Ann"], name="Ann", does=True)
+    await _consolidate(engine, models, other, 1, 10, "First ten.")
+    await _consolidate(engine, models, other, 11, 15, "Original five.")
+    await truncate(engine, other, 12)
+    (rerun,) = await cs.jobs(engine, other, "queued")
+    assert (rerun.payload["from_turn"], rerun.payload["to_turn"]) == (11, 12)
+    models.stub.script("consolidation", [cs.answer(facts=[("Rerun two.", "observation", [0])])])
+    assert await cs.run_jobs(engine, models, other) == ["committed"]
+    assert await _active(engine, other) == {"First ten.", "Rerun two."}
+    await untruncate(engine, other)  # nothing written over the tail: a plain reactivation
+    assert await _active(engine, other) == {"First ten.", "Original five."}
+    superseded = await cs.outputs(engine, other, membership="superseded")
+    assert [r.text for r in superseded] == ["Rerun two."]

@@ -173,7 +173,7 @@ async def test_invalid_config_is_refused_and_nothing_changes(
     assert await changes(engine, before["config_revision"]) == []
 
 
-@pytest.mark.parametrize("purpose", ["nonsense", "consolidation"])
+@pytest.mark.parametrize("purpose", ["nonsense", "time_estimation"])
 async def test_unknown_purpose_is_refused(
     client: httpx.AsyncClient, engine: AsyncEngine, purpose: str
 ) -> None:

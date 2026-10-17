@@ -7097,3 +7097,65 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (tests):** Several tests used `entailment` as their example of a reserved purpose: `test_registry`, `test_api_key_at_rest`, `test_model_config_api` and `test_engine_profiles`' undelivered-route case. They now use `consolidation`, which is still reserved for M4. `test_profile_routing`'s recorded models gain `entailment`, at its resolved model. `test_config_changes`' every-section sample gains `neighborhood_max_facts` for the new `VerifySettings` section, and `test_u_18`'s class table gains both new deployment settings.
   **Why:** The purpose is delivered now, and the new section must round-trip like every other.
   **Issue:** #142
+- **Decision (#142 fix, orchestrator's instruction):** `test_a_turn_calls_each_purpose_with_its_routed_model` (an M3 part) named `entailment`, an M4 lexicon term. It now builds the unrouted purposes' recorded models from `STORY_PURPOSES` (every story purpose except the two the profile routes), so it asserts the same thing without naming an M4 term and stays true as purposes are delivered. `docs/model-matrix.md` was regenerated with `render`. Separate commit ec1422f, `Refs #142`.
+  **Why:** HEAD's lexicon gate and the committed-matrix test failed.
+  **Issue:** #142
+- **Decision (Discretion, planner pass 1):** Coverage is the window's positioned `consolidation` operation (at `to_turn`, `source_window = {consolidation: "memories", from_turn, to_turn, scope, level, inputs_hash, input_versions, explicit}`), not the outputs. A window the model answered with nothing is still covered, so automatic scheduling never retries it forever. Its outputs carry that operation's id and position, so truncation, untruncation, swap, regenerate and fork move them with it. `flip_by_sources` is not needed: no source of an output is positioned after the output. `covered_by` on memories holds output memory ids (#147 reads it, joined on membership); fork remaps it.
+  **Why:** FR-STORE-13,26,27 follow from the positioning alone, with no second membership mechanism. `covered_to` is one backward index scan from the head, bounded by the uncovered gap.
+  **Issue:** #143, #147
+- **Decision (Discretion, deviation from planner pass 1):** The replay key (`inputs_hash`) is a SHA-256 over each input's kind, turn, beat and text digest, plus the scope and level. It does not cover ids or `membership_tx`. The commit recheck still uses full versions (`memories:<id>` = membership, membership time, tier, text digest; `operations:<id>`).
+  **Why:** A fork remaps ids. Keying on them would make a fork's consolidation of a copied window rerun the model, against S-CONSOLIDATION-REPLAY. Content is what "inputs unchanged" means.
+  **Issue:** #143
+- **Decision (Discretion):** These are the run rules:
+  - **Non-explicit job, exact window covered.** Same replay key: a no-op with zero calls (`noop: replayed`). Different key: rerun, and the old outputs are `superseded`.
+  - **Partly covered.** The job starts after the last covering window.
+  - **Explicit job.** Reruns. It supersedes only the outputs of windows inside the one asked for, never a window that merely overlaps it.
+  - **Payload.** A job re-plans its window at run time, clamped to the head. A job dropped by a truncation therefore reruns over the surviving turns.
+  - **Calls.** At most 10 per run, 150 records a call, at most 900 inputs a window (cut at a whole turn).
+  - **Failures.** An uncertain answer, a spent budget or a failed call ends the window at the last whole turn done. A failure on the first chunk writes nothing: `ModelError` fails the job, `Uncertain` is a no-op.
+  - **Policies.** A deterministic output-policy violation re-runs the chunk once, then the violating statements are dropped and recorded as audit records.
+  **Why:** FR-MEM-10's replay and rerun rules, and the planner's budget and output-policy lines.
+  **Issue:** #143
+- **Decision (Discretion):** These are the modality and scope rules:
+  - **Modality.** The engine derives each statement's modality and speaker from its supports, whatever the model said. Objective only when every support is objective canon (a canon fact, or at level 2 an objective output). A `say` beat or an attributed claim makes it the speaker's `attributed_claim`, one statement per speaker, with text "<name> said …". A sentence-initial function word is lower-cased; a proper noun keeps its capital. Anything else is an `observation`.
+  - **Episodic type.** An episodic memory's type comes from its attributed line: `<name> does:` and narration are observations, any other actor's line is a claim.
+  - **Speaker.** The speaker is the output's `character_id`, so erasing the speaker deletes the output like any memory they voiced. No `attributed_to` column.
+  - **Scope.** Automatic triggers consolidate the shared scope only (M4 writes no private memory). A characters scope selects memories visible to any named character. An empty intersection is refused when planned: `ScopeMismatch`, 422 `scope_mismatch` at the route, and a `noop` with no call in a job.
+  - **Not done.** Statements are text-only: no #140 normalization or `proposition_ids`, and no promotion to canon. Dedupe is by case-folded text within the window. No adjacent-window context is sent.
+  **Why:** FR-MEM-9, and keeping outputs off the verifier and canon path. #144 owns canonization; consolidation never promotes.
+  **Issue:** #143, #140, #144
+- **Decision (Discretion):** These are the triggers:
+  - **Episodic hook.** A new `records.EPISODIC_HOOKS` (run only after episodic writes) enqueues the oldest due shared window. It passes the committing turn as the head, because `next_turn_index` moves only after the commit steps.
+  - **Both triggers** (the owner's decision): `memory.consolidation.window_memories`, a new profile dial (behavioral, prospective, relevant; default 50, 1..10,000; migration 0058 adds it to `profile_defaults`), or `cadence_turns`.
+  - **Membership changes.** The post-commit membership hook (truncate, untruncate, swap, fork) enqueues whatever is uncovered (`force`). An in-transaction hook makes a reactivated original beat an overlapping rerun.
+  - **After a level-1 commit.** The next due window, and a level-2 window every 5 level-1 windows. `LEVEL2_EVERY` is a constant, not the planner's dial.
+  - **Overflow.** `schedule_overflow` is #147's priority entry (due an hour ahead).
+  - **No safety net.** There is no recurring sweep.
+  **Why:** AC3. A level-2 dial nothing needs would be one more setting to migrate.
+  **Issue:** #143, #147
+- **Decision (Discretion, deviation):** The writer is `core.memory.records.write_consolidated`, which is already a `DIRECT` write path in `CONTENT_WRITE_PATHS`. It runs `guard.check_content` and the erasure index itself. Erasure *redacts* reflections in place through the existing `_erase_memories` and does not regenerate them through a `Ports` compressor. A job reading the subject abandons on its input recheck: the text digest changes, and the operations' `membership_tx` moves. A rerun reads the redacted inputs. A later answer naming the subject is refused by the guard.
+  **Why:** AC5 says "redacted or regenerated". Redaction needs no new port. The writer living in core keeps the guard registry unchanged.
+  **Issue:** #143, #125, #127
+- **Decision (Discretion):** These are the admin route and API shapes:
+  - **Route.** `POST /admin/stories/{id}/consolidate` answers 202 `{job_id, timeline_revision}` (plus `idempotency_key`), like a queued rebuild. No `operation_id`, because no operation exists until the job runs.
+  - **Engine.** `Engine.consolidate(ctx, story_id, ConsolidateRequest)`. The idempotency operation is `consolidate_story`, and the route's operation id is the same.
+  - **Route tables.** The route is a row in `fr_api_6_routes.json` (`outside`, FR-MEM-3) and a C-03 error step (409 `module_off` on C-03's Lite story).
+  - **New errors.** `ModuleOff` (409) and `ScopeMismatch` (422) join `ERROR_STATUS`.
+  - **Library entry.** `consolidate_window(db, story_id, window, scope, *, level, explicit, models)` enqueues, claims and commits one job in process, for #157.
+  - **Retrieval.** `retrieve` gains a `kinds` filter.
+  **Why:** AC3. A REST client polls the job.
+  **Issue:** #143, #157
+- **Decision (Discretion):** `model` is the model the call log recorded for the last successful call. A nested `recording()` is merged back into any outer log. `model_version` is `None`: the adapter reports none (#145's rule). `prompt_hash` is the SHA-256 of the chunk's rendered messages (`lite.prompt.prompt_hash`).
+  **Why:** `structured_call` returns only the parsed result. `resolve()` gives `None` when no row names a model.
+  **Issue:** #143
+- **Decision (tests, deviation):** Some tests deviate from the planner's lines:
+  - **FR-MEM-6.** `test_s_consolidation_race__bounded` (300 turns, consolidation on) asserts the context stays within `retrieval_token_budget` in both arms and that reflections reach it. It drops the planner's "fewer drops with consolidation on": without #147's retirement, consolidation adds candidates rather than removing them.
+  - **Q-03.** `tests/eval/test_q_03.py` is a small labeled stub fixture, lexical arm. #157 extends it.
+  - **Scale.** S-DERIVED-VIEWS uses turn 8 for docs/04's 800.
+  - **Reserved example.** The tests that used `consolidation` as their reserved purpose now use `time_estimation` (M6, no lexicon term).
+  - **Bulk fixture.** Long scenario fixtures write episodic memories in bulk (`tests/consolidation_support.bulk_turns`), each citing its own turn.
+  **Why:** The traceability gate, test speed, and AC5's "within budget" being the requirement.
+  **Issue:** #143, #147, #153, #157
+- **Decision (Lite):** Lite is unchanged except for `lite_summary`'s inherited model row. A Lite story writes no episodic memory, so no hook runs and no job is enqueued. The new in-transaction membership hook adds one primary-key read on an untruncate or swap. `lite_summary.schedule` is untouched, so #282's cost test is unaffected.
+  **Why:** Brief rule.
+  **Issue:** #143, #282

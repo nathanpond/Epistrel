@@ -195,15 +195,25 @@ PREVIOUS_ENTAILMENT_GATE = 0.5
 ``0057`` moves a stored 0.5 to the new default."""
 
 
+CONSOLIDATION_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
+    {"memory": {"consolidation": {"window_memories": 50}}}
+)
+"""The consolidation window dial (#143), at the schema's default: migration
+``0058_consolidation`` adds it to a deployment's ``profile_defaults`` that does not name it
+yet."""
+
+
 def profile_defaults() -> dict[str, Any]:
     """A deployment's seeded ``profile_defaults``: Lite's settings with ``M4_PROFILE_DEFAULTS``,
-    ``VERIFY_DEPTH_DEFAULTS``, ``RETRIEVAL_DEFAULTS`` and ``ESCALATION_DEFAULTS`` under them (a
-    complete document of every delivered setting)."""
+    ``VERIFY_DEPTH_DEFAULTS``, ``RETRIEVAL_DEFAULTS``, ``ESCALATION_DEFAULTS`` and
+    ``CONSOLIDATION_DEFAULTS`` under them (a complete document of every delivered setting)."""
     base = _merged(_merged(_thaw(M4_PROFILE_DEFAULTS), VERIFY_DEPTH_DEFAULTS), RETRIEVAL_DEFAULTS)
-    return _merged(_merged(base, ESCALATION_DEFAULTS), LITE_SETTINGS)
+    base = _merged(_merged(base, ESCALATION_DEFAULTS), CONSOLIDATION_DEFAULTS)
+    return _merged(base, LITE_SETTINGS)
 
 
 __all__ = [
+    "CONSOLIDATION_DEFAULTS",
     "ESCALATION_DEFAULTS",
     "LITE_NAME",
     "LITE_PRESET_ID",

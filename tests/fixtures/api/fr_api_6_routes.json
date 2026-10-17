@@ -998,6 +998,11 @@
       "requirement": "FR-STORE-2"
     },
     {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/consolidate",
+      "requirement": "FR-MEM-3"
+    },
+    {
       "method": "GET",
       "path": "/admin/model-config",
       "requirement": "FR-MODEL-1"

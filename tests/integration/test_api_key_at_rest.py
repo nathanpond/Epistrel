@@ -89,7 +89,7 @@ async def test_writes_validate_purpose_and_base_url(engine: AsyncEngine) -> None
     keybox = KeyBox(None)
     async with restored_model_config(engine):
         with pytest.raises(InvalidRequest):
-            await model_config.write_config(engine, "consolidation", keybox=keybox, principal="p")
+            await model_config.write_config(engine, "time_estimation", keybox=keybox, principal="p")
         with pytest.raises(InvalidRequest):
             await model_config.write_config(
                 engine, "default", keybox=keybox, principal="p", base_url="ftp://x"

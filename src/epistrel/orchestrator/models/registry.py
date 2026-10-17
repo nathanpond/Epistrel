@@ -51,8 +51,13 @@ class ContentCategory(StrEnum):
     ``quality_judge`` compares. Never a live story's content."""
     MEMORY_TEXT = "memory_text"
     """A memory record's text and kind (#135): what ``importance_scoring`` rates, the
-    ``embedding`` port embeds (#138; a retrieval query is embedded as one) and #143's
-    consolidation compresses."""
+    ``embedding`` port embeds (#138; a retrieval query is embedded as one) and ``consolidation``
+    compresses (#143: with the canon facts positioned in its window, rendered as one line)."""
+    RECORD_META = "record_meta"
+    """What ``consolidation`` is told about each record it compresses (#143): its index, kind,
+    holder, visibility, position and speaker. Labels and positions only, never other text."""
+    SCOPE_META = "scope_meta"
+    """The viewpoint scope, level and turns one ``consolidation`` call covers (#143)."""
     CLAIM_TEXT = "claim_text"
     """A normalized claim rendered as ``<subject> <predicate> <object> [T+minutes]`` (#142): what
     the ``entailment`` purpose judges. Names and ids only, never the beat's prose."""
@@ -363,6 +368,73 @@ class EntailmentVerdict(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+CONSOLIDATION_MAX_RECORDS = 200
+"""The most records one ``consolidation`` request carries (a window is cut to it)."""
+CONSOLIDATION_STATEMENTS_MAX = 50
+"""The most facts, and the most reflections, one ``consolidation`` answer may hold (the engine
+keeps the first ``consolidation`` targets: 10 and 5)."""
+
+RecordKind = Literal["episodic", "semantic", "reflection", "fact"]
+Modality = Literal["objective", "attributed_claim", "observation"]
+"""A consolidation statement's epistemic type (FR-MEM-9): ``objective`` (a world fact),
+``attributed_claim`` (someone said it: "Bobby said P") or ``observation`` (something seen
+done or narrated)."""
+
+
+class ConsolidationRecord(InputSchema):
+    """One record a consolidation compresses (#143): its index (what a statement's ``supports``
+    name), its text, and the labels that keep its epistemic scope and type."""
+
+    index: Annotated[int, Field(ge=0), C.RECORD_META]
+    text: Annotated[str, Field(max_length=2_000), C.MEMORY_TEXT]
+    kind: Annotated[RecordKind, C.RECORD_META] = "episodic"
+    holder: Annotated[str, Field(max_length=200), C.RECORD_META] = "shared"
+    visibility: Annotated[str, Field(max_length=200), C.RECORD_META] = "public"
+    position: Annotated[str, Field(max_length=64), C.RECORD_META] = ""
+    speaker: Annotated[str | None, Field(max_length=200), C.RECORD_META] = None
+    """The character a ``say`` record quotes (``None`` for narration, a deed or a fact)."""
+
+
+class ConsolidationInputs(InputSchema):
+    """One window of one viewpoint scope (FR-MEM-3,6,9; #143): its records, oldest first, the
+    scope's label, the level (1: episodic memories and canon; 2: level-1 outputs) and the turns
+    it covers."""
+
+    records: Annotated[list[ConsolidationRecord], Field(max_length=CONSOLIDATION_MAX_RECORDS)] = (
+        Field(default_factory=list)
+    )
+    scope: Annotated[str, Field(max_length=500), C.SCOPE_META] = "shared"
+    level: Annotated[int, Field(ge=1, le=2), C.SCOPE_META] = 1
+    covers: Annotated[str, Field(max_length=64), C.SCOPE_META] = ""
+
+
+class ConsolidationStatement(BaseModel):
+    """One standing fact or reflection a consolidation proposes: its text, its epistemic type,
+    whose claim it is (``attributed_claim``) and the records it rests on. The engine recomputes
+    the type and the speaker from ``supports`` and never widens either (FR-MEM-9)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(min_length=1, max_length=2_000)
+    modality: Modality = "observation"
+    attributed_to: str | None = Field(default=None, max_length=200)
+    supports: list[int] = Field(default_factory=list, max_length=CONSOLIDATION_MAX_RECORDS)
+
+
+class ConsolidationResult(BaseModel):
+    """The structured result of one ``consolidation`` call: standing facts and reflections. The
+    defaults (nothing) are the conservative answer: no output, the window stays as it is."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    facts: list[ConsolidationStatement] = Field(
+        default_factory=list, max_length=CONSOLIDATION_STATEMENTS_MAX
+    )
+    reflections: list[ConsolidationStatement] = Field(
+        default_factory=list, max_length=CONSOLIDATION_STATEMENTS_MAX
+    )
+
+
 class EmbeddingInputs(InputSchema):
     """One text to embed (FR-EMBED-1; #138): a memory's text, or a retrieval query's."""
 
@@ -467,10 +539,29 @@ GUARDRAIL_CHECK = Purpose(
     response_schema=GuardrailVerdict,
 )
 
+CONSOLIDATION = Purpose(
+    name="consolidation",
+    description=(
+        "Compresses one window of episodic memories (and the canon in it) into standing facts "
+        "and reflections, in the background (FR-MEM-3,6,9,10)."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=ConsolidationInputs,
+    template="consolidation.j2",
+    hot_path=False,
+    # The window's records and their labels only: never a definition, a policy, an age, a
+    # transcript or eval text, and never a record outside the window or the scope.
+    never_receives=_EVERYTHING - {C.MEMORY_TEXT, C.RECORD_META, C.SCOPE_META},
+    response_schema=ConsolidationResult,
+)
+
 LITE_SUMMARY = Purpose(
     name="lite_summary",
     description="Folds old messages into a Lite story's rolling summary (FR-LITE-2).",
-    default_model_key=DEFAULT_MODEL_KEY,
+    # #51's note, applied by #143: the rolling summary is a consolidation, so a deployment that
+    # configures a consolidation model summarises with it unless lite_summary has its own row.
+    default_model_key=CONSOLIDATION.name,
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.NONE),
     input_schema=LiteSummaryInputs,
     template="lite_summary.j2",
@@ -549,7 +640,6 @@ ENTAILMENT = Purpose(
 
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("regeneration", "Regenerates a span under corrected constraints.", "M4"),
-    ReservedPurpose("consolidation", "Summaries and reflections (worker).", "M4"),
     ReservedPurpose("salience_detection", "Detects signals that need commitment.", "M4"),
     ReservedPurpose("extraction_backstop", "Model layer of claim detection.", "M4"),
     ReservedPurpose(
@@ -714,6 +804,7 @@ DELIVERED: Mapping[str, Purpose] = _build(
     (
         GENERATION,
         GUARDRAIL_CHECK,
+        CONSOLIDATION,
         LITE_SUMMARY,
         RATING_SUGGESTION,
         QUALITY_JUDGE,
@@ -742,6 +833,9 @@ def get_purpose(name: str) -> Purpose:
 
 
 __all__ = [
+    "CONSOLIDATION",
+    "CONSOLIDATION_MAX_RECORDS",
+    "CONSOLIDATION_STATEMENTS_MAX",
     "DEFAULT_MODEL_KEY",
     "DELIVERED",
     "EMBEDDING",
@@ -756,6 +850,10 @@ __all__ = [
     "SUBJECT_LABEL_PATTERN",
     "CapabilityFloor",
     "CharacterDefinition",
+    "ConsolidationInputs",
+    "ConsolidationRecord",
+    "ConsolidationResult",
+    "ConsolidationStatement",
     "ContentCategory",
     "ElementKind",
     "EmbeddingFloor",
@@ -771,6 +869,7 @@ __all__ = [
     "InputSchema",
     "KnownHit",
     "LiteSummaryInputs",
+    "Modality",
     "PlayerInput",
     "Port",
     "Purpose",
@@ -779,6 +878,7 @@ __all__ = [
     "QualityJudgeVerdict",
     "RatingSuggestionInputs",
     "RatingSuggestionVerdict",
+    "RecordKind",
     "RegistryError",
     "ReservedPurpose",
     "StructuredOutput",

@@ -62,10 +62,12 @@ def bad_template_env(source: str) -> Environment:
 def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
     # M3 delivers rating_suggestion (#121), which defaults to guardrail_check's row (FR-MODEL-2);
     # M4 the eval harness's quality_judge (#134), memory importance_scoring (#135) and
-    # verify's entailment (#142).
+    # verify's entailment (#142) and memory consolidation (#143), which lite_summary now
+    # defaults to (#51's note).
     assert set(DELIVERED) == {
         "generation",
         "guardrail_check",
+        "consolidation",
         "lite_summary",
         "rating_suggestion",
         "quality_judge",
@@ -73,7 +75,8 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
         "entailment",
     }
     for purpose in DELIVERED.values():
-        expected = "guardrail_check" if purpose.name == "rating_suggestion" else "default"
+        parents = {"rating_suggestion": "guardrail_check", "lite_summary": "consolidation"}
+        expected = parents.get(purpose.name, "default")
         assert purpose.default_model_key == expected
         assert purpose.capability_floor.min_context_tokens == 8_192
         registry.validate_purpose(purpose)
@@ -96,14 +99,14 @@ def test_registry_enumerates_every_named_purpose() -> None:
 
 def test_reserved_and_unknown_purposes_are_refused() -> None:
     with pytest.raises(UnknownPurpose) as reserved:
-        get_delivered("consolidation")
+        get_delivered("time_estimation")
     details = dict(reserved.value.details)
     assert len(details.pop("errors")) == 1
     assert details == {
         "field": "body",
-        "purpose": "consolidation",
+        "purpose": "time_estimation",
         "reason": "reserved",
-        "milestone": "M4",
+        "milestone": "M6",
     }
     with pytest.raises(UnknownPurpose) as unknown:
         get_delivered("nope")

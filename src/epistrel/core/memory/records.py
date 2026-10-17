@@ -36,6 +36,15 @@ orchestrator. ``beats_of_operation`` reads an operation's beats from its M2/M3 b
 (``player_input``, ``message_rendered``, ``think``, ``latent``) for callers that have no typed
 beats of their own.
 
+**Semantic memories and reflections** (FR-MEM-2,3; #143). ``write_consolidated(conn,
+operation, rows, covered)`` is the writer the consolidation job calls in its positioned
+operation's commit (``core.memory.consolidation`` builds the rows): ``semantic`` and
+``reflection`` rows with provenance ``system_consolidated``, their ``level``, ``modality``,
+``inputs_hash``, ``model``, ``model_version`` and ``prompt_hash``. It runs the resurrection
+guard over their texts and speakers, indexes them for erasure, adds their ids to the
+``covered_by`` of the inputs they compress, and runs ``MEMORY_HOOKS`` (embedding, importance).
+``EPISODIC_HOOKS`` run only after an episodic write (consolidation's scheduler).
+
 **Working memory** (FR-MEM-5) is a function over events, never a table:
 ``working_memory(conn, story_id, character_id, through_position, n)`` answers the last ``n``
 beats of the active timeline at or before the position, as the character perceives them. M4
@@ -204,6 +213,13 @@ class Memory(BaseModel):
     embedding_model_version: str | None
     created_at: datetime
     last_accessed_at: datetime | None
+    covered_by: tuple[str, ...] = ()
+    level: int | None = None
+    modality: str | None = None
+    inputs_hash: str | None = None
+    model: str | None = None
+    model_version: str | None = None
+    prompt_hash: str | None = None
 
 
 def _memory(row: Any) -> Memory:
@@ -236,6 +252,13 @@ def _memory(row: Any) -> Memory:
         embedding_model_version=row.embedding_model_version,
         created_at=row.created_at,
         last_accessed_at=row.last_accessed_at,
+        covered_by=tuple(str(c) for c in row.covered_by),
+        level=row.level,
+        modality=row.modality,
+        inputs_hash=row.inputs_hash,
+        model=row.model,
+        model_version=row.model_version,
+        prompt_hash=row.prompt_hash,
     )
 
 
@@ -266,6 +289,20 @@ def register_memory_hook(hook: MemoryHook) -> MemoryHook:
 def remove_memory_hook(hook: MemoryHook) -> None:
     if hook in MEMORY_HOOKS:
         MEMORY_HOOKS.remove(hook)
+    if hook in EPISODIC_HOOKS:
+        EPISODIC_HOOKS.remove(hook)
+
+
+EPISODIC_HOOKS: list[MemoryHook] = []
+"""Run after ``MEMORY_HOOKS``, after an episodic write only (never a consolidation output's):
+consolidation's scheduler (#143)."""
+
+
+def register_episodic_hook(hook: MemoryHook) -> MemoryHook:
+    """Run ``hook`` after every episodic write (once per hook)."""
+    if hook not in EPISODIC_HOOKS:
+        EPISODIC_HOOKS.append(hook)
+    return hook
 
 
 # -- the episodic writer ------------------------------------------------------------------------
@@ -418,6 +455,96 @@ async def write_episodic(
     await insert_derived(conn, memories, rows)
     await index_records(conn, [memory_record(SimpleNamespace(**r)) for r in rows])
     ids = tuple(str(r["id"]) for r in rows)
+    for hook in [*MEMORY_HOOKS, *EPISODIC_HOOKS]:
+        await hook(conn, story_id, ids)
+    return await memories_by_id(conn, story_id, ids)
+
+
+CONSOLIDATED_KINDS: frozenset[MemoryKind] = frozenset({MemoryKind.SEMANTIC, MemoryKind.REFLECTION})
+
+_CONSOLIDATED_FIELDS: tuple[str, ...] = (
+    "id",
+    "kind",
+    "text",
+    "holder_character_id",
+    "character_id",
+    "visibility",
+    "source_event_ids",
+    "proposition_ids",
+    "participants",
+    "importance",
+    "level",
+    "modality",
+    "inputs_hash",
+    "model",
+    "model_version",
+    "prompt_hash",
+)
+"""What a consolidation output row names (``write_consolidated`` adds the rest)."""
+
+
+async def write_consolidated(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    rows: Sequence[Mapping[str, Any]],
+    covered: Sequence[str] = (),
+) -> list[Memory]:
+    """Write consolidation outputs (#143; see the module docstring) inside ``operation``'s
+    commit transaction: each row names ``_CONSOLIDATED_FIELDS``; the row is positioned at the
+    operation's narrative position, ``system_consolidated`` and engine-trusted. ``covered`` are
+    the input memories whose ``covered_by`` gains the new ids. Answers the memories written."""
+    story_id = operation.story_id
+    if story_id is None:
+        raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
+    if not rows:
+        return []
+    provenance = RecordProvenance.SYSTEM_CONSOLIDATED
+    written: list[dict[str, Any]] = []
+    contents: list[guard.Content] = []
+    for row in rows:
+        unknown = set(row) - set(_CONSOLIDATED_FIELDS)
+        if unknown:
+            raise ValueError(f"a consolidation output names no column(s) {sorted(unknown)}")
+        if MemoryKind(row["kind"]) not in CONSOLIDATED_KINDS:
+            raise ValueError("a consolidation output is a semantic memory or a reflection")
+        importance = row.get("importance")
+        line = str(row["text"])[:TEXT_MAX]
+        speaker = None if row.get("character_id") is None else str(row["character_id"])
+        values: dict[str, Any] = {
+            **{k: row.get(k) for k in _CONSOLIDATED_FIELDS},
+            "story_id": story_id,
+            "text": line,
+            "provenance": provenance.value,
+            "trust_tier": trust_tier_of(provenance).value,
+            "operation_id": operation.operation_id,
+            "narrative_turn": operation.narrative_turn,
+            "turn_variant": operation.turn_variant,
+            "beat": None,
+            "importance_at": operation.narrative_turn if importance is not None else None,
+            "source_event_ids": list(row.get("source_event_ids") or ()),
+            "proposition_ids": list(row.get("proposition_ids") or ()),
+            "participants": list(row.get("participants") or ()),
+        }
+        contents.append(guard.Content((line,), frozenset({speaker}) if speaker else frozenset()))
+        written.append(values)
+    await guard.check_content(
+        conn, story_id, contents, base_revision=operation.base_revision, path=__name__
+    )
+    await insert_derived(conn, memories, written)
+    await index_records(conn, [memory_record(SimpleNamespace(**r)) for r in written])
+    ids = tuple(str(r["id"]) for r in written)
+    inputs = sorted(set(covered))
+    if inputs:
+        await conn.execute(
+            update(memories)
+            .where(memories.c.story_id == story_id, memories.c.id.in_(inputs))
+            .values(
+                covered_by=func.array_cat(
+                    memories.c.covered_by,
+                    bindparam("covering", list(ids), type_=ARRAY(ulid_type())),
+                )
+            )
+        )
     for hook in list(MEMORY_HOOKS):
         await hook(conn, story_id, ids)
     return await memories_by_id(conn, story_id, ids)
@@ -768,8 +895,10 @@ async def memories_through(
 
 __all__ = [
     "BEAT_EVENT_TYPES",
+    "CONSOLIDATED_KINDS",
     "DEFAULT_IMPORTANCE",
     "DEFAULT_WORKING_MEMORY_BEATS",
+    "EPISODIC_HOOKS",
     "EPISODIC_MODULE",
     "MEMORY_HOOKS",
     "OBSERVABLE",
@@ -789,6 +918,7 @@ __all__ = [
     "memories_linked",
     "memories_through",
     "participants_of",
+    "register_episodic_hook",
     "register_memory_hook",
     "remove_memory_hook",
     "render_line",
@@ -797,4 +927,5 @@ __all__ = [
     "trust_tier_of",
     "unscored",
     "working_memory",
+    "write_consolidated",
 ]

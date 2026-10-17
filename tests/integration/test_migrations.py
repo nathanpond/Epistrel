@@ -741,3 +741,64 @@ def test_the_escalation_dials_join_the_profile_defaults(scratch_database: str) -
         assert defaults()["verification"]["entailment_gate"] == 0.8
     finally:
         engine.dispose()
+
+
+def test_the_consolidation_columns_and_dial(scratch_database: str) -> None:
+    """0058 (#143): ``memories`` gains ``covered_by`` (``{}`` for existing rows), ``level``,
+    ``modality``, ``inputs_hash``, ``model``, ``model_version`` and ``prompt_hash`` with their
+    checks and ``ix_memories_story_kind_turn``; the guard lets ``covered_by`` change;
+    ``memory.consolidation.window_memories`` (50) joins the profile defaults and the rest of the
+    document is kept; the downgrade removes all of it again."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0057")
+    engine = make_sync_engine(scratch_database)
+    added = {"covered_by", "level", "modality", "inputs_hash", "model", "model_version"}
+    added.add("prompt_hash")
+
+    def columns() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'memories'"
+                    )
+                )
+            )
+
+    def defaults() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+
+    def indexes() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(text("SELECT indexname FROM pg_indexes WHERE tablename = 'memories'"))
+            )
+
+    try:
+        before = defaults()
+        assert not added & columns()
+        command.upgrade(cfg, "0058")
+        assert added <= columns()
+        assert "ix_memories_story_kind_turn" in indexes()
+        after = defaults()
+        assert after["memory"]["consolidation"].pop("window_memories") == 50
+        assert after == before
+        with engine.connect() as conn:
+            guard = conn.scalar(
+                text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_memories_guard'")
+            )
+        assert "'covered_by'" in str(guard)
+        assert "'search'" in str(guard)
+        command.downgrade(cfg, "0057")
+        assert not added & columns()
+        assert "ix_memories_story_kind_turn" not in indexes()
+        assert defaults() == before
+        with engine.connect() as conn:
+            guard = conn.scalar(
+                text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_memories_guard'")
+            )
+        assert "'covered_by'" not in str(guard)
+    finally:
+        engine.dispose()

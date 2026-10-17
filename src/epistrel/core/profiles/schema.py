@@ -214,7 +214,13 @@ class Consolidation(ProfileModel):
     cadence_turns: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
         default=20, ge=1, le=1_000
     )
-    """Turns between consolidation runs."""
+    """Turns between consolidation runs: a commit this many turns past the last consolidated
+    turn starts one."""
+    window_memories: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=50, ge=1, le=10_000
+    )
+    """Uncovered episodic memories that start a consolidation run (whichever of this and
+    ``cadence_turns`` is reached first), and the most one window compresses."""
 
 
 class HotSet(ProfileModel):

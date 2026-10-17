@@ -1073,3 +1073,22 @@ class LedgerUnavailable(EpistrelError):
 
     code = "ledger_unavailable"
     http_status = 503
+
+
+class ModuleOff(EpistrelError):
+    """A call needs a profile module the story's effective configuration has off (FR-PROF-2;
+    #143: ``POST /admin/stories/{id}/consolidate`` with ``memory.consolidation.enabled`` off).
+    ``details``: ``story_id`` and ``module``. Nothing is written."""
+
+    code = "module_off"
+    http_status = 409
+
+
+class ScopeMismatch(EpistrelError):
+    """A consolidation's inputs span viewpoint scopes no one output may combine (FR-MEM-9; #143):
+    the intersection of their scopes is empty (two characters' private memories). Refused when
+    the job is planned, before any model call. ``details``: ``story_id`` and ``scopes`` (the
+    input scopes found)."""
+
+    code = "scope_mismatch"
+    http_status = 422

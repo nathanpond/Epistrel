@@ -133,3 +133,11 @@ A structured story checks each claim deterministically first. Only a claim the e
 A model answer that is unparseable, below the floor, or `novel` never counts as `supported`, and neither does an unreachable model: each takes the safe disposition.
 
 Two deployment settings bound what one verification reads. `neighborhood_max_facts` (default 50) caps the facts, closed sets, projections and memories of a repair's dependency cluster. `entailment_max_records` (default 30) caps the records one entailment request carries.
+
+## Consolidation
+
+A structured story with `memory.consolidation.enabled` compresses old episodic memories into standing facts and reflections in the background (the `consolidation` job and model purpose). Two engine-profile dials start a run, whichever is reached first: `memory.consolidation.window_memories` (default 50) uncovered episodic memories, or `memory.consolidation.cadence_turns` (default 20) turns since the last consolidated turn. A window holds at most `window_memories` memories, and every fifth window is folded again into higher-level reflections.
+
+The `consolidation` purpose inherits the deployment's `default` model unless it has a `model_config` row of its own, and the Lite rolling summary (`lite_summary`) now inherits from `consolidation` before `default`: configuring a consolidation model moves the rolling summary onto it too, unless `lite_summary` has its own row.
+
+`POST /admin/stories/{id}/consolidate {from_turn, to_turn, scope}` consolidates a window now, rerunning one already consolidated (the earlier outputs are kept, `superseded`). It answers 202 with the job, 409 `module_off` when the story has consolidation off, and 422 `scope_mismatch` when the window's private memories belong to characters no single output may serve. Without such a request a window is consolidated once: forks, undo and reconstruction reuse the stored outputs and make no model call.

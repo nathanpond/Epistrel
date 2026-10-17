@@ -28,6 +28,15 @@ One row is one memory record:
   ``english`` configuration (``SEARCH_EXPRESSION``), GIN-indexed: the lexical arm and the
   alias arm of the hybrid retrieval read it, and an erasure that rewrites ``text`` recomputes
   it.
+- **what consolidation made of it** (#143, migration 0058): on a ``semantic`` or ``reflection``
+  row, ``level`` (1: compressed from episodic memories and canon; 2: from level-1 outputs),
+  ``modality`` (``objective``, ``attributed_claim`` or ``observation``: the epistemic type
+  FR-MEM-9 preserves; an attributed claim's speaker is its ``character_id``), ``inputs_hash``
+  (the replay key: a digest of its inputs' content, the same in a fork) and the provenance
+  FR-MEM-10 stores, ``model``, ``model_version`` (``NULL`` when the adapter reports none) and
+  ``prompt_hash``; on any row, ``covered_by`` (the consolidation outputs that cover it,
+  rewritten as outputs are made; an output that is no longer active covers nothing, so readers
+  join on its membership; #147's retirement prefers covered records).
 - **retrieval**: ``retrieval_tier`` (``hot``/``retired``, independent of membership; #147),
   ``embedding`` (a pgvector ``vector``, untyped here: #138 pins the dimension, retypes the
   column and creates the HNSW cosine index; ``NULL`` until the embed job runs) and
@@ -81,6 +90,9 @@ SEARCH_EXPRESSION = f"to_tsvector('{SEARCH_CONFIGURATION}'::regconfig, text)"
 EVENT_TYPE_MAX = 64
 """The longest ``event_type`` (CHECK)."""
 
+MODALITIES: tuple[str, ...] = ("objective", "attributed_claim", "observation")
+"""The epistemic types a consolidation output carries (``modality``, CHECK; FR-MEM-9)."""
+
 VISIBILITY_SCOPES: tuple[str, ...] = ("objective", "public", "engine", "characters")
 """The visibility scopes a memory may carry (#133's, ``visibility->>'scope'``, CHECK)."""
 
@@ -93,6 +105,7 @@ MUTABLE_MEMORY_COLUMNS: tuple[str, ...] = (
     "embedding_model_version",
     "membership",
     "membership_tx",
+    "covered_by",
 )
 """The columns an UPDATE of ``memories`` may change outside an erasure. (The generated
 ``search`` column is also let through by the guard, since a BEFORE trigger cannot read its new
@@ -174,6 +187,13 @@ memories = Table(
         server_default=text("transaction_timestamp()"),
     ),
     Column("last_accessed_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("covered_by", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
+    Column("level", SmallInteger, nullable=True),
+    Column("modality", Text, nullable=True),
+    Column("inputs_hash", Text, nullable=True),
+    Column("model", Text, nullable=True),
+    Column("model_version", Text, nullable=True),
+    Column("prompt_hash", Text, nullable=True),
     CheckConstraint(f"char_length(text) <= {TEXT_MAX}", name="text_length"),
     CheckConstraint(
         "importance IS NULL OR (importance >= 0 AND importance <= 1)", name="importance"
@@ -183,6 +203,11 @@ memories = Table(
         f"event_type IS NULL OR char_length(event_type) BETWEEN 1 AND {EVENT_TYPE_MAX}",
         name="event_type_length",
     ),
+    CheckConstraint(
+        "modality IS NULL OR modality IN (" + ", ".join(f"'{m}'" for m in MODALITIES) + ")",
+        name="modality",
+    ),
+    CheckConstraint("level IS NULL OR level IN (1, 2)", name="level"),
     CheckConstraint(
         "(visibility->>'scope' = 'characters') = "
         "(jsonb_typeof(visibility->'characters') = 'array' "
@@ -196,6 +221,9 @@ Index("ix_memories_story_holder", memories.c.story_id, memories.c.holder_charact
 Index("ix_memories_source_event_ids", memories.c.source_event_ids, postgresql_using="gin")
 Index("ix_memories_participants", memories.c.participants, postgresql_using="gin")
 Index("ix_memories_search", memories.c.search, postgresql_using="gin")
+Index(
+    "ix_memories_story_kind_turn", memories.c.story_id, memories.c.kind, memories.c.narrative_turn
+)
 Index(
     "ix_memories_story_occasion",
     memories.c.story_id,
@@ -211,6 +239,7 @@ neither valid-time nor transaction-time columns."""
 __all__ = [
     "EVENT_TYPE_MAX",
     "MEMORIES",
+    "MODALITIES",
     "MUTABLE_MEMORY_COLUMNS",
     "SEARCH_CONFIGURATION",
     "SEARCH_EXPRESSION",

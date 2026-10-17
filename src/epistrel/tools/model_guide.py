@@ -73,7 +73,15 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
     ContentCategory.MEMORY_TEXT: (
         "One memory record of the story: its text (an attributed line of a beat) and its kind, "
         "scored by importance scoring (#135) and embedded by the embedding port, as is a "
-        "retrieval query (#138)."
+        "retrieval query (#138); compressed by consolidation with the canon facts of its "
+        "window, each rendered as one line (#143)."
+    ),
+    ContentCategory.RECORD_META: (
+        "The labels of each record consolidation compresses: its index, kind, holder, "
+        "visibility, position and speaker; never other text (#143)."
+    ),
+    ContentCategory.SCOPE_META: (
+        "The viewpoint scope, level and turns one consolidation call covers (#143)."
     ),
     ContentCategory.CLAIM_TEXT: (
         "One claim the deterministic check left uncertain, normalized and rendered with entity "

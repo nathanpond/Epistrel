@@ -3179,6 +3179,12 @@
         "additionalProperties": false,
         "description": "The settings a story is created with: the full ``StorySettings`` schema, unknown keys\nrefused (M2's engine dials with the profile setting that replaced each, #113: a story\ncreated under its profile overrides them afterwards). ``default_output_viewpoint`` names a\ncharacter of the cast **by name** here; it is stored as ``character:<id>``.",
         "properties": {
+          "allow_new_arrivals": {
+            "default": true,
+            "description": "Whether new arrivals may be introduced (FR-VERIFY-11; #144): a director pass's arrival\n(a ``located_at``/``present_at`` claim on a person with no prior placement) is permitted\nnovelty, and a render may bring in a new unmodeled person as scene texture, only while this\nis on. Genesis copies the scenario's ``story_settings_defaults.allow_new_arrivals``; a story\nwithout it reads true. Interpretive: a structured turn's permission checks depend on it\n(#136's re-check at commit).",
+            "title": "Allow New Arrivals",
+            "type": "boolean"
+          },
           "audit_retention_days": {
             "anyOf": [
               {
@@ -26066,6 +26072,17 @@
         "additionalProperties": false,
         "description": "The settings a story created from the scenario starts with (what the story is, not how\nhard the engine works): each ``null`` leaves the deployment's or story's default. The\noutput viewpoint is a role id, which genesis turns into that role's character. Also the\nstory-scoped ``policies`` and the external providers the scenario requires. Unknown\nsetting names are refused.",
         "properties": {
+          "allow_new_arrivals": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow New Arrivals"
+          },
           "ambiguous_retcon_timing": {
             "anyOf": [
               {
@@ -26198,6 +26215,19 @@
           }
         ],
         "properties": {
+          "allow_new_arrivals": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Whether new arrivals may be introduced (FR-VERIFY-11; #144): a director pass's arrival\n(a ``located_at``/``present_at`` claim on a person with no prior placement) is permitted\nnovelty, and a render may bring in a new unmodeled person as scene texture, only while this\nis on. Genesis copies the scenario's ``story_settings_defaults.allow_new_arrivals``; a story\nwithout it reads true. Interpretive: a structured turn's permission checks depend on it\n(#136's re-check at commit).",
+            "title": "Allow New Arrivals"
+          },
           "audit_retention_days": {
             "anyOf": [
               {
@@ -45818,6 +45848,7 @@
                     "anyOf": [
                       {
                         "enum": [
+                          "allow_new_arrivals",
                           "audit_retention_days",
                           "content_rating_id",
                           "default_output_viewpoint",
@@ -50856,7 +50887,7 @@
         ]
       },
       "patch": {
-        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment) and `audit_retention_days` (1-3650; `null`: the deployment's). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint` is prospective: it applies to requests that arrive after the write, never to a turn already running; `default_output_viewpoint` is interpretive (a turn in flight is checked against it when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
+        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: it applies to requests that arrive after the write, never to a turn already running; those two are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
         "operationId": "update_story_settings",
         "parameters": [
           {

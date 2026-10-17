@@ -539,7 +539,9 @@ SETTINGS_PATCH_DESCRIPTION = (
     "`turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's "
     "default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never "
     "`omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per "
-    "summary segment) and `audit_retention_days` (1-3650; `null`: the deployment's). An "
+    "summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and "
+    "`allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce "
+    "new arrivals; default `true`). An "
     "unknown key is 422. The engine's dials are the story's engine profile's, overridden per "
     "story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there "
     "(`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, "
@@ -548,11 +550,11 @@ SETTINGS_PATCH_DESCRIPTION = (
     "`details.replacement`. `policies` (optional) upserts the story's own policies; an item "
     "that would relax a policy refuses the whole request with 422 `cannot_relax` before "
     "anything is written."
-    "\n\nEvery setting but `default_output_viewpoint` is prospective: it applies to requests "
-    "that arrive after the write, never to a turn already running; `default_output_viewpoint` "
-    "is interpretive (a turn in flight is checked against it when it commits). A write that "
-    "changes something moves the story's `config_revision`. The answer carries the budget the "
-    "story's next turn plans with (`effective_budget`)."
+    "\n\nEvery setting but `default_output_viewpoint` and `allow_new_arrivals` is prospective: "
+    "it applies to requests that arrive after the write, never to a turn already running; "
+    "those two are interpretive (a turn in flight is checked against them when it commits). A "
+    "write that changes something moves the story's `config_revision`. The answer carries the "
+    "budget the story's next turn plans with (`effective_budget`)."
 )
 
 

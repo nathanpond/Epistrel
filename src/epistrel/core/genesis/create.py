@@ -922,6 +922,8 @@ def _settings(
         values["turn_concurrency"] = defaults.turn_concurrency
     if defaults.audit_retention_days is not None:
         values["audit_retention_days"] = defaults.audit_retention_days
+    if defaults.allow_new_arrivals is not None:
+        values["allow_new_arrivals"] = defaults.allow_new_arrivals
     inactive = materialized.settings()
     if inactive:
         values[INACTIVE_KEY] = inactive

@@ -25,6 +25,16 @@ bounds).
   ``REBASE_CHECKS`` (the stand-in for #140's verify) under the configuration current then, and
   commits recording it, or regenerates when the check fails there; a prospective change never
   re-checks, rebases or regenerates (the complement).
+- ``test_config_revalidation__permission`` (#144): the same for novelty permission checks. A
+  structured turn's read phase asks ``core.verify.permission`` about its claims (the Bobby/Jenni
+  fixture, ``tests.novelty_support``). The author turning ``allow_new_arrivals`` off while it is
+  held is an interpretive change: the turn re-checks at commit, the director's arrival is now
+  denied (``policy``), and the turn regenerates under the new policy. A lock on the claim's own
+  (subject, predicate) touches its keyed lock lookup and regenerates it, the claim then denied
+  (``locked_canon``); a lock elsewhere moves only the ``author_locks`` member, so the turn
+  re-checks, passes and commits. Complement: a prospective change (``verification.
+  entailment_gate``) never re-checks, and each committed turn records the configuration
+  current at its commit.
 """
 
 from __future__ import annotations
@@ -63,6 +73,8 @@ from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.readset import EMPTY_RESULT, result_hash
 from epistrel.core.settings_schema import OMNISCIENT
+from epistrel.core.verify import permission
+from tests import novelty_support as ns
 from tests.auth_support import auth_settings
 from tests.canon_support import World, at, auto_predicate, commit, world
 from tests.concurrency_support import (
@@ -753,3 +765,132 @@ def test_config_revalidation__verify(pg_url: str) -> None:
     finally:
         readset.remove_rebase_check(verifier)
     assert all(tally[k] > 0 for k in ("prospective", "passed", "failed")), tally
+
+
+# -- CONFIG-REVALIDATION, M4 part: novelty permission (#144) ------------------------------------
+
+
+@dataclass
+class Permissions:
+    """A held turn's read phase: ``permission.check`` on its claims, each attempt's codes."""
+
+    cast: ns.Cast
+    claims: list[tuple[Proposition, permission.Asserter]]
+    codes: list[list[str]] = field(default_factory=list)
+
+    async def __call__(self, conn: AsyncConnection, read_set: readset.StructuredReadSet) -> Any:
+        found = [
+            await permission.check(conn, read_set, self.cast.story_id, claim, asserter)
+            for claim, asserter in self.claims
+        ]
+        self.codes.append([f.code() if f is not None else "off" for f in found])
+        return [[code] for code in self.codes[-1]]
+
+
+async def _permission_turn(
+    engine: AsyncEngine, cast: ns.Cast, claims: list[tuple[Proposition, permission.Asserter]]
+) -> tuple[KeyedTurn, Permissions]:
+    read = Permissions(cast, claims)
+    held = await start_keyed_turn(engine, cast.story_id, [], budget=1, read=read)
+    return held, read
+
+
+async def _finish(engine: AsyncEngine, held: KeyedTurn, story_id: str) -> None:
+    while not held.done:
+        await held.release()
+    result = await held.task
+    async with engine.connect() as conn:
+        current = await config_dependencies.capture(
+            conn, story_id, config_dependencies.STRUCTURED_DEPENDENCIES
+        )
+    recorded = result.operation.config_revisions or {}
+    for name in config_dependencies.STRUCTURED_DEPENDENCIES:
+        assert recorded.get(name) == (current or {}).get(name), name
+
+
+async def _permission_revalidation(url: str) -> None:
+    engine = make_engine(auth_settings(url))
+    try:
+        cast = await ns.bobby_and_jenni(engine)
+        story = cast.story_id
+        arrival = (ns.claim(cast.stranger, ns.LOCATED_AT, cast.porch), cast.director)
+        backstory = (ns.claim(cast.bobby, ns.ATTENDED, cast.camp), cast.render(cast.bobby))
+
+        # The arrival policy turned off while the turn is held: re-checked, now denied.
+        held, read = await _permission_turn(engine, cast, [arrival])
+        assert read.codes == [["permitted:arrival"]]
+        await ns.set_arrivals(engine, story, allowed=False)
+        await held.release()
+        first = held.op.attempts[0]
+        assert (first["outcome"], first["recheck"]) == ("recheck", "failed"), first
+        assert first["config_changed"] == ["allow_new_arrivals"], first
+        assert not held.done  # regenerating under the new policy
+        assert read.codes[-1] == ["denied:policy"]
+        await _finish(engine, held, story)
+        assert held.op.config_revisions is not None
+        assert held.op.config_revisions["allow_new_arrivals"] is False
+        await ns.set_arrivals(engine, story, allowed=True)
+
+        # A lock on the claim's own key: its keyed lock lookup is touched, the turn regenerates
+        # and the claim is then denied.
+        held, read = await _permission_turn(engine, cast, [backstory])
+        assert read.codes == [["permitted:own"]]
+        await commit(
+            engine,
+            story,
+            ns.claim(cast.bobby, ns.ATTENDED, cast.osu, ns.SEED_SPAN),
+            kind=OperationKind.CONTROL,
+            provenance="author",
+            author_locked=True,
+        )
+        await held.release()
+        first = held.op.attempts[0]
+        assert (first["outcome"], first["reason"]) == ("regenerate", "read_set_touched"), first
+        assert read.codes[-1] == ["denied:locked_canon"]
+        await _finish(engine, held, story)
+
+        # A lock elsewhere moves only the ``author_locks`` member: re-checked, passed.
+        held, read = await _permission_turn(engine, cast, [arrival])
+        await commit(
+            engine,
+            story,
+            ns.claim(cast.jenni, ns.ATTENDED, cast.camp, ns.SEED_SPAN),
+            kind=OperationKind.CONTROL,
+            provenance="author",
+            author_locked=True,
+        )
+        await held.release()
+        first = held.op.attempts[0]
+        assert (first["outcome"], first["recheck"]) == ("recheck", "passed"), first
+        assert first["config_changed"] == ["author_locks"], first
+        await _finish(engine, held, story)
+        assert read.codes == [["permitted:arrival"]]
+
+        # The complement: a prospective change never re-checks.
+        held, read = await _permission_turn(engine, cast, [arrival])
+        await set_overrides(
+            engine,
+            story,
+            ProfileOverridesPatch(
+                settings={"verification": {"entailment_gate": 0.4}}, ignore_warnings=True
+            ),
+            principal="p-author",
+            facts=NO_FACTS,
+        )
+        await held.release()
+        assert held.op.attempts[0]["outcome"] == "commit", held.op.attempts[0]
+        await _finish(engine, held, story)
+        assert read.codes == [["permitted:arrival"]]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.part("M4", "FR-CONC-16")
+def test_config_revalidation__permission(pg_url: str) -> None:
+    """See the module docstring."""
+    assert schema.setting_tags()["verification.entailment_gate"].change_class.value == (
+        "prospective"
+    )
+    assert "allow_new_arrivals" in config_dependencies.STRUCTURED_DEPENDENCIES
+    assert "author_locks" in config_dependencies.STRUCTURED_DEPENDENCIES
+    asyncio.run(_permission_revalidation(pg_url))

@@ -1126,6 +1126,19 @@ async def hidden_from(
     return [fact for fact in every if not visible_to(fact.visibility, viewpoint)]
 
 
+async def locked_keys(conn: AsyncConnection, story_id: str) -> list[tuple[str, str, str]]:
+    """The current ``author_locked`` versions as ``(fact id, subject, predicate)``, ordered:
+    the locks a structured turn's permission checks depend on (FR-VERIFY-11, FR-CONC-16;
+    #144's ``author_locks`` configuration member, hashed by ``core.config_dependencies``)."""
+    f = facts.alias("f")
+    rows = await conn.execute(
+        select(f.c.id, f.c.subject_id, f.c.predicate_id)
+        .where(f.c.story_id == story_id, f.c.author_locked.is_(True), *_open(f, None))
+        .order_by(f.c.id)
+    )
+    return [(str(r.id), str(r.subject_id), str(r.predicate_id)) for r in rows]
+
+
 __all__ = [
     "FACT_COMMITTED",
     "FACT_HOOKS",
@@ -1144,6 +1157,7 @@ __all__ = [
     "commit_fact",
     "default_authority",
     "hidden_from",
+    "locked_keys",
     "register_fact_hook",
     "remove_fact_hook",
     "supersede",

@@ -10,10 +10,12 @@ capabilities (``genesis_capabilities``) are those the deployment has delivered (
 ``structured`` pipeline (FR-PROF-4): M4's delivery of that pipeline changes nothing here.
 
 ``SETTING_CAPABILITIES`` maps every ``story_settings_defaults`` field to the capability it
-needs, ``None`` for the settings a Lite story uses (the turn concurrency, the default output
-viewpoint, the audit retention, the story-scoped policies). A capability no #106 module covers
-is named by the setting's own area (``history_rewrite``, ``providers``). The build-time check
-``unmapped_settings`` keeps the dict complete.
+needs, ``None`` for the settings every story is created with (the turn concurrency, the default
+output viewpoint, the audit retention, the story-scoped policies, which Lite uses, and the
+arrival policy, a story setting only the structured permission check reads, #144, kept in place
+so a later upgrade finds it). A capability no #106 module covers is named by the setting's own
+area (``history_rewrite``, ``providers``). The build-time check ``unmapped_settings`` keeps the
+dict complete.
 """
 
 from __future__ import annotations
@@ -35,10 +37,12 @@ SETTING_CAPABILITIES: Final[Mapping[str, str | None]] = {
     "ambiguous_retcon_timing": "history_rewrite",
     "backfill_conflict_policy": "history_rewrite",
     "audit_retention_days": None,
+    "allow_new_arrivals": None,
     "policies": None,
     "required_providers": "providers",
 }
-"""Each ``story_settings_defaults`` field and the capability it needs (``None``: used by Lite)."""
+"""Each ``story_settings_defaults`` field and the capability it needs (``None``: applied at
+genesis)."""
 
 PARTICIPATION: Final = "participation"
 """A role's default participation (``cast.roles[].participation``) is stored as the inactive

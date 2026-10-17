@@ -165,8 +165,10 @@ async def test_only_the_uncertain_residual_reaches_the_model(engine: AsyncEngine
                 "evidence_ids": [],
                 "escalated": True,
                 "disposition": None,
+                "permission": None,
             }
         ],
+        "denied": [],
     }
 
 

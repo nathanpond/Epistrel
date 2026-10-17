@@ -22,7 +22,10 @@ proposal or an author edit changes it) and ``verification_settings`` (the effect
 profile's interpretive ``verification.*`` settings, ``engine_profile:<id>.<path>`` changes,
 #113; a prospective one such as ``verification.entailment_gate`` is not a member). A change to
 either re-checks the turn: its policy checks and its ``REBASE_CHECKS`` (#140's verify, #144's
-permission checks) run under the new configuration.
+permission checks) run under the new configuration. #144 adds what its permission checks
+interpret: ``allow_new_arrivals`` (the story's arrival policy, a story setting) and
+``author_locks`` (a hash of the current ``author_locked`` fact versions' ``(id, subject,
+predicate)``: an author locking or unlocking canon, #145, changes it).
 
 The set values are hashes (``hash_member``), so detection at commit is a compare. At commit,
 under the story lock, ``changed`` names the dependencies whose value moved since the capture:
@@ -61,8 +64,14 @@ LITE_DEPENDENCIES = (
 )
 """What a Lite turn's commit is re-checked against when it changes (M4 widens it)."""
 
-STRUCTURED_DEPENDENCIES = (*LITE_DEPENDENCIES, "predicate_registry", "verification_settings")
-"""What a structured turn's commit is re-checked against when it changes (#136)."""
+STRUCTURED_DEPENDENCIES = (
+    *LITE_DEPENDENCIES,
+    "predicate_registry",
+    "verification_settings",
+    "allow_new_arrivals",
+    "author_locks",
+)
+"""What a structured turn's commit is re-checked against when it changes (#136, #144)."""
 
 VERIFICATION_PREFIX = "verification."
 
@@ -178,6 +187,14 @@ async def capture(
         captured["predicate_registry"] = await _predicate_registry(conn, story_id)
     if "verification_settings" in members:
         captured["verification_settings"] = await _verification_settings(conn, story_id)
+    if "allow_new_arrivals" in members:
+        captured["allow_new_arrivals"] = StorySettings.from_row(story.settings).allow_new_arrivals
+    if "author_locks" in members:
+        from epistrel.core.canon.facts import locked_keys  # here: canon imports the read set
+
+        captured["author_locks"] = hash_member(
+            [list(key) for key in await locked_keys(conn, story_id)]
+        )
     if "default_output_viewpoint" in members:
         captured["default_output_viewpoint"] = StorySettings.from_row(
             story.settings

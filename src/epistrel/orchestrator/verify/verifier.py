@@ -42,12 +42,26 @@ reason is recorded); ``surface`` lets the beat stand and lists the claim in the 
 ``uncertain_claims`` (degradation ``uncertain_surfaced``). Either way the final kind stays
 ``uncertain``: an undecided claim is never a silent ``supported``.
 
+**Novelty is not permission** (FR-VERIFY-11,12; #144). Every claim that ends ``novel`` and
+names its asserter (``verify(..., asserter=...)``) passes ``core.verify.permission`` before it
+can be canonized or repaired (``ClaimSource.permission``: over canon, ``permission.check``,
+its reads keyed and recorded for the rebase re-check). A ``Permitted`` claim becomes a
+``CanonRequest`` (``canon_requests()``; ``core.canon.canonize`` writes them in the turn's
+commit) with the asserter's provenance, its beat's visibility (``ClaimRef.channel`` and
+``scope``) and an anchor from the claim subject's neighborhood; a ``think`` claim never
+canonizes, and a ``say`` claim only when it is about the speaker's own actions or backstory
+(otherwise it stays an utterance label, FR-TURN-5). A ``Denied`` claim is never canonized:
+it ``needs_repair`` with ``repair_tag = "unpermitted"`` (#151's ladder), except
+``player_authority``, whose player text stands; it is listed in ``report()["denied"]`` with its
+reason, and its verdict entry carries the permission code.
+
 **Within one turn** a ``Verifier`` is built per turn: identical ``(claim, records)`` requests
 reuse the first validated answer (the structured call's deterministic step), escalations run one
 after the other, and every residual that reached the gate leaves an ``EscalationRecord`` in
 ``escalations``: #155 writes them (its ``escalations`` table) in the turn's transaction.
 ``report()`` is ``turn_report.verify`` (``{claims, deterministic, escalated, verdicts}``, the
-basis of P-05's escalation rate) and ``uncertain_claims()`` the surfaced claims. A model verdict
+basis of P-05's escalation rate, plus ``denied``) and ``uncertain_claims()`` the surfaced
+claims. A model verdict
 rests on keyed reads (the deterministic fetch): a rebase that changes them regenerates the turn,
 so a stale model verdict is never reused.
 
@@ -56,6 +70,7 @@ Log lines carry counts and codes only (invariant 3).
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -66,6 +81,7 @@ from typing import Any, Literal, Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core.canon.canonize import CanonRequest, anchor_for, visibility_of
 from epistrel.core.config_changes import read_section
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
@@ -74,9 +90,19 @@ from epistrel.core.propositions.registry import Registry, load
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.settings_schema import OMNISCIENT, VerifySettings
 from epistrel.core.tables import entities
+from epistrel.core.verify import permission as permissions
 from epistrel.core.verify import rules
 from epistrel.core.verify.neighborhood import Seed, fact_neighborhood
 from epistrel.core.verify.normalize import Unnormalizable
+from epistrel.core.verify.permission import (
+    Asserter,
+    Basis,
+    Denied,
+    EntityInfo,
+    Permission,
+    PermissionFacts,
+    Permitted,
+)
 from epistrel.core.verify.rules import (
     CANON,
     ClosedSetRecord,
@@ -118,6 +144,11 @@ ENTAILMENT_BUDGET = "entailment_budget_exhausted"
 UNCERTAIN_SURFACED = "uncertain_surfaced"
 ENTAILMENT_RULE = "entailment"
 """The ``rule`` of a verdict the entailment model decided (it cites no record)."""
+UNPERMITTED = "unpermitted"
+"""The repair tag of a novel claim its asserter may not introduce (#151's ladder)."""
+NEVER_CANONIZES = frozenset({"think"})
+"""Beat channels whose claims never canonize."""
+SAY = "say"
 
 BUILT_IN_PARAMS = ModelParams(temperature=0.0, max_tokens=100)
 """The entailment call's own params; the story's ``entailment`` route's params win."""
@@ -179,11 +210,15 @@ class VerifyConfig:
 @dataclass(frozen=True, slots=True)
 class ClaimRef:
     """Where a claim sits in the turn, for the turn report: its id (``<operation>:<n>``, minted
-    at detection by #150), its beat and its character span in the beat."""
+    at detection by #150), its beat and its character span in the beat, and the beat's channel
+    (``say``, ``think``, ``do``, ``latent``, ``narration``) and, for a ``latent`` beat, its
+    declared scope (the characters it names), which a canonized claim's visibility follows."""
 
     claim_id: str | None = None
     beat: int | None = None
     span: tuple[int, int] | None = None
+    channel: str | None = None
+    scope: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +241,12 @@ class VerifyResult:
     disposition: SafeDisposition | None = None
     degradation: tuple[str, ...] = ()
     sub_results: tuple[VerifyResult, ...] = ()
+    asserter: Asserter | None = None
+    permission: Permission | None = None
+    """A novel claim's permission (#144); ``None`` when it was not asked (not novel, or no
+    asserter named)."""
+    anchored_to: str | None = None
+    """The fact a permitted claim's canonization anchors to (its neighborhood's)."""
 
     @property
     def reason(self) -> VerdictReason | None:
@@ -222,9 +263,28 @@ class VerifyResult:
         return found[0] if found else None
 
     @property
+    def denied(self) -> Denied | None:
+        return self.permission if isinstance(self.permission, Denied) else None
+
+    @property
+    def permitted(self) -> Permitted | None:
+        return self.permission if isinstance(self.permission, Permitted) else None
+
+    @property
     def needs_repair(self) -> bool:
-        """Whether #151 repairs the claim: contradicted, or undecided under ``repair``."""
-        return self.kind is VerdictKind.CONTRADICTED or self.disposition == "repair"
+        """Whether #151 repairs the claim: contradicted, undecided under ``repair``, or novel
+        and not permitted (``repair_tag``)."""
+        return (
+            self.kind is VerdictKind.CONTRADICTED
+            or self.disposition == "repair"
+            or self.repair_tag is not None
+        )
+
+    @property
+    def repair_tag(self) -> str | None:
+        """``unpermitted`` for a denied novel claim #151 repairs (FR-VERIFY-12)."""
+        denied = self.denied
+        return UNPERMITTED if denied is not None and denied.repaired else None
 
     @property
     def surfaced(self) -> bool:
@@ -253,6 +313,7 @@ class VerifyResult:
             "evidence_ids": self.evidence_ids(),
             "escalated": self.escalated,
             "disposition": self.disposition,
+            "permission": None if self.permission is None else self.permission.code(),
         }
 
 
@@ -307,17 +368,35 @@ class ClaimSource(Protocol):
 
     async def names(self, ids: Sequence[str]) -> Mapping[str, str]: ...
 
+    async def permission(
+        self,
+        claim: Proposition,
+        asserter: Asserter,
+        *,
+        position: tuple[int, int] | None,
+        protected: bool,
+    ) -> Permission | None: ...
+
+    async def anchor(
+        self, claim: Proposition, *, viewpoint: str, position: tuple[int, int] | None
+    ) -> str | None: ...
+
 
 @dataclass
 class RecordsSource:
     """The holder's records passed in (pure: #140's ``check``). For an utterance holder, whose
-    records #150 fetches, and for the unit tests."""
+    records #150 fetches, and for the unit tests. Permission is decided over the ``entities``,
+    ``locked`` (subject, predicate) keys, ``placed`` subjects and arrival policy passed in."""
 
     records: Sequence[Record]
     registry_: Registry
     closed_sets: Sequence[ClosedSetRecord] = ()
     options: Options = field(default_factory=Options)
     entity_names: Mapping[str, str] = field(default_factory=dict)
+    entities: Mapping[str, EntityInfo] = field(default_factory=dict)
+    locked: frozenset[tuple[str, str]] = frozenset()
+    placed: frozenset[str] = frozenset()
+    allow_new_arrivals: bool = True
 
     async def registry(self) -> Registry:
         return self.registry_
@@ -350,6 +429,31 @@ class RecordsSource:
 
     async def names(self, ids: Sequence[str]) -> Mapping[str, str]:
         return {i: self.entity_names[i] for i in ids if i in self.entity_names}
+
+    async def permission(
+        self,
+        claim: Proposition,
+        asserter: Asserter,
+        *,
+        position: tuple[int, int] | None,
+        protected: bool,
+    ) -> Permission | None:
+        del position
+        facts = PermissionFacts(
+            entities=self.entities,
+            predicate=self.registry_.get(claim.predicate_id),
+            locked=(claim.subject_id, claim.predicate_id) in self.locked,
+            placed=claim.subject_id in self.placed,
+            allow_new_arrivals=self.allow_new_arrivals,
+            protected=protected,
+        )
+        return permissions.permission(claim, asserter, permissions.owner_of(claim, facts), facts)
+
+    async def anchor(
+        self, claim: Proposition, *, viewpoint: str, position: tuple[int, int] | None
+    ) -> str | None:
+        del viewpoint, position
+        return anchor_for(claim, [(r.fact_id, r.proposition) for r in self.records if r.fact_id])
 
 
 class CanonSource:
@@ -412,6 +516,42 @@ class CanonSource:
             registry=await self.registry(),
         )
         return [Record.of_fact(f) for f in found.facts()]
+
+    async def permission(
+        self,
+        claim: Proposition,
+        asserter: Asserter,
+        *,
+        position: tuple[int, int] | None,
+        protected: bool,
+    ) -> Permission | None:
+        return await permissions.check(
+            self.conn,
+            self.read_set,
+            self.story_id,
+            claim,
+            asserter,
+            through_position=position,
+            protected=protected,
+            registry=await self.registry(),
+            remember=self.remember,
+        )
+
+    async def anchor(
+        self, claim: Proposition, *, viewpoint: str, position: tuple[int, int] | None
+    ) -> str | None:
+        """The anchor ``core.canon.canonize.anchor_for`` picks from the claim subject's
+        neighborhood (context reads, never keyed)."""
+        found = await fact_neighborhood(
+            KeyedLookup(self.conn, self.read_set),
+            self.story_id,
+            Seed.entity(claim.subject_id),
+            depth=NEIGHBORHOOD_DEPTH,
+            viewpoint=viewpoint,
+            through_position=position,
+            registry=await self.registry(),
+        )
+        return anchor_for(claim, found.facts())
 
     async def names(self, ids: Sequence[str]) -> Mapping[str, str]:
         if not ids:
@@ -545,9 +685,13 @@ class Verifier:
         *,
         holder: Holder = CANON,
         ref: ClaimRef | None = None,
+        asserter: Asserter | None = None,
+        protected: bool = False,
     ) -> VerifyResult | None:
         """``claim``'s verdict as ``viewpoint`` may know it, at narrative ``position`` (canon
-        written at or before it); ``None`` when the story's verification is off."""
+        written at or before it); ``None`` when the story's verification is off. A claim that
+        ends ``novel`` passes ``asserter``'s permission check (``protected``: the claim's text
+        matched protected content, #148's detector) before it can be canonized or repaired."""
         if not self.config.on:
             return None
         found = await self.source.deterministic(
@@ -559,6 +703,8 @@ class Verifier:
         where = ref or ClaimRef()
         at = _At(viewpoint, position, holder)
         result = await self._settle(claim, verdict, fetched, at, where, top=True)
+        if asserter is not None and result.kind is VerdictKind.NOVEL:
+            result = await self._permit(result, claim, asserter, at, protected=protected)
         self.results.append((where, result))
         if result.surfaced:
             self.rendered[id(result)] = await self._render_claim(claim)
@@ -587,6 +733,73 @@ class Verifier:
         result = self._safe(None, verdict, decision, where)
         self.results.append((where, result))
         return result
+
+    # -- novelty and permission (#144) ----------------------------------------------------
+
+    async def _permit(
+        self,
+        result: VerifyResult,
+        claim: Proposition,
+        asserter: Asserter,
+        at: _At,
+        *,
+        protected: bool,
+    ) -> VerifyResult:
+        found = await self.source.permission(
+            claim, asserter, position=at.position, protected=protected
+        )
+        anchor = None
+        if isinstance(found, Permitted):
+            anchor = await self.source.anchor(claim, viewpoint=at.viewpoint, position=at.position)
+        return dataclasses.replace(result, asserter=asserter, permission=found, anchored_to=anchor)
+
+    def canon_requests(self) -> list[CanonRequest]:
+        """The turn's permitted novel claims to canonize at its commit, in verification order
+        (``core.canon.canonize.canonize_all`` dedupes identical ones): never a denied claim, a
+        ``think`` claim, or a ``say`` claim that is not about the speaker's own actions or
+        backstory."""
+        found: list[CanonRequest] = []
+        for ref, r in self.results:
+            permitted = r.permitted
+            if permitted is None or r.claim is None or r.asserter is None:
+                continue
+            if r.kind is not VerdictKind.NOVEL or ref.channel in NEVER_CANONIZES:
+                continue
+            if ref.channel == SAY and permitted.basis is not Basis.OWN:
+                continue
+            found.append(
+                CanonRequest(
+                    claim=r.claim,
+                    provenance=r.asserter.provenance,
+                    visibility=visibility_of(ref.channel, ref.scope),
+                    anchored_to=r.anchored_to,
+                    beat=ref.beat,
+                    claim_id=ref.claim_id,
+                )
+            )
+        return found
+
+    async def denied(self) -> list[dict[str, Any]]:
+        """``turn_report.verify.denied``: each novel claim its asserter may not introduce,
+        rendered, with its asserter, reason, beat and span (never canonized; #151 repairs every
+        one but a ``player_authority`` denial)."""
+        found: list[dict[str, Any]] = []
+        for ref, r in self.results:
+            denied = r.denied
+            if denied is None or r.asserter is None:
+                continue
+            found.append(
+                {
+                    "claim": await self._render_claim(r.claim),
+                    "claim_id": ref.claim_id,
+                    "asserter": r.asserter.key(),
+                    "reason": denied.reason.value,
+                    "repaired": denied.repaired,
+                    "beat": ref.beat,
+                    "span": None if ref.span is None else list(ref.span),
+                }
+            )
+        return found
 
     # -- the residual ---------------------------------------------------------------------
 
@@ -811,13 +1024,25 @@ class Verifier:
 
     def report(self) -> dict[str, Any]:
         """``turn_report.verify``: how many claims were checked, decided without a model call,
-        and escalated, and one entry per claim (ids and codes only)."""
+        and escalated, one entry per claim (ids and codes only) and the denied novel claims'
+        codes (``denied``: ids, asserters and reasons; ``await denied()`` renders them)."""
         escalated = sum(1 for _, r in self.results if r.escalated)
         return {
             "claims": len(self.results),
             "deterministic": len(self.results) - escalated,
             "escalated": escalated,
             "verdicts": [r.as_payload(ref.claim_id) for ref, r in self.results],
+            "denied": [
+                {
+                    "claim_id": ref.claim_id,
+                    "asserter": r.asserter.key(),
+                    "reason": d.reason.value,
+                    "beat": ref.beat,
+                    "span": None if ref.span is None else list(ref.span),
+                }
+                for ref, r in self.results
+                if (d := r.denied) is not None and r.asserter is not None
+            ],
         }
 
     def uncertain_claims(self) -> list[dict[str, Any]]:
@@ -872,6 +1097,7 @@ __all__ = [
     "ENTAILMENT_RULE",
     "ENTAILMENT_UNAVAILABLE",
     "UNCERTAIN_SURFACED",
+    "UNPERMITTED",
     "CanonSource",
     "ClaimRef",
     "ClaimSource",

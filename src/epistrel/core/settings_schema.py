@@ -321,6 +321,14 @@ class StorySettings(BaseModel):
     them (FR-STORE-30; #71), 1 to 3650. ``None``: the deployment's ``audit_retention_days``
     (default 90). Never affects story history. Prospective."""
 
+    allow_new_arrivals: Annotated[StrictBool, INTERPRETIVE] = True
+    """Whether new arrivals may be introduced (FR-VERIFY-11; #144): a director pass's arrival
+    (a ``located_at``/``present_at`` claim on a person with no prior placement) is permitted
+    novelty, and a render may bring in a new unmodeled person as scene texture, only while this
+    is on. Genesis copies the scenario's ``story_settings_defaults.allow_new_arrivals``; a story
+    without it reads true. Interpretive: a structured turn's permission checks depend on it
+    (#136's re-check at commit)."""
+
     @field_validator("default_output_viewpoint")
     @classmethod
     def _never_omniscient(cls, value: str | None) -> str | None:

@@ -719,6 +719,7 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
         Use.story_setting,
     ),
     "story_settings_defaults.audit_retention_days": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.allow_new_arrivals": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.policies[].name": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.policies[].applies_to": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.policies[].rule": (FieldClass.configuration, Use.policy),

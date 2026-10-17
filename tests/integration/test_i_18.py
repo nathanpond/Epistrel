@@ -509,6 +509,7 @@ def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
     derived from the model so a setting added later is covered too (#292)."""
     explicit: dict[str, st.SearchStrategy[Any]] = {
         "turn_concurrency": st.sampled_from(["reject", "queue"]),
+        "allow_new_arrivals": st.none() | st.booleans(),
         "default_output_viewpoint": st.none() | st.sampled_from([f"character:{c}" for c in cast]),
     }
     return st.fixed_dictionaries(

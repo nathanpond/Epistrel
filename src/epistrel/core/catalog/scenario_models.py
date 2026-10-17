@@ -542,6 +542,10 @@ class StorySettingsDefaults(ScenarioModel):
     audit_retention_days: Annotated[int | None, FieldClass.configuration, Use.story_setting] = (
         Field(default=None, ge=AUDIT_RETENTION_MIN_DAYS, le=AUDIT_RETENTION_MAX_DAYS)
     )
+    allow_new_arrivals: Annotated[bool | None, FieldClass.configuration, Use.story_setting] = None
+    """The scenario's arrival policy (FR-VERIFY-11; #144): whether a director pass may introduce
+    new arrivals, and a render a new unmodeled person as scene texture. ``null`` leaves the
+    story's default (true)."""
     policies: list[ScenarioPolicy] = Field(default_factory=list, max_length=POLICIES_MAX)
     required_providers: Annotated[list[ProviderName], FieldClass.configuration, Use.policy] = Field(
         default_factory=list, max_length=NAMES_MAX

@@ -1,6 +1,6 @@
 """U-04 (M4): verification set-logic over normalized propositions, deterministic first (docs/04
-§3; #142). Every U-04 (M4) part lives in this file (traceability counts a test ID per milestone
-in one file); #144's ``test_u_04__canonize`` joins it.
+§3; #142, #144). Every U-04 (M4) part lives in this file (traceability counts a test ID per
+milestone in one file).
 
 The verifier runs over records passed in (``RecordsSource``: #140's pure ``check``) and a stub
 Model Access Layer with no database, so the model calls are counted exactly:
@@ -14,6 +14,15 @@ Model Access Layer with no database, so the model calls are counted exactly:
   and granularity never do (complement), and neither do the reasons that never escalate. A
   low-confidence or unparseable answer takes the safe disposition, and so does every residual
   below ``verification.level = entailment``, with zero calls.
+- ``test_u_04__canonize`` (#144): a permitted ``novel`` verdict canonizes (FR-VERIFY-4). Over
+  records passed in, Bobby's own novel claim is permitted and becomes a canon request with his
+  provenance (``render``), its beat's visibility (``objective``; a ``latent`` beat's scope) and
+  an anchor (his most recent fact with the same subject and predicate); a ``think`` claim and
+  a ``say`` claim about someone else's texture never do, and neither does a denied claim
+  (complement). Against PostgreSQL, ``canonize_all`` writes the requests through
+  ``commit_fact`` in a turn's commit step: provenance, visibility and the anchor are recorded,
+  identical claims are written once, and a place first named in the claim becomes a ``place``
+  entity then.
 """
 
 from __future__ import annotations
@@ -23,9 +32,17 @@ from collections.abc import Sequence
 from typing import Any
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.propositions.model import Granularity, Instant, Proposition
+from epistrel.core.canon.canonize import CanonRequest, NewEntity, canonize_all
+from epistrel.core.canon.facts import Fact, Visibility
+from epistrel.core.enums import RecordProvenance
+from epistrel.core.events import Operation
+from epistrel.core.propositions.model import Granularity, Instant, Interval, Proposition
+from epistrel.core.tables import entities
 from epistrel.core.verify.normalize import Unnormalizable
+from epistrel.core.verify.permission import Asserter, Basis, Denied, EntityInfo, Permitted, Reason
 from epistrel.core.verify.rules import Options, Rule, VerdictKind, VerdictReason
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
@@ -38,11 +55,13 @@ from epistrel.orchestrator.verify.gate import (
     PredicateShape,
 )
 from epistrel.orchestrator.verify.verifier import (
+    ClaimRef,
     RecordsSource,
     Verifier,
     VerifyConfig,
     VerifyResult,
 )
+from tests import canon_support as cs
 from tests import verify_support as vs
 
 NAMES = {
@@ -325,3 +344,111 @@ async def test_u_04__escalation() -> None:
     assert found.decision is not None
     assert found.decision.outcome == "below_gate"
     assert (found.kind, found.escalated, calls(mal)) == (VerdictKind.UNCERTAIN, False, 0)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-VERIFY-4")
+async def test_u_04__canonize(engine: AsyncEngine) -> None:
+    """A permitted ``novel`` verdict canonizes with provenance, visibility and an anchor (see
+    the module docstring)."""
+    bobby = Asserter("character", vs.BOBBY)
+    known = vs.records(KITCHEN, vs.prop(vs.BOBBY, vs.LOCATED_AT, vs.GARDEN, vs.span(100, 200)))
+    source = RecordsSource(
+        known,
+        vs.REGISTRY,
+        entity_names=NAMES,
+        entities={
+            vs.BOBBY: EntityInfo(vs.BOBBY, "person", vs.BOBBY),
+            vs.ANN: EntityInfo(vs.ANN, "person", vs.ANN),
+            vs.KITCHEN: EntityInfo(vs.KITCHEN, "place"),
+        },
+        placed=frozenset({vs.BOBBY}),
+    )
+    v = Verifier(source, VerifyConfig(level="extraction"), models=None, budget=TurnBudget())
+    later = vs.prop(vs.BOBBY, vs.LOCATED_AT, vs.KITCHEN, vs.span(300, 400))
+    own = await v.verify(later, ref=ClaimRef("c:1", beat=1, channel="do"), asserter=bobby)
+    assert own is not None
+    assert (own.kind, own.permission) == (VerdictKind.NOVEL, Permitted(Basis.OWN))
+    # The anchor: his same subject-and-predicate fact that starts last (the garden, 100-200).
+    assert own.anchored_to == known[1].fact_id
+    hidden = await v.verify(
+        later,
+        ref=ClaimRef("c:2", beat=2, channel="latent", scope=(vs.BOBBY,)),
+        asserter=bobby,
+    )
+    thought = await v.verify(later, ref=ClaimRef("c:3", beat=3, channel="think"), asserter=bobby)
+    texture = vs.prop(vs.KITCHEN, vs.LOCATED_IN, vs.HOUSE)
+    said = await v.verify(texture, ref=ClaimRef("c:4", beat=4, channel="say"), asserter=bobby)
+    other = await v.verify(
+        vs.prop(vs.ANN, vs.LOCATED_AT, vs.GARDEN, vs.span(0, 10)),
+        ref=ClaimRef("c:5", beat=5, channel="do"),
+        asserter=bobby,
+    )
+    assert hidden is not None
+    assert thought is not None
+    assert said is not None
+    assert said.permission == Permitted(Basis.TEXTURE)
+    assert other is not None
+    assert other.permission == Denied(Reason.OTHER_CHARACTER_SECRET)
+    assert other.repair_tag == "unpermitted"
+    unasked = await v.verify(KITCHEN, ref=ClaimRef("c:6", beat=6, channel="do"), asserter=bobby)
+    assert unasked is not None
+    assert (unasked.kind, unasked.permission) == (VerdictKind.SUPPORTED, None)
+    requests = v.canon_requests()
+    # Only the permitted novel claims of canonizing channels: not the think, the say about
+    # texture, the denied claim, or the supported one (the complement).
+    assert [r.claim_id for r in requests] == ["c:1", "c:2"]
+    first, second = requests
+    assert (first.provenance, first.visibility, first.anchored_to, first.beat) == (
+        RecordProvenance.RENDER,
+        Visibility(),
+        known[1].fact_id,
+        1,
+    )
+    assert second.visibility == Visibility(scope="characters", characters=(vs.BOBBY,))
+
+    # Against PostgreSQL: canonize writes through commit_fact in a turn's commit step.
+    w = await cs.world(engine)
+    story = w.story_id
+    anchor = await cs.commit(engine, story, cs.at(w.people["Bobby"], w.places["kitchen"], 0, 100))
+    shed = "01JA00000000000000000000SH"
+    claimed = cs.at(w.people["Bobby"], w.places["garden"], 100, 200)
+    new_place = Proposition(
+        subject_id=w.people["Bobby"],
+        predicate_id=vs.LOCATED_AT,
+        object_id=shed,
+        valid_time=Interval.of(200, 300),
+    )
+    turn = [
+        CanonRequest(claimed, RecordProvenance.RENDER, anchored_to=anchor.id, beat=1),
+        CanonRequest(claimed, RecordProvenance.RENDER, anchored_to=anchor.id, beat=2),
+        CanonRequest(
+            new_place,
+            RecordProvenance.DIRECTOR,
+            visibility=Visibility(scope="characters", characters=(w.characters["Bobby"],)),
+            introduces=(NewEntity(shed, "the shed"),),
+        ),
+    ]
+
+    async def write(conn: AsyncConnection, op: Operation) -> list[Fact]:
+        return await canonize_all(conn, story, turn, operation=op)
+
+    op, written = await cs.run(engine, story, write)
+    garden, in_shed = written  # the identical second request was written once
+    assert (garden.provenance, garden.anchored_to, garden.beat, garden.operation_id) == (
+        RecordProvenance.RENDER,
+        anchor.id,
+        1,
+        op.operation_id,
+    )
+    assert (in_shed.provenance, in_shed.visibility.scope) == (
+        RecordProvenance.DIRECTOR,
+        "characters",
+    )
+    rows = await cs.fact_rows(engine, story)
+    assert rows[garden.id].anchored_to == anchor.id
+    assert rows[garden.id].provenance == "render"
+    assert len(rows) == 3
+    async with engine.connect() as conn:
+        kind = await conn.scalar(select(entities.c.kind).where(entities.c.id == shed))
+    assert kind == "place"

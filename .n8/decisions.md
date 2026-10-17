@@ -7159,3 +7159,58 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Lite):** Lite is unchanged except for `lite_summary`'s inherited model row. A Lite story writes no episodic memory, so no hook runs and no job is enqueued. The new in-transaction membership hook adds one primary-key read on an untruncate or swap. `lite_summary.schedule` is untouched, so #282's cost test is unaffected.
   **Why:** Brief rule.
   **Issue:** #143, #282
+- **Decision (Discretion):** Permission (#144) lives in `core/verify/permission.py`. It has two parts. The pure part is `permission(claim, asserter, subject_owner, facts)`. `owner_of` derives the subject owner (`modeled_character`, `player_character`, `world` or `external`), and the AC's signature is kept by passing the structured data in as `PermissionFacts`. The reading part is `check(conn, read_set, …)`.
+  - **What it reads.** Entities, characters and the story setting are read directly (they aren't `facts`). The claim's own (subject, predicate) facts, for the lock, and the subject's `located_at`/`present_at` facts, for an arrival, are read through `KeyedLookup.canon_at`. The module is a `KEYED_READERS` member. It reads no placement, relationships or scene projection table, so #137's carried obligation doesn't apply.
+  - **Reason codes.** Precedence is `external_value` (`Predicate.owner = external`, which binds the author too) > `locked_canon` > `state_change` (never fires in M4) > `player_character` > `other_character_secret` > `player_authority` > `policy` > `protected_content`. The planner's list is kept, with `external_value` first because it binds every asserter, and `state_change` placed after the lock.
+  - **Arrivals and texture.** An arrival is a `located_at`/`present_at` claim on a `person` entity with no current placement fact. Items and places never "arrive". A director arrival of a modeled character is permitted under the policy. A render's own movement is never an arrival denial.
+  - **Player input.** Player input for a character that isn't `is_player` is judged as that character's render (FR-AUTH-3).
+  - **M5 exception stubs.** `reactive` and `co_author` are judged as a plain render and plain player input, so what their exception would admit comes back `Denied` (`other_character_secret` and `player_authority`). They don't get a new "not delivered" code.
+  - **Not done here.** The `resolution` exemption for #146's `depend()` commits isn't implemented: no thunk ledger exists yet, and #146 owns `depend()`.
+  **Why:** AC1, the planner's Discretion, and keeping one code per denial.
+  **Issue:** #144, #146, #137
+- **Decision (Discretion):** The arrival policy is `allow_new_arrivals`, added to `StorySettings` (`StrictBool`, interpretive, default true) and to `StorySettingsDefaults`. In `SETTING_CAPABILITIES` its capability is `None`, so genesis applies it to the story's settings, not `inactive`. This deviates from the planner's "initialised from the scenario snapshot". `PATCH /stories/{id}/settings` stores every field's dump, so an `inactive`-held value would be silently overwritten by `true` on the first unrelated settings write. Applying it at genesis is the only way the scenario's value survives, and nothing in Lite reads it. The settings-map docstring now says `None` means "applied at genesis". `docs/02` §4.10 is amended, a §4.9 bullet describes permission and canonization, and `docs/openapi.json` is regenerated (the setting appears in `StorySettings`, `StorySettingsPatch` and `StorySettingsDefaults`).
+  **Why:** AC1 ("genesis copies it, and a story without it reads true"), and not losing the scenario's value.
+  **Issue:** #144, #108, #149
+- **Decision (Discretion):** For CONFIG-REVALIDATION M4, `STRUCTURED_DEPENDENCIES` gains `allow_new_arrivals` (the story setting) and `author_locks`, a hash of the current `author_locked` versions' `(id, subject, predicate)`. `author_locks` is read by a new store function `core.canon.facts.locked_keys`, so the config module doesn't read `facts` itself. `permission.recheck` is a `REBASE_CHECKS` entry, modelled on #140's `rules.recheck`: it re-runs every recorded answer on a scratch read set and regenerates when one changed code. Test: `test_config_revalidation__permission` in `tests/property/test_readset_completeness.py`, not `tests/integration/test_config_revalidation.py` as the brief named it, because that file already holds CONFIG-REVALIDATION (M4) and traceability keeps one file per test ID and milestone. It covers four cases:
+  - An arrival-policy edit while the turn is held is `recheck` → `failed` → regenerated, then denied `policy`.
+  - A lock on the claim's own key is `regenerate` (`read_set_touched`), then denied `locked_canon`.
+  - A lock elsewhere is `recheck` with `config_changed = ["author_locks"]` → `passed`.
+  - A prospective `entailment_gate` change commits straight through.
+  Locks are written as `control` operations (the author's, #145), so they don't touch the Lite transcript member.
+  **Why:** AC4 and the obligation #136 carried here.
+  **Issue:** #144, #136, #145
+- **Decision (Discretion):** Canonization is `core/canon/canonize.py`. `canonize()` calls `commit_fact` inside the turn's commit step. Its provenance is in `render`/`director`/`player`/`author`, and `Asserter.provenance` maps the asserter onto it. Visibility comes from `visibility_of(channel, scope)`: `objective`, or a `latent` beat's `characters` scope. The anchor can be given, or `anchor_for` picks it from the neighborhood: the same subject and predicate first, else the same subject, the most recent by valid-time start, then id. `canonize_all` dedupes identical claims (same proposition, provenance and visibility; the first keeps its beat). `NewEntity` creates a place or object entity on its first canonized mention, with the claim's id for it and `kind` from the predicate's argument type on that side (`other` when that type isn't an entity kind). A denied claim creates nothing.
+  **Why:** AC2 and the planner's lines on anchors, dedupe and new entities (docs/02 §4.9 names #144 for first-named places and objects).
+  **Issue:** #144
+- **Decision (Discretion, deviation):** `canonize.py` is not added to `guard.CONTENT_WRITE_PATHS`, although the must-have's parenthetical names it `OPERATION`.
+  - **Why not.** It writes no table itself. Every write goes through `commit_fact` (registered `DIRECT`, which calls `check_content` and the erasure index) and, for a new entity, `propositions.store.add_entity` (`DIRECT`).
+  - **Why it can't be added.** `test_every_content_write_path_is_guarded` requires the registered set to equal `SUBJECT_WRITERS`' writer modules, and canonize indexes nothing itself. Registering it would break that test, or would need a fake indexer call or a docstring mention of `Operation(` to satisfy the source check.
+  - **Still guarded.** The write still runs inside an `Operation` commit step, so the must-have's intent (writes through `Operation` events) holds.
+  **Why:** Not weakening the guard test, and not registering a path that doesn't write.
+  **Issue:** #144, #127
+- **Decision (Discretion):** The verifier is wired as follows:
+  - **The permission step.** `Verifier.verify(..., asserter=, protected=)` runs `ClaimSource.permission` on every claim whose final kind is `novel`, including a partly covered claim whose remainder is novel. `CanonSource` calls `permission.check`. `RecordsSource` decides over the `entities`, `locked`, `placed` and policy values passed in.
+  - **The result.** `VerifyResult` gains `asserter`, `permission` and `anchored_to`. `needs_repair` is also true for a denial #151 repairs, with `repair_tag = "unpermitted"` (`player_authority` stands unrepaired).
+  - **Canonizing.** `canon_requests()` holds only the permitted novel claims: never a `think`, and a `say` only on basis `own` (otherwise the claim stays an utterance label).
+  - **The report.** `report()["denied"]` gives `{claim_id, asserter, reason, beat, span}` in codes only. `await denied()` renders the claim text for the turn report, like `uncertain_claims()`. Each `verdicts[]` entry gains a `permission` code.
+  - **New `ClaimRef` fields.** `channel` and `scope`.
+  - **Left to #150.** The staged overlay that lets a later beat's verification see an earlier beat's permitted facts in the same transaction. The structured turn itself, which calls `verify(asserter=...)` and runs `canonize_all` as a commit step.
+  **Why:** The key links (novel → `permission()` → canonize or repair). No structured turn exists before #150 to host the overlay.
+  **Issue:** #144, #150, #151
+- **Decision (Discretion):** The planner's locked-field set (`appearance`, `true_age`, `visual_identity`) maps to the predicates `age`, `name`, `appearance_of` and `visual_identity_of`, matched by name. The last two are auto predicates, which bind once registered. The set is denied `locked_canon` for any asserter but the author when the subject is a modeled character, the player's own included. Any other own-subject claim is "minor backstory within its constraints".
+  **Why:** The planner's Discretion line.
+  **Issue:** #144
+- **Decision (tests):** The tests are:
+  - `tests/scenario/test_s_novelty_permission.py` (an integration mark per test) holds `test_s_novelty_permission__m4` (scenario (a), the director arrival and its policy-off complement, and (f), with zero `facts` rows checked by SQL), `__matrix` (the pure M4 matrix, each reason code and the M5 stubs) and `__model_free` (an AST check: no Orchestrator import, no purpose name, no model entry point).
+  - `test_u_04__canonize` (FR-VERIFY-4) in `tests/test_u_04.py`, integration-marked. It checks requests over records, the anchor, visibility, the channel rules and the complement, and against PostgreSQL the anchor and provenance rows, dedupe, and the new `place` entity.
+  - The Bobby/Jenni fixture with the arrival toggle is `tests/novelty_support.py`, for #151.
+  - `permission.py` carries a `# noqa: S105` on the reason code `other_character_secret`. Ruff's hardcoded-password heuristic misreads the word "secret", and the code name is fixed by the AC.
+  **Why:** The test plan, traceability (one file per test ID and milestone), and the AC's code names.
+  **Issue:** #144, #151
+- **Decision (tests, lexicon):** The exception stubs (`reactive`, `co_author`) and the precedence order are unit-tested in an unmarked `tests/test_permission.py`, not in the M4 parts. The lexicon gate forbids an M4 part from naming M5 and M6 capability terms ("reactive", "State"). They aren't M4 requirement evidence; they only pin the stubs' behaviour. Other edits:
+  - Rule 1: C-15's field-class map gains `story_settings_defaults.allow_new_arrivals`.
+  - I-18's settings strategy gains a boolean draw.
+  - The verifier's exact-report test gains `permission`/`denied`.
+  - `PATCH /stories/{id}/settings`'s description names the new interpretive setting (C-01 requires every setting to be named there).
+  **Why:** The gates (lexicon, C-01, C-15, I-18) cover any new story setting.
+  **Issue:** #144

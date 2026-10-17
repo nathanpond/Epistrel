@@ -49,7 +49,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -106,6 +106,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events.registry import EventPayload, lookup, validate
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import flip_membership
 from epistrel.core.ratings.stamp import guardrail_stamp
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.tables import events, operations, stories, turn_queue
@@ -917,8 +918,8 @@ class Operation:
     async def _retire_variant(self, conn: AsyncConnection) -> None:
         """A regenerated turn replaces the active variant at its index: everything positioned
         at it (the old turn and the work hanging off it) goes ``dormant`` (kept, swappable,
-        FR-STORE-12/28) in the same transaction."""
-        await conn.execute(
+        FR-STORE-12/28) in the same transaction, and their derived records with them (#130)."""
+        retired = await conn.execute(
             update(operations)
             .where(
                 operations.c.story_id == self.story_id,
@@ -927,13 +928,16 @@ class Operation:
                 operations.c.membership == Membership.ACTIVE.value,
             )
             .values(membership=Membership.DORMANT.value, membership_tx=func.transaction_timestamp())
+            .returning(operations.c.operation_id)
         )
+        await self._derived_follow(conn, retired.scalars().all())
 
     async def _shelve_discarded(self, conn: AsyncConnection) -> None:
         """A rewound tail becomes a dormant continuation at the first turn written over it
         (#66): the still-``discarded`` operations at or after this turn's index go ``dormant``.
-        The transcript projection makes the same change from the turn's events."""
-        await conn.execute(
+        The transcript projection makes the same change from the turn's events; the derived
+        records of those operations follow them (#130)."""
+        shelved = await conn.execute(
             update(operations)
             .where(
                 operations.c.story_id == self.story_id,
@@ -942,7 +946,14 @@ class Operation:
                 operations.c.membership == Membership.DISCARDED.value,
             )
             .values(membership=Membership.DORMANT.value, membership_tx=func.transaction_timestamp())
+            .returning(operations.c.operation_id)
         )
+        await self._derived_follow(conn, shelved.scalars().all())
+
+    async def _derived_follow(self, conn: AsyncConnection, operation_ids: Sequence[str]) -> None:
+        """The derived records of operations this commit made ``dormant`` follow them (#130):
+        these changes run no ``core.timeline`` membership hook."""
+        await flip_membership(conn, operation_ids, Membership.DORMANT, story_id=self.story_id)
 
     async def _check_chain(self, conn: AsyncConnection) -> None:
         """The active turn variants must be one chain: turns 1..k, one variant each, and the

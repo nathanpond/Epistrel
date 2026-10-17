@@ -42,7 +42,9 @@ re-reads and restages (up to ``EDIT_RETRY_BUDGET`` times, then 409 ``revision_co
 ``hook(conn, change)`` run for every membership change these edits make: ``in_transaction``
 hooks run inside the commit (a failure rolls the edit back); ``post_commit`` hooks run after it
 on their own connection, and a failure is logged (no content) and never undoes the edit. #72
-registers the Lite summary rebuild here.
+registers the Lite summary rebuild here. The first ``in_transaction`` hook is
+``core.membership``'s (#130): every registered derived record of the changed operations takes
+their new membership in the same transaction.
 """
 
 from __future__ import annotations
@@ -75,6 +77,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events.operation import Operation
 from epistrel.core.events.types import Head, Swap, Truncate, Untruncate
+from epistrel.core.membership import follow_membership_change
 from epistrel.core.stories import require_writable
 from epistrel.core.tables import events, operations, stories
 from epistrel.core.variants import (
@@ -220,6 +223,12 @@ def on_membership_change(
     if hook not in _HOOKS[phase]:
         _HOOKS[phase].append(hook)
     return hook
+
+
+on_membership_change(follow_membership_change)
+"""The first in-transaction hook (#130): the derived records of the changed operations follow
+them in the edit's transaction (``core.membership``), before any later-registered hook reads
+them."""
 
 
 def remove_membership_hook(hook: MembershipHook) -> None:

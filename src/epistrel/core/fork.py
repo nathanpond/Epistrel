@@ -25,7 +25,8 @@ independent copy under new ids, isolated from the source from the moment it exis
   ``prefix:`` (``character:<id>``), takes the new id; unmapped values (ratings, client event
   ids) are kept. New ULIDs keep the source's relative order. ``tx_time``, ``valid_time``,
   ``base_revision``, ``config_revisions`` and ``parent_variant`` are kept; ``membership_tx``
-  is the fork's time on rows that were not active.
+  is the fork's time on rows that were not active. A registered derived table's rows
+  (``core.membership``, #130) flatten the same way, except that ``superseded`` stays.
 - **One snapshot.** The copy runs on one connection whose transaction is ``REPEATABLE READ``
   from its first statement, so every read sees the source at one ``timeline_revision`` and a
   turn committing meanwhile is wholly in or wholly out (FR-CONC-10). A serialization failure is
@@ -96,6 +97,7 @@ from epistrel.core.events.operation import Operation
 from epistrel.core.events.registry import validate
 from epistrel.core.events.types import CastMember, Fork, ForkedFrom, StoryCreated
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import DERIVED_TABLES
 from epistrel.core.ownership import Owner
 from epistrel.core.projections.heads import head_row
 from epistrel.core.stories import (
@@ -592,6 +594,30 @@ OVERRIDES: dict[str, dict[str, str]] = {
 """Per-table columns that are not a plain remapped copy: memberships flatten to ``active``,
 events and transcript rows take the new ``seq``, and idempotency keys stay with the source."""
 
+_SUPERSEDED = f"'{Membership.SUPERSEDED.value}'"
+
+DERIVED_OVERRIDES: dict[str, str] = {
+    "membership": f"CASE WHEN t.membership = {_SUPERSEDED} THEN t.membership ELSE {_ACTIVE} END",
+    "membership_tx": (
+        f"CASE WHEN t.membership IN ({_ACTIVE}, {_SUPERSEDED}) THEN t.membership_tx "
+        "ELSE transaction_timestamp() END"
+    ),
+    "source_event_ids": (
+        f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.source_event_ids) "  # noqa: S608
+        "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
+    ),
+}
+"""A registered derived table's copied rows (``core.membership``, #130) follow their copied
+operations, which are all ``active`` in the fork (a ``superseded`` row stays superseded), and
+their ``source_event_ids`` name the fork's copies of those events."""
+
+
+def _overrides(table: Table) -> dict[str, str]:
+    if table.name in DERIVED_TABLES:
+        return {**DERIVED_OVERRIDES, **OVERRIDES.get(table.name, {})}
+    return OVERRIDES.get(table.name, {})
+
+
 _EVENT_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'event')"  # noqa: S608
 _OPERATION_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'operation')"  # noqa: S608
 
@@ -632,7 +658,7 @@ async def _map_primary_keys(conn: AsyncConnection, table: Table, where: str, sou
 async def _copy_table(conn: AsyncConnection, table: Table, source: str, fork_id: str) -> int:
     where = _row_filter(table)
     result = await conn.execute(
-        text(_insert_select(table, OVERRIDES.get(table.name, {}), where)),
+        text(_insert_select(table, _overrides(table), where)),
         {"source": source, "fork": fork_id},
     )
     return int(result.rowcount)

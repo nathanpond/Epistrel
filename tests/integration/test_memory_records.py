@@ -51,7 +51,7 @@ from tests.memory_support import (
 from tests.respond_support import new_story as new_rest_story
 from tests.respond_support import respond_client
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("drained_embedding_jobs")]
 
 FIXTURE = Path(__file__).resolve().parents[2] / "evals" / "sets" / "importance" / "cases.jsonl"
 

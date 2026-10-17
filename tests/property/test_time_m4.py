@@ -77,6 +77,9 @@ from tests.memory_support import derived_memory, event_ids, memory_rows, use_str
 from tests.memory_support import turn as memory_turn
 from tests.projection_support import swap, truncate, untruncate
 
+# The memory slices write episodic memories on the shared database: drain their embed jobs (#138).
+pytestmark = pytest.mark.usefixtures("drained_embedding_jobs")
+
 NAME = "derived_fixture"
 VALID_FROM = datetime(1999, 1, 1, tzinfo=UTC)
 VALID_TO = datetime(1999, 1, 2, tzinfo=UTC)

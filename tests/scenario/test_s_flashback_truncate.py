@@ -29,7 +29,7 @@ from tests.event_support import play_turn
 from tests.memory_support import memory_rows, turn, use_structured
 from tests.projection_support import truncate, untruncate
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("drained_embedding_jobs")]
 
 YEAR = 525_600
 """Story-minutes in a year."""

@@ -8,6 +8,7 @@ import urllib.request
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
@@ -250,3 +251,53 @@ async def engine(settings: Settings) -> AsyncIterator[AsyncEngine]:
         yield engine
     finally:
         await engine.dispose()
+
+
+# -- embedding jobs on the shared database (#138) -------------------------------------------------
+
+EMBEDDING_JOB_KINDS = ("embed", "reembed")
+"""The jobs whose run pins the deployment's vector space (``core.embeddings.pin_first``): a
+retype of ``memories.embedding`` and deployment-scope state. One left queued on the shared
+session database could be claimed by a later test's worker and pin it, so no test may leave one
+there (scratch databases are their tests' own)."""
+_LEFTOVER = text(
+    "SELECT count(*) FROM jobs WHERE kind = ANY(:kinds) AND status IN ('queued', 'running')"
+)
+_DRAIN = text("DELETE FROM jobs WHERE kind = ANY(:kinds) AND status IN ('queued', 'running')")
+
+
+@pytest.fixture(scope="session")
+def _shared_jobs_db(pg_url: str) -> Iterator[Any]:
+    sync = make_sync_engine(pg_url)
+    try:
+        yield sync
+    finally:
+        sync.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _no_embedding_jobs_left(request: pytest.FixtureRequest) -> Iterator[None]:
+    """After every test that uses the shared database, fail it if an ``embed`` or ``reembed``
+    job is left queued or running there (M3's rule: deployment-scope state is rolled back). A
+    test that writes memories there drains its jobs with ``drained_embedding_jobs``."""
+    yield
+    if "pg_url" not in request.fixturenames:
+        return
+    sync = request.getfixturevalue("_shared_jobs_db")
+    with sync.connect() as conn:
+        left = int(conn.execute(_LEFTOVER, {"kinds": list(EMBEDDING_JOB_KINDS)}).scalar() or 0)
+    if left:
+        pytest.fail(
+            f"{request.node.nodeid} left {left} embed/reembed job(s) queued on the shared "
+            "database; use the drained_embedding_jobs fixture",
+            pytrace=False,
+        )
+
+
+@pytest.fixture
+def drained_embedding_jobs(_shared_jobs_db: Any) -> Iterator[None]:
+    """Delete the ``embed``/``reembed`` jobs a test's memory writes enqueued on the shared
+    database (its teardown runs before ``_no_embedding_jobs_left`` checks)."""
+    yield
+    with _shared_jobs_db.begin() as conn:
+        conn.execute(_DRAIN, {"kinds": list(EMBEDDING_JOB_KINDS)})

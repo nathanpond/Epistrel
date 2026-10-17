@@ -3515,10 +3515,106 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "commitment": {
+                "additionalProperties": false,
+                "description": "Commitment (FR-COMMIT) and its salience detection.",
+                "properties": {
+                  "enabled": {
+                    "default": false,
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "salience": {
+                    "default": "rules",
+                    "enum": [
+                      "rules",
+                      "rules_and_model"
+                    ],
+                    "title": "Salience",
+                    "type": "string"
+                  }
+                },
+                "title": "Commitment",
+                "type": "object"
+              },
               "memory": {
                 "additionalProperties": false,
                 "description": "The memory modules (FR-PROF-2).",
                 "properties": {
+                  "consolidation": {
+                    "additionalProperties": false,
+                    "description": "Consolidation and reflections (FR-MEM-3,6).",
+                    "properties": {
+                      "cadence_turns": {
+                        "default": 20,
+                        "description": "Turns between consolidation runs.",
+                        "maximum": 1000.0,
+                        "minimum": 1.0,
+                        "title": "Cadence Turns",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Consolidation",
+                    "type": "object"
+                  },
+                  "episodic": {
+                    "additionalProperties": false,
+                    "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                    "properties": {
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "hybrid_search": {
+                        "default": true,
+                        "title": "Hybrid Search",
+                        "type": "boolean"
+                      },
+                      "k": {
+                        "default": 8,
+                        "description": "How many memories one retrieval returns.",
+                        "maximum": 100.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "type": "integer"
+                      },
+                      "reranking": {
+                        "default": false,
+                        "title": "Reranking",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Episodic",
+                    "type": "object"
+                  },
+                  "hot_set": {
+                    "additionalProperties": false,
+                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "properties": {
+                      "memories_per_character": {
+                        "default": 2000,
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Memories Per Character",
+                        "type": "integer"
+                      },
+                      "vectors_per_story": {
+                        "default": 50000,
+                        "maximum": 10000000.0,
+                        "minimum": 1.0,
+                        "title": "Vectors Per Story",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "HotSet",
+                    "type": "object"
+                  },
                   "rolling_summary": {
                     "additionalProperties": false,
                     "description": "The rolling auto-summary (FR-LITE-2).",
@@ -3725,9 +3821,10 @@
               },
               "pipeline": {
                 "default": "lite",
-                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                 "enum": [
-                  "lite"
+                  "lite",
+                  "structured"
                 ],
                 "title": "Pipeline",
                 "type": "string"
@@ -3736,6 +3833,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "max_attempts": {
+                    "default": 0,
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Attempts",
+                    "type": "integer"
+                  },
                   "polish": {
                     "additionalProperties": false,
                     "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
@@ -3759,6 +3864,48 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "verification": {
+                "additionalProperties": false,
+                "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                "properties": {
+                  "contradiction_checking": {
+                    "default": false,
+                    "title": "Contradiction Checking",
+                    "type": "boolean"
+                  },
+                  "entailment_gate": {
+                    "default": 0.5,
+                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "extraction_mode": {
+                    "default": "gated",
+                    "enum": [
+                      "gated",
+                      "always"
+                    ],
+                    "title": "Extraction Mode",
+                    "type": "string"
+                  },
+                  "level": {
+                    "default": "off",
+                    "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                    "enum": [
+                      "off",
+                      "declared",
+                      "extraction",
+                      "entailment"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Verification",
                 "type": "object"
               }
             },
@@ -3799,10 +3946,106 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "commitment": {
+                "additionalProperties": false,
+                "description": "Commitment (FR-COMMIT) and its salience detection.",
+                "properties": {
+                  "enabled": {
+                    "default": false,
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "salience": {
+                    "default": "rules",
+                    "enum": [
+                      "rules",
+                      "rules_and_model"
+                    ],
+                    "title": "Salience",
+                    "type": "string"
+                  }
+                },
+                "title": "Commitment",
+                "type": "object"
+              },
               "memory": {
                 "additionalProperties": false,
                 "description": "The memory modules (FR-PROF-2).",
                 "properties": {
+                  "consolidation": {
+                    "additionalProperties": false,
+                    "description": "Consolidation and reflections (FR-MEM-3,6).",
+                    "properties": {
+                      "cadence_turns": {
+                        "default": 20,
+                        "description": "Turns between consolidation runs.",
+                        "maximum": 1000.0,
+                        "minimum": 1.0,
+                        "title": "Cadence Turns",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Consolidation",
+                    "type": "object"
+                  },
+                  "episodic": {
+                    "additionalProperties": false,
+                    "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                    "properties": {
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "hybrid_search": {
+                        "default": true,
+                        "title": "Hybrid Search",
+                        "type": "boolean"
+                      },
+                      "k": {
+                        "default": 8,
+                        "description": "How many memories one retrieval returns.",
+                        "maximum": 100.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "type": "integer"
+                      },
+                      "reranking": {
+                        "default": false,
+                        "title": "Reranking",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Episodic",
+                    "type": "object"
+                  },
+                  "hot_set": {
+                    "additionalProperties": false,
+                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "properties": {
+                      "memories_per_character": {
+                        "default": 2000,
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Memories Per Character",
+                        "type": "integer"
+                      },
+                      "vectors_per_story": {
+                        "default": 50000,
+                        "maximum": 10000000.0,
+                        "minimum": 1.0,
+                        "title": "Vectors Per Story",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "HotSet",
+                    "type": "object"
+                  },
                   "rolling_summary": {
                     "additionalProperties": false,
                     "description": "The rolling auto-summary (FR-LITE-2).",
@@ -4009,9 +4252,10 @@
               },
               "pipeline": {
                 "default": "lite",
-                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                 "enum": [
-                  "lite"
+                  "lite",
+                  "structured"
                 ],
                 "title": "Pipeline",
                 "type": "string"
@@ -4020,6 +4264,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "max_attempts": {
+                    "default": 0,
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Attempts",
+                    "type": "integer"
+                  },
                   "polish": {
                     "additionalProperties": false,
                     "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
@@ -4043,6 +4295,48 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "verification": {
+                "additionalProperties": false,
+                "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                "properties": {
+                  "contradiction_checking": {
+                    "default": false,
+                    "title": "Contradiction Checking",
+                    "type": "boolean"
+                  },
+                  "entailment_gate": {
+                    "default": 0.5,
+                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "extraction_mode": {
+                    "default": "gated",
+                    "enum": [
+                      "gated",
+                      "always"
+                    ],
+                    "title": "Extraction Mode",
+                    "type": "string"
+                  },
+                  "level": {
+                    "default": "off",
+                    "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                    "enum": [
+                      "off",
+                      "declared",
+                      "extraction",
+                      "entailment"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Verification",
                 "type": "object"
               }
             },
@@ -4324,10 +4618,106 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "commitment": {
+                "additionalProperties": false,
+                "description": "Commitment (FR-COMMIT) and its salience detection.",
+                "properties": {
+                  "enabled": {
+                    "default": false,
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "salience": {
+                    "default": "rules",
+                    "enum": [
+                      "rules",
+                      "rules_and_model"
+                    ],
+                    "title": "Salience",
+                    "type": "string"
+                  }
+                },
+                "title": "Commitment",
+                "type": "object"
+              },
               "memory": {
                 "additionalProperties": false,
                 "description": "The memory modules (FR-PROF-2).",
                 "properties": {
+                  "consolidation": {
+                    "additionalProperties": false,
+                    "description": "Consolidation and reflections (FR-MEM-3,6).",
+                    "properties": {
+                      "cadence_turns": {
+                        "default": 20,
+                        "description": "Turns between consolidation runs.",
+                        "maximum": 1000.0,
+                        "minimum": 1.0,
+                        "title": "Cadence Turns",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Consolidation",
+                    "type": "object"
+                  },
+                  "episodic": {
+                    "additionalProperties": false,
+                    "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                    "properties": {
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "hybrid_search": {
+                        "default": true,
+                        "title": "Hybrid Search",
+                        "type": "boolean"
+                      },
+                      "k": {
+                        "default": 8,
+                        "description": "How many memories one retrieval returns.",
+                        "maximum": 100.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "type": "integer"
+                      },
+                      "reranking": {
+                        "default": false,
+                        "title": "Reranking",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Episodic",
+                    "type": "object"
+                  },
+                  "hot_set": {
+                    "additionalProperties": false,
+                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "properties": {
+                      "memories_per_character": {
+                        "default": 2000,
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Memories Per Character",
+                        "type": "integer"
+                      },
+                      "vectors_per_story": {
+                        "default": 50000,
+                        "maximum": 10000000.0,
+                        "minimum": 1.0,
+                        "title": "Vectors Per Story",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "HotSet",
+                    "type": "object"
+                  },
                   "rolling_summary": {
                     "additionalProperties": false,
                     "description": "The rolling auto-summary (FR-LITE-2).",
@@ -4534,9 +4924,10 @@
               },
               "pipeline": {
                 "default": "lite",
-                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                 "enum": [
-                  "lite"
+                  "lite",
+                  "structured"
                 ],
                 "title": "Pipeline",
                 "type": "string"
@@ -4545,6 +4936,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "max_attempts": {
+                    "default": 0,
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Attempts",
+                    "type": "integer"
+                  },
                   "polish": {
                     "additionalProperties": false,
                     "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
@@ -4568,6 +4967,48 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "verification": {
+                "additionalProperties": false,
+                "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                "properties": {
+                  "contradiction_checking": {
+                    "default": false,
+                    "title": "Contradiction Checking",
+                    "type": "boolean"
+                  },
+                  "entailment_gate": {
+                    "default": 0.5,
+                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "extraction_mode": {
+                    "default": "gated",
+                    "enum": [
+                      "gated",
+                      "always"
+                    ],
+                    "title": "Extraction Mode",
+                    "type": "string"
+                  },
+                  "level": {
+                    "default": "off",
+                    "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                    "enum": [
+                      "off",
+                      "declared",
+                      "extraction",
+                      "entailment"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Verification",
                 "type": "object"
               }
             },
@@ -7157,12 +7598,206 @@
                       }
                     ]
                   },
+                  "commitment": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "Commitment (FR-COMMIT) and its salience detection.",
+                        "properties": {
+                          "enabled": {
+                            "anyOf": [
+                              {
+                                "default": false,
+                                "title": "Enabled",
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "salience": {
+                            "anyOf": [
+                              {
+                                "default": "rules",
+                                "enum": [
+                                  "rules",
+                                  "rules_and_model"
+                                ],
+                                "title": "Salience",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "Commitment",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "memory": {
                     "anyOf": [
                       {
                         "additionalProperties": false,
                         "description": "The memory modules (FR-PROF-2).",
                         "properties": {
+                          "consolidation": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "Consolidation and reflections (FR-MEM-3,6).",
+                                "properties": {
+                                  "cadence_turns": {
+                                    "anyOf": [
+                                      {
+                                        "default": 20,
+                                        "description": "Turns between consolidation runs.",
+                                        "maximum": 1000.0,
+                                        "minimum": 1.0,
+                                        "title": "Cadence Turns",
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "enabled": {
+                                    "anyOf": [
+                                      {
+                                        "default": false,
+                                        "title": "Enabled",
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "title": "Consolidation",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "episodic": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                                "properties": {
+                                  "enabled": {
+                                    "anyOf": [
+                                      {
+                                        "default": false,
+                                        "title": "Enabled",
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "hybrid_search": {
+                                    "anyOf": [
+                                      {
+                                        "default": true,
+                                        "title": "Hybrid Search",
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "k": {
+                                    "anyOf": [
+                                      {
+                                        "default": 8,
+                                        "description": "How many memories one retrieval returns.",
+                                        "maximum": 100.0,
+                                        "minimum": 1.0,
+                                        "title": "K",
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "reranking": {
+                                    "anyOf": [
+                                      {
+                                        "default": false,
+                                        "title": "Reranking",
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "title": "Episodic",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "hot_set": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                                "properties": {
+                                  "memories_per_character": {
+                                    "anyOf": [
+                                      {
+                                        "default": 2000,
+                                        "maximum": 100000.0,
+                                        "minimum": 1.0,
+                                        "title": "Memories Per Character",
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "vectors_per_story": {
+                                    "anyOf": [
+                                      {
+                                        "default": 50000,
+                                        "maximum": 10000000.0,
+                                        "minimum": 1.0,
+                                        "title": "Vectors Per Story",
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "title": "HotSet",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "rolling_summary": {
                             "anyOf": [
                               {
@@ -7488,9 +8123,10 @@
                     "anyOf": [
                       {
                         "default": "lite",
-                        "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                        "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                         "enum": [
-                          "lite"
+                          "lite",
+                          "structured"
                         ],
                         "title": "Pipeline",
                         "type": "string"
@@ -7506,6 +8142,21 @@
                         "additionalProperties": false,
                         "description": "Repair and polish (FR-PROF-2).",
                         "properties": {
+                          "max_attempts": {
+                            "anyOf": [
+                              {
+                                "default": 0,
+                                "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                                "maximum": 10.0,
+                                "minimum": 0.0,
+                                "title": "Max Attempts",
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "polish": {
                             "anyOf": [
                               {
@@ -7550,6 +8201,83 @@
                           }
                         },
                         "title": "Repair",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "verification": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                        "properties": {
+                          "contradiction_checking": {
+                            "anyOf": [
+                              {
+                                "default": false,
+                                "title": "Contradiction Checking",
+                                "type": "boolean"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "entailment_gate": {
+                            "anyOf": [
+                              {
+                                "default": 0.5,
+                                "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                                "maximum": 1.0,
+                                "minimum": 0.0,
+                                "title": "Entailment Gate",
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "extraction_mode": {
+                            "anyOf": [
+                              {
+                                "default": "gated",
+                                "enum": [
+                                  "gated",
+                                  "always"
+                                ],
+                                "title": "Extraction Mode",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "level": {
+                            "anyOf": [
+                              {
+                                "default": "off",
+                                "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                                "enum": [
+                                  "off",
+                                  "declared",
+                                  "extraction",
+                                  "entailment"
+                                ],
+                                "title": "Level",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "Verification",
                         "type": "object"
                       },
                       {
@@ -10254,10 +10982,106 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "commitment": {
+                "additionalProperties": false,
+                "description": "Commitment (FR-COMMIT) and its salience detection.",
+                "properties": {
+                  "enabled": {
+                    "default": false,
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "salience": {
+                    "default": "rules",
+                    "enum": [
+                      "rules",
+                      "rules_and_model"
+                    ],
+                    "title": "Salience",
+                    "type": "string"
+                  }
+                },
+                "title": "Commitment",
+                "type": "object"
+              },
               "memory": {
                 "additionalProperties": false,
                 "description": "The memory modules (FR-PROF-2).",
                 "properties": {
+                  "consolidation": {
+                    "additionalProperties": false,
+                    "description": "Consolidation and reflections (FR-MEM-3,6).",
+                    "properties": {
+                      "cadence_turns": {
+                        "default": 20,
+                        "description": "Turns between consolidation runs.",
+                        "maximum": 1000.0,
+                        "minimum": 1.0,
+                        "title": "Cadence Turns",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Consolidation",
+                    "type": "object"
+                  },
+                  "episodic": {
+                    "additionalProperties": false,
+                    "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                    "properties": {
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "hybrid_search": {
+                        "default": true,
+                        "title": "Hybrid Search",
+                        "type": "boolean"
+                      },
+                      "k": {
+                        "default": 8,
+                        "description": "How many memories one retrieval returns.",
+                        "maximum": 100.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "type": "integer"
+                      },
+                      "reranking": {
+                        "default": false,
+                        "title": "Reranking",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Episodic",
+                    "type": "object"
+                  },
+                  "hot_set": {
+                    "additionalProperties": false,
+                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "properties": {
+                      "memories_per_character": {
+                        "default": 2000,
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Memories Per Character",
+                        "type": "integer"
+                      },
+                      "vectors_per_story": {
+                        "default": 50000,
+                        "maximum": 10000000.0,
+                        "minimum": 1.0,
+                        "title": "Vectors Per Story",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "HotSet",
+                    "type": "object"
+                  },
                   "rolling_summary": {
                     "additionalProperties": false,
                     "description": "The rolling auto-summary (FR-LITE-2).",
@@ -10464,9 +11288,10 @@
               },
               "pipeline": {
                 "default": "lite",
-                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                 "enum": [
-                  "lite"
+                  "lite",
+                  "structured"
                 ],
                 "title": "Pipeline",
                 "type": "string"
@@ -10475,6 +11300,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "max_attempts": {
+                    "default": 0,
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Attempts",
+                    "type": "integer"
+                  },
                   "polish": {
                     "additionalProperties": false,
                     "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
@@ -10498,6 +11331,48 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "verification": {
+                "additionalProperties": false,
+                "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                "properties": {
+                  "contradiction_checking": {
+                    "default": false,
+                    "title": "Contradiction Checking",
+                    "type": "boolean"
+                  },
+                  "entailment_gate": {
+                    "default": 0.5,
+                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "extraction_mode": {
+                    "default": "gated",
+                    "enum": [
+                      "gated",
+                      "always"
+                    ],
+                    "title": "Extraction Mode",
+                    "type": "string"
+                  },
+                  "level": {
+                    "default": "off",
+                    "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                    "enum": [
+                      "off",
+                      "declared",
+                      "extraction",
+                      "entailment"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Verification",
                 "type": "object"
               }
             },
@@ -12108,10 +12983,106 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "commitment": {
+                "additionalProperties": false,
+                "description": "Commitment (FR-COMMIT) and its salience detection.",
+                "properties": {
+                  "enabled": {
+                    "default": false,
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "salience": {
+                    "default": "rules",
+                    "enum": [
+                      "rules",
+                      "rules_and_model"
+                    ],
+                    "title": "Salience",
+                    "type": "string"
+                  }
+                },
+                "title": "Commitment",
+                "type": "object"
+              },
               "memory": {
                 "additionalProperties": false,
                 "description": "The memory modules (FR-PROF-2).",
                 "properties": {
+                  "consolidation": {
+                    "additionalProperties": false,
+                    "description": "Consolidation and reflections (FR-MEM-3,6).",
+                    "properties": {
+                      "cadence_turns": {
+                        "default": 20,
+                        "description": "Turns between consolidation runs.",
+                        "maximum": 1000.0,
+                        "minimum": 1.0,
+                        "title": "Cadence Turns",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Consolidation",
+                    "type": "object"
+                  },
+                  "episodic": {
+                    "additionalProperties": false,
+                    "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                    "properties": {
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "hybrid_search": {
+                        "default": true,
+                        "title": "Hybrid Search",
+                        "type": "boolean"
+                      },
+                      "k": {
+                        "default": 8,
+                        "description": "How many memories one retrieval returns.",
+                        "maximum": 100.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "type": "integer"
+                      },
+                      "reranking": {
+                        "default": false,
+                        "title": "Reranking",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Episodic",
+                    "type": "object"
+                  },
+                  "hot_set": {
+                    "additionalProperties": false,
+                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "properties": {
+                      "memories_per_character": {
+                        "default": 2000,
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Memories Per Character",
+                        "type": "integer"
+                      },
+                      "vectors_per_story": {
+                        "default": 50000,
+                        "maximum": 10000000.0,
+                        "minimum": 1.0,
+                        "title": "Vectors Per Story",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "HotSet",
+                    "type": "object"
+                  },
                   "rolling_summary": {
                     "additionalProperties": false,
                     "description": "The rolling auto-summary (FR-LITE-2).",
@@ -12318,9 +13289,10 @@
               },
               "pipeline": {
                 "default": "lite",
-                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                 "enum": [
-                  "lite"
+                  "lite",
+                  "structured"
                 ],
                 "title": "Pipeline",
                 "type": "string"
@@ -12329,6 +13301,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "max_attempts": {
+                    "default": 0,
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Attempts",
+                    "type": "integer"
+                  },
                   "polish": {
                     "additionalProperties": false,
                     "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
@@ -12352,6 +13332,48 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "verification": {
+                "additionalProperties": false,
+                "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                "properties": {
+                  "contradiction_checking": {
+                    "default": false,
+                    "title": "Contradiction Checking",
+                    "type": "boolean"
+                  },
+                  "entailment_gate": {
+                    "default": 0.5,
+                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "extraction_mode": {
+                    "default": "gated",
+                    "enum": [
+                      "gated",
+                      "always"
+                    ],
+                    "title": "Extraction Mode",
+                    "type": "string"
+                  },
+                  "level": {
+                    "default": "off",
+                    "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                    "enum": [
+                      "off",
+                      "declared",
+                      "extraction",
+                      "entailment"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Verification",
                 "type": "object"
               }
             },
@@ -12494,10 +13516,106 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "commitment": {
+                "additionalProperties": false,
+                "description": "Commitment (FR-COMMIT) and its salience detection.",
+                "properties": {
+                  "enabled": {
+                    "default": false,
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "salience": {
+                    "default": "rules",
+                    "enum": [
+                      "rules",
+                      "rules_and_model"
+                    ],
+                    "title": "Salience",
+                    "type": "string"
+                  }
+                },
+                "title": "Commitment",
+                "type": "object"
+              },
               "memory": {
                 "additionalProperties": false,
                 "description": "The memory modules (FR-PROF-2).",
                 "properties": {
+                  "consolidation": {
+                    "additionalProperties": false,
+                    "description": "Consolidation and reflections (FR-MEM-3,6).",
+                    "properties": {
+                      "cadence_turns": {
+                        "default": 20,
+                        "description": "Turns between consolidation runs.",
+                        "maximum": 1000.0,
+                        "minimum": 1.0,
+                        "title": "Cadence Turns",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Consolidation",
+                    "type": "object"
+                  },
+                  "episodic": {
+                    "additionalProperties": false,
+                    "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                    "properties": {
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "hybrid_search": {
+                        "default": true,
+                        "title": "Hybrid Search",
+                        "type": "boolean"
+                      },
+                      "k": {
+                        "default": 8,
+                        "description": "How many memories one retrieval returns.",
+                        "maximum": 100.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "type": "integer"
+                      },
+                      "reranking": {
+                        "default": false,
+                        "title": "Reranking",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Episodic",
+                    "type": "object"
+                  },
+                  "hot_set": {
+                    "additionalProperties": false,
+                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "properties": {
+                      "memories_per_character": {
+                        "default": 2000,
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Memories Per Character",
+                        "type": "integer"
+                      },
+                      "vectors_per_story": {
+                        "default": 50000,
+                        "maximum": 10000000.0,
+                        "minimum": 1.0,
+                        "title": "Vectors Per Story",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "HotSet",
+                    "type": "object"
+                  },
                   "rolling_summary": {
                     "additionalProperties": false,
                     "description": "The rolling auto-summary (FR-LITE-2).",
@@ -12704,9 +13822,10 @@
               },
               "pipeline": {
                 "default": "lite",
-                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                 "enum": [
-                  "lite"
+                  "lite",
+                  "structured"
                 ],
                 "title": "Pipeline",
                 "type": "string"
@@ -12715,6 +13834,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "max_attempts": {
+                    "default": 0,
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Attempts",
+                    "type": "integer"
+                  },
                   "polish": {
                     "additionalProperties": false,
                     "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
@@ -12738,6 +13865,48 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "verification": {
+                "additionalProperties": false,
+                "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                "properties": {
+                  "contradiction_checking": {
+                    "default": false,
+                    "title": "Contradiction Checking",
+                    "type": "boolean"
+                  },
+                  "entailment_gate": {
+                    "default": 0.5,
+                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "extraction_mode": {
+                    "default": "gated",
+                    "enum": [
+                      "gated",
+                      "always"
+                    ],
+                    "title": "Extraction Mode",
+                    "type": "string"
+                  },
+                  "level": {
+                    "default": "off",
+                    "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                    "enum": [
+                      "off",
+                      "declared",
+                      "extraction",
+                      "entailment"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Verification",
                 "type": "object"
               }
             },
@@ -12979,12 +14148,206 @@
                   }
                 ]
               },
+              "commitment": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "Commitment (FR-COMMIT) and its salience detection.",
+                    "properties": {
+                      "enabled": {
+                        "anyOf": [
+                          {
+                            "default": false,
+                            "title": "Enabled",
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "salience": {
+                        "anyOf": [
+                          {
+                            "default": "rules",
+                            "enum": [
+                              "rules",
+                              "rules_and_model"
+                            ],
+                            "title": "Salience",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "title": "Commitment",
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "memory": {
                 "anyOf": [
                   {
                     "additionalProperties": false,
                     "description": "The memory modules (FR-PROF-2).",
                     "properties": {
+                      "consolidation": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "description": "Consolidation and reflections (FR-MEM-3,6).",
+                            "properties": {
+                              "cadence_turns": {
+                                "anyOf": [
+                                  {
+                                    "default": 20,
+                                    "description": "Turns between consolidation runs.",
+                                    "maximum": 1000.0,
+                                    "minimum": 1.0,
+                                    "title": "Cadence Turns",
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "enabled": {
+                                "anyOf": [
+                                  {
+                                    "default": false,
+                                    "title": "Enabled",
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "title": "Consolidation",
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "episodic": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                            "properties": {
+                              "enabled": {
+                                "anyOf": [
+                                  {
+                                    "default": false,
+                                    "title": "Enabled",
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "hybrid_search": {
+                                "anyOf": [
+                                  {
+                                    "default": true,
+                                    "title": "Hybrid Search",
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "k": {
+                                "anyOf": [
+                                  {
+                                    "default": 8,
+                                    "description": "How many memories one retrieval returns.",
+                                    "maximum": 100.0,
+                                    "minimum": 1.0,
+                                    "title": "K",
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "reranking": {
+                                "anyOf": [
+                                  {
+                                    "default": false,
+                                    "title": "Reranking",
+                                    "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "title": "Episodic",
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "hot_set": {
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                            "properties": {
+                              "memories_per_character": {
+                                "anyOf": [
+                                  {
+                                    "default": 2000,
+                                    "maximum": 100000.0,
+                                    "minimum": 1.0,
+                                    "title": "Memories Per Character",
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "vectors_per_story": {
+                                "anyOf": [
+                                  {
+                                    "default": 50000,
+                                    "maximum": 10000000.0,
+                                    "minimum": 1.0,
+                                    "title": "Vectors Per Story",
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "title": "HotSet",
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "rolling_summary": {
                         "anyOf": [
                           {
@@ -13310,9 +14673,10 @@
                 "anyOf": [
                   {
                     "default": "lite",
-                    "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                    "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                     "enum": [
-                      "lite"
+                      "lite",
+                      "structured"
                     ],
                     "title": "Pipeline",
                     "type": "string"
@@ -13328,6 +14692,21 @@
                     "additionalProperties": false,
                     "description": "Repair and polish (FR-PROF-2).",
                     "properties": {
+                      "max_attempts": {
+                        "anyOf": [
+                          {
+                            "default": 0,
+                            "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                            "maximum": 10.0,
+                            "minimum": 0.0,
+                            "title": "Max Attempts",
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "polish": {
                         "anyOf": [
                           {
@@ -13372,6 +14751,83 @@
                       }
                     },
                     "title": "Repair",
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "verification": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                    "properties": {
+                      "contradiction_checking": {
+                        "anyOf": [
+                          {
+                            "default": false,
+                            "title": "Contradiction Checking",
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "entailment_gate": {
+                        "anyOf": [
+                          {
+                            "default": 0.5,
+                            "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                            "maximum": 1.0,
+                            "minimum": 0.0,
+                            "title": "Entailment Gate",
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "extraction_mode": {
+                        "anyOf": [
+                          {
+                            "default": "gated",
+                            "enum": [
+                              "gated",
+                              "always"
+                            ],
+                            "title": "Extraction Mode",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "level": {
+                        "anyOf": [
+                          {
+                            "default": "off",
+                            "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                            "enum": [
+                              "off",
+                              "declared",
+                              "extraction",
+                              "entailment"
+                            ],
+                            "title": "Level",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "title": "Verification",
                     "type": "object"
                   },
                   {
@@ -13537,10 +14993,106 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "commitment": {
+                "additionalProperties": false,
+                "description": "Commitment (FR-COMMIT) and its salience detection.",
+                "properties": {
+                  "enabled": {
+                    "default": false,
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "salience": {
+                    "default": "rules",
+                    "enum": [
+                      "rules",
+                      "rules_and_model"
+                    ],
+                    "title": "Salience",
+                    "type": "string"
+                  }
+                },
+                "title": "Commitment",
+                "type": "object"
+              },
               "memory": {
                 "additionalProperties": false,
                 "description": "The memory modules (FR-PROF-2).",
                 "properties": {
+                  "consolidation": {
+                    "additionalProperties": false,
+                    "description": "Consolidation and reflections (FR-MEM-3,6).",
+                    "properties": {
+                      "cadence_turns": {
+                        "default": 20,
+                        "description": "Turns between consolidation runs.",
+                        "maximum": 1000.0,
+                        "minimum": 1.0,
+                        "title": "Cadence Turns",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Consolidation",
+                    "type": "object"
+                  },
+                  "episodic": {
+                    "additionalProperties": false,
+                    "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                    "properties": {
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "hybrid_search": {
+                        "default": true,
+                        "title": "Hybrid Search",
+                        "type": "boolean"
+                      },
+                      "k": {
+                        "default": 8,
+                        "description": "How many memories one retrieval returns.",
+                        "maximum": 100.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "type": "integer"
+                      },
+                      "reranking": {
+                        "default": false,
+                        "title": "Reranking",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Episodic",
+                    "type": "object"
+                  },
+                  "hot_set": {
+                    "additionalProperties": false,
+                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "properties": {
+                      "memories_per_character": {
+                        "default": 2000,
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Memories Per Character",
+                        "type": "integer"
+                      },
+                      "vectors_per_story": {
+                        "default": 50000,
+                        "maximum": 10000000.0,
+                        "minimum": 1.0,
+                        "title": "Vectors Per Story",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "HotSet",
+                    "type": "object"
+                  },
                   "rolling_summary": {
                     "additionalProperties": false,
                     "description": "The rolling auto-summary (FR-LITE-2).",
@@ -13747,9 +15299,10 @@
               },
               "pipeline": {
                 "default": "lite",
-                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                 "enum": [
-                  "lite"
+                  "lite",
+                  "structured"
                 ],
                 "title": "Pipeline",
                 "type": "string"
@@ -13758,6 +15311,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "max_attempts": {
+                    "default": 0,
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Attempts",
+                    "type": "integer"
+                  },
                   "polish": {
                     "additionalProperties": false,
                     "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
@@ -13781,6 +15342,48 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "verification": {
+                "additionalProperties": false,
+                "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                "properties": {
+                  "contradiction_checking": {
+                    "default": false,
+                    "title": "Contradiction Checking",
+                    "type": "boolean"
+                  },
+                  "entailment_gate": {
+                    "default": 0.5,
+                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "extraction_mode": {
+                    "default": "gated",
+                    "enum": [
+                      "gated",
+                      "always"
+                    ],
+                    "title": "Extraction Mode",
+                    "type": "string"
+                  },
+                  "level": {
+                    "default": "off",
+                    "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                    "enum": [
+                      "off",
+                      "declared",
+                      "extraction",
+                      "entailment"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Verification",
                 "type": "object"
               }
             },
@@ -13854,10 +15457,106 @@
                     "title": "Budgets",
                     "type": "object"
                   },
+                  "commitment": {
+                    "additionalProperties": false,
+                    "description": "Commitment (FR-COMMIT) and its salience detection.",
+                    "properties": {
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "salience": {
+                        "default": "rules",
+                        "enum": [
+                          "rules",
+                          "rules_and_model"
+                        ],
+                        "title": "Salience",
+                        "type": "string"
+                      }
+                    },
+                    "title": "Commitment",
+                    "type": "object"
+                  },
                   "memory": {
                     "additionalProperties": false,
                     "description": "The memory modules (FR-PROF-2).",
                     "properties": {
+                      "consolidation": {
+                        "additionalProperties": false,
+                        "description": "Consolidation and reflections (FR-MEM-3,6).",
+                        "properties": {
+                          "cadence_turns": {
+                            "default": 20,
+                            "description": "Turns between consolidation runs.",
+                            "maximum": 1000.0,
+                            "minimum": 1.0,
+                            "title": "Cadence Turns",
+                            "type": "integer"
+                          },
+                          "enabled": {
+                            "default": false,
+                            "title": "Enabled",
+                            "type": "boolean"
+                          }
+                        },
+                        "title": "Consolidation",
+                        "type": "object"
+                      },
+                      "episodic": {
+                        "additionalProperties": false,
+                        "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                        "properties": {
+                          "enabled": {
+                            "default": false,
+                            "title": "Enabled",
+                            "type": "boolean"
+                          },
+                          "hybrid_search": {
+                            "default": true,
+                            "title": "Hybrid Search",
+                            "type": "boolean"
+                          },
+                          "k": {
+                            "default": 8,
+                            "description": "How many memories one retrieval returns.",
+                            "maximum": 100.0,
+                            "minimum": 1.0,
+                            "title": "K",
+                            "type": "integer"
+                          },
+                          "reranking": {
+                            "default": false,
+                            "title": "Reranking",
+                            "type": "boolean"
+                          }
+                        },
+                        "title": "Episodic",
+                        "type": "object"
+                      },
+                      "hot_set": {
+                        "additionalProperties": false,
+                        "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                        "properties": {
+                          "memories_per_character": {
+                            "default": 2000,
+                            "maximum": 100000.0,
+                            "minimum": 1.0,
+                            "title": "Memories Per Character",
+                            "type": "integer"
+                          },
+                          "vectors_per_story": {
+                            "default": 50000,
+                            "maximum": 10000000.0,
+                            "minimum": 1.0,
+                            "title": "Vectors Per Story",
+                            "type": "integer"
+                          }
+                        },
+                        "title": "HotSet",
+                        "type": "object"
+                      },
                       "rolling_summary": {
                         "additionalProperties": false,
                         "description": "The rolling auto-summary (FR-LITE-2).",
@@ -14064,9 +15763,10 @@
                   },
                   "pipeline": {
                     "default": "lite",
-                    "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                    "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                     "enum": [
-                      "lite"
+                      "lite",
+                      "structured"
                     ],
                     "title": "Pipeline",
                     "type": "string"
@@ -14075,6 +15775,14 @@
                     "additionalProperties": false,
                     "description": "Repair and polish (FR-PROF-2).",
                     "properties": {
+                      "max_attempts": {
+                        "default": 0,
+                        "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Max Attempts",
+                        "type": "integer"
+                      },
                       "polish": {
                         "additionalProperties": false,
                         "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
@@ -14098,6 +15806,48 @@
                       }
                     },
                     "title": "Repair",
+                    "type": "object"
+                  },
+                  "verification": {
+                    "additionalProperties": false,
+                    "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                    "properties": {
+                      "contradiction_checking": {
+                        "default": false,
+                        "title": "Contradiction Checking",
+                        "type": "boolean"
+                      },
+                      "entailment_gate": {
+                        "default": 0.5,
+                        "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Entailment Gate",
+                        "type": "number"
+                      },
+                      "extraction_mode": {
+                        "default": "gated",
+                        "enum": [
+                          "gated",
+                          "always"
+                        ],
+                        "title": "Extraction Mode",
+                        "type": "string"
+                      },
+                      "level": {
+                        "default": "off",
+                        "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                        "enum": [
+                          "off",
+                          "declared",
+                          "extraction",
+                          "entailment"
+                        ],
+                        "title": "Level",
+                        "type": "string"
+                      }
+                    },
+                    "title": "Verification",
                     "type": "object"
                   }
                 },
@@ -18856,10 +20606,106 @@
                 "title": "Budgets",
                 "type": "object"
               },
+              "commitment": {
+                "additionalProperties": false,
+                "description": "Commitment (FR-COMMIT) and its salience detection.",
+                "properties": {
+                  "enabled": {
+                    "default": false,
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "salience": {
+                    "default": "rules",
+                    "enum": [
+                      "rules",
+                      "rules_and_model"
+                    ],
+                    "title": "Salience",
+                    "type": "string"
+                  }
+                },
+                "title": "Commitment",
+                "type": "object"
+              },
               "memory": {
                 "additionalProperties": false,
                 "description": "The memory modules (FR-PROF-2).",
                 "properties": {
+                  "consolidation": {
+                    "additionalProperties": false,
+                    "description": "Consolidation and reflections (FR-MEM-3,6).",
+                    "properties": {
+                      "cadence_turns": {
+                        "default": 20,
+                        "description": "Turns between consolidation runs.",
+                        "maximum": 1000.0,
+                        "minimum": 1.0,
+                        "title": "Cadence Turns",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Consolidation",
+                    "type": "object"
+                  },
+                  "episodic": {
+                    "additionalProperties": false,
+                    "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                    "properties": {
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "hybrid_search": {
+                        "default": true,
+                        "title": "Hybrid Search",
+                        "type": "boolean"
+                      },
+                      "k": {
+                        "default": 8,
+                        "description": "How many memories one retrieval returns.",
+                        "maximum": 100.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "type": "integer"
+                      },
+                      "reranking": {
+                        "default": false,
+                        "title": "Reranking",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "Episodic",
+                    "type": "object"
+                  },
+                  "hot_set": {
+                    "additionalProperties": false,
+                    "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                    "properties": {
+                      "memories_per_character": {
+                        "default": 2000,
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Memories Per Character",
+                        "type": "integer"
+                      },
+                      "vectors_per_story": {
+                        "default": 50000,
+                        "maximum": 10000000.0,
+                        "minimum": 1.0,
+                        "title": "Vectors Per Story",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "HotSet",
+                    "type": "object"
+                  },
                   "rolling_summary": {
                     "additionalProperties": false,
                     "description": "The rolling auto-summary (FR-LITE-2).",
@@ -19066,9 +20912,10 @@
               },
               "pipeline": {
                 "default": "lite",
-                "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                 "enum": [
-                  "lite"
+                  "lite",
+                  "structured"
                 ],
                 "title": "Pipeline",
                 "type": "string"
@@ -19077,6 +20924,14 @@
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
                 "properties": {
+                  "max_attempts": {
+                    "default": 0,
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Attempts",
+                    "type": "integer"
+                  },
                   "polish": {
                     "additionalProperties": false,
                     "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
@@ -19100,6 +20955,48 @@
                   }
                 },
                 "title": "Repair",
+                "type": "object"
+              },
+              "verification": {
+                "additionalProperties": false,
+                "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                "properties": {
+                  "contradiction_checking": {
+                    "default": false,
+                    "title": "Contradiction Checking",
+                    "type": "boolean"
+                  },
+                  "entailment_gate": {
+                    "default": 0.5,
+                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "extraction_mode": {
+                    "default": "gated",
+                    "enum": [
+                      "gated",
+                      "always"
+                    ],
+                    "title": "Extraction Mode",
+                    "type": "string"
+                  },
+                  "level": {
+                    "default": "off",
+                    "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                    "enum": [
+                      "off",
+                      "declared",
+                      "extraction",
+                      "entailment"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Verification",
                 "type": "object"
               }
             },
@@ -19568,10 +21465,106 @@
                     "title": "Budgets",
                     "type": "object"
                   },
+                  "commitment": {
+                    "additionalProperties": false,
+                    "description": "Commitment (FR-COMMIT) and its salience detection.",
+                    "properties": {
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "salience": {
+                        "default": "rules",
+                        "enum": [
+                          "rules",
+                          "rules_and_model"
+                        ],
+                        "title": "Salience",
+                        "type": "string"
+                      }
+                    },
+                    "title": "Commitment",
+                    "type": "object"
+                  },
                   "memory": {
                     "additionalProperties": false,
                     "description": "The memory modules (FR-PROF-2).",
                     "properties": {
+                      "consolidation": {
+                        "additionalProperties": false,
+                        "description": "Consolidation and reflections (FR-MEM-3,6).",
+                        "properties": {
+                          "cadence_turns": {
+                            "default": 20,
+                            "description": "Turns between consolidation runs.",
+                            "maximum": 1000.0,
+                            "minimum": 1.0,
+                            "title": "Cadence Turns",
+                            "type": "integer"
+                          },
+                          "enabled": {
+                            "default": false,
+                            "title": "Enabled",
+                            "type": "boolean"
+                          }
+                        },
+                        "title": "Consolidation",
+                        "type": "object"
+                      },
+                      "episodic": {
+                        "additionalProperties": false,
+                        "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                        "properties": {
+                          "enabled": {
+                            "default": false,
+                            "title": "Enabled",
+                            "type": "boolean"
+                          },
+                          "hybrid_search": {
+                            "default": true,
+                            "title": "Hybrid Search",
+                            "type": "boolean"
+                          },
+                          "k": {
+                            "default": 8,
+                            "description": "How many memories one retrieval returns.",
+                            "maximum": 100.0,
+                            "minimum": 1.0,
+                            "title": "K",
+                            "type": "integer"
+                          },
+                          "reranking": {
+                            "default": false,
+                            "title": "Reranking",
+                            "type": "boolean"
+                          }
+                        },
+                        "title": "Episodic",
+                        "type": "object"
+                      },
+                      "hot_set": {
+                        "additionalProperties": false,
+                        "description": "The hot-set budgets of the structured pipeline's memories (FR-MEM-8).",
+                        "properties": {
+                          "memories_per_character": {
+                            "default": 2000,
+                            "maximum": 100000.0,
+                            "minimum": 1.0,
+                            "title": "Memories Per Character",
+                            "type": "integer"
+                          },
+                          "vectors_per_story": {
+                            "default": 50000,
+                            "maximum": 10000000.0,
+                            "minimum": 1.0,
+                            "title": "Vectors Per Story",
+                            "type": "integer"
+                          }
+                        },
+                        "title": "HotSet",
+                        "type": "object"
+                      },
                       "rolling_summary": {
                         "additionalProperties": false,
                         "description": "The rolling auto-summary (FR-LITE-2).",
@@ -19778,9 +21771,10 @@
                   },
                   "pipeline": {
                     "default": "lite",
-                    "description": "The pipeline every turn runs: ``lite`` (FR-LITE).",
+                    "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
                     "enum": [
-                      "lite"
+                      "lite",
+                      "structured"
                     ],
                     "title": "Pipeline",
                     "type": "string"
@@ -19789,6 +21783,14 @@
                     "additionalProperties": false,
                     "description": "Repair and polish (FR-PROF-2).",
                     "properties": {
+                      "max_attempts": {
+                        "default": 0,
+                        "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Max Attempts",
+                        "type": "integer"
+                      },
                       "polish": {
                         "additionalProperties": false,
                         "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
@@ -19812,6 +21814,48 @@
                       }
                     },
                     "title": "Repair",
+                    "type": "object"
+                  },
+                  "verification": {
+                    "additionalProperties": false,
+                    "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                    "properties": {
+                      "contradiction_checking": {
+                        "default": false,
+                        "title": "Contradiction Checking",
+                        "type": "boolean"
+                      },
+                      "entailment_gate": {
+                        "default": 0.5,
+                        "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Entailment Gate",
+                        "type": "number"
+                      },
+                      "extraction_mode": {
+                        "default": "gated",
+                        "enum": [
+                          "gated",
+                          "always"
+                        ],
+                        "title": "Extraction Mode",
+                        "type": "string"
+                      },
+                      "level": {
+                        "default": "off",
+                        "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                        "enum": [
+                          "off",
+                          "declared",
+                          "extraction",
+                          "entailment"
+                        ],
+                        "title": "Level",
+                        "type": "string"
+                      }
+                    },
+                    "title": "Verification",
                     "type": "object"
                   }
                 },

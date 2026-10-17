@@ -46,6 +46,10 @@ jobs:
       - name: model-guide
         run: uv run python -m epistrel.tools.model_guide --check
         if: always()
+      # Capability map (#129, FR-PROF-13): docs/capability-map.md is exactly what CAPABILITY_MAP renders.
+      - name: capability-map
+        run: uv run python -m epistrel.tools.capability_map --check
+        if: always()
       # Milestone gate (#37): every requirement in docs/03 is assigned to exactly one milestone in §22.
       - run: uv run python -m tools.gates check-assignment
         if: always()

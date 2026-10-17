@@ -26,13 +26,16 @@ as strings) of::
 Core never reads the model configuration or the templates: the Orchestrator resolves them and
 the Engine passes them in as ``RuntimeFacts``.
 
-**Capabilities** are the names of the modules a configuration turns on, sorted; the pipeline
-is named by its level (``lite``). **Quality status** is ``{status}``: ``certified``,
-``uncertified`` or ``stale``. M3 has no certification records, so every configuration is
-``uncertified``; M7's certification produces the other two.
+**Capabilities** are the modules a configuration turns on, sorted, each by its name or, at a
+level that is not simply on, as ``<module>:<level>`` (``verification:entailment``); the pipeline
+is named by its level (``lite``, ``structured``; ``capabilities.capability_names``, #129).
+**Quality status** is ``{status}``: ``certified``, ``uncertified`` or ``stale``. M3 has no
+certification records, so every configuration is ``uncertified``; M7's certification produces
+the other two.
 
-**Guarantees** are the FR-VERIFY-15 guarantees a configuration provides, each held by one
-module at the levels shown (``GUARANTEES``): under Lite none of them holds.
+**Guarantees** are the FR-VERIFY-15 guarantees a configuration provides, each held where its
+capability-map entry holds (``GUARANTEES``, read from ``capabilities.CAPABILITY_MAP``): under
+Lite none of them holds.
 """
 
 from __future__ import annotations
@@ -48,7 +51,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from epistrel.core.profiles import schema
-from epistrel.core.profiles.schema import ProfileSettings, Quality, Requirement
+from epistrel.core.profiles.capabilities import CAPABILITY, CapabilityEntry, capability_names
+from epistrel.core.profiles.schema import ProfileSettings, Quality
 from epistrel.core.settings_schema import flatten
 
 FINGERPRINT_PREFIX = "sha256:"
@@ -153,13 +157,9 @@ def canonical_json(value: Any) -> str:
 
 
 def capabilities(settings: ProfileSettings) -> tuple[str, ...]:
-    """The names of the modules ``settings`` turns on, sorted; the pipeline by its level."""
-    return tuple(
-        sorted(
-            level if name == "pipeline" else name
-            for name, level in schema.enabled_modules(settings).items()
-        )
-    )
+    """The capabilities ``settings`` enables, sorted: each module on, by name or as
+    ``<module>:<level>``, and the pipeline by its level (``capabilities.capability_names``)."""
+    return capability_names(settings)
 
 
 RELEVANT_PATHS: frozenset[str] = frozenset(
@@ -211,28 +211,32 @@ def stamp(
 
 @dataclass(frozen=True, slots=True)
 class Guarantee:
-    """One FR-VERIFY-15 guarantee and the module (at its levels) that provides it."""
+    """One FR-VERIFY-15 guarantee and the capability-map entry (#129) that provides it."""
 
     name: str
-    held_by: Requirement
+    entry: str
+    """The ``CAPABILITY_MAP`` slug whose modules provide it."""
+
+    @property
+    def held_by(self) -> CapabilityEntry:
+        return CAPABILITY[self.entry]
 
 
 GUARANTEES: tuple[Guarantee, ...] = (
-    Guarantee("structural knowledge separation", Requirement("partitions")),
-    Guarantee("audience filtering", Requirement("perception", ("co_location", "full"))),
-    Guarantee(
-        "verification", Requirement("verification", ("declared", "extraction", "entailment"))
-    ),
-    Guarantee("commitment", Requirement("commitment")),
+    Guarantee("structural knowledge separation", "partitions"),
+    Guarantee("audience filtering", "perception_co_location"),
+    Guarantee("verification", "verification"),
+    Guarantee("commitment", "commitment"),
 )
-"""The guarantees FR-VERIFY-15 names as not holding under Lite, with what provides each:
-per-character partitions, perception at ``co_location`` or ``full``, verification from declared
-claims up, and commitment (the strings are FR-VERIFY-15's own)."""
+"""The guarantees FR-VERIFY-15 names as not holding under Lite (the strings are its own), each
+held where its ``CAPABILITY_MAP`` entry holds: per-character partitions, perception at
+``co_location`` or ``full``, verification from declared claims up, and commitment."""
 
 
 def guarantees(settings: ProfileSettings) -> tuple[str, ...]:
-    """The guarantees ``settings`` provides, in ``GUARANTEES`` order."""
-    return tuple(g.name for g in GUARANTEES if g.held_by.met(settings))
+    """The guarantees ``settings`` provides, in ``GUARANTEES`` order: those whose capability-map
+    entry holds under it."""
+    return tuple(g.name for g in GUARANTEES if g.held_by.holds(settings))
 
 
 __all__ = [

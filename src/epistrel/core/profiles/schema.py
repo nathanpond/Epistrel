@@ -32,10 +32,12 @@ exactly one tag of each kind.
 **Modules and levels.** ``MODULES`` names each capability module (the names #109 reports as
 capabilities and #122's genesis defers by), the setting that switches it, the level each value
 of that setting means, and the settings it owns. ``DELIVERED`` maps each module this deployment
-has delivered to its delivered levels; in M3 that is the ``lite`` pipeline, the rolling summary,
-pinned memories, the polish pass, budgets and models. M4 to M6 flip entries here and nothing
-else. ``delivered_schema`` derives, from the full model, the JSON Schema of only the delivered
-modules and levels: the OpenAPI document and ``GET /engine-profiles/schema`` publish that one.
+has delivered to its delivered levels: in M3 the ``lite`` pipeline, the rolling summary, pinned
+memories, the polish pass, budgets and models; M4 adds the ``structured`` pipeline, episodic
+retrieval, consolidation, verification at every level, contradiction checking, commitment and
+the repair attempts (#129). M5 and M6 flip entries here and nothing else. ``delivered_schema``
+derives, from the full model, the JSON Schema of only the delivered modules and levels: the
+OpenAPI document and ``GET /engine-profiles/schema`` publish that one.
 ``PATCH_SCHEMA`` is the same with ``null`` allowed for every member: a JSON merge patch over a
 story's overrides (#113).
 
@@ -402,7 +404,8 @@ class ProfileSettings(ProfileModel):
     pipeline: Annotated[Literal["lite", "structured"], DATA_PRODUCING, PROSPECTIVE, RELEVANT] = (
         "lite"
     )
-    """The pipeline every turn runs: ``lite`` (FR-LITE)."""
+    """The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core
+    path)."""
     memory: Memory = Field(default_factory=Memory)
     pins: Pins = Field(default_factory=Pins)
     character_knowledge: CharacterKnowledge = Field(default_factory=CharacterKnowledge)
@@ -462,8 +465,8 @@ def tags_of(info: FieldInfo) -> SettingTags:
 
 INTERPRETIVE_SETTINGS: frozenset[str] = frozenset()
 """Engine-profile settings read as interpretive whatever their ``ConfigClass`` tag says. Empty:
-every delivered setting in M3 is prospective, so the per-setting class of a configuration
-change has nothing real to tell apart. Read at call time, so a test may reclassify delivered
+the schema's own tags decide (M4 delivers the first interpretive settings: verification's and
+commitment's). Read at call time, so a test may reclassify delivered
 settings (``epistrel.testing.profiles.interpretive``)."""
 
 
@@ -575,17 +578,26 @@ MODULE: Mapping[str, Module] = types.MappingProxyType({m.name: m for m in MODULE
 
 DELIVERED: Mapping[str, frozenset[str]] = types.MappingProxyType(
     {
-        "pipeline": frozenset({"lite"}),
+        "pipeline": frozenset({"lite", "structured"}),
         "rolling_summary": frozenset({ON}),
+        "episodic": frozenset({ON}),
+        "consolidation": frozenset({ON}),
         "pins": frozenset({ON}),
+        "verification": frozenset({"declared", "extraction", "entailment"}),
+        "contradiction_checking": frozenset({ON}),
+        "commitment": frozenset({ON}),
+        "repair": frozenset({ON}),
         "polish": frozenset({ON}),
         "budgets": frozenset({ON}),
         "models": frozenset({ON}),
     }
 )
-"""The modules this deployment has delivered, each with its delivered levels (M3: the ``lite``
-pipeline, the rolling summary, pinned memories, the polish pass, budgets and models). A module
-not listed is not delivered at any level."""
+"""The modules this deployment has delivered, each with its delivered levels. M3: the ``lite``
+pipeline, the rolling summary, pinned memories, the polish pass, budgets and models. M4 (#129):
+the ``structured`` pipeline (with the hot-set budgets it owns), episodic retrieval,
+consolidation, verification at ``declared``, ``extraction`` and ``entailment`` (with
+``extraction_mode`` and ``entailment_gate``), contradiction checking, commitment, and the repair
+attempts. A module not listed is not delivered at any level."""
 
 
 def _owners() -> list[tuple[str, str, str | None]]:
@@ -717,8 +729,9 @@ DATA_PRODUCING_MODULES: frozenset[str] = frozenset(
     m.name for m in MODULES if _switch_tag(m) is Tag.data_producing
 )
 """Modules whose switch is tagged data-producing: turning one on, or raising its level, makes the
-engine write structured data that a story's existing history lacks (FR-PROF-6). In M3 none of
-them is delivered. Read at call time, so a test may mark a delivered module data-producing
+engine write structured data that a story's existing history lacks (FR-PROF-6). M4 delivers
+the first of them: the ``structured`` pipeline, consolidation, verification and commitment
+(#129). Read at call time, so a test may mark a delivered module data-producing
 (``epistrel.testing.profiles.data_producing``)."""
 
 DATA_PRODUCING_DIALS: Mapping[str, str] = types.MappingProxyType(

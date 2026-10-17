@@ -85,9 +85,12 @@ READ = bearer()
 SUMMARY_OFF = nest("memory.rolling_summary.enabled", False)
 PINS_OFF = nest("pins.enabled", False)
 WINDOW = "memory.rolling_summary.window_messages"
-PINS_NEED_SUMMARY = DependencyRule(TEST_CLAUSE, "pins", (Requirement("rolling_summary"),))
-"""A test-only rule (no two delivered modules depend on each other): pinned memories need the
-rolling summary."""
+PINS_NEED_SUMMARY = DependencyRule(
+    TEST_CLAUSE, "pins", (Requirement("rolling_summary"),), when=Requirement("pipeline", ("lite",))
+)
+"""A test-only rule (no two of M3's modules depend on each other): under ``lite``, pinned
+memories need the rolling summary. Only under ``lite``, so the seeded system profiles that run
+another pipeline are never what it refuses."""
 
 
 def headers(key: str | None = None) -> dict[str, str]:

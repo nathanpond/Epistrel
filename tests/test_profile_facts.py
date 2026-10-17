@@ -17,6 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from epistrel.core.profiles import schema
+from epistrel.core.profiles.capabilities import CAPABILITY
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.estimates import (
     CALL_LATENCY_MS,
@@ -158,7 +159,9 @@ def test_quality_relevant_settings_are_the_tagged_ones_and_the_templates() -> No
 
 def test_capabilities_and_guarantees() -> None:
     """Lite enables its pipeline (by level) and the delivered modules it turns on, and holds
-    none of the guarantee table's guarantees; each holds once its module is on."""
+    none of the guarantee table's guarantees. Each guarantee holds exactly where its
+    capability-map entry does: once the modules the entry needs are on, when they are delivered,
+    and nowhere while one is not."""
     assert list(capabilities(_settings())) == LITE_CAPABILITIES
     assert "rolling_summary" not in capabilities(
         _settings(nest("memory.rolling_summary.enabled", False))
@@ -167,15 +170,17 @@ def test_capabilities_and_guarantees() -> None:
     structured = parse_settings({"pipeline": "structured"})
     assert "structured" in capabilities(structured)
     for guarantee in GUARANTEES:
-        module = schema.MODULE[guarantee.held_by.module]
-        assert module.switch is not None
-        value = next(
-            v
-            for v, level in module.levels
-            if not guarantee.held_by.levels or level in guarantee.held_by.levels
-        )
-        held = parse_settings(nest(module.switch, value))
-        assert guarantee.name in guarantees(held)
+        entry = guarantee.held_by
+        assert entry.slug in CAPABILITY
+        document: dict[str, Any] = {"pipeline": "structured"}
+        for need in entry.requires:
+            module = schema.MODULE[need.module]
+            assert module.switch is not None
+            value = next(v for v, level in module.levels if need.level in (None, level))
+            document = merged(document, nest(module.switch, value))
+        held = parse_settings(document)
+        assert (guarantee.name in guarantees(held)) is entry.delivered, guarantee.name
+        assert entry.holds(held) is entry.delivered
     assert QualityStatus(status=QualityStatusValue.uncertified) == UNCERTIFIED
     assert {s.value for s in QualityStatusValue} == {"certified", "uncertified", "stale"}
 

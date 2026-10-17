@@ -18,13 +18,20 @@ from itertools import combinations, product
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine
+from tools.gates.spec import expand_ids
 
 from epistrel.core.profiles import schema
+from epistrel.core.profiles.capabilities import CAPABILITY_MAP
 from epistrel.core.profiles.schema import DependencyRule, Module, Requirement
+from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
 from tests.conftest import REPO_ROOT
 from tests.event_support import execute_in_tx, rows, scalar
 
 PROFILES = "/engine-profiles"
+SEEDED_PROFILES = [STRUCTURED_M4_PROFILE_ID, LITE_PRESET_ID]
+"""The profiles every database at head holds, as a listing orders them (newest first: equal
+creation times, so by id descending): the system-owned ``Structured (M4)`` and the Lite
+preset."""
 SETTINGS: dict[str, Any] = {
     "memory": {"rolling_summary": {"window_messages": 24, "compress_threshold_tokens": 3_000}},
     "pins": {"max_pinned": 20},
@@ -86,6 +93,18 @@ def off_value(module: Module) -> Any:
     return next(value for value in options if module.level(value) is None)
 
 
+M3_DELIVERED: dict[str, frozenset[str]] = {
+    "pipeline": frozenset({"lite"}),
+    "rolling_summary": frozenset({schema.ON}),
+    "pins": frozenset({schema.ON}),
+    "polish": frozenset({schema.ON}),
+    "budgets": frozenset({schema.ON}),
+    "models": frozenset({schema.ON}),
+}
+"""What M3 delivered (#106): its parts assert what still holds of these as later milestones
+deliver more."""
+
+
 def undelivered_modules() -> list[Module]:
     """Every module this deployment has not delivered at any level."""
     return [m for m in schema.MODULES if m.name not in schema.DELIVERED]
@@ -106,6 +125,24 @@ def naming(module: Module, level: str | None = None) -> dict[str, Any]:
     """A settings document that turns ``module`` on (at ``level``)."""
     assert module.switch is not None, module.name
     return nest(module.switch, on_value(module, level))
+
+
+def undelivered() -> dict[str, Any]:
+    """A settings document that switches on the first module (in schema order) this
+    deployment has not delivered at any level: what a test may send as settings that cannot
+    run, whichever milestone it is."""
+    return naming(undelivered_modules()[0])
+
+
+def undelivered_finding() -> dict[str, Any]:
+    """The ``undelivered`` entry a refusal of ``undelivered()`` names."""
+    module = undelivered_modules()[0]
+    assert module.switch is not None, module.name
+    return {
+        "module": module.name,
+        "level": module.level(on_value(module)),
+        "setting": module.switch,
+    }
 
 
 def holding(requirement: Requirement) -> dict[str, Any]:
@@ -147,11 +184,61 @@ def documented_rules() -> list[str]:
     return [text for _, text in found]
 
 
-def requirement_text() -> str:
-    """docs/03's FR-PROF-4 line."""
+def requirement_text(req_id: str = "FR-PROF-4") -> str:
+    """docs/03's line defining ``req_id`` (FR-PROF-4 unless named)."""
     spec = (REPO_ROOT / "docs" / "03-requirements-spec.md").read_text(encoding="utf-8")
-    (line,) = [line for line in spec.splitlines() if line.startswith("- **FR-PROF-4 (M).**")]
-    return line
+    lines = spec.splitlines()
+    (start,) = [i for i, line in enumerate(lines) if line.startswith(f"- **{req_id} (M).**")]
+    found = [lines[start]]
+    for line in lines[start + 1 :]:  # a requirement's sub-bullets, indented under it
+        if not line.startswith("  "):
+            break
+        found.append(line)
+    return "\n".join(found)
+
+
+# -- the capability map (#129) --------------------------------------------------------------------
+
+STRUCTURED_DOCUMENT: dict[str, Any] = {"pipeline": "structured"}
+"""A settings document that runs the ``structured`` pipeline and nothing else."""
+
+GROUP = re.compile(r"(?:FR|NFR)-[A-Z]+(?:-\d+(?:\.\.\d+)?(?:,\d+(?:\.\.\d+)?)*)?")
+FAMILY = re.compile(r"^(?:FR|NFR)-[A-Z]+$")
+FLOOR_POINTERS = frozenset({"FR-CONC", "FR-GUARD", "FR-CONC-4", "FR-LITE-5"})
+"""What FR-PROF-13's listed clauses name without listing it: the families whose listed parts
+follow in parentheses, the Lite read set it calls floor, and the Lite forms it refers to."""
+
+
+def _units(groups: list[str]) -> set[str]:
+    found: set[str] = set()
+    for group in groups:
+        found.update({group} if FAMILY.match(group) else expand_ids(group))
+    return found
+
+
+def prof_13_units() -> set[str]:
+    """Every family and requirement id FR-PROF-13 lists against a module (its text up to the
+    floor sentence), less ``FLOOR_POINTERS``."""
+    text = requirement_text("FR-PROF-13").split("The **floor**")[0]
+    body = text.split("**Capability map.**", 1)[1]
+    return _units(GROUP.findall(body)) - FLOOR_POINTERS
+
+
+def map_units() -> set[str]:
+    """Every family and requirement id the capability map's entries list (the floor lists
+    none)."""
+    return _units([group for entry in CAPABILITY_MAP for group in entry.requirements])
+
+
+def delivered_rules() -> list[DependencyRule]:
+    """The dependency rules whose modules (and condition) are all delivered."""
+    return [
+        rule
+        for rule in schema.DEPENDENCIES
+        if schema.is_delivered(rule.module)
+        and all(schema.is_delivered(r.module) for r in rule.requires)
+        and (rule.when is None or schema.is_delivered(rule.when.module))
+    ]
 
 
 def covering_array(factors: dict[str, list[Any]]) -> list[dict[str, Any]]:

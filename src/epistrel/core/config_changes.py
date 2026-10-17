@@ -42,7 +42,8 @@ from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import config_change_record, event_record
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid, ulid_after
-from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
+from epistrel.core.seeds.profiles import profile_defaults as seeded_profile_defaults
 from epistrel.core.settings_schema import (
     DEFAULT_FEEDBACK_TAGS,
     DEFAULT_LISTING_STATUS_VALUES,
@@ -253,7 +254,7 @@ class DeploymentState:
         default_factory=lambda: list(DEFAULT_LISTING_STATUS_VALUES)
     )
     feedback_tags: list[str] = field(default_factory=lambda: list(DEFAULT_FEEDBACK_TAGS))
-    profile_defaults: dict[str, Any] = field(default_factory=lite_settings)
+    profile_defaults: dict[str, Any] = field(default_factory=seeded_profile_defaults)
     """The engine profiles' deployment defaults (``deployment_state.profile_defaults``, #113)."""
     settings: dict[str, Any] = field(default_factory=dict)
     replayed: bool = False

@@ -169,6 +169,7 @@ from tests.character_support import complete as complete_character
 from tests.conformance.conftest import migrated_database
 from tests.media_support import files, metadata, png
 from tests.model_support import config_key
+from tests.profile_support import undelivered
 from tests.scenario_support import complete_with as complete_scenario
 from tests.story_support import story_body
 
@@ -473,7 +474,7 @@ PROFILE = {
 }
 PROFILE_EDIT = {"name": "Parity profile", "settings": {"pins": {"max_pinned": 10}}}
 PROFILE_COPY = {"name": "Parity copy"}
-PROFILE_DRY_RUN = {"settings": {"pipeline": "structured"}}
+PROFILE_DRY_RUN = {"settings": undelivered()}
 PROFILE_ANSWERS = [
     ("create_profile", 201),
     ("get_profile", 200),

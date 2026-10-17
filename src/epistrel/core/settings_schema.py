@@ -52,7 +52,8 @@ from pydantic.fields import FieldInfo
 
 from epistrel.core.context import CONTROL_CHARACTERS as _CONTROLS
 from epistrel.core.errors import InvalidRequest
-from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
+from epistrel.core.seeds.profiles import profile_defaults as seeded_profile_defaults
 
 
 class ConfigClass(StrEnum):
@@ -866,17 +867,17 @@ class DeploymentSettings(
     when it is written."""
 
     profile_defaults: Annotated[dict[str, Any], PROSPECTIVE] = Field(
-        default_factory=lite_settings, json_schema_extra=_profile_settings_schema
+        default_factory=seeded_profile_defaults, json_schema_extra=_profile_settings_schema
     )
     """The deployment's defaults for every engine profile setting (FR-PROF-5; #113): the bottom
     layer of each story's effective configuration, under its profile's version and its own
     overrides. A complete settings document (every delivered setting named), seeded from the
-    Lite preset. A write is a partial merge (an object merges into an object; any other value,
-    ``null`` included, replaces) that must leave a complete document every profile and story can
-    still run under (422 ``validation_error`` or ``invalid_profile`` otherwise). Each changed
-    setting is recorded as ``profile_defaults.<path>`` with its own class. Prospective: a story's
-    next turn runs under the new defaults, wherever its profile and overrides leave a setting
-    out."""
+    Lite preset with every other delivered module off. A write is a partial merge (an object
+    merges into an object; any other value, ``null`` included, replaces) that must leave a
+    complete document every profile and story can still run under (422 ``validation_error``
+    or ``invalid_profile`` otherwise). Each changed setting is recorded as
+    ``profile_defaults.<path>`` with its own class. Prospective: a story's next turn runs under
+    the new defaults, wherever its profile and overrides leave a setting out."""
 
     @field_validator("listing_status_values")
     @classmethod

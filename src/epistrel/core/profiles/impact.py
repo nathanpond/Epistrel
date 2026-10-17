@@ -70,13 +70,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.ids import Ulid
 from epistrel.core.profiles import effective, estimates, schema
+from epistrel.core.profiles.capabilities import module_names
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import (
     GUARANTEES,
     QualityStatus,
     RuntimeFacts,
     Stamp,
-    capabilities,
     guarantees,
 )
 from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsPatch
@@ -206,7 +206,7 @@ def _moved(before: ProfileSettings, after: ProfileSettings, *, up: bool) -> set[
 
 def delta(before: Configuration, after: Configuration, facts: RuntimeFacts) -> Delta:
     """How ``after`` differs from ``before``."""
-    had, has = set(capabilities(before.settings)), set(capabilities(after.settings))
+    had, has = set(module_names(before.settings)), set(module_names(after.settings))
     held = set(guarantees(before.settings)) - set(guarantees(after.settings))
     return Delta(
         gained=tuple(sorted((has - had) | _moved(before.settings, after.settings, up=True))),
@@ -232,7 +232,7 @@ def unmet(
     """The recommended capabilities ``settings`` does not enable, in the scenario's order."""
     if recommendation is None:
         return []
-    enabled = set(capabilities(settings))
+    enabled = set(module_names(settings))
     return [
         UnmetRecommendation(capability=name, recommended_by=recommendation.recommended_by)
         for name in recommendation.capabilities

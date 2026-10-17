@@ -21,6 +21,7 @@ per model tier are in [model-matrix.md](model-matrix.md).
 | `guardrail_check` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
 | `lite_summary` | no | `default` | `none` | 8,192 tokens |
 | `rating_suggestion` | no | `guardrail_check` | `parse_validate_retry` | 8,192 tokens |
+| `quality_judge` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 
 ### `generation`
 
@@ -56,7 +57,7 @@ Writes the reply of a Lite turn from the story's prompt sections.
 | `player_input.say` | `player_input` |
 | `player_input.do` | `player_input` |
 
-**Never receives:** `subject_true_age`, `checked_text`
+**Never receives:** `subject_true_age`, `checked_text`, `eval_text`
 
 ### `guardrail_check`
 
@@ -77,7 +78,7 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 | `subjects.label` | `policy_text` |
 | `subjects.age` | `subject_true_age` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`
 
 ### `lite_summary`
 
@@ -105,7 +106,7 @@ Folds old messages into a Lite story's rolling summary (FR-LITE-2).
 | `covers` | `rolling_summary` |
 | `target_tokens` | `rolling_summary` |
 
-**Never receives:** `policy_text`, `subject_true_age`, `checked_text`
+**Never receives:** `policy_text`, `subject_true_age`, `checked_text`, `eval_text`
 
 ### `rating_suggestion`
 
@@ -136,7 +137,27 @@ Reviews one catalog entry against one rating's content policy: its description, 
 | `elements.location` | `catalog_text` |
 | `elements.text` | `catalog_text` |
 
-**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`
+**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`, `eval_text`
+
+### `quality_judge`
+
+Pairwise prose comparisons (eval only, never in a turn; NFR-QUAL-14,15).
+
+- **Hot path:** no
+- **Default model:** the `default` row of `model_config`, unless the purpose has its own
+- **Template:** `quality_judge.j2`
+- **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
+- **Returns:** `QualityJudgeVerdict` (`preferred`), validated strictly; its free text is author-facing
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `first` | `eval_text` |
+| `second` | `eval_text` |
+| `criteria` | `eval_text` |
+
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`
 
 ## Reserved purposes
 
@@ -151,7 +172,6 @@ its floor and data-flow row, in the milestone that delivers it.
 | `importance_scoring` | purpose | M4 | — | Scores one memory's importance. |
 | `salience_detection` | purpose | M4 | — | Detects signals that need commitment. |
 | `extraction_backstop` | purpose | M4 | — | Model layer of claim detection. |
-| `quality_judge` | purpose | M4 | — | Pairwise prose comparisons (eval only). |
 | `belief_adjudication` | purpose | M5 | `entailment` | Adjudicated belief transitions. |
 | `time_estimation` | purpose | M6 | `extraction_backstop` | Best-guess duration of a narrated skip. |
 | `image_prompt` | purpose | M8 | `generation` | Writes image prompts. |
@@ -177,6 +197,7 @@ its floor and data-flow row, in the milestone that delivers it.
 | `rating_description` | A content rating's name and content-policy description. |
 | `scenario_text` | A scenario story's world, seeded facts, relationships, starting places and player persona, as text (#122). |
 | `director_notes` | A scenario story's director notes: plot hooks, objectives, guidance, planned reveals, milestones and endings (#122). |
+| `eval_text` | Text an eval case supplies or an eval's scratch story produced, compared by the quality judge; never a live story's content (#134). |
 
 ## Hosted providers and retention
 

@@ -43,6 +43,9 @@ class ContentCategory(StrEnum):
     RATING_DESCRIPTION = "rating_description"
     SCENARIO_TEXT = "scenario_text"
     DIRECTOR_NOTES = "director_notes"
+    EVAL_TEXT = "eval_text"
+    """Text an eval case supplies or an eval's scratch story produced (#134): what the
+    ``quality_judge`` compares. Never a live story's content."""
 
 
 class StructuredOutput(StrEnum):
@@ -279,6 +282,24 @@ class RatingSuggestionVerdict(BaseModel):
     concerns: list[SuggestedConcern] = Field(default_factory=list, max_length=200)
 
 
+class QualityJudgeInputs(InputSchema):
+    """One pairwise comparison (NFR-QUAL-14,15; #134): two passages from an eval's scratch
+    stories and what to compare them on. A placeholder schema: #158 replaces it with the
+    calibrated rubric's."""
+
+    first: Annotated[str, C.EVAL_TEXT]
+    second: Annotated[str, C.EVAL_TEXT]
+    criteria: Annotated[str, C.EVAL_TEXT] = "voice consistency and readability"
+
+
+class QualityJudgeVerdict(BaseModel):
+    """Which passage a ``quality_judge`` call prefers, or a tie; no free text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    preferred: Literal["first", "second", "tie"] = "tie"
+
+
 # -- purposes ---------------------------------------------------------------------------------
 
 
@@ -330,7 +351,7 @@ GENERATION = Purpose(
     hot_path=True,
     # Policy text arrives only as a regeneration's constraints (#68): the violated policies'
     # messages, never a policy prompt, subject label or age.
-    never_receives=frozenset({C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT}),
+    never_receives=frozenset({C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT, C.EVAL_TEXT}),
     history_field="recent_messages",
 )
 
@@ -354,7 +375,7 @@ LITE_SUMMARY = Purpose(
     input_schema=LiteSummaryInputs,
     template="lite_summary.j2",
     hot_path=False,
-    never_receives=frozenset({C.POLICY_TEXT, C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT}),
+    never_receives=frozenset({C.POLICY_TEXT, C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT, C.EVAL_TEXT}),
 )
 
 RATING_SUGGESTION = Purpose(
@@ -380,6 +401,22 @@ RATING_SUGGESTION = Purpose(
     story_scoped=False,
 )
 
+QUALITY_JUDGE = Purpose(
+    name="quality_judge",
+    description="Pairwise prose comparisons (eval only, never in a turn; NFR-QUAL-14,15).",
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=QualityJudgeInputs,
+    template="quality_judge.j2",
+    hot_path=False,
+    # Eval text only: every story-content category is refused, so the judge can never be handed
+    # a live story's transcript, memories or definitions (the harness also refuses any story
+    # that is not one of its scratch stories, #134).
+    never_receives=_EVERYTHING - {C.EVAL_TEXT},
+    response_schema=QualityJudgeVerdict,
+    story_scoped=False,
+)
+
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("regeneration", "Regenerates a span under corrected constraints.", "M4"),
     ReservedPurpose("entailment", "The fuzzy residual of verify.", "M4"),
@@ -387,7 +424,6 @@ RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("importance_scoring", "Scores one memory's importance.", "M4"),
     ReservedPurpose("salience_detection", "Detects signals that need commitment.", "M4"),
     ReservedPurpose("extraction_backstop", "Model layer of claim detection.", "M4"),
-    ReservedPurpose("quality_judge", "Pairwise prose comparisons (eval only).", "M4"),
     ReservedPurpose(
         "belief_adjudication", "Adjudicated belief transitions.", "M5", defaults_to="entailment"
     ),
@@ -508,7 +544,7 @@ def _build(purposes: tuple[Purpose, ...]) -> Mapping[str, Purpose]:
 
 
 DELIVERED: Mapping[str, Purpose] = _build(
-    (GENERATION, GUARDRAIL_CHECK, LITE_SUMMARY, RATING_SUGGESTION)
+    (GENERATION, GUARDRAIL_CHECK, LITE_SUMMARY, RATING_SUGGESTION, QUALITY_JUDGE)
 )
 """Purposes a model call may use now, by name."""
 
@@ -516,7 +552,8 @@ STORY_PURPOSES: Mapping[str, Purpose] = types.MappingProxyType(
     {name: purpose for name, purpose in DELIVERED.items() if purpose.story_scoped}
 )
 """The delivered purposes that run inside a story: what an engine profile routes, a story's
-runtime facts fingerprint and the model matrix measures (not ``rating_suggestion``, #121)."""
+runtime facts fingerprint and the model matrix measures (not ``rating_suggestion``, #121, nor
+``quality_judge``, #134)."""
 
 RESERVED: Mapping[str, ReservedPurpose] = types.MappingProxyType(
     {r.name: r for r in RESERVED_PURPOSES}
@@ -532,6 +569,7 @@ def get_purpose(name: str) -> Purpose:
 __all__ = [
     "DEFAULT_MODEL_KEY",
     "DELIVERED",
+    "QUALITY_JUDGE",
     "RATING_SUGGESTION",
     "RESERVED",
     "STORY_PURPOSES",
@@ -549,6 +587,8 @@ __all__ = [
     "PlayerInput",
     "Purpose",
     "PurposeStatus",
+    "QualityJudgeInputs",
+    "QualityJudgeVerdict",
     "RatingSuggestionInputs",
     "RatingSuggestionVerdict",
     "RegistryError",

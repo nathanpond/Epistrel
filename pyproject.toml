@@ -158,6 +158,21 @@ ignore_imports = [
     "epistrel.core.erasure.erase -> epistrel.core.feedback",
 ]
 
+[[tool.importlinter.contracts]]
+# NFR-QUAL-8 (#134): the eval harness never runs in a turn. Nothing in the engine (Core, the
+# Orchestrator, the API, the Engine, observability) imports `epistrel.evals`, directly or through
+# another module; the harness may import any of them (it drives the in-process Engine).
+name = "nothing-in-the-engine-imports-the-eval-harness"
+type = "forbidden"
+source_modules = [
+    "epistrel.core",
+    "epistrel.orchestrator",
+    "epistrel.api",
+    "epistrel.engine",
+    "epistrel.observability",
+]
+forbidden_modules = ["epistrel.evals"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -225,7 +240,8 @@ asyncio_default_test_loop_scope = "session"
 [tool.coverage.run]
 branch = true
 source = ["epistrel"]
-omit = ["tools/*"]
+# The eval harness (#134) is measured by its own runs, not by the core coverage gate.
+omit = ["tools/*", "*/epistrel/evals/*"]
 
 [tool.coverage.report]
 # fail_under is deliberately not set here: the gate passes `--cov-fail-under=90` explicitly for

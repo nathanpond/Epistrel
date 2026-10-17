@@ -12,6 +12,7 @@ Transport failures surface as the SDK's own exception types from both adapters;
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from contextvars import ContextVar
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -25,6 +26,13 @@ DEFAULT_TIMEOUT_S = 60.0
 """Per-call timeout when neither the purpose's config nor the call sets one."""
 
 MAX_COMPLETION_TOKENS = 4_000
+MAX_SEED = 2**31 - 1
+
+EVAL_CASE_HEADER = "X-Eval-Case"
+"""The line the Model Access Layer appends to a call's system message inside an eval scope
+(``access.eval_scope``, #134): ``X-Eval-Case: <case id>``. It names an eval case, never story
+content, so the stub can answer per case (``StubAdapter.case``)."""
+EVAL_CASE_PATTERN = re.compile(rf"^{EVAL_CASE_HEADER}: (\S+)$", re.MULTILINE)
 
 
 class Message(BaseModel):
@@ -46,6 +54,9 @@ class ModelParams(BaseModel):
     max_tokens: int | None = Field(default=None, ge=1, le=MAX_COMPLETION_TOKENS)
     timeout: float | None = Field(default=None, gt=0.0, le=600.0)
     stop: tuple[str, ...] | None = Field(default=None, max_length=4)
+    seed: int | None = Field(default=None, ge=0, le=MAX_SEED)
+    """The provider's sampling seed (OpenAI ``seed``), for reproducible runs; the eval harness
+    sets one per run seed (#134). Providers treat it as best effort."""
 
     def merged(self, override: ModelParams | None) -> ModelParams:
         """These params with every key ``override`` sets replacing ours."""
@@ -107,6 +118,15 @@ REQUEST_FIELDS: ContextVar[tuple[str, ...] | None] = ContextVar("REQUEST_FIELDS"
 the stub can record them; never holds values."""
 
 
+def eval_case_of(messages: Sequence[Message]) -> str | None:
+    """The eval case a request names (its ``X-Eval-Case`` line), or ``None``."""
+    for message in messages:
+        found = EVAL_CASE_PATTERN.search(message.content)
+        if found is not None:
+            return found.group(1)
+    return None
+
+
 @runtime_checkable
 class ModelAdapter(Protocol):
     """One model transport."""
@@ -130,6 +150,8 @@ class ModelAdapter(Protocol):
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
+    "EVAL_CASE_HEADER",
+    "MAX_SEED",
     "PROBE_MESSAGES",
     "PROBE_TIMEOUT_S",
     "REQUEST_FIELDS",
@@ -142,4 +164,5 @@ __all__ = [
     "ProbeResult",
     "UndeclaredInput",
     "UnknownPurpose",
+    "eval_case_of",
 ]

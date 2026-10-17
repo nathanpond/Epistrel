@@ -59,8 +59,15 @@ def bad_template_env(source: str) -> Environment:
 
 
 def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
-    # M3 delivers rating_suggestion (#121), which defaults to guardrail_check's row (FR-MODEL-2).
-    assert set(DELIVERED) == {"generation", "guardrail_check", "lite_summary", "rating_suggestion"}
+    # M3 delivers rating_suggestion (#121), which defaults to guardrail_check's row (FR-MODEL-2);
+    # M4 the eval harness's quality_judge (#134).
+    assert set(DELIVERED) == {
+        "generation",
+        "guardrail_check",
+        "lite_summary",
+        "rating_suggestion",
+        "quality_judge",
+    }
     for purpose in DELIVERED.values():
         expected = "guardrail_check" if purpose.name == "rating_suggestion" else "default"
         assert purpose.default_model_key == expected

@@ -63,6 +63,10 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "A scenario story's director notes: plot hooks, objectives, guidance, planned reveals, "
         "milestones and endings (#122)."
     ),
+    ContentCategory.EVAL_TEXT: (
+        "Text an eval case supplies or an eval's scratch story produced, compared by the quality "
+        "judge; never a live story's content (#134)."
+    ),
 }
 
 STRUCTURED_LABELS: Mapping[StructuredOutput, str] = {

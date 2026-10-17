@@ -63,13 +63,13 @@ def test_a_purpose_defaulting_to_an_undelivered_row_fails_the_registry() -> None
 def test_it_is_no_story_purpose_and_no_profile_routes_it(dummy_dsn: str) -> None:
     """It runs outside any story: the story purposes, a story's runtime facts and template
     hashes leave it out, and a profile naming it is refused at its field."""
-    assert set(DELIVERED) - set(STORY_PURPOSES) == {"rating_suggestion"}
+    assert set(DELIVERED) - set(STORY_PURPOSES) == {"rating_suggestion", "quality_judge"}
     assert "rating_suggestion" not in identities({})
     assert "rating_suggestion" not in TEMPLATE_HASHES
     settings = lite_settings()
     settings["models"]["purposes"]["rating_suggestion"] = {"model": None}
     purposes = Engine(auth_settings(dummy_dsn, model_adapter="stub")).purposes
-    assert purposes.deployment == {"rating_suggestion"}
+    assert purposes.deployment == {"rating_suggestion", "quality_judge"}
     assert "rating_suggestion" not in purposes.delivered | purposes.reserved
     with pytest.raises(InvalidRequest) as refused:
         validate_profile(settings, purposes=purposes)

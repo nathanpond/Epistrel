@@ -3542,7 +3542,8 @@ class Engine:
     def purposes(self) -> Purposes:
         """The model purposes a profile may route: the Orchestrator's delivered story purposes,
         the ones it reserves for later milestones (naming one is naming something undelivered),
-        and the deployment-level ones no profile routes (``rating_suggestion``, #121)."""
+        and the deployment-level ones no profile routes (``rating_suggestion``, #121;
+        ``quality_judge``, #134)."""
         return Purposes.of(
             list(model_registry.STORY_PURPOSES),
             list(model_registry.RESERVED),

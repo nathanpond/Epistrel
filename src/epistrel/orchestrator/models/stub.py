@@ -10,6 +10,9 @@ Tests drive it through the Model Access Layer's ``stub`` (the ``stub`` fixture):
 ``script(purpose, [responses])`` queues answers (FIFO; exhausted → the default),
 ``when(substring, response, purpose=None)`` answers any request (of ``purpose``, when given)
 whose messages contain ``substring`` (or every one of a tuple of substrings),
+``case(case_id, response, purpose=None, seed=None)`` answers the requests an eval scope marks
+as case ``case_id`` (their ``X-Eval-Case`` line, #134; only ``purpose``'s, and only under
+``seed``, when given; the most specific match wins, before any queued script),
 ``fault(purpose, kind, n)`` makes the next ``n`` calls fail: ``timeout``, ``connection``,
 ``http_500``, ``http_429`` (with ``Retry-After``), ``http_401``, ``response_format_400`` and
 ``bad_body`` raise the ``openai`` SDK's own exception types; ``garbage`` answers unparseable
@@ -51,6 +54,7 @@ from epistrel.orchestrator.models.adapter import (
     ModelParams,
     ModelResult,
     ProbeResult,
+    eval_case_of,
 )
 from epistrel.orchestrator.models.registry import DELIVERED
 
@@ -205,6 +209,7 @@ class StubAdapter:
         self._scripts: defaultdict[str, deque[str]] = defaultdict(deque)
         self._faults: defaultdict[str, deque[FaultKind]] = defaultdict(deque)
         self._when: list[tuple[tuple[str, ...], str, str | None]] = []
+        self._cases: dict[tuple[str, str | None, int | None], str] = {}
         self._latches: dict[str, StubLatch] = {}
         self.fault_hook: Callable[[str], FaultKind | None] | None = None
         """Consulted on every call with no queued fault (chaos tests draw faults at random)."""
@@ -222,6 +227,34 @@ class StubAdapter:
         needles = (substring,) if isinstance(substring, str) else substring
         self._when.append((needles, response, purpose))
 
+    def case(
+        self,
+        case_id: str,
+        response: str,
+        *,
+        purpose: str | None = None,
+        seed: int | None = None,
+    ) -> None:
+        """Answer ``response`` to the requests marked as eval case ``case_id`` (see the module
+        docstring); a later call for the same case, purpose and seed replaces the answer."""
+        self._cases[(case_id, purpose, seed)] = response
+
+    def _case_answer(
+        self, purpose: str, messages: Sequence[Message], params: ModelParams
+    ) -> str | None:
+        case_id = eval_case_of(messages)
+        if case_id is None or not self._cases:
+            return None
+        for key in (
+            (case_id, purpose, params.seed),
+            (case_id, None, params.seed),
+            (case_id, purpose, None),
+            (case_id, None, None),
+        ):
+            if key in self._cases:
+                return self._cases[key]
+        return None
+
     def fault(self, purpose: str, kind: FaultKind = "timeout", n: int = 1) -> None:
         self._faults[purpose].extend([kind] * n)
 
@@ -236,6 +269,7 @@ class StubAdapter:
         self._scripts.clear()
         self._faults.clear()
         self._when.clear()
+        self._cases.clear()
         self._latches.clear()
         self.fault_hook = None
         self.nondeterministic = False
@@ -314,6 +348,8 @@ class StubAdapter:
             refused = kind == "refusal"
             if kind == "length":
                 finish_reason = "length"
+        if text is None:
+            text = self._case_answer(purpose, messages, params)
         if text is None:
             text = self._answer(purpose, messages, digest, response_schema)
             if finish_reason == "length":

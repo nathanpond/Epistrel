@@ -59,6 +59,12 @@ jobs:
       - name: predicates
         run: uv run python -m epistrel.tools.predicates --check
         if: always()
+      # Evals (#134, NFR-QUAL-8): every model-dependent guarantee row's metric has a suite (or is
+      # pending with the story that ships it), every floored metric has a floor, and
+      # docs/evals/INDEX.md is exactly what the committed reports regenerate.
+      - name: evals-check
+        run: uv run python -m epistrel.evals --check
+        if: always()
       # Milestone gate (#37): every requirement in docs/03 is assigned to exactly one milestone in §22.
       - run: uv run python -m tools.gates check-assignment
         if: always()
@@ -170,6 +176,26 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
+      # The eval harness on the stub (#134, NFR-QUAL-8): every registered suite, two seeds, scripted
+      # per case, through scratch stories on a throwaway PostgreSQL (testcontainers, like the suite).
+      # No real model is ever called in CI (docs/evals/README.md). The step fails on a harness error
+      # (a malformed labeled set, a suite that cannot run, a write outside its scratch stories) and,
+      # with --fail-on-gate, when a suite marked ci_gate misses its deterministic stub floors. One
+      # shard runs it.
+      - name: evals (stub)
+        if: matrix.shard.name == 'rest'
+        run: uv run python -m epistrel.evals run --adapter stub --all --seeds 2 --fail-on-gate
+      - name: upload the stub eval report
+        if: always() && matrix.shard.name == 'rest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: evals-stub-report
+          path: |
+            build/evals/stub-report.md
+            build/evals/*.json
+            build/evals/*.jsonl
+          if-no-files-found: warn
+          retention-days: 14
 
   coverage:
     # The one coverage gate (#331): every shard's data combined, then epistrel.core ≥ 90 %.

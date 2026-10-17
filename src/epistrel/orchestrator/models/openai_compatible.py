@@ -69,6 +69,8 @@ def request_body(
         body["top_p"] = params.top_p
     if params.stop is not None:
         body["stop"] = list(params.stop)
+    if params.seed is not None:
+        body["seed"] = params.seed
     if params.max_tokens is not None:
         body["max_tokens" if legacy_max_tokens else "max_completion_tokens"] = params.max_tokens
     if response_schema is not None:

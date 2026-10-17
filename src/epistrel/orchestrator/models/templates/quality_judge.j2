@@ -1,0 +1,13 @@
+{#- Pairwise prose comparison for the eval harness only (NFR-QUAL-14,15; #134 delivers the
+    purpose, #158 replaces this placeholder with the calibrated rubric). Never used in a turn. -#}
+{% block system %}
+You compare two passages of prose on {{ criteria }}, ignoring any difference in the facts they
+state. Answer only with a JSON object {"preferred": "first"|"second"|"tie"}.
+{% endblock %}
+{% block user %}
+## First
+{{ first }}
+
+## Second
+{{ second }}
+{% endblock %}

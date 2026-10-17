@@ -10,12 +10,14 @@ any leading `LicenseRef-` or `GNU` (`GPL-3.0-only`, `GPLv3`, `GNU-GPL`, `GPL.v3`
 `LicenseRef-GPL-3.0`), or by its long name with any separators or none (`GNU Public License`,
 `Server-Side Public License`, `EuropeanUnionPublicLicence`); any `Affero` is the AGPL. A GPL
 qualified as another license (`Lesser GPL`, `Library GPL`, `Nethack GPL`) is that license. A
-bare `GNU` names no single family, so an exception can admit it (#313). A table entry settles
-its own spelling. A license text (a value spanning several lines) is judged by its title line
-only, since full texts cite or bundle other licenses in their body. So a text whose first line
-does not name its license, such as the FSF notice that opens "This program is free software;",
-reads UNKNOWN: it fails without an exception, and an exception admits it (#312, the owner's
-decision to keep the rule). Whoever writes an exception reads the package's license first.
+value that names `GNU` but no specific license (`GNU`, `GNU v3`, `GNU License`) is the GPL, the
+fail-safe reading (#313, the owner's decision); a package that is really LGPL and says only that
+needs a normalisation-table entry. A table entry settles its own spelling. A license text (a
+value spanning several lines) is judged by its title line only, since full texts cite or bundle
+other licenses in their body. So a text whose first line does not name its license, such as the
+FSF notice that opens "This program is free software;", reads UNKNOWN: it fails without an
+exception, and an exception admits it (#312, the owner's decision to keep the rule). Whoever
+writes an exception reads the package's license first.
 """
 
 from __future__ import annotations
@@ -178,6 +180,15 @@ FAMILY_NAMES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     ("EUPL", re.compile(rf" (?:european ?union|eu) ?{_PUBLIC_LICENSE}")),
     ("SSPL", re.compile(rf" server ?side ?{_PUBLIC_LICENSE}")),
+)
+# A bare GNU (#313): the word `gnu`, alone or joined to a version or `License` (`GNUv3`,
+# `GNULicense`), matched against `_words`, so `gnuplot` is not one. It names the GPL unless the
+# value also names one of the other GNU licenses: the LGPL (`Lesser`, `Library`, `LGPL…`), the
+# AGPL, the GFDL (`Free Documentation`, `FDL`, `GFDL…`), the GNU All-permissive License, or the
+# Nethack GPL. Only counts while the GPL is denied.
+BARE_GNU_RE = re.compile(r" gnu(?:v?\d+|licen[cs]e)?(?= )")
+OTHER_GNU_LICENSE_RE = re.compile(
+    r" (?:lesser|library|lgpl|affero|agpl|documentation|fdl|gfdl|permissive|allpermissive|nethack)"
 )
 # Runs of free text that may be ids (`GPL-3.0-only`, `GNU-GPL`, `GPL.v3`).
 TOKEN_RE = re.compile(r"[A-Za-z0-9.+-]+")
@@ -394,7 +405,8 @@ def _words(text: str) -> str:
 def named_family(text: str, deny: tuple[str, ...]) -> str | None:
     """A deny family named in free `text` or an id, by identifier (`GNU GPL v3`, `GNU-GPL`,
     `(GPL-3.0-only)`, `LicenseRef-GPLv3`) or by long name (`GNU Public License`,
-    `GNU-General-Public-License`, `Affero GPL`). A qualified GPL (`Lesser GPL`) is not the GPL."""
+    `GNU-General-Public-License`, `Affero GPL`). A qualified GPL (`Lesser GPL`) is not the GPL.
+    A bare GNU (`GNU`, `GNU v3`, `GNU License`) is (#313)."""
     for token in TOKEN_RE.finditer(text):
         family = denied_family(token[0].strip(".+-"), deny)
         if family == "GPL" and GPL_QUALIFIER_RE.search(text[: token.start()]):
@@ -405,6 +417,8 @@ def named_family(text: str, deny: tuple[str, ...]) -> str | None:
     for family, name in FAMILY_NAMES:
         if family in deny and name.search(words):
             return family
+    if "GPL" in deny and BARE_GNU_RE.search(words) and not OTHER_GNU_LICENSE_RE.search(words):
+        return "GPL"
     return None
 
 

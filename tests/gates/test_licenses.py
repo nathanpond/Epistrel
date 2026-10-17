@@ -389,6 +389,24 @@ def test_classifier_values_are_read_per_classifier(raw: str, status: str, detail
         ("Library: GPL v3", "GPL"),
         ("Python library GPL v3", "GPL"),
         ("Library AGPL v3", "AGPL"),
+        # A value that names GNU but no specific license is the GPL, the fail-safe reading (#313,
+        # option 2): the spellings the issue names, as an id, joined, after `LicenseRef-`, as a
+        # free-text part beside an allowed one, and as a license text's title line.
+        ("GNU", "GPL"),
+        ("gnu", "GPL"),
+        ("GNU v3", "GPL"),
+        ("GNU License", "GPL"),
+        ("GNU license v2 or later", "GPL"),
+        ("GNU-v3", "GPL"),
+        ("GNUv3", "GPL"),
+        ("GNU3", "GPL"),
+        ("GNULicense", "GPL"),
+        ("LicenseRef-GNU", "GPL"),
+        ("GNU General License", "GPL"),
+        ("The GNU license", "GPL"),
+        ("MIT AND GNU", "GPL"),
+        ("MIT; GNU License", "GPL"),
+        ("GNU LICENSE\n   Version 3\n", "GPL"),
     ],
 )
 def test_an_exception_never_admits_a_denied_family_whatever_the_spelling(
@@ -464,6 +482,17 @@ NUMPY_TEXT = (
         ("LicenseRef-CNRI-Python-GPL-Compatible", "not allowed"),
         # `licensed` is not `license`.
         ("Free for the general public, licensed as MIT", "unknown"),
+        # A value that names a specific GNU license other than the GPL is not a bare GNU (#313),
+        # and `gnu` must be a word of its own.
+        ("GNU Lesser License v3", "unknown"),
+        ("GNU Library License", "unknown"),
+        ("GNU LGPLv3", "unknown"),
+        ("GNU Free Documentation License v1.3", "unknown"),
+        ("GNU FDL", "unknown"),
+        ("GNU GFDL-1.3", "unknown"),
+        ("GNU All-permissive License", "unknown"),
+        ("GNU-Nethack-License", "not allowed"),
+        ("GNUplot License", "unknown"),
     ],
 )
 def test_an_exception_still_admits_what_names_no_denied_family(raw: str, status: str) -> None:
@@ -560,6 +589,24 @@ def test_family_names_follow_the_configured_deny_list(raw: str) -> None:
     verdict = judge("pkg", raw, cfg)
     assert (verdict.status, verdict.detail) == ("denied", "exception refused: LGPL family")
     assert judge("pkg", raw, CONFIG).status == "unknown"
+
+
+@pytest.mark.parametrize("raw", ["GNU", "GNU v3", "GNU License"])
+def test_a_bare_gnu_is_the_gpl_only_while_the_gpl_is_denied(raw: str) -> None:
+    """A bare GNU value is read as the GPL family (#313), so it counts only for a deny list that
+    names the GPL; without it the value is judged as before (UNKNOWN or not allowed)."""
+    cfg = LicensesConfig(CONFIG.allow, ("AGPL", "SSPL", "EUPL"), {"pkg": "vendor says fine"})
+    assert judge("pkg", raw, cfg).status == "excepted"
+    verdict = judge("pkg", raw, LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "fine"}))
+    assert verdict.detail == "exception refused: GPL family"
+
+
+def test_a_table_entry_settles_a_bare_gnu_spelling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The remedy for a package that is really LGPL but declares only `GNU` (#313): a table entry
+    is authoritative for its spelling, so `GNU License` → `LGPL-2.1-or-later` passes."""
+    assert judge("pkg", "GNU License", CONFIG).detail == "GPL"
+    monkeypatch.setitem(NORMALISATION, "gnu license", "LGPL-2.1-or-later")
+    assert judge("pkg", "GNU License", CONFIG).status == "ok"
 
 
 # Every license classifier in trove-classifiers 2026.9.21.13, as pip-licenses reports it (the

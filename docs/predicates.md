@@ -40,7 +40,7 @@ does not name its only institution. An author declares such rules where they hol
 
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
-| `holds`<br>`01JPRED0000000000000000005` | any → item | multi per (subject) | fluent | — | — | — | — | The subject physically has the item; a person may hold several. Its inverse `held_by` is functional: an item is in one pair of hands at a time. |
+| `holds`<br>`01JPRED0000000000000000005` | any → item | multi per (subject) | fluent | — | — | — | placement | The subject physically has the item; a person may hold several. Its inverse `held_by` is functional: an item is in one pair of hands at a time. |
 | `held_by`<br>`01JPRED0000000000000000006` | item → any | functional per (subject) | fluent | inverse of `holds` | — | — | — | The inverse of `holds`, stored as `holds`: an item has one holder at a time. |
 | `owns`<br>`01JPRED0000000000000000007` | any → any | multi per (subject) | fluent | — | — | — | — | Ownership, independent of who holds the thing now. |
 
@@ -56,9 +56,9 @@ does not name its only institution. An author declares such rules where they hol
 
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
-| `parent_of`<br>`01JPRED0000000000000000011` | person → person | multi per (subject) | permanent | — | — | — | — | The subject is a parent of the object. |
-| `child_of`<br>`01JPRED0000000000000000012` | person → person | multi per (subject) | permanent | inverse of `parent_of` | — | — | — | The inverse of `parent_of`, stored as `parent_of`. |
-| `sibling_of`<br>`01JPRED0000000000000000013` | person → person | multi per (subject) | permanent | symmetric | — | — | — | The two people are siblings (symmetric). |
+| `parent_of`<br>`01JPRED0000000000000000011` | person → person | multi per (subject) | permanent | — | — | — | relationships | The subject is a parent of the object. |
+| `child_of`<br>`01JPRED0000000000000000012` | person → person | multi per (subject) | permanent | inverse of `parent_of` | — | — | relationships | The inverse of `parent_of`, stored as `parent_of`. |
+| `sibling_of`<br>`01JPRED0000000000000000013` | person → person | multi per (subject) | permanent | symmetric | — | — | relationships | The two people are siblings (symmetric). |
 | `married_to`<br>`01JPRED0000000000000000014` | person → person | multi per (subject) | fluent | symmetric | — | — | relationships | The two people are married (symmetric, over an interval). |
 
 ## Relationships
@@ -73,8 +73,8 @@ does not name its only institution. An author declares such rules where they hol
 
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
-| `member_of`<br>`01JPRED0000000000000000018` | person → organization | multi per (subject) | fluent | — | — | `role` (str) | — | Membership of a team, club or other organization, with an optional `role` (not part of the key). Implies no enrollment anywhere. |
-| `holds_position`<br>`01JPRED0000000000000000019` | person → organization | multi per (subject) | fluent | — | — | `title` (str) | — | An office or position in an organization, with its `title`. |
+| `member_of`<br>`01JPRED0000000000000000018` | person → organization | multi per (subject) | fluent | — | — | `role` (str) | relationships | Membership of a team, club or other organization, with an optional `role` (not part of the key). Implies no enrollment anywhere. |
+| `holds_position`<br>`01JPRED0000000000000000019` | person → organization | multi per (subject) | fluent | — | — | `title` (str) | relationships | An office or position in an organization, with its `title`. |
 
 ## Education
 
@@ -88,7 +88,7 @@ does not name its only institution. An author declares such rules where they hol
 
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
-| `employed_by`<br>`01JPRED0000000000000000023` | any → organization | multi per (subject) | fluent | — | — | `role` (str) | — | Employment by an organization or a person, with an optional `role`; several employers at once are allowed. |
+| `employed_by`<br>`01JPRED0000000000000000023` | any → organization | multi per (subject) | fluent | — | — | `role` (str) | relationships | Employment by an organization or a person, with an optional `role`; several employers at once are allowed. |
 
 ## Basic attributes
 

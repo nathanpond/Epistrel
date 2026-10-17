@@ -86,6 +86,7 @@ from epistrel.api.routes.ownership import (
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
 from epistrel.api.routes.respond import RespondResponse
+from epistrel.api.routes.scene import EntityProfileBody, SceneBody
 from epistrel.api.routes.stories import (
     IngestResponse,
     PromotionBody,
@@ -149,6 +150,7 @@ from epistrel.core.profiles.impact import ImpactPreviewRequest
 from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpdate, ProfileValidate
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.propositions import registry as predicate_registry
+from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Cardinality
 from epistrel.core.propositions.registry import ApproveRequest
 from epistrel.core.propositions.vocabulary import MEMBER_OF
@@ -711,6 +713,21 @@ def _steps() -> list[Step]:
             lambda ids: Rest("POST", f"{s}/predicates/{MEMBER_OF}/reject"),
             lambda e, ids: _predicate_decision(e.reject_predicate(CTX, ids["story"], MEMBER_OF)),
             group=REGISTRY_GROUP,
+        ),
+        # -- the structured projections (#137): the scene, and the profile of an entity the
+        # resolver would have recorded (seeded on both surfaces: no public call adds one).
+        Step(
+            "scene",
+            lambda ids: Rest("GET", f"{s}/scene", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _scene(e, ids["story"]),
+        ),
+        Step(
+            "entity_profile",
+            lambda ids: Rest(
+                "GET", f"{s}/entities/{{entity}}/profile", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _entity_profile(e, ids["story"], ids["entity"]),
+            prepare=_entity,
         ),
         # -- turns
         Step(
@@ -2028,6 +2045,21 @@ async def _proposals(engine: Engine, ids: Ids) -> None:
 
 async def _predicates(engine: Engine, story_id: str) -> dict[str, Any]:
     return dump(PredicateListBody.of(await engine.list_predicates(CTX, story_id)))
+
+
+async def _scene(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(SceneBody.of(await engine.scene(CTX, story_id, viewpoint="omniscient")))
+
+
+async def _entity(engine: Engine, ids: Ids) -> None:
+    """An entity of the story, written as #139's resolver would (#137's profile read)."""
+    async with engine.db.begin() as conn:
+        ids["entity"] = await store.add_entity(conn, ids["story"], "person", "Profiled")
+
+
+async def _entity_profile(engine: Engine, story_id: str, entity_id: str) -> dict[str, Any]:
+    found = await engine.entity_profile(CTX, story_id, entity_id, viewpoint="omniscient")
+    return dump(EntityProfileBody.of(found))
 
 
 async def _predicate_decision(call: Awaitable[Any]) -> dict[str, Any]:

@@ -1081,6 +1081,16 @@
       "method": "GET",
       "path": "/stories/{story_id}/guarantees",
       "requirement": "FR-PROF-12"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/scene",
+      "requirement": "FR-STORE-3"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/entities/{entity_id}/profile",
+      "requirement": "FR-RET-6"
     }
   ]
 }

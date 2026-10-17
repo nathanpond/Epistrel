@@ -32,7 +32,9 @@ one transaction that does all of the following:
    ``erased_subject_referenced``, the operation ``abandoned``; a revalidating turn regenerates
    within its budget first) before they are indexed;
 5. finalises the operation (``committed``, ``membership_tx`` = the commit's ``tx_time``, the
-   story's resulting ``timeline_revision``), bumps ``stories.timeline_revision`` by one when the
+   story's resulting ``timeline_revision``), refreshes a turn's structured scene and what the
+   operations it made dormant project (``projections.structured.after_turn``, #137), bumps
+   ``stories.timeline_revision`` by one when the
    operation ``bumps_revision`` (FR-CONC-1), records a control action on the story, and checks
    the active variants are one chain (FR-STORE-28, ``ChainBroken``): at the chain's head, by
    index lookups, unless the commit is a control action or ``stories.chain_unchecked`` says the
@@ -374,6 +376,9 @@ class Operation:
         """The story's revision after this operation committed."""
         self._staged: list[StagedEvent] = []
         self._commit_steps: list[CommitStep] = []
+        self._followed: list[str] = []
+        """Operations this commit made ``dormant`` (a regenerate, a rewound tail), for the
+        structured projections (#137)."""
 
     # -- lifecycle ---------------------------------------------------------------------------
 
@@ -765,6 +770,7 @@ class Operation:
 
     async def _write(self, conn: AsyncConnection, decide: Decide | None) -> None:
         kind = self.kind.value
+        self._followed = []
         crash.hit("before_lock", kind)
         advance = False
         current_revision = 0
@@ -874,6 +880,15 @@ class Operation:
                 ],
             )
         await self._finalise(conn, advance, current_revision)
+        if (
+            self.story_id is not None
+            and self.kind is OperationKind.TURN
+            and self.narrative_turn is not None
+        ):
+            # The turn's scene, and what the operations it made dormant project (#137).
+            await projections.structured.after_turn(
+                conn, self.story_id, self.narrative_turn, self._followed
+            )
         if self.story_id is not None and self.kind is OperationKind.TURN:
             # The guardrail set the turn variant passed (FR-RATE-7, #118), in force now.
             await conn.execute(
@@ -1037,6 +1052,7 @@ class Operation:
         """The derived records of operations this commit made ``dormant`` follow them (#130):
         these changes run no ``core.timeline`` membership hook."""
         await flip_membership(conn, operation_ids, Membership.DORMANT, story_id=self.story_id)
+        self._followed.extend(operation_ids)
 
     async def _check_chain(self, conn: AsyncConnection) -> None:
         """The active turn variants must be one chain: turns 1..k, one variant each, and the

@@ -105,6 +105,7 @@ from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
+from epistrel.core.projections import structured as structured_projections
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.ratings import change as rating_change
 from epistrel.core.ratings import reactivation
@@ -1381,6 +1382,47 @@ class Engine:
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
         )
+
+    # -- the structured projections (FR-STORE-3, FR-RET-6; #137) ---------------------------------
+
+    @refuses_nul()
+    async def scene(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        as_of: int | None = None,
+        viewpoint: str | None = None,
+    ) -> structured_projections.SceneView:
+        """The scene as of turn ``as_of`` (default the head; 422 beyond it): the player
+        character's location and the entities present there, for ``viewpoint`` (or
+        ``ctx.viewpoint``, else the story's default output viewpoint; 422
+        ``viewpoint_unresolved`` when none resolves). A character viewpoint is not shown an
+        entity placed by a fact it may not read."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        async with self.db.connect() as conn:
+            return await structured_projections.scene_view(
+                conn, story_id, as_of=as_of, viewpoint=ctx.viewpoint
+            )
+
+    @refuses_nul()
+    async def entity_profile(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        entity_id: str,
+        *,
+        as_of: int | None = None,
+        viewpoint: str | None = None,
+    ) -> structured_projections.ProfileView:
+        """``entity_id``'s standing profile as of turn ``as_of`` (FR-RET-6): its
+        relationships in both directions, where it is and what it holds, for ``viewpoint`` as
+        ``scene`` resolves it. 404 ``not_found`` for an entity that is not the story's."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        async with self.db.connect() as conn:
+            return await structured_projections.profile_view(
+                conn, story_id, entity_id, as_of=as_of, viewpoint=ctx.viewpoint
+            )
 
     # -- the predicate registry (FR-PROP-3,4; #131) ---------------------------------------------
 

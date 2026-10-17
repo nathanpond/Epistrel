@@ -205,6 +205,10 @@ async def _scenario(url: str, steps: list[Action]) -> None:
             "story_heads": 1,
             "story_texts": 1,
             "lite_summary_segments": len(incremental.segments),
+            # The structured projections over canon (#137): a Lite story has none.
+            "relationships": 0,
+            "placement": 0,
+            "scene_state": 0,
         }
         # The corrupted row is replaced and the invented row is gone, not kept.
         assert all("corrupted" not in row and BOGUS_ID not in row for row in rebuilt.transcript)

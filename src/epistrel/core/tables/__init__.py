@@ -39,6 +39,9 @@ from epistrel.core.tables.profiles import (
 )
 from epistrel.core.tables.projections import (
     lite_summary_segments,
+    placement,
+    relationships,
+    scene_state,
     story_heads,
     story_texts,
     transcript_messages,
@@ -92,6 +95,7 @@ __all__ = [
     "operations",
     "ownership_events",
     "personas",
+    "placement",
     "policies",
     "predicate_proposals",
     "predicates",
@@ -99,8 +103,10 @@ __all__ = [
     "propositions",
     "rating_check_jobs",
     "recurring_tasks",
+    "relationships",
     "scenario_catalog",
     "scenario_versions",
+    "scene_state",
     "stories",
     "story_heads",
     "story_profile_overrides",

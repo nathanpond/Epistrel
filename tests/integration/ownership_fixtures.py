@@ -447,6 +447,26 @@ async def _fresh_proposal(client: httpx.AsyncClient, kind: Kind, entity: Entity)
     return {"predicate_id": await _propose(client, entity.id, f"rides with {new_ulid()}")}
 
 
+async def _profiled(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """An entity of the story (#137's profile read), the same one for every requester: created
+    once as #139's resolver would, on the app's own database."""
+    from sqlalchemy import select
+
+    from epistrel.core.propositions import store
+    from epistrel.core.tables import entities
+
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    async with db.begin() as conn:
+        found = await conn.scalar(
+            select(entities.c.id).where(
+                entities.c.story_id == entity.id, entities.c.canonical_name == "Profiled"
+            )
+        )
+        if found is None:
+            found = await store.add_entity(conn, entity.id, "person", "Profiled")
+    return {"entity_id": str(found)}
+
+
 @dataclass(frozen=True)
 class Call:
     """A request that succeeds (``expected``) when the entity's owner sends it. ``json`` is the
@@ -537,6 +557,11 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/predicates"): Call(200, prepare=_proposed),
     ("POST", f"{S}/predicates/{{predicate_id}}/approve"): Call(200, {}, prepare=_fresh_proposal),
     ("POST", f"{S}/predicates/{{predicate_id}}/reject"): Call(200, prepare=_fresh_proposal),
+    # The structured projections (#137): the scene and an entity's standing profile.
+    ("GET", f"{S}/scene"): Call(200, queries=(OMNISCIENT,)),
+    ("GET", f"{S}/entities/{{entity_id}}/profile"): Call(
+        200, queries=(OMNISCIENT,), prepare=_profiled
+    ),
     # -- stories: message ratings (#112). Each requester rates a fresh story's reply, retracts
     # the owner's rating (none of its own: still 204), and reads its own rating of a reply all
     # three rated alike.

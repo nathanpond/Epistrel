@@ -16,7 +16,8 @@ independent copy under new ids, isolated from the source from the moment it exis
   SELECT`` unless ``stories.STORY_TABLES_NOT_COPIED`` names it, so a new table is copied by
   default: a row follows its operation when it has an ``operation_id`` column (``client_events``,
   #58), and otherwise belongs to the story (``characters``, ``policies``, ``story_texts``).
-  ``story_heads`` is rebuilt from the copied turns and ``lite_summary_segments`` by folding the
+  ``story_heads`` is rebuilt from the copied turns, the structured projections (#137) by
+  folding the copied canon, and ``lite_summary_segments`` by folding the
   copied events (#72: segments positioned at or before N come along with their operations, and
   the post-commit ``fork`` hook schedules the fork's summary job for the boundary); story-scoped
   ``config_changes`` rows are
@@ -137,11 +138,18 @@ SKIPPED_EVENT_TYPES: frozenset[str] = frozenset(
 """Control events that edit the source's own timeline or lifecycle; the fork starts without
 them (its membership is already flattened) and their operations are not copied."""
 
-STORY_TABLES_REBUILT: frozenset[str] = frozenset({story_heads.name, lite_summary_segments.name})
+STORY_TABLES_REBUILT: frozenset[str] = frozenset(
+    {
+        story_heads.name,
+        lite_summary_segments.name,
+        *(p.name for p in projections.STRUCTURED),
+    }
+)
 """Story tables the fork rebuilds from the copied rows instead of copying: ``story_heads`` from
-the copied turns, and ``lite_summary_segments`` (#72) by folding the copied events, so a copied
+the copied turns, ``lite_summary_segments`` (#72) by folding the copied events, so a copied
 segment's ``superseded`` state is the fork's own (a merged parent past the fork point is not
-copied, and its children are active in the fork)."""
+copied, and its children are active in the fork), and the structured projections
+(``relationships``, ``placement``, ``scene_state``; #137) by folding the copied canon."""
 
 FORK_SUFFIX = " (fork)"
 
@@ -382,6 +390,7 @@ async def _copy(
     counts[config_changes.name] = await _copy_config_changes(conn, source, fork_id)
     counts[story_heads.name] = await _rebuild_heads(conn, fork_id)
     counts[lite_summary_segments.name] = await _rebuild_segments(conn, fork_id)
+    counts.update(await _rebuild_structured(conn, fork_id))
 
     cast = await _cast(conn, fork_id)
     origin = ForkOrigin(
@@ -749,6 +758,18 @@ async def _rebuild_segments(conn: AsyncConnection, fork_id: str) -> int:
     if len(folded):
         await conn.execute(insert(lite_summary_segments), list(folded))
     return len(folded)
+
+
+async def _rebuild_structured(conn: AsyncConnection, fork_id: str) -> dict[str, int]:
+    """The fork's structured projection rows, folded from its copied canon (#137)."""
+    folded = await projections.fold(conn, fork_id, only=projections.STRUCTURED)
+    counts: dict[str, int] = {}
+    for projection in projections.STRUCTURED:
+        rows = folded[projection.name]
+        if len(rows):
+            await conn.execute(insert(projection.table), list(rows))
+        counts[projection.name] = len(rows)
+    return counts
 
 
 async def _cast(conn: AsyncConnection, fork_id: str) -> tuple[ForkCharacter, ...]:

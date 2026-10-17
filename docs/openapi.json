@@ -5071,6 +5071,30 @@
         "title": "EngineProfile",
         "type": "object"
       },
+      "EntityBody": {
+        "description": "An entity of the story: its id, kind and canonical name.",
+        "properties": {
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "kind",
+          "name"
+        ],
+        "title": "EntityBody",
+        "type": "object"
+      },
       "EntityListRule": {
         "additionalProperties": false,
         "description": "Named entities; any whole-word mention matches, under the wordlist rules.\n\nAt story and character scope an empty ``names`` means \"the story's characters\": the names\nare frozen into the rule when it is saved (the whole cast for a story policy, the character\nitself for a character policy, #50). Every stored rule has names.",
@@ -5096,6 +5120,56 @@
           "type"
         ],
         "title": "EntityListRule",
+        "type": "object"
+      },
+      "EntityProfileBody": {
+        "description": "An entity's standing profile as of a turn for one viewpoint (FR-RET-6): the entity,\nits relationships in both directions, its placement (``null`` when it has none the\nviewpoint can read) and its inventory.",
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "integer"
+          },
+          "entity": {
+            "$ref": "#/components/schemas/EntityBody"
+          },
+          "inventory": {
+            "items": {
+              "$ref": "#/components/schemas/InventoryBody"
+            },
+            "title": "Inventory",
+            "type": "array"
+          },
+          "placement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlacementBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "relationships": {
+            "items": {
+              "$ref": "#/components/schemas/RelationshipBody"
+            },
+            "title": "Relationships",
+            "type": "array"
+          },
+          "viewpoint": {
+            "title": "Viewpoint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity",
+          "as_of",
+          "relationships",
+          "placement",
+          "inventory",
+          "viewpoint"
+        ],
+        "title": "EntityProfileBody",
         "type": "object"
       },
       "EntityType": {
@@ -8914,6 +8988,31 @@
         "title": "InteractionStylePatch",
         "type": "object"
       },
+      "InventoryBody": {
+        "description": "An item the entity holds and, for ``omniscient``, the canon fact behind it.",
+        "properties": {
+          "item": {
+            "$ref": "#/components/schemas/EntityBody"
+          },
+          "source_fact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Fact Id"
+          }
+        },
+        "required": [
+          "item",
+          "source_fact_id"
+        ],
+        "title": "InventoryBody",
+        "type": "object"
+      },
       "Kind": {
         "description": "Whether the engine performs a step by rules or a model performs it.",
         "enum": [
@@ -12407,6 +12506,81 @@
           "elapsed_ms"
         ],
         "title": "PinnedMemoriesWritten",
+        "type": "object"
+      },
+      "PlacementBody": {
+        "description": "Where the entity is: at a ``location`` (with the places that contain it, nearest\nfirst, ``within``) or in a ``container`` (the entity holding it); the valid-time bounds and,\nfor ``omniscient``, the canon fact behind it.",
+        "properties": {
+          "container": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EntityBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EntityBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_fact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Fact Id"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          },
+          "within": {
+            "items": {
+              "$ref": "#/components/schemas/EntityBody"
+            },
+            "title": "Within",
+            "type": "array"
+          }
+        },
+        "required": [
+          "location",
+          "container",
+          "within",
+          "valid_from",
+          "valid_to",
+          "source_fact_id"
+        ],
+        "title": "PlacementBody",
         "type": "object"
       },
       "PlannedReveal": {
@@ -18362,6 +18536,76 @@
         "title": "RelationsBody",
         "type": "object"
       },
+      "RelationshipBody": {
+        "description": "One relationship of the entity: the predicate, ``direction`` (``out`` when the entity is\nthe subject, or the predicate is symmetric; ``in`` otherwise), the other entity, the key\nqualifiers, the valid-time bounds (story-minutes, ``null`` open) and, for ``omniscient``,\nthe canon fact behind it.",
+        "properties": {
+          "direction": {
+            "title": "Direction",
+            "type": "string"
+          },
+          "other": {
+            "$ref": "#/components/schemas/EntityBody"
+          },
+          "predicate": {
+            "title": "Predicate",
+            "type": "string"
+          },
+          "predicate_id": {
+            "title": "Predicate Id",
+            "type": "string"
+          },
+          "qualifiers": {
+            "additionalProperties": true,
+            "title": "Qualifiers",
+            "type": "object"
+          },
+          "source_fact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Fact Id"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          }
+        },
+        "required": [
+          "predicate_id",
+          "predicate",
+          "direction",
+          "other",
+          "qualifiers",
+          "valid_from",
+          "valid_to",
+          "source_fact_id"
+        ],
+        "title": "RelationshipBody",
+        "type": "object"
+      },
       "RequiredSetting": {
         "description": "A setting a step also needs, at one of ``values``.",
         "properties": {
@@ -20767,6 +21011,56 @@
           }
         },
         "title": "ScenarioWorld",
+        "type": "object"
+      },
+      "SceneBody": {
+        "description": "The scene as of a turn for one viewpoint: the turn and its active variant (``null`` at\nturn 0), the player character's location (``null`` when unknown to the viewpoint), and the\nentities present there, characters and objects, by id.",
+        "properties": {
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EntityBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "present": {
+            "items": {
+              "$ref": "#/components/schemas/EntityBody"
+            },
+            "title": "Present",
+            "type": "array"
+          },
+          "turn": {
+            "title": "Turn",
+            "type": "integer"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
+          },
+          "viewpoint": {
+            "title": "Viewpoint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "turn",
+          "variant",
+          "location",
+          "present",
+          "viewpoint"
+        ],
+        "title": "SceneBody",
         "type": "object"
       },
       "SceneContext": {
@@ -44071,6 +44365,153 @@
         ]
       }
     },
+    "/stories/{story_id}/entities/{entity_id}/profile": {
+      "get": {
+        "description": "The entity's relationships in both directions, where it is and what it holds, as of a turn, from the structured projections over canon (FR-RET-6). 404 `not_found` when the entity is not one of the story's. `as_of` is a turn from 0 to the head (default the head; 422 otherwise); `viewpoint` is `omniscient` or `character:<id>` of the cast (default the story's default output viewpoint; 422 `viewpoint_unresolved` when none resolves). In M4 the story-time of every turn is the story's start (the world clock arrives in M6).",
+        "operationId": "entity_profile",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The entity's id (a ULID).",
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "description": "The entity's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Entity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntityProfileBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read an entity's standing profile",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
     "/stories/{story_id}/fork": {
       "post": {
         "description": "Copy the story's corrected history through `at_turn` (default the head) into a new story: every active record positioned at or before it, the cast, settings, rating, engine profile (a deleted one too: the fork runs on its last version), pinned memories, custom instructions and story policies, under new ids. The copy reads one snapshot of the source, so it equals the source at exactly one timeline revision (`forked_from.revision`), and the two stories are independent from then on. `variant_chain` (`{turn, variant}` or `\"turn:variant\"`) copies another chain, e.g. a dormant continuation, as the fork's active history; `at_turn` must then lie on it (422 otherwise), and a chain that names no variant or continues in more than one way is 409 `unknown_chain`. `at_turn` above the head is 422. An archived story can be forked; the fork is active. Answers 201 with `Location`. The source records a `fork` event and keeps its revision. `Idempotency-Key` (per deployment, like story creation) and `X-Epistrel-Expected-Revision` (the source's) are optional.\n\nReactivation check (FR-RATE-7): when `variant_chain` names a continuation that is not active and one of the turns it would copy was last checked against a guardrail set that lacks a policy now in effect, the source is paused and those turns are checked first: 202 `{job_id, operation_id, status: checking}` with `Location` (the check). If they all pass, the check creates the fork and ends `reactivated` with this answer as its `outcome`; otherwise it ends `refused` with each violation and no fork is created.",
@@ -47447,6 +47888,138 @@
           }
         ],
         "summary": "Play one turn and return the finished reply",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/scene": {
+      "get": {
+        "description": "The player character's location at the end of the turn and the entities placed (or present) there, from the structured projections over canon (FR-STORE-3). A character viewpoint is not shown what a fact it may not read placed there. `as_of` is a turn from 0 to the head (default the head; 422 otherwise); `viewpoint` is `omniscient` or `character:<id>` of the cast (default the story's default output viewpoint; 422 `viewpoint_unresolved` when none resolves). In M4 the story-time of every turn is the story's start (the world clock arrives in M6).",
+        "operationId": "scene",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SceneBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read the story's scene as of a turn",
         "tags": [
           "stories"
         ]

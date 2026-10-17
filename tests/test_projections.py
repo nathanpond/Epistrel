@@ -60,6 +60,10 @@ def test_m2_projections_are_registered_once() -> None:
         "story_heads",
         "story_texts",
         "lite_summary_segments",
+        # The structured projections over canon (#137).
+        "relationships",
+        "placement",
+        "scene_state",
     ]
     with pytest.raises(ValueError, match="already registered"):
         register_projection(HeadsProjection())

@@ -751,6 +751,12 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "guardrail_check_results": "verdicts by record key and policy id",
     "proposition_changes": "the read set's change index: ids, hashes, windows and visibility "
     "scopes of committed proposition changes (#136)",
+    "relationships": "a projection of facts, which are erased; refolded by erasure's rebuilt "
+    "stage (#137)",
+    "placement": "a projection of facts, which are erased; refolded by erasure's rebuilt stage "
+    "(#137)",
+    "scene_state": "a projection of facts and turns: entity ids only, refolded by erasure's "
+    "rebuilt stage (#137)",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",

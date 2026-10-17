@@ -176,6 +176,25 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
         sailing.model_copy(update={"valid_time": Interval.of(5, 25)}),
         authority="author",
     )
+    # The structured projections (#137): the player at a place and a friendship, so the turn
+    # writing them leaves a placement, a relationship and a scene row.
+    async with engine.begin() as conn:
+        player = await conn.scalar(
+            text("SELECT id FROM characters WHERE story_id = :s AND is_player"), {"s": story_id}
+        )
+        here = await store.add_entity(conn, story_id, "place", "the quay")
+        me = await store.add_entity(conn, story_id, "person", "Me", character_id=player)
+    await canon_support.commit(engine, story_id, canon_support.at(me, here, 0, None))
+    await canon_support.commit(
+        engine,
+        story_id,
+        Proposition(
+            subject_id=me,
+            predicate_id=canon_support.KNOWS,
+            object_id=ann,
+            valid_time=Interval.of(0, None),
+        ),
+    )
     # Memory records (#135): a memory of the story, written by its own operation.
     await memory_support.derived_memory(engine, story_id, "Ann sails at dawn.", [])
 

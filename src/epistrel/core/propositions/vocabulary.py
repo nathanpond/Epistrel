@@ -157,6 +157,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         object_type="item",
         cardinality=_M,
         temporal_kind=_FLUENT,
+        projection="placement",
         docs="The subject physically has the item; a person may hold several. Its inverse "
         "`held_by` is functional: an item is in one pair of hands at a time.",
     ),
@@ -221,6 +222,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         object_type="person",
         cardinality=_M,
         temporal_kind=_PERM,
+        projection="relationships",
         docs="The subject is a parent of the object.",
     ),
     _core(
@@ -232,6 +234,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_M,
         temporal_kind=_PERM,
         inverse_of=PARENT_OF,
+        projection="relationships",
         docs="The inverse of `parent_of`, stored as `parent_of`.",
     ),
     _core(
@@ -243,6 +246,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_M,
         temporal_kind=_PERM,
         symmetric=True,
+        projection="relationships",
         docs="The two people are siblings (symmetric).",
     ),
     _core(
@@ -298,6 +302,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_M,
         temporal_kind=_FLUENT,
         qualifiers={"role": _STR},
+        projection="relationships",
         docs="Membership of a team, club or other organization, with an optional `role` (not "
         "part of the key). Implies no enrollment anywhere.",
     ),
@@ -310,6 +315,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_M,
         temporal_kind=_FLUENT,
         qualifiers={"title": _STR},
+        projection="relationships",
         docs="An office or position in an organization, with its `title`.",
     ),
     _core(
@@ -355,6 +361,7 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_M,
         temporal_kind=_FLUENT,
         qualifiers={"role": _STR},
+        projection="relationships",
         docs="Employment by an organization or a person, with an optional `role`; several "
         "employers at once are allowed.",
     ),

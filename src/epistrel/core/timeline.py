@@ -78,6 +78,7 @@ from epistrel.core.errors import (
 from epistrel.core.events.operation import Operation
 from epistrel.core.events.types import Head, Swap, Truncate, Untruncate
 from epistrel.core.membership import follow_membership_change
+from epistrel.core.projections import structured
 from epistrel.core.stories import require_writable
 from epistrel.core.tables import events, operations, stories
 from epistrel.core.variants import (
@@ -229,6 +230,10 @@ on_membership_change(follow_membership_change)
 """The first in-transaction hook (#130): the derived records of the changed operations follow
 them in the edit's transaction (``core.membership``), before any later-registered hook reads
 them."""
+
+on_membership_change(structured.follow_membership_change)
+"""The second (#137): the structured projections re-derive what the changed operations' facts
+project, once those facts have followed them."""
 
 
 def remove_membership_hook(hook: MembershipHook) -> None:

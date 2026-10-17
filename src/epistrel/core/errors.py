@@ -945,6 +945,14 @@ class StoryCharacterNotFound(EpistrelError):
     http_status = 404
 
 
+class StoryEntityNotFound(EpistrelError):
+    """The story has no entity with that id (it may belong to another story; #137's profile
+    read). ``details``: ``story_id`` and ``entity_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
 class OffboardingNotFound(EpistrelError):
     """The offboarding job a call names does not exist (or its report was purged).
     ``details``: ``job_id``."""

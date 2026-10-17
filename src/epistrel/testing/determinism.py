@@ -95,6 +95,21 @@ _SUBJECT_RANK = (
     "OR c.persona_id::text = t.subject_id))"
 )
 """A subject by the cast ordinal of the story character it is (or that links it)."""
+_STRUCTURED_RANK = (
+    "t.since_turn NULLS FIRST, t.since_slot NULLS FIRST, t.valid_from NULLS FIRST, "
+    "t.valid_to NULLS LAST, t.closed_turn NULLS LAST, t.closed_slot NULLS LAST"
+)
+"""A structured projection row (#137) by its source fact's position and valid-time."""
+_RELATION_RANK = (
+    "(SELECT e.canonical_name FROM entities e WHERE e.id = t.subject_id), "
+    "(SELECT e.canonical_name FROM entities e WHERE e.id = t.object_id), "
+    "(SELECT p.name FROM predicates p WHERE p.id = t.predicate_id)"
+)
+_PLACED_RANK = (
+    "(SELECT e.canonical_name FROM entities e WHERE e.id = t.entity_id), "
+    "(SELECT e.canonical_name FROM entities e "
+    "WHERE e.id = coalesce(t.location_id, t.container_id))"
+)
 
 ORDER: dict[str, str] = {
     "deployment_state": "t.id",
@@ -152,6 +167,11 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
         "t.beat NULLS FIRST, t.kind, t.created_at, t.text"
     ),
+    # The structured projections (#137): by the source fact's position and valid-time, then
+    # the names of what the row joins; scenes by turn and variant.
+    "relationships": f"{_STORY_RANK}, {_STRUCTURED_RANK}, {_RELATION_RANK}",
+    "placement": f"{_STORY_RANK}, {_STRUCTURED_RANK}, {_PLACED_RANK}",
+    "scene_state": f"{_STORY_RANK}, t.turn, t.variant",
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

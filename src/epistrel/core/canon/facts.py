@@ -20,7 +20,7 @@ with the turn or control action that produced it, under the story lock:
   part continues its lineage, a later part starts its own). An identical proposition already
   current over the whole span (a ``multi`` predicate) is a no-op answering the existing
   version. It appends a ``derived`` ``fact_committed`` event and runs ``FACT_HOOKS`` (#136's
-  ``proposition_changes`` writer, #137's projections) in the same transaction; a hook's
+  ``proposition_changes`` writer, #137's structured projections) in the same transaction; a hook's
   exception aborts the commit.
 - ``supersede`` closes one version and writes its successor in the same lineage, with the
   same uniqueness key (``KeyMismatch`` otherwise), inheriting what it is not given. A retcon is
@@ -105,6 +105,7 @@ from epistrel.core.events.types import FactCommitted
 from epistrel.core.events.types import FactSuperseded as FactSupersededEvent
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import active_as_of, active_only, insert_derived
+from epistrel.core.projections import structured
 from epistrel.core.propositions import store
 from epistrel.core.propositions.codec import proposition_from_row
 from epistrel.core.propositions.model import (
@@ -274,6 +275,10 @@ def remove_fact_hook(hook: FactHook) -> None:
 
 register_fact_hook(readset.record_fact_change)
 """#136's change index: every write's added and closed propositions, in its transaction."""
+
+register_fact_hook(structured.on_fact_change)
+"""#137's structured projections: the write's subjects' relationship and placement rows, and the
+scenes they change, in its transaction."""
 
 
 def default_authority(provenance: RecordProvenance) -> FactAuthority:

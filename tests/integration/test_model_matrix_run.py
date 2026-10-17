@@ -1,6 +1,7 @@
 """The model matrix tool end to end against a local OpenAI-compatible server (#54): protocol,
 capability per purpose, E-06, and timed Lite turns for both rows, then the files it writes.
-On the stub adapter, scripted deadline faults show up in the call breakdown (#303).
+On the stub adapter, scripted deadline faults show up in the call breakdown (#303), and P-08's
+calls assertion holds on them (#308).
 
 The real measurement runs against LM Studio on the owner's machine (``test_p_08``, marked
 ``live_model``); this run proves the tool's plumbing in CI with a 3-turn row."""
@@ -22,6 +23,7 @@ from epistrel.orchestrator.models.stub import FaultKind, StubAdapter
 from epistrel.tools import model_matrix as mm
 from tests.auth_support import auth_settings
 from tests.model_support import config_key, mock_openai, restored_model_config
+from tests.perf.test_p_08 import check_rows
 
 DEADLINE_S = 2.0
 """The minors story's turn deadline in the deadline run's hanging turns (its override of
@@ -253,6 +255,35 @@ async def test_a_slow_runner_hits_only_the_scripted_deadlines(
     assert minors.failed_calls == {"generation": {"timeout": 1}, "guardrail_check": {"timeout": 1}}
     others = [ms for n, ms in enumerate(minors.latencies_ms, 1) if n not in minors.faulted_turns]
     assert min(others) >= 3 * slow * 1000 > DEADLINE_S * 1000
+
+
+async def test_p_08_holds_on_scripted_flagged_and_deadline_turns(
+    pg_url: str, engine: AsyncEngine
+) -> None:
+    """#308: P-08's turns as P-08 measures them (``mm.measure_turns``), on the stub with the
+    deadline run's faults: in the minors row the output check flags the draft in measured
+    turns 2 and 4 and the deadline cuts the regeneration or its re-check. The folded mean is
+    ``guardrail_check 2.2``, so P-08's old assertion fails, while ``check_rows`` passes:
+    every turn kept its row's design and recorded its call cap, and stayed within it.
+
+    Complement asserted: the policies-off row of the same run has no extra call."""
+    settings = auth_settings(pg_url, model_adapter="stub", config_key=config_key())
+    async with restored_model_config(engine):
+        epistrel = Engine(settings, db=engine)
+        try:
+            await mm.configure(epistrel, STUB_TARGET)
+            rows: dict[str, list[mm.TurnCalls]] = {}
+            for policies in mm.POLICY_SETS:
+                driver = DeadlineDriver(epistrel.models.stub)
+                _, rows[policies] = await mm.measure_turns(epistrel, driver, policies, MEASURED)
+        finally:
+            await epistrel.models.aclose()
+    assert mm.calls_per_turn(rows["minors"])["guardrail_check"] == 2.2
+    assert all(turn.max_calls for turn in rows["minors"])
+    breakdowns = check_rows(rows)
+    assert breakdowns["minors"].faulted_turns == [2, 4]
+    assert breakdowns["minors"].extra_calls == {"generation": 2, "guardrail_check": 1}
+    assert breakdowns["off"].extra_calls == {}
 
 
 async def test_fault_free_run_reports_the_design_only(pg_url: str, engine: AsyncEngine) -> None:

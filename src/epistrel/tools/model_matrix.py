@@ -44,7 +44,10 @@ re-checks, and revision regenerations. A call the deadline cuts is never retried
 output check or a regeneration, the turn releases the safe fallback (cause ``deadline``). If it
 is the input check or the first generation, the turn fails and the run writes nothing. A row
 measured before the breakdown holds ``null`` in those fields, and the md shows them as *not
-recorded* until that tier's next live run.
+recorded* until that tier's next live run. P-08 asserts each row's design with
+``design_problems`` and reports the extra calls instead of failing on them (#308): they are
+bounded by each turn's call cap, and a check skipped or a draft released unchecked without a
+deadline or error is still a failure.
 """
 
 from __future__ import annotations
@@ -141,19 +144,23 @@ SCRIPT = (
 
 class TurnCalls(CallLog):
     """One measured turn (#303): its model calls in the order they were made (every attempt,
-    failed ones included), the calls it was designed to make by purpose, and the cause of each
-    safe fallback it released (``deadline``, ``retry_budget`` or ``call_budget``)."""
+    failed ones included), the calls it was designed to make by purpose, the cause of each
+    safe fallback it released (``deadline``, ``retry_budget`` or ``call_budget``), and its
+    budget's call cap (``max_calls``, #69; ``None`` when the turn had none or it is unknown,
+    #308)."""
 
     def __init__(
         self,
         calls: Iterable[ModelCall],
         designed: Mapping[str, int],
         fallback_causes: Iterable[str] = (),
+        max_calls: int | None = None,
     ) -> None:
         super().__init__()
         self.calls.extend(calls)
         self.designed = dict(designed)
         self.fallback_causes = list(fallback_causes)
+        self.max_calls = max_calls
 
     def extra(self) -> dict[str, int]:
         """The calls made beyond the design, by purpose. A designed call that was never made
@@ -249,6 +256,7 @@ class RespondDriver:
             result.model_calls,
             designed_calls(sum(result.budget.reserved.values())),
             [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK],
+            result.budget.max_calls,
         )
 
 
@@ -366,6 +374,53 @@ def call_breakdown(turns: Sequence[TurnCalls]) -> CallBreakdown:
         faulted_turns=faulted,
         fallbacks=dict(sorted(fallbacks.items())),
     )
+
+
+def design_problems(
+    turns: Sequence[TurnCalls], design: Mapping[str, int], *, output_checked: bool | None = None
+) -> list[str]:
+    """What is wrong with measured turns against the ``design`` a row expects (P-08, #308);
+    empty when nothing is. Extra calls (a flagged draft's regeneration and re-check, a retry,
+    a call the deadline cut) are not wrong by themselves; ``call_breakdown`` reports them.
+    A turn (numbered from 1) is wrong when:
+
+    - its design is not ``design`` (the turn was planned with other calls);
+    - it made fewer calls of a designed purpose than designed and hit no model-call deadline
+      or error (a call was skipped);
+    - it made a call of a purpose outside ``design``;
+    - it made more calls than its budget's ``max_calls``: the bound on extra calls
+      (NFR-PERF-6), checked when the turn recorded its cap;
+    - with ``output_checked`` (by default, when ``design`` has a ``guardrail_check``: the
+      matrix's minors policy checks the input and the output), it hit no deadline or error and
+      its last ``generation`` call was not followed by a ``guardrail_check``: a draft released
+      unchecked."""
+    if output_checked is None:
+        output_checked = GUARDRAIL_CHECK.name in design
+    expected = dict(design)
+    problems: list[str] = []
+    for number, turn in enumerate(turns, start=1):
+        made = turn.by_purpose()
+        if turn.designed != expected:
+            problems.append(f"turn {number}: designed {turn.designed}, expected {expected}")
+        for purpose, count in sorted(expected.items()):
+            if made.get(purpose, 0) < count and not turn.faulted:
+                problems.append(
+                    f"turn {number}: {made.get(purpose, 0)} of {count} designed {purpose} "
+                    "calls, with no deadline or error"
+                )
+        for purpose in sorted(set(made) - set(expected)):
+            problems.append(f"turn {number}: {made[purpose]} {purpose} calls outside the design")
+        if turn.max_calls is not None and len(turn.calls) > turn.max_calls:
+            problems.append(
+                f"turn {number}: {len(turn.calls)} calls, over its budget of {turn.max_calls}"
+            )
+        if output_checked and not turn.faulted:
+            purposes = [call.purpose for call in turn.calls]
+            generated = [i for i, p in enumerate(purposes) if p == GENERATION.name]
+            checked = [i for i, p in enumerate(purposes) if p == GUARDRAIL_CHECK.name]
+            if generated and not (checked and checked[-1] > generated[-1]):
+                problems.append(f"turn {number}: its last draft was released unchecked")
+    return problems
 
 
 BREAKDOWN = tuple(f.name for f in fields(CallBreakdown))

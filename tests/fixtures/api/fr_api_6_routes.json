@@ -1094,6 +1094,11 @@
     },
     {
       "method": "GET",
+      "path": "/stories/{story_id}/retrieve",
+      "requirement": "FR-RET-2"
+    },
+    {
+      "method": "GET",
       "path": "/admin/reembed/status",
       "requirement": "FR-EMBED-3"
     },

@@ -456,6 +456,72 @@
         "title": "CandidateBody",
         "type": "object"
       },
+      "CanonBody": {
+        "description": "A canon fact about a resolved entity: its id, subject, predicate and its object (an\nentity, a set or a literal), as the viewpoint may read it.",
+        "properties": {
+          "fact_id": {
+            "title": "Fact Id",
+            "type": "string"
+          },
+          "literal": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Literal"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Id"
+          },
+          "object_set": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Set"
+          },
+          "polarity": {
+            "title": "Polarity",
+            "type": "string"
+          },
+          "predicate_id": {
+            "title": "Predicate Id",
+            "type": "string"
+          },
+          "subject_id": {
+            "title": "Subject Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact_id",
+          "subject_id",
+          "predicate_id",
+          "object_id",
+          "object_set",
+          "literal",
+          "polarity"
+        ],
+        "title": "CanonBody",
+        "type": "object"
+      },
       "CardImage": {
         "additionalProperties": false,
         "description": "An image on a public card (FR-CAT-4): the media asset and its alt text, nothing else.",
@@ -2768,6 +2834,75 @@
         "title": "ConfigReplacement",
         "type": "object"
       },
+      "ContextBody": {
+        "description": "The assembled context within the token budget.",
+        "properties": {
+          "budget": {
+            "title": "Budget",
+            "type": "integer"
+          },
+          "dropped": {
+            "items": {
+              "$ref": "#/components/schemas/DroppedBody"
+            },
+            "title": "Dropped",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ContextItemBody"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "used": {
+            "title": "Used",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "budget",
+          "used",
+          "items",
+          "dropped"
+        ],
+        "title": "ContextBody",
+        "type": "object"
+      },
+      "ContextItemBody": {
+        "description": "A placed context item: its tier (1 ledger and pins, 2 occasions, 3 profiles and canon,\n4 ranked memories), kind, id, text and tokens (``len // 4``).",
+        "properties": {
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "tier": {
+            "title": "Tier",
+            "type": "integer"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tier",
+          "kind",
+          "item_id",
+          "text",
+          "tokens"
+        ],
+        "title": "ContextItemBody",
+        "type": "object"
+      },
       "CreatedCharacterBody": {
         "description": "A character of the new story: its id and name, and the scenario role it fills (absent\nfor a blank story).",
         "properties": {
@@ -3465,6 +3600,40 @@
         "title": "DormantChainBody",
         "type": "object"
       },
+      "DroppedBody": {
+        "description": "A context item the budget left out: ``budget``, ``pin_cap`` or ``duplicate``.",
+        "properties": {
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "tier": {
+            "title": "Tier",
+            "type": "integer"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tier",
+          "kind",
+          "item_id",
+          "tokens",
+          "reason"
+        ],
+        "title": "DroppedBody",
+        "type": "object"
+      },
       "EffectiveBudgetBody": {
         "description": "The budget the story's next turn plans with (#69), from its effective configuration's\n`budgets` (#113): `max_model_calls_per_turn` and its `source` (`story`: the story's\noverrides, `profile`: its profile's version, `deployment`: the deployment's\n`profile_defaults`, or `formula`: `9 + G` when the cap is `null`), `turn_deadline` (seconds:\n`budgets.deadline_ms` / 1000), the guardrail calls G it reserves (`guardrail_input`,\n`guardrail_output`) and `minimum_required` (`1 + G`).",
         "properties": {
@@ -3604,6 +3773,7 @@
                       },
                       "hybrid_search": {
                         "default": true,
+                        "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                         "title": "Hybrid Search",
                         "type": "boolean"
                       },
@@ -3615,10 +3785,51 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "recency_half_life_turns": {
+                        "default": 100,
+                        "description": "The turns over which a memory's recency halves.",
+                        "maximum": 1000000.0,
+                        "minimum": 1.0,
+                        "title": "Recency Half Life Turns",
+                        "type": "integer"
+                      },
                       "reranking": {
                         "default": false,
+                        "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                         "title": "Reranking",
                         "type": "boolean"
+                      },
+                      "retrieval_token_budget": {
+                        "default": 3000,
+                        "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                        "maximum": 200000.0,
+                        "minimum": 100.0,
+                        "title": "Retrieval Token Budget",
+                        "type": "integer"
+                      },
+                      "weight_importance": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Importance",
+                        "type": "number"
+                      },
+                      "weight_recency": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Recency",
+                        "type": "number"
+                      },
+                      "weight_similarity": {
+                        "default": 0.6,
+                        "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Similarity",
+                        "type": "number"
                       }
                     },
                     "title": "Episodic",
@@ -4043,6 +4254,7 @@
                       },
                       "hybrid_search": {
                         "default": true,
+                        "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                         "title": "Hybrid Search",
                         "type": "boolean"
                       },
@@ -4054,10 +4266,51 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "recency_half_life_turns": {
+                        "default": 100,
+                        "description": "The turns over which a memory's recency halves.",
+                        "maximum": 1000000.0,
+                        "minimum": 1.0,
+                        "title": "Recency Half Life Turns",
+                        "type": "integer"
+                      },
                       "reranking": {
                         "default": false,
+                        "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                         "title": "Reranking",
                         "type": "boolean"
+                      },
+                      "retrieval_token_budget": {
+                        "default": 3000,
+                        "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                        "maximum": 200000.0,
+                        "minimum": 100.0,
+                        "title": "Retrieval Token Budget",
+                        "type": "integer"
+                      },
+                      "weight_importance": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Importance",
+                        "type": "number"
+                      },
+                      "weight_recency": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Recency",
+                        "type": "number"
+                      },
+                      "weight_similarity": {
+                        "default": 0.6,
+                        "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Similarity",
+                        "type": "number"
                       }
                     },
                     "title": "Episodic",
@@ -4723,6 +4976,7 @@
                       },
                       "hybrid_search": {
                         "default": true,
+                        "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                         "title": "Hybrid Search",
                         "type": "boolean"
                       },
@@ -4734,10 +4988,51 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "recency_half_life_turns": {
+                        "default": 100,
+                        "description": "The turns over which a memory's recency halves.",
+                        "maximum": 1000000.0,
+                        "minimum": 1.0,
+                        "title": "Recency Half Life Turns",
+                        "type": "integer"
+                      },
                       "reranking": {
                         "default": false,
+                        "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                         "title": "Reranking",
                         "type": "boolean"
+                      },
+                      "retrieval_token_budget": {
+                        "default": 3000,
+                        "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                        "maximum": 200000.0,
+                        "minimum": 100.0,
+                        "title": "Retrieval Token Budget",
+                        "type": "integer"
+                      },
+                      "weight_importance": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Importance",
+                        "type": "number"
+                      },
+                      "weight_recency": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Recency",
+                        "type": "number"
+                      },
+                      "weight_similarity": {
+                        "default": 0.6,
+                        "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Similarity",
+                        "type": "number"
                       }
                     },
                     "title": "Episodic",
@@ -7953,6 +8248,7 @@
                                     "anyOf": [
                                       {
                                         "default": true,
+                                        "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                                         "title": "Hybrid Search",
                                         "type": "boolean"
                                       },
@@ -7976,12 +8272,88 @@
                                       }
                                     ]
                                   },
+                                  "recency_half_life_turns": {
+                                    "anyOf": [
+                                      {
+                                        "default": 100,
+                                        "description": "The turns over which a memory's recency halves.",
+                                        "maximum": 1000000.0,
+                                        "minimum": 1.0,
+                                        "title": "Recency Half Life Turns",
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
                                   "reranking": {
                                     "anyOf": [
                                       {
                                         "default": false,
+                                        "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                                         "title": "Reranking",
                                         "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "retrieval_token_budget": {
+                                    "anyOf": [
+                                      {
+                                        "default": 3000,
+                                        "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                                        "maximum": 200000.0,
+                                        "minimum": 100.0,
+                                        "title": "Retrieval Token Budget",
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "weight_importance": {
+                                    "anyOf": [
+                                      {
+                                        "default": 0.2,
+                                        "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                                        "maximum": 10.0,
+                                        "minimum": 0.0,
+                                        "title": "Weight Importance",
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "weight_recency": {
+                                    "anyOf": [
+                                      {
+                                        "default": 0.2,
+                                        "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                                        "maximum": 10.0,
+                                        "minimum": 0.0,
+                                        "title": "Weight Recency",
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "weight_similarity": {
+                                    "anyOf": [
+                                      {
+                                        "default": 0.6,
+                                        "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                                        "maximum": 10.0,
+                                        "minimum": 0.0,
+                                        "title": "Weight Similarity",
+                                        "type": "number"
                                       },
                                       {
                                         "type": "null"
@@ -9817,6 +10189,52 @@
         "title": "Membership",
         "type": "string"
       },
+      "MentionBody": {
+        "description": "A mention the resolve stage found: its character span, kind, the entity it resolved to\n(or ``null``) and, when unresolved, the reason code.",
+        "properties": {
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "span": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Span",
+            "type": "array"
+          }
+        },
+        "required": [
+          "span",
+          "kind",
+          "entity_id",
+          "reason"
+        ],
+        "title": "MentionBody",
+        "type": "object"
+      },
       "MessageBody": {
         "description": "The finished reply: the id of its transcript row and its text.",
         "properties": {
@@ -11384,6 +11802,7 @@
                       },
                       "hybrid_search": {
                         "default": true,
+                        "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                         "title": "Hybrid Search",
                         "type": "boolean"
                       },
@@ -11395,10 +11814,51 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "recency_half_life_turns": {
+                        "default": 100,
+                        "description": "The turns over which a memory's recency halves.",
+                        "maximum": 1000000.0,
+                        "minimum": 1.0,
+                        "title": "Recency Half Life Turns",
+                        "type": "integer"
+                      },
                       "reranking": {
                         "default": false,
+                        "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                         "title": "Reranking",
                         "type": "boolean"
+                      },
+                      "retrieval_token_budget": {
+                        "default": 3000,
+                        "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                        "maximum": 200000.0,
+                        "minimum": 100.0,
+                        "title": "Retrieval Token Budget",
+                        "type": "integer"
+                      },
+                      "weight_importance": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Importance",
+                        "type": "number"
+                      },
+                      "weight_recency": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Recency",
+                        "type": "number"
+                      },
+                      "weight_similarity": {
+                        "default": 0.6,
+                        "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Similarity",
+                        "type": "number"
                       }
                     },
                     "title": "Episodic",
@@ -13734,6 +14194,7 @@
                       },
                       "hybrid_search": {
                         "default": true,
+                        "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                         "title": "Hybrid Search",
                         "type": "boolean"
                       },
@@ -13745,10 +14206,51 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "recency_half_life_turns": {
+                        "default": 100,
+                        "description": "The turns over which a memory's recency halves.",
+                        "maximum": 1000000.0,
+                        "minimum": 1.0,
+                        "title": "Recency Half Life Turns",
+                        "type": "integer"
+                      },
                       "reranking": {
                         "default": false,
+                        "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                         "title": "Reranking",
                         "type": "boolean"
+                      },
+                      "retrieval_token_budget": {
+                        "default": 3000,
+                        "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                        "maximum": 200000.0,
+                        "minimum": 100.0,
+                        "title": "Retrieval Token Budget",
+                        "type": "integer"
+                      },
+                      "weight_importance": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Importance",
+                        "type": "number"
+                      },
+                      "weight_recency": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Recency",
+                        "type": "number"
+                      },
+                      "weight_similarity": {
+                        "default": 0.6,
+                        "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Similarity",
+                        "type": "number"
                       }
                     },
                     "title": "Episodic",
@@ -14275,6 +14777,7 @@
                       },
                       "hybrid_search": {
                         "default": true,
+                        "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                         "title": "Hybrid Search",
                         "type": "boolean"
                       },
@@ -14286,10 +14789,51 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "recency_half_life_turns": {
+                        "default": 100,
+                        "description": "The turns over which a memory's recency halves.",
+                        "maximum": 1000000.0,
+                        "minimum": 1.0,
+                        "title": "Recency Half Life Turns",
+                        "type": "integer"
+                      },
                       "reranking": {
                         "default": false,
+                        "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                         "title": "Reranking",
                         "type": "boolean"
+                      },
+                      "retrieval_token_budget": {
+                        "default": 3000,
+                        "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                        "maximum": 200000.0,
+                        "minimum": 100.0,
+                        "title": "Retrieval Token Budget",
+                        "type": "integer"
+                      },
+                      "weight_importance": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Importance",
+                        "type": "number"
+                      },
+                      "weight_recency": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Recency",
+                        "type": "number"
+                      },
+                      "weight_similarity": {
+                        "default": 0.6,
+                        "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Similarity",
+                        "type": "number"
                       }
                     },
                     "title": "Episodic",
@@ -14970,6 +15514,7 @@
                                 "anyOf": [
                                   {
                                     "default": true,
+                                    "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                                     "title": "Hybrid Search",
                                     "type": "boolean"
                                   },
@@ -14993,12 +15538,88 @@
                                   }
                                 ]
                               },
+                              "recency_half_life_turns": {
+                                "anyOf": [
+                                  {
+                                    "default": 100,
+                                    "description": "The turns over which a memory's recency halves.",
+                                    "maximum": 1000000.0,
+                                    "minimum": 1.0,
+                                    "title": "Recency Half Life Turns",
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
                               "reranking": {
                                 "anyOf": [
                                   {
                                     "default": false,
+                                    "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                                     "title": "Reranking",
                                     "type": "boolean"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "retrieval_token_budget": {
+                                "anyOf": [
+                                  {
+                                    "default": 3000,
+                                    "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                                    "maximum": 200000.0,
+                                    "minimum": 100.0,
+                                    "title": "Retrieval Token Budget",
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "weight_importance": {
+                                "anyOf": [
+                                  {
+                                    "default": 0.2,
+                                    "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                                    "maximum": 10.0,
+                                    "minimum": 0.0,
+                                    "title": "Weight Importance",
+                                    "type": "number"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "weight_recency": {
+                                "anyOf": [
+                                  {
+                                    "default": 0.2,
+                                    "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                                    "maximum": 10.0,
+                                    "minimum": 0.0,
+                                    "title": "Weight Recency",
+                                    "type": "number"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "weight_similarity": {
+                                "anyOf": [
+                                  {
+                                    "default": 0.6,
+                                    "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                                    "maximum": 10.0,
+                                    "minimum": 0.0,
+                                    "title": "Weight Similarity",
+                                    "type": "number"
                                   },
                                   {
                                     "type": "null"
@@ -15775,6 +16396,7 @@
                       },
                       "hybrid_search": {
                         "default": true,
+                        "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                         "title": "Hybrid Search",
                         "type": "boolean"
                       },
@@ -15786,10 +16408,51 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "recency_half_life_turns": {
+                        "default": 100,
+                        "description": "The turns over which a memory's recency halves.",
+                        "maximum": 1000000.0,
+                        "minimum": 1.0,
+                        "title": "Recency Half Life Turns",
+                        "type": "integer"
+                      },
                       "reranking": {
                         "default": false,
+                        "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                         "title": "Reranking",
                         "type": "boolean"
+                      },
+                      "retrieval_token_budget": {
+                        "default": 3000,
+                        "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                        "maximum": 200000.0,
+                        "minimum": 100.0,
+                        "title": "Retrieval Token Budget",
+                        "type": "integer"
+                      },
+                      "weight_importance": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Importance",
+                        "type": "number"
+                      },
+                      "weight_recency": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Recency",
+                        "type": "number"
+                      },
+                      "weight_similarity": {
+                        "default": 0.6,
+                        "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Similarity",
+                        "type": "number"
                       }
                     },
                     "title": "Episodic",
@@ -16247,6 +16910,7 @@
                           },
                           "hybrid_search": {
                             "default": true,
+                            "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                             "title": "Hybrid Search",
                             "type": "boolean"
                           },
@@ -16258,10 +16922,51 @@
                             "title": "K",
                             "type": "integer"
                           },
+                          "recency_half_life_turns": {
+                            "default": 100,
+                            "description": "The turns over which a memory's recency halves.",
+                            "maximum": 1000000.0,
+                            "minimum": 1.0,
+                            "title": "Recency Half Life Turns",
+                            "type": "integer"
+                          },
                           "reranking": {
                             "default": false,
+                            "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                             "title": "Reranking",
                             "type": "boolean"
+                          },
+                          "retrieval_token_budget": {
+                            "default": 3000,
+                            "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                            "maximum": 200000.0,
+                            "minimum": 100.0,
+                            "title": "Retrieval Token Budget",
+                            "type": "integer"
+                          },
+                          "weight_importance": {
+                            "default": 0.2,
+                            "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                            "maximum": 10.0,
+                            "minimum": 0.0,
+                            "title": "Weight Importance",
+                            "type": "number"
+                          },
+                          "weight_recency": {
+                            "default": 0.2,
+                            "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                            "maximum": 10.0,
+                            "minimum": 0.0,
+                            "title": "Weight Recency",
+                            "type": "number"
+                          },
+                          "weight_similarity": {
+                            "default": 0.6,
+                            "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                            "maximum": 10.0,
+                            "minimum": 0.0,
+                            "title": "Weight Similarity",
+                            "type": "number"
                           }
                         },
                         "title": "Episodic",
@@ -18836,6 +19541,99 @@
         "title": "RequiredSetting",
         "type": "object"
       },
+      "ResolutionBody": {
+        "description": "The resolve stage: the mentions, the resolved entities, the event type, the time window\nas story-minutes (``[start, end)``, ``null`` when the time did not resolve or the text has\nnone) with the turns it maps to, and why the time did not resolve (a reason code).",
+        "properties": {
+          "entities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entities",
+            "type": "array"
+          },
+          "event_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type"
+          },
+          "mentions": {
+            "items": {
+              "$ref": "#/components/schemas/MentionBody"
+            },
+            "title": "Mentions",
+            "type": "array"
+          },
+          "time_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Reason"
+          },
+          "turns": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turns"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          }
+        },
+        "required": [
+          "mentions",
+          "entities",
+          "event_type",
+          "window",
+          "turns",
+          "time_reason"
+        ],
+        "title": "ResolutionBody",
+        "type": "object"
+      },
       "RespondRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/respond`` and ``Engine.respond``.\n\n- ``actor_character_id``: whose input this is. Any cast member may act, a player's own\n  character or not: who acts is the consumer's call (FR-AUTH-3).\n- ``player_input``: the actor's ``say``/``do``; the turn's first beat. It is only ever the\n  actor's own speech and action: there is no field for another character's words, and a\n  ``say`` that quotes a render character is still the actor speaking (FR-AUTH-3 b).\n- ``render_character_ids``: who answers, voiced in this order in one combined reply\n  (FR-RESP-5, FR-LITE-5). Omitted: every cast member except the actor, or the actor when\n  no one else is in the cast. The actor may be listed. An explicit empty list is refused,\n  and duplicates are dropped.\n- ``output_viewpoint``: ``character:<id>`` or ``omniscient``; default the actor.\n- ``prompt_params``: ``length`` (``short``/``medium``/``long`` or a token cap),\n  ``temperature`` and ``top_p``, for this request only (FR-RESP-3).\n- ``scene_context``: non-authoritative; never stored or placed in a prompt.\n- ``budget``: this turn's ``max_calls``/``deadline_s``, within the story's (#69).",
@@ -19131,6 +19929,281 @@
           "config_revision"
         ],
         "title": "RespondResponse",
+        "type": "object"
+      },
+      "RetrievalBody": {
+        "description": "What a structured render's context would retrieve for the query (FR-RET-2..7).",
+        "properties": {
+          "assessments": {
+            "items": {
+              "$ref": "#/components/schemas/RetrievedMemoryBody"
+            },
+            "title": "Assessments",
+            "type": "array"
+          },
+          "canon": {
+            "items": {
+              "$ref": "#/components/schemas/CanonBody"
+            },
+            "title": "Canon",
+            "type": "array"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ContextBody"
+          },
+          "degradation": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Degradation",
+            "type": "array"
+          },
+          "embedding_model_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model Version"
+          },
+          "episodes": {
+            "items": {
+              "$ref": "#/components/schemas/RetrievedMemoryBody"
+            },
+            "title": "Episodes",
+            "type": "array"
+          },
+          "memories": {
+            "items": {
+              "$ref": "#/components/schemas/RetrievedMemoryBody"
+            },
+            "title": "Memories",
+            "type": "array"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "participants": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Participants",
+            "type": "array"
+          },
+          "position": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Position",
+            "type": "array"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/EntityProfileBody"
+            },
+            "title": "Profiles",
+            "type": "array"
+          },
+          "rehydrated": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rehydrated",
+            "type": "array"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/ResolutionBody"
+          },
+          "skipped": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped",
+            "type": "array"
+          },
+          "timings": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Timings",
+            "type": "object"
+          }
+        },
+        "required": [
+          "position",
+          "resolution",
+          "episodes",
+          "participants",
+          "assessments",
+          "memories",
+          "profiles",
+          "canon",
+          "context",
+          "rehydrated",
+          "degradation",
+          "skipped",
+          "model_calls",
+          "embedding_model_version",
+          "timings"
+        ],
+        "title": "RetrievalBody",
+        "type": "object"
+      },
+      "RetrievedMemoryBody": {
+        "description": "One returned memory: its id, kind, text and position, its actor, occasion and\nparticipants, its retrieval tier (``retired``: rehydrated for this query, its tier\nunchanged), its importance, the arms that found it and, for a ranked memory, its score and\nthe terms it came from (fused similarity, recency, decayed importance).",
+        "properties": {
+          "arms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Arms",
+            "type": "array"
+          },
+          "beat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beat"
+          },
+          "character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Character Id"
+          },
+          "decayed_importance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decayed Importance"
+          },
+          "event_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "importance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narrative Turn"
+          },
+          "participants": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Participants",
+            "type": "array"
+          },
+          "recency": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recency"
+          },
+          "retrieval_tier": {
+            "title": "Retrieval Tier",
+            "type": "string"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "similarity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Similarity"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "text",
+          "narrative_turn",
+          "beat",
+          "character_id",
+          "event_type",
+          "participants",
+          "retrieval_tier",
+          "importance",
+          "arms",
+          "score",
+          "similarity",
+          "recency",
+          "decayed_importance"
+        ],
+        "title": "RetrievedMemoryBody",
         "type": "object"
       },
       "ReviewedPlayerInput": {
@@ -21518,6 +22591,13 @@
             "title": "Embedding Hnsw Ef Construction",
             "type": "integer"
           },
+          "embedding_hnsw_ef_search": {
+            "default": 40,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Embedding Hnsw Ef Search",
+            "type": "integer"
+          },
           "embedding_hnsw_m": {
             "default": 16,
             "maximum": 100.0,
@@ -21832,6 +22912,7 @@
                       },
                       "hybrid_search": {
                         "default": true,
+                        "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                         "title": "Hybrid Search",
                         "type": "boolean"
                       },
@@ -21843,10 +22924,51 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "recency_half_life_turns": {
+                        "default": 100,
+                        "description": "The turns over which a memory's recency halves.",
+                        "maximum": 1000000.0,
+                        "minimum": 1.0,
+                        "title": "Recency Half Life Turns",
+                        "type": "integer"
+                      },
                       "reranking": {
                         "default": false,
+                        "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                         "title": "Reranking",
                         "type": "boolean"
+                      },
+                      "retrieval_token_budget": {
+                        "default": 3000,
+                        "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                        "maximum": 200000.0,
+                        "minimum": 100.0,
+                        "title": "Retrieval Token Budget",
+                        "type": "integer"
+                      },
+                      "weight_importance": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Importance",
+                        "type": "number"
+                      },
+                      "weight_recency": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Recency",
+                        "type": "number"
+                      },
+                      "weight_similarity": {
+                        "default": 0.6,
+                        "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Similarity",
+                        "type": "number"
                       }
                     },
                     "title": "Episodic",
@@ -22224,6 +23346,34 @@
             "title": "Require Primary Image",
             "type": "boolean"
           },
+          "retrieval_lexical_k": {
+            "default": 50,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Retrieval Lexical K",
+            "type": "integer"
+          },
+          "retrieval_rehydrate_max_rows": {
+            "default": 20,
+            "maximum": 500.0,
+            "minimum": 0.0,
+            "title": "Retrieval Rehydrate Max Rows",
+            "type": "integer"
+          },
+          "retrieval_rrf_k": {
+            "default": 60,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Retrieval Rrf K",
+            "type": "integer"
+          },
+          "retrieval_vector_k": {
+            "default": 50,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Retrieval Vector K",
+            "type": "integer"
+          },
           "structured_retry_budget": {
             "default": 2,
             "maximum": 10.0,
@@ -22355,6 +23505,17 @@
               }
             ],
             "title": "Embedding Hnsw Ef Construction"
+          },
+          "embedding_hnsw_ef_search": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Hnsw Ef Search"
           },
           "embedding_hnsw_m": {
             "anyOf": [
@@ -22757,6 +23918,7 @@
                           },
                           "hybrid_search": {
                             "default": true,
+                            "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
                             "title": "Hybrid Search",
                             "type": "boolean"
                           },
@@ -22768,10 +23930,51 @@
                             "title": "K",
                             "type": "integer"
                           },
+                          "recency_half_life_turns": {
+                            "default": 100,
+                            "description": "The turns over which a memory's recency halves.",
+                            "maximum": 1000000.0,
+                            "minimum": 1.0,
+                            "title": "Recency Half Life Turns",
+                            "type": "integer"
+                          },
                           "reranking": {
                             "default": false,
+                            "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
                             "title": "Reranking",
                             "type": "boolean"
+                          },
+                          "retrieval_token_budget": {
+                            "default": 3000,
+                            "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                            "maximum": 200000.0,
+                            "minimum": 100.0,
+                            "title": "Retrieval Token Budget",
+                            "type": "integer"
+                          },
+                          "weight_importance": {
+                            "default": 0.2,
+                            "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                            "maximum": 10.0,
+                            "minimum": 0.0,
+                            "title": "Weight Importance",
+                            "type": "number"
+                          },
+                          "weight_recency": {
+                            "default": 0.2,
+                            "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                            "maximum": 10.0,
+                            "minimum": 0.0,
+                            "title": "Weight Recency",
+                            "type": "number"
+                          },
+                          "weight_similarity": {
+                            "default": 0.6,
+                            "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                            "maximum": 10.0,
+                            "minimum": 0.0,
+                            "title": "Weight Similarity",
+                            "type": "number"
                           }
                         },
                         "title": "Episodic",
@@ -23175,6 +24378,50 @@
               }
             ],
             "title": "Require Primary Image"
+          },
+          "retrieval_lexical_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrieval Lexical K"
+          },
+          "retrieval_rehydrate_max_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrieval Rehydrate Max Rows"
+          },
+          "retrieval_rrf_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrieval Rrf K"
+          },
+          "retrieval_vector_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrieval Vector K"
           },
           "structured_retry_budget": {
             "anyOf": [
@@ -26438,6 +27685,7 @@
                           "default_safe_fallback",
                           "embedding_batch_max",
                           "embedding_hnsw_ef_construction",
+                          "embedding_hnsw_ef_search",
                           "embedding_hnsw_m",
                           "erasure_shared_media",
                           "feedback_export",
@@ -26497,7 +27745,12 @@
                           "profile_defaults.memory.episodic.enabled",
                           "profile_defaults.memory.episodic.hybrid_search",
                           "profile_defaults.memory.episodic.k",
+                          "profile_defaults.memory.episodic.recency_half_life_turns",
                           "profile_defaults.memory.episodic.reranking",
+                          "profile_defaults.memory.episodic.retrieval_token_budget",
+                          "profile_defaults.memory.episodic.weight_importance",
+                          "profile_defaults.memory.episodic.weight_recency",
+                          "profile_defaults.memory.episodic.weight_similarity",
                           "profile_defaults.memory.hot_set",
                           "profile_defaults.memory.hot_set.memories_per_character",
                           "profile_defaults.memory.hot_set.vectors_per_story",
@@ -26538,6 +27791,10 @@
                           "readset_change_retention_days",
                           "reembed_batch_size",
                           "require_primary_image",
+                          "retrieval_lexical_k",
+                          "retrieval_rehydrate_max_rows",
+                          "retrieval_rrf_k",
+                          "retrieval_vector_k",
                           "structured_retry_budget",
                           "timer_lag_alert",
                           "turn_queue_max",
@@ -43921,7 +45178,12 @@
                           "profile_overrides.memory.episodic.enabled",
                           "profile_overrides.memory.episodic.hybrid_search",
                           "profile_overrides.memory.episodic.k",
+                          "profile_overrides.memory.episodic.recency_half_life_turns",
                           "profile_overrides.memory.episodic.reranking",
+                          "profile_overrides.memory.episodic.retrieval_token_budget",
+                          "profile_overrides.memory.episodic.weight_importance",
+                          "profile_overrides.memory.episodic.weight_recency",
+                          "profile_overrides.memory.episodic.weight_similarity",
                           "profile_overrides.memory.hot_set",
                           "profile_overrides.memory.hot_set.memories_per_character",
                           "profile_overrides.memory.hot_set.vectors_per_story",
@@ -48508,6 +49770,173 @@
           }
         ],
         "summary": "Play one turn and return the finished reply",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/retrieve": {
+      "get": {
+        "description": "Runs the retrieval pipeline for the text `q` asked by `actor_character_id` (default the player) just after turn `as_of` (default the head): resolution of time, entities and event type; the occasion's episodes and the participants' assessments; hybrid vector and lexical search ranked by similarity, recency and decayed importance; standing profiles and canon; and the context assembled within the token budget, with per-stage timings (ms, model calls excluded). `viewpoint` must resolve to `omniscient` (403 `omniscient_required` otherwise). A read: no operation, and no memory's access time moves. A story whose `episodic` module is off answers an empty result with `skipped: [\"episodic\"]`.",
+        "operationId": "retrieve",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          },
+          {
+            "in": "query",
+            "name": "actor_character_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Actor Character Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievalBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Show what a structured render would retrieve for a query",
         "tags": [
           "stories"
         ]

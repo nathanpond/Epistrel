@@ -573,8 +573,10 @@ def _expression(column: Column[Any], overrides: dict[str, str]) -> str:
 
 
 def _insert_select(table: Table, overrides: dict[str, str], where: str) -> str:
-    names = [f'"{c.name}"' for c in table.columns]
-    values = [_expression(c, overrides) for c in table.columns]
+    # A generated column (``memories.search``, #141) is computed by the insert, never copied.
+    columns = [c for c in table.columns if c.computed is None]
+    names = [f'"{c.name}"' for c in columns]
+    values = [_expression(c, overrides) for c in columns]
     return (
         f'INSERT INTO "{table.name}" ({", ".join(names)}) '  # noqa: S608 - names from metadata
         f'SELECT {", ".join(values)} FROM "{table.name}" t WHERE {where}'
@@ -616,19 +618,24 @@ OVERRIDES: dict[str, dict[str, str]] = {
             "ORDER BY s.n) AS char(26)[])"
         ),
     },
-    # Memory records (#135): the propositions a memory wraps are the fork's copies.
+    # Memory records (#135): the propositions a memory wraps are the fork's copies, and (#141)
+    # its participants the fork's entities.
     "memories": {
         "proposition_ids": (
             f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.proposition_ids) "  # noqa: S608
             f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
             "ORDER BY s.n) AS char(26)[])"
         ),
+        "participants": (
+            f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.participants) "  # noqa: S608
+            "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
+        ),
     },
 }
 """Per-table columns that are not a plain remapped copy: memberships flatten to ``active``,
 events and transcript rows take the new ``seq``, idempotency keys stay with the source, a
-fact's links to other versions keep only the copied ones, and a memory's propositions are the
-fork's."""
+fact's links to other versions keep only the copied ones, and a memory's propositions and
+participants are the fork's."""
 
 _SUPERSEDED = f"'{Membership.SUPERSEDED.value}'"
 

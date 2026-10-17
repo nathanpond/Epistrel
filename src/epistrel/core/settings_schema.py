@@ -749,7 +749,9 @@ DEFAULT_REEMBED_BATCH_SIZE = 500
 REEMBED_BATCH_CEILING = 10_000
 DEFAULT_HNSW_M = 16
 DEFAULT_HNSW_EF_CONSTRUCTION = 64
-"""pgvector's own HNSW defaults: the index the first embedding creates (#138; #141 tunes)."""
+"""pgvector's own HNSW defaults: the index the first embedding creates (#138, #141)."""
+DEFAULT_HNSW_EF_SEARCH = 40
+"""pgvector's own ``hnsw.ef_search`` default: the candidate list of one vector search (#141)."""
 
 
 class EmbeddingSettings(BaseModel):
@@ -773,6 +775,45 @@ class EmbeddingSettings(BaseModel):
     )
     embedding_hnsw_ef_construction: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_HNSW_EF_CONSTRUCTION, ge=4, le=1_000
+    )
+    embedding_hnsw_ef_search: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_HNSW_EF_SEARCH, ge=1, le=1_000
+    )
+    """``SET LOCAL hnsw.ef_search`` of every retrieval's vector arm (#141). Unlike ``m`` and
+    ``ef_construction`` it needs no rebuild: a change applies to the next search. Changing
+    ``m`` or ``ef_construction`` applies to an index built afterwards; an existing index keeps
+    its parameters until an operator rebuilds it (``REINDEX INDEX
+    ix_memories_embedding_hnsw``, docs/OPERATIONS.md) or a model change retypes the column."""
+
+
+DEFAULT_RETRIEVAL_VECTOR_K = 50
+DEFAULT_RETRIEVAL_LEXICAL_K = 50
+DEFAULT_RETRIEVAL_RRF_K = 60
+DEFAULT_REHYDRATE_MAX_ROWS = 20
+
+
+class RetrievalSettings(BaseModel):
+    """How a retrieval's search arms are sized and fused (FR-RET-4,5, FR-MEM-8; #141), stored
+    under ``deployment_state.settings``: the vector arm's and the lexical arm's top-k
+    (``retrieval_vector_k``, ``retrieval_lexical_k``), the reciprocal-rank fusion constant
+    (``retrieval_rrf_k``) and the most retired records one retrieval rehydrates
+    (``retrieval_rehydrate_max_rows``). The ranking weights, the recency half-life and the
+    token budget are engine-profile dials (``memory.episodic``). Prospective: a retrieval
+    reads them when it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    retrieval_vector_k: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_RETRIEVAL_VECTOR_K, ge=1, le=1_000
+    )
+    retrieval_lexical_k: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_RETRIEVAL_LEXICAL_K, ge=1, le=1_000
+    )
+    retrieval_rrf_k: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_RETRIEVAL_RRF_K, ge=1, le=1_000
+    )
+    retrieval_rehydrate_max_rows: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_REHYDRATE_MAX_ROWS, ge=0, le=500
     )
 
 
@@ -867,6 +908,7 @@ class DeploymentSettings(
     ErasureSettings,
     MemorySettings,
     EmbeddingSettings,
+    RetrievalSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

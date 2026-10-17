@@ -12,7 +12,11 @@ by AST (it never imports them) and reports, in each, every direct read of ``fact
   of the ``core.canon.facts`` module;
 - an import of the ``facts`` or ``propositions`` table;
 - a ``facts.c`` or ``propositions.c`` reference;
-- a string constant (not a docstring) holding SQL that reads either table (``FROM``/``JOIN``).
+- a string constant (not a docstring) holding SQL that reads either table (``FROM``/``JOIN``);
+- likewise for the structured projections over canon (#137, carried by #141): an import of
+  ``profile_view``/``scene_view`` (``core.projections.structured``) or of the
+  ``relationships``, ``placement`` or ``scene_state`` table, a ``.c`` reference to one, or SQL
+  reading one. A turn reads them through ``KeyedLookup.profile``/``scene``.
 
 A listed module that does not exist is reported, and so is a listed module of ``EXEMPT``: the
 store and ``KeyedLookup`` itself read the tables directly by design, and are never keyed readers.
@@ -42,11 +46,21 @@ EXEMPT: dict[str, str] = {
 
 CANON_MODULE = "epistrel.core.canon.facts"
 CANON_READS = frozenset({"canon", "canon_at", "canon_as_recorded", "hidden_from"})
-TABLES = frozenset({"facts", "propositions"})
+PROJECTION_MODULE = "epistrel.core.projections.structured"
+PROJECTION_READS = frozenset({"profile_view", "scene_view"})
+TABLES = frozenset({"facts", "propositions", "relationships", "placement", "scene_state"})
 TABLE_MODULES = frozenset(
-    {"epistrel.core.tables", "epistrel.core.tables.facts", "epistrel.core.tables.propositions"}
+    {
+        "epistrel.core.tables",
+        "epistrel.core.tables.facts",
+        "epistrel.core.tables.propositions",
+        "epistrel.core.tables.projections",
+    }
 )
-SQL_READ = re.compile(r"\b(from|join)\s+(facts|propositions)\b", re.IGNORECASE)
+SQL_READ = re.compile(
+    r"\b(from|join)\s+(facts|propositions|relationships|placement|scene_state)\b",
+    re.IGNORECASE,
+)
 
 
 def listed(root: Path = REPO_ROOT) -> tuple[str, ...]:
@@ -87,6 +101,8 @@ def _reads(tree: ast.AST) -> Iterator[tuple[int, str]]:
             names = {a.name for a in node.names}
             if node.module == CANON_MODULE and names & CANON_READS:
                 yield node.lineno, f"imports {', '.join(sorted(names & CANON_READS))}"
+            elif node.module == PROJECTION_MODULE and names & PROJECTION_READS:
+                yield node.lineno, f"imports {', '.join(sorted(names & PROJECTION_READS))}"
             elif node.module == "epistrel.core.canon" and "facts" in names:
                 yield node.lineno, "imports core.canon.facts"
             elif node.module in TABLE_MODULES and names & TABLES:
@@ -107,7 +123,7 @@ def _reads(tree: ast.AST) -> Iterator[tuple[int, str]]:
             and id(node) not in prose
             and SQL_READ.search(node.value)
         ):
-            yield node.lineno, "SQL read of facts/propositions"
+            yield node.lineno, "SQL read of facts/propositions or a structured projection"
 
 
 def scan(root: Path = REPO_ROOT, readers: Sequence[str] | None = None) -> list[str]:

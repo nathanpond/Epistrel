@@ -18,7 +18,9 @@ export switch and aggregate window (``feedback_export``, ``feedback_regen_window
 and what a catalog erasure does with media others still reference (``erasure_shared_media``, #124),
 and how fast memory importance decays (``memory_importance_half_life_turns``, #135),
 and the embedding port's batches and HNSW index (``embedding_batch_max``,
-``reembed_batch_size``, ``embedding_hnsw_m``, ``embedding_hnsw_ef_construction``; #138).
+``reembed_batch_size``, ``embedding_hnsw_m``, ``embedding_hnsw_ef_construction``; #138; and
+``embedding_hnsw_ef_search``, #141), and the retrieval's arms (``retrieval_vector_k``,
+``retrieval_lexical_k``, ``retrieval_rrf_k``, ``retrieval_rehydrate_max_rows``; #141).
 ``media_sweep_interval`` also moves its recurring task's ``recurring_tasks`` row
 (``RECURRING_INTERVAL_SETTINGS``).
 
@@ -192,6 +194,11 @@ class SettingsPatch(BaseModel):
     reembed_batch_size: StrictInt | None = None
     embedding_hnsw_m: StrictInt | None = None
     embedding_hnsw_ef_construction: StrictInt | None = None
+    embedding_hnsw_ef_search: StrictInt | None = None
+    retrieval_vector_k: StrictInt | None = None
+    retrieval_lexical_k: StrictInt | None = None
+    retrieval_rrf_k: StrictInt | None = None
+    retrieval_rehydrate_max_rows: StrictInt | None = None
     profile_defaults: SettingsDocument | None = None
 
     @model_validator(mode="before")

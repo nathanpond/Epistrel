@@ -18,6 +18,16 @@ One row is one memory record:
 - **how important it is now**: ``importance`` (0..1, ``NULL`` until scored; ranking and
   retirement read ``NULL`` as ``DEFAULT_IMPORTANCE``) and ``importance_at`` (the committed turn
   the importance was assigned at; ``core.memory.records.decayed_importance`` decays from it).
+- **which occasion it belongs to** (#141): ``event_type`` (#139's event-type vocabulary, the
+  beat's occasion; ``NULL`` when the beat names none) and ``participants`` (the entity ids the
+  beat involves: its actor and the entities its mentions resolved to; GIN-indexed). #150's
+  episodic writer fills them from the beat's resolved entities (``Beat.event_type``,
+  ``Beat.participants``); #143's semantic memories and reflections carry their sources'.
+  ``core.retrieval.pipeline``'s occasion step queries them.
+- **lexical search** (#141): ``search``, the ``tsvector`` generated from ``text`` under the
+  ``english`` configuration (``SEARCH_EXPRESSION``), GIN-indexed: the lexical arm and the
+  alias arm of the hybrid retrieval read it, and an erasure that rewrites ``text`` recomputes
+  it.
 - **retrieval**: ``retrieval_tier`` (``hot``/``retired``, independent of membership; #147),
   ``embedding`` (a pgvector ``vector``, untyped here: #138 pins the dimension, retypes the
   column and creates the HNSW cosine index; ``NULL`` until the embed job runs) and
@@ -40,6 +50,7 @@ from sqlalchemy import (
     TIMESTAMP,
     CheckConstraint,
     Column,
+    Computed,
     Index,
     Integer,
     SmallInteger,
@@ -47,7 +58,7 @@ from sqlalchemy import (
     Text,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql.base import ischema_names
 from sqlalchemy.types import UserDefinedType
 
@@ -63,6 +74,13 @@ from epistrel.core.tables.base import metadata, pg_enum, ulid_type
 TEXT_MAX = 2_000
 """The longest memory text (an episodic line is cut to it)."""
 
+SEARCH_CONFIGURATION = "english"
+"""The text-search configuration of ``memories.search`` (and of every query against it)."""
+SEARCH_EXPRESSION = f"to_tsvector('{SEARCH_CONFIGURATION}'::regconfig, text)"
+"""The generated ``search`` column's expression (migration 0056)."""
+EVENT_TYPE_MAX = 64
+"""The longest ``event_type`` (CHECK)."""
+
 VISIBILITY_SCOPES: tuple[str, ...] = ("objective", "public", "engine", "characters")
 """The visibility scopes a memory may carry (#133's, ``visibility->>'scope'``, CHECK)."""
 
@@ -76,7 +94,9 @@ MUTABLE_MEMORY_COLUMNS: tuple[str, ...] = (
     "membership",
     "membership_tx",
 )
-"""The columns an UPDATE of ``memories`` may change outside an erasure."""
+"""The columns an UPDATE of ``memories`` may change outside an erasure. (The generated
+``search`` column is also let through by the guard, since a BEFORE trigger cannot read its new
+value; it follows ``text``, which stays guarded.)"""
 
 
 class Vector(UserDefinedType[list[float]]):
@@ -136,6 +156,9 @@ memories = Table(
     *derived_columns(),
     Column("beat", SmallInteger, nullable=True),
     Column("proposition_ids", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
+    Column("event_type", Text, nullable=True),
+    Column("participants", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
+    Column("search", TSVECTOR, Computed(SEARCH_EXPRESSION, persisted=True)),
     Column(
         "retrieval_tier",
         pg_enum(RetrievalTier, "retrieval_tier"),
@@ -157,6 +180,10 @@ memories = Table(
     ),
     CheckConstraint(f"visibility->>'scope' IN ({_SCOPES})", name="visibility_scope"),
     CheckConstraint(
+        f"event_type IS NULL OR char_length(event_type) BETWEEN 1 AND {EVENT_TYPE_MAX}",
+        name="event_type_length",
+    ),
+    CheckConstraint(
         "(visibility->>'scope' = 'characters') = "
         "(jsonb_typeof(visibility->'characters') = 'array' "
         "AND jsonb_array_length(visibility->'characters') > 0)",
@@ -167,6 +194,14 @@ memories = Table(
 )
 Index("ix_memories_story_holder", memories.c.story_id, memories.c.holder_character_id)
 Index("ix_memories_source_event_ids", memories.c.source_event_ids, postgresql_using="gin")
+Index("ix_memories_participants", memories.c.participants, postgresql_using="gin")
+Index("ix_memories_search", memories.c.search, postgresql_using="gin")
+Index(
+    "ix_memories_story_occasion",
+    memories.c.story_id,
+    memories.c.event_type,
+    memories.c.narrative_turn,
+)
 
 MEMORIES = register_derived(DerivedTable(memories))
 """``memories`` in ``core.membership.DERIVED_TABLES``: truncation, untruncation, swap,
@@ -174,8 +209,11 @@ regenerate and fork move its rows with their operations. A memory has a narrativ
 neither valid-time nor transaction-time columns."""
 
 __all__ = [
+    "EVENT_TYPE_MAX",
     "MEMORIES",
     "MUTABLE_MEMORY_COLUMNS",
+    "SEARCH_CONFIGURATION",
+    "SEARCH_EXPRESSION",
     "TEXT_MAX",
     "VISIBILITY_SCOPES",
     "Vector",

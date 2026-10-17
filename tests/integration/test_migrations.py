@@ -631,3 +631,65 @@ def test_the_implication_depth_joins_the_profile_defaults(scratch_database: str)
         assert depth() == 5
     finally:
         engine.dispose()
+
+
+def test_the_retrieval_columns_and_dials(scratch_database: str) -> None:
+    """0056 (#141): ``memories`` gains ``event_type``, ``participants`` (``{}`` for existing
+    rows) and the generated ``search`` vector with their indexes; the guard lets ``search``
+    through; the retrieval dials join the profile defaults at the schema's values and the rest
+    of the document is kept; the downgrade removes all of it again."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0055")
+    engine = make_sync_engine(scratch_database)
+
+    def columns() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'memories'"
+                    )
+                )
+            )
+
+    def defaults() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+
+    def indexes() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(text("SELECT indexname FROM pg_indexes WHERE tablename = 'memories'"))
+            )
+
+    added = {"ix_memories_participants", "ix_memories_search", "ix_memories_story_occasion"}
+    try:
+        before = defaults()
+        assert not {"event_type", "participants", "search"} & columns()
+        command.upgrade(cfg, "0056")
+        assert {"event_type", "participants", "search"} <= columns()
+        assert added <= indexes()
+        after = defaults()
+        episodic = after["memory"]["episodic"]
+        assert {
+            k: episodic.pop(k) for k in list(episodic) if k not in before["memory"]["episodic"]
+        } == {
+            "weight_similarity": 0.6,
+            "weight_recency": 0.2,
+            "weight_importance": 0.2,
+            "recency_half_life_turns": 100,
+            "retrieval_token_budget": 3_000,
+        }
+        assert after == before
+        with engine.connect() as conn:
+            guard = conn.scalar(
+                text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_memories_guard'")
+            )
+        assert "'search'" in str(guard)
+        command.downgrade(cfg, "0055")
+        assert not {"event_type", "participants", "search"} & columns()
+        assert not added & indexes()
+        assert defaults() == before
+    finally:
+        engine.dispose()

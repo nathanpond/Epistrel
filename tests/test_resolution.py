@@ -533,3 +533,23 @@ def test_q_02_metric_and_fixture() -> None:
         len(wrong.mentions),
         0,
     )
+
+
+def test_q_02_runs_through_the_retrieval_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#141: Q-02 resolves every query through the retrieval pipeline's resolve stage
+    (``core.retrieval.pipeline.resolve_query``, the function ``retrieve`` runs first), not
+    through the resolvers on their own: one call per query, with the scores unchanged."""
+    from epistrel.core.retrieval import pipeline
+
+    seen: list[str] = []
+    original = pipeline.resolve_query
+
+    def spy(text: str, **kw: Any) -> pipeline.QueryResolution:
+        seen.append(text)
+        return original(text, **kw)
+
+    monkeypatch.setattr(pipeline, "resolve_query", spy)
+    fixture = q02.generate(seed=3, n=12)
+    accuracy = q02.accuracy(q02.run(fixture))
+    assert seen == [q.text for q in fixture.queries]
+    assert (accuracy.per_mention, accuracy.per_query) == (1.0, 1.0)

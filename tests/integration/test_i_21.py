@@ -459,12 +459,19 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
 
 
+DURATIONS = frozenset({"timings"})
+
+
 def _blanked(body: Any) -> Any:
     """``body`` without what differs between two fresh entities in the same state: every id
     and time blanked, in keys too (a mapping whose keys become alike, such as true ages by
-    character id, is compared as its pairs), and every list in one order."""
+    character id, is compared as its pairs), and every list in one order. Durations
+    (``DURATIONS``: a retrieval's stage timings, #141) are left out."""
     if isinstance(body, dict):
-        pairs = sorted(((_blanked(k), _blanked(v)) for k, v in body.items()), key=_canonical)
+        pairs = sorted(
+            ((_blanked(k), _blanked(v)) for k, v in body.items() if k not in DURATIONS),
+            key=_canonical,
+        )
         return dict(pairs) if len({key for key, _ in pairs}) == len(pairs) else pairs
     if isinstance(body, list):
         return sorted((_blanked(item) for item in body), key=_canonical)

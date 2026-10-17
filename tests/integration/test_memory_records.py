@@ -22,6 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core.enums import (
     MemoryKind,
     MemoryTrustTier,
+    OperationKind,
+    Provenance,
     RecordProvenance,
 )
 from epistrel.core.errors import ErasedSubjectReferenced
@@ -359,6 +361,85 @@ async def test_the_table_is_guarded(engine: AsyncEngine) -> None:
             text("UPDATE memories SET text = '[erased]' WHERE id = :m"), {"m": memory.id}
         )
     assert (await memory_rows(engine, w.story_id))[memory.id].text == "[erased]"
+
+
+async def test_the_writer_records_the_occasion_and_the_lexical_vector(engine: AsyncEngine) -> None:
+    """#141's writer hook: a beat's ``event_type`` and ``participants`` are written (its actor
+    first), ``beat_occasion`` derives them from a text and its resolved mentions, the generated
+    ``search`` vector is the text's under ``english`` and an erasure rewriting the text
+    recomputes it, and the guard still refuses other changes. Complements: a participant that is
+    not one of the story's entities, or an event type over 64 characters, is refused and
+    nothing is written."""
+    from epistrel.core.errors import InvalidRequest
+    from epistrel.core.events import Operation
+    from epistrel.core.resolution.types import Mention, MentionKind
+    from epistrel.core.retrieval.pipeline import beat_occasion
+
+    w = await _structured_world(engine)
+    story, cal, bobby = w.story_id, w.characters["Cal"], w.people["Bobby"]
+    mentions = [Mention((0, 5), MentionKind.NAME, bobby), Mention((6, 9), MentionKind.GROUP, None)]
+    event_type, participants = beat_occasion("Bobby won the game.", mentions)
+    assert (event_type, participants) == ("game", (bobby,))
+
+    async def write(beat: records.Beat) -> list[records.Memory]:
+        found: dict[str, list[records.Memory]] = {}
+        async with Operation(
+            engine, story_id=story, kind=OperationKind.TURN, principal="p-test"
+        ) as op:
+            op.append("player_input", {"text": beat.text}, provenance=Provenance.PLAYER, beat=1)
+
+            async def step(conn: Any) -> None:
+                (recorded,) = await records.beats_of_operation(conn, op.operation_id)
+                found["m"] = await records.write_episodic(
+                    conn, op, [dataclasses.replace(beat, event_id=recorded.event_id)]
+                )
+
+            op.add_commit_step(step)
+            await op.commit()
+        return found["m"]
+
+    beat = records.Beat(
+        "say",
+        "Bobby won the game.",
+        "",
+        beat=1,
+        character_id=cal,
+        provenance=RecordProvenance.PLAYER,
+        event_type=event_type,
+        participants=participants,
+    )
+    (memory,) = await write(beat)
+    assert memory.event_type == "game"
+    assert memory.participants == (cal, bobby)
+    (row,) = await rows(
+        engine,
+        "SELECT search::text AS search, search @@ to_tsquery('english', 'games') AS hit "
+        "FROM memories WHERE id = :m",
+        m=memory.id,
+    )
+    assert row.hit
+    assert "'bobbi'" in row.search
+    async with engine.begin() as conn:
+        await conn.execute(text("SET LOCAL epistrel.erasure = 'on'"))
+        await conn.execute(
+            text("UPDATE memories SET text = '[erased]' WHERE id = :m"), {"m": memory.id}
+        )
+    (erased,) = await rows(
+        engine, "SELECT search::text AS search FROM memories WHERE id = :m", m=memory.id
+    )
+    assert "bobbi" not in erased.search
+    with pytest.raises(DBAPIError):
+        await execute_in_tx(
+            engine,
+            ("UPDATE memories SET event_type = 'party' WHERE id = :m", {"m": memory.id}),
+        )
+    for bad in (
+        dataclasses.replace(beat, participants=("01J9Z8Q4N5V6W7X8Y9Z0A1B2C9",)),
+        dataclasses.replace(beat, event_type="x" * 65),
+    ):
+        with pytest.raises(InvalidRequest):
+            await write(bad)
+    assert len(await memory_rows(engine, story)) == 1
 
 
 async def test_a_fork_copies_memories_with_their_vectors(engine: AsyncEngine) -> None:

@@ -9,7 +9,9 @@ the operation's connection:
 - ``load_context``: the context window (the last ``CONTEXT_BEATS`` beats at or before the
   position, #135's ``working_memory`` as the speaker perceives them), the player character,
   the scene's entities present and the relationships of the story's people (#137's
-  projections, omniscient: no visibility filter on candidates in M4);
+  projections, omniscient: no visibility filter on candidates in M4), read through
+  ``KeyedLookup.scene``/``profile`` (#137's carried rule: a turn-time projection read is
+  recorded in the read set, as context);
 - ``subject_timeline``: the subject's ``born`` and ``age`` canon through #136's
   ``KeyedLookup`` (so a verdict resting on "when he was seven" regenerates when they change).
   This module is a keyed reader (``core.readset.KEYED_READERS``): it never reads ``facts`` or
@@ -27,7 +29,7 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.memory.records import working_memory
 from epistrel.core.propositions.model import Instant, Interval, Polarity
 from epistrel.core.propositions.vocabulary import AGE, BORN
-from epistrel.core.readset import KeyedLookup
+from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.entities import (
     CONTEXT_BEATS,
     NARRATOR,
@@ -88,11 +90,13 @@ async def load_context(
     position: Position,
     speaker: str,
     index: EntityIndex | None = None,
+    lookup: KeyedLookup | None = None,
 ) -> ResolutionContext:
     """The ``ResolutionContext`` of a text spoken by ``speaker`` (an entity id, ``narrator`` or
-    ``player``) at ``position`` (see the module docstring)."""
-    from epistrel.core.projections.structured import profile_view, scene_view
-
+    ``player``) at ``position`` (see the module docstring). The scene and the relationships are
+    read through ``lookup`` (#136's ``KeyedLookup``: recorded in its read set as retrieved
+    rows), or through a lookup of a read set of its own when none is given."""
+    lookup = lookup or KeyedLookup(conn, StructuredReadSet())
     index = index or await load_index(conn, story_id)
     player = await conn.scalar(
         select(characters.c.id).where(
@@ -120,7 +124,7 @@ async def load_context(
     if head >= 0:
         as_of = min(max(turn, 0), head)
         try:
-            scene = await scene_view(conn, story_id, as_of=as_of, viewpoint=OMNISCIENT)
+            scene = await lookup.scene(story_id, as_of=as_of, viewpoint=OMNISCIENT)
         except InvalidRequest:
             scene = None
         if scene is not None and scene.present:
@@ -129,9 +133,7 @@ async def load_context(
         for entry in index.entries.values():
             if entry.kind != "person":
                 continue
-            profile = await profile_view(
-                conn, story_id, entry.id, as_of=as_of, viewpoint=OMNISCIENT
-            )
+            profile = await lookup.profile(story_id, entry.id, as_of=as_of, viewpoint=OMNISCIENT)
             for rel in profile.relationships:
                 subject, obj = (
                     (entry.id, rel.other.entity_id)

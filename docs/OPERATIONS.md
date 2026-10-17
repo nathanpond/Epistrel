@@ -113,3 +113,11 @@ The same statement is served by `GET /admin/erasure/boundary` as data, and it en
 <!-- feedback-export-boundary:start -->
 Delivered exports are outside the erasure boundary (FR-ADMIN-8: exports already delivered): an export's file counts as delivered once it has been downloaded, and an erasure cannot reach a copy outside the deployment. Until its first download, an erasure redacts the subject in the file's cases.
 <!-- feedback-export-boundary:end -->
+
+## Retrieval index tuning
+
+The embedding vectors' HNSW index (`ix_memories_embedding_hnsw`, cosine) is built when the first embedding pins the dimension, and again when a model change retypes the column. It uses the deployment settings `embedding_hnsw_m` (default 16) and `embedding_hnsw_ef_construction` (default 64). A change to either setting applies to the next build only. To rebuild an existing index with the new values, run `REINDEX INDEX CONCURRENTLY ix_memories_embedding_hnsw;` against the database after the `PUT /admin/settings`. Searches keep running during the rebuild.
+
+`embedding_hnsw_ef_search` (default 40) is the candidate list size of each retrieval's vector search. Every retrieval sets it on its own transaction (`SET LOCAL hnsw.ef_search`) together with pgvector's iterative scan (`hnsw.iterative_scan = relaxed_order`), so filtered searches still fill their top-k. A change applies to the next retrieval and needs no rebuild.
+
+`retrieval_vector_k`, `retrieval_lexical_k` (50 each), `retrieval_rrf_k` (60) and `retrieval_rehydrate_max_rows` (20) size and fuse the search arms. The ranking weights, the recency half-life and the token budget are engine-profile dials (`memory.episodic`).

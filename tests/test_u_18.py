@@ -84,6 +84,11 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "reembed_batch_size": ConfigClass.prospective,
         "embedding_hnsw_m": ConfigClass.prospective,
         "embedding_hnsw_ef_construction": ConfigClass.prospective,
+        "embedding_hnsw_ef_search": ConfigClass.prospective,
+        "retrieval_vector_k": ConfigClass.prospective,
+        "retrieval_lexical_k": ConfigClass.prospective,
+        "retrieval_rrf_k": ConfigClass.prospective,
+        "retrieval_rehydrate_max_rows": ConfigClass.prospective,
     },
 }
 

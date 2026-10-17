@@ -1,17 +1,36 @@
-"""I-05: the resolution pipeline end to end (docs/04 §4), its M4 parts.
+"""The retrieval pipeline against PostgreSQL (#141): docs/04 I-05 and I-06 (M4) and the
+S-THOSEGUYS scenario, plus rehydration, the gate on the ``episodic`` module, the debugging read
+and the implementation's cost structure.
 
-#139's slice ``test_i_05__resolution`` (FR-RET-2) covers what #141's retrieval stands on: "those
-guys a month ago at the game" resolves its time window against the position's story-time, its
-event type, and its participants through recent context and #137's projections; a subject's
-timeline is read through #136's keyed lookup. #141 adds ``test_i_05`` (episode, participants,
-scoped assessments) beside it.
+#139's slice ``test_i_05__resolution`` (FR-RET-2) covers what retrieval stands on: "those guys a
+month ago at the game" resolves its time window against the position's story-time, its event
+type, and its participants through recent context and #137's projections; a subject's timeline
+is read through #136's keyed lookup. ``test_i_05`` (FR-RET-2,3,6) runs ``retrieve`` end to end:
+the window locates the episode, its participants resolve the group, and their assessments and
+standing profiles come back. ``test_i_06`` (FR-RET-4) shows the lexical arm returning a proper
+noun the vector arm misses, ``test_s_thoseguys`` the same recall as I-05 on the 5,000-turn
+fixture among distractors.
+
+Every test but #139's runs on a database of its own (``embedding_support.embedding_db``): the
+vector arm needs a pinned dimension (``retrieval_support.pin``), and a pin retypes
+``memories.embedding``. NFR-PERF-1's p95 bound is gated in #153's weekly suite over this code;
+here the cost structure is proved without a clock: the same statements whatever the story's
+size, and every ``memories`` read served by an index.
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from typing import Any
+
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.context import RequestContext
+from epistrel.core.enums import MemoryKind, RetrievalTier
+from epistrel.core.profiles.effective import effective_configuration
+from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import (
     Granularity,
     Instant,
@@ -30,11 +49,17 @@ from epistrel.core.resolution.time import (
     story_time_at,
 )
 from epistrel.core.resolution.types import MentionKind, ReasonCode, ResolvedTime, Uncertain
+from epistrel.core.retrieval import pipeline
+from epistrel.core.retrieval.assemble import ContextItem, Tier
 from tests import canon_support as c
+from tests import retrieval_support as r
+from tests.auth_support import bearer
+from tests.embedding_support import Scratch, embedding_db, reset, vectors
 
 pytestmark = pytest.mark.integration
 
 DAY = 1440
+CTX = RequestContext(principal=c.PRINCIPAL)
 
 
 @pytest.mark.part("M4", "FR-RET-2")
@@ -115,3 +140,463 @@ async def test_i_05__resolution(engine: AsyncEngine) -> None:
 
 async def _nothing() -> None:
     return None
+
+
+# -- retrieve(), on a database of its own ---------------------------------------------------------
+
+QUERY = "Those guys a month ago at the game: you were there with Bobby's sister."
+GAME_LINES = (
+    ("game_bobby", "Bobby says: What a game that was, Ann!", "Bobby"),
+    ("game_ann", "Ann does: cheers as Dan scores at the game.", "Ann"),
+    ("game_dan", "Dan says: I nearly lost the game.", "Dan"),
+)
+Q_VECTOR = (1.0, 0.0, 0.0, 0.0)
+NEAR = (0.9, 0.1, 0.0, 0.0)
+FAR = (-1.0, 0.0, 0.0, 0.0)
+
+
+@pytest.fixture(scope="module")
+async def scratch(pg_url: str) -> AsyncIterator[Scratch]:
+    async with embedding_db(pg_url, stub_embedding_dimension=r.DIMENSION) as s:
+        await reset(s.db)
+        await r.pin(s.db)
+        yield s
+
+
+@pytest.fixture(scope="module")
+async def long_story(scratch: Scratch) -> r.Story:
+    """S-THOSEGUYS's 5,000-turn fixture: 5,000 filler memories with the occasion planted."""
+    story = await r.build_story(scratch.db, fillers=r.TURNS)
+    await _plant_occasion(scratch.db, story)
+    await r.set_vectors(scratch.db, story.story_id, NEAR)
+    return story
+
+
+async def _plant_occasion(db: AsyncEngine, story: r.Story) -> None:
+    """The game a month ago (three beats: Bobby, Ann, Dan), and its distractors: a game in the
+    window with only Cal and Dan, a game 10 days ago with Bobby and Ann; Cal's assessments of
+    Dan and of Bobby, and one of Cal by Quillon, whom nobody asked about."""
+    for beat, (name, line, actor) in enumerate(GAME_LINES, start=1):
+        await r.memory(
+            db,
+            story,
+            name,
+            line,
+            turn=r.MONTH_AGO,
+            beat=beat,
+            event_type="game",
+            participants=(actor, *(p for p in ("Bobby", "Ann", "Dan") if p != actor)),
+            importance=0.7,
+        )
+    await r.memory(
+        db,
+        story,
+        "game_other",
+        "Cal says: Dan, that game was rigged.",
+        turn=r.MONTH_AGO + 300,
+        event_type="game",
+        participants=("Cal", "Dan"),
+    )
+    await r.memory(
+        db,
+        story,
+        "game_recent",
+        "Bobby says: Ann, the game tonight was dull.",
+        turn=r.TURNS - 1_440,
+        event_type="game",
+        participants=("Bobby", "Ann"),
+    )
+    await r.memory(
+        db,
+        story,
+        "assess_dan",
+        "Cal thinks Dan cheated at the game.",
+        kind=MemoryKind.SEMANTIC,
+        turn=r.MONTH_AGO + 5,
+        participants=("Cal", "Dan"),
+    )
+    await r.memory(
+        db,
+        story,
+        "assess_bobby",
+        "Cal believes Bobby is a good sport.",
+        kind=MemoryKind.REFLECTION,
+        turn=None,
+        participants=("Cal", "Bobby"),
+    )
+    await r.memory(
+        db,
+        story,
+        "assess_cal",
+        "Quillon Vexby thinks Cal talks too much.",
+        kind=MemoryKind.SEMANTIC,
+        turn=r.MONTH_AGO + 5,
+        participants=("Quillon", "Cal"),
+    )
+
+
+def _vector(q: Sequence[float] = Q_VECTOR) -> Callable[[str], Awaitable[Sequence[float]]]:
+    async def embed(text: str) -> Sequence[float]:
+        del text
+        return q
+
+    return embed
+
+
+async def _retrieve(
+    db: AsyncEngine, story_id: str, text: str, **kw: Any
+) -> pipeline.RetrievalResult:
+    async with db.begin() as conn:
+        return await pipeline.retrieve(conn, story_id, pipeline.RetrievalQuery(text), **kw)
+
+
+async def _settings(db: AsyncEngine, story_id: str, **episodic: Any) -> ProfileSettings:
+    """The story's effective settings with ``memory.episodic`` dials changed."""
+    async with db.connect() as conn:
+        found = (await effective_configuration(conn, story_id)).settings
+    document = found.model_dump(mode="json")
+    document["memory"]["episodic"].update(episodic)
+    return ProfileSettings.model_validate(document)
+
+
+def _ids(found: Sequence[pipeline.RetrievedMemory]) -> list[str]:
+    return [m.id for m in found]
+
+
+@pytest.mark.part("M4", "FR-RET-2,3,6")
+async def test_i_05(scratch: Scratch) -> None:
+    """ "Those guys a month ago at the game: you were there with Bobby's sister." resolves the
+    window (about 30 days back), the event type ``game`` and Bobby and Ann; the occasion query
+    locates the game's three beats (not the in-window game without them, not last week's game
+    with them), their participants (Bobby, Ann and Dan) resolve "those guys", and the
+    participants' assessments come back with Bobby's and Ann's standing profiles (Bobby is
+    Ann's sibling) and the canon about them. Complements: the same text without its time and
+    occasion words skips the occasion step and locates nothing; an assessment about none of the
+    participants is not returned; Cal, the speaker, gets no profile."""
+    db = scratch.db
+    story = await r.build_story(db)
+    await _plant_occasion(db, story)
+    ids, people = story.ids, story.people
+    read_set = StructuredReadSet()
+    read_set.start_attempt()
+    found = await _retrieve(db, story.story_id, QUERY, read_set=read_set)
+
+    resolution = found.resolution
+    assert resolution.event_type == "game"
+    assert set(resolution.entities) == {people["Bobby"], people["Ann"]}
+    assert resolution.group
+    assert found.turn_window is not None
+    first, last = found.turn_window
+    assert first is not None
+    assert last is not None
+    assert first <= r.MONTH_AGO <= last
+    assert last < r.TURNS - 1_440 - 1  # last week's game is outside the window
+    assert _ids(found.episodes) == [ids["game_dan"], ids["game_ann"], ids["game_bobby"]]
+    assert set(found.participants) == {people["Bobby"], people["Ann"], people["Dan"]}
+    assert set(_ids(found.assessments)) == {ids["assess_dan"], ids["assess_bobby"]}
+    assert ids["assess_cal"] not in _ids((*found.assessments, *found.memories))
+    assert ids["game_other"] not in _ids(found.episodes)
+    assert ids["game_recent"] not in _ids(found.episodes)
+    assert "occasion" not in found.skipped
+    profiled = {p.entity.entity_id for p in found.profiles}
+    assert profiled == {people["Bobby"], people["Ann"]}  # characters only; Dan is none
+    bobby = next(p for p in found.profiles if p.entity.entity_id == people["Bobby"])
+    assert any(
+        rel.predicate == "sibling_of" and rel.other.entity_id == people["Ann"]
+        for rel in bobby.relationships
+    )
+    assert people["Cal"] not in profiled
+    assert any(f.subject_id == people["Bobby"] for f in found.canon)
+    # The context: occasions, then profiles and canon, then ranked memories, within budget.
+    tiers = [int(i.tier) for i in found.context.items]
+    assert tiers == sorted(tiers)
+    assert found.context.used <= found.context.budget == 3_000
+    episode_items = [i.item_id for i in found.context.items if i.kind == "episode"]
+    assert episode_items == _ids(found.episodes)
+    # The read set records every returned memory, and the profiles, as context (never keys).
+    retrieved = {(t, i) for t, i in read_set.retrieved}
+    assert {("memories", m) for m in _ids((*found.episodes, *found.assessments))} <= retrieved
+    assert ("profile", people["Bobby"]) in retrieved
+    assert all(m.id not in _ids(found.memories) for m in found.episodes)
+    assert set(found.timings) == {*pipeline.STAGES, "total"}
+    # Complement: no time or occasion words, no occasion.
+    plain = await _retrieve(db, story.story_id, "You were there with Bobby's sister.")
+    assert "occasion" in plain.skipped
+    assert plain.episodes == ()
+    assert plain.assessments == ()
+
+
+@pytest.mark.part("M4", "FR-RET-4")
+async def test_i_06(scratch: Scratch) -> None:
+    """A proper noun the vector arm misses is returned by the lexical arm: 60 memories sit
+    nearer the query's vector than "Quillon Vexby lent Cal the lantern." (the vector arm's
+    top 50 never reaches it), yet hybrid retrieval returns it, found by the lexical and alias
+    arms. Complement: with ``memory.episodic.hybrid_search`` off (vector only) it is missing,
+    and nothing returned was found by any arm but the vector one."""
+    db = scratch.db
+    story = await r.build_story(db, turns=200)
+    for n in range(60):
+        await r.memory(
+            db,
+            story,
+            f"near{n}",
+            f"Bobby says: line {n} about the cellar.",
+            turn=n + 1,
+            vector=NEAR,
+        )
+    target = await r.memory(
+        db, story, "quillon", "Quillon Vexby lent Cal the lantern.", turn=100, vector=FAR
+    )
+    await r.set_vectors(db, story.story_id, NEAR)
+    text = "What did Quillon Vexby lend me?"
+    hybrid = await _retrieve(db, story.story_id, text, embed=_vector())
+    assert target in _ids(hybrid.memories)
+    found = next(m for m in hybrid.memories if m.id == target)
+    assert "vector" not in found.arms
+    assert {"lexical", "alias"} <= set(found.arms)
+    assert hybrid.degradation == ()
+    assert hybrid.model_calls == 1
+    # Complement: the lexical arm off, the vector arm alone misses it.
+    vector_only = await _retrieve(
+        db,
+        story.story_id,
+        text,
+        embed=_vector(),
+        settings=await _settings(db, story.story_id, hybrid_search=False),
+    )
+    assert target not in _ids(vector_only.memories)
+    assert vector_only.memories
+    assert all(m.arms == ("vector",) for m in vector_only.memories)
+    assert {"lexical", "alias"} <= set(vector_only.skipped)
+
+
+@pytest.mark.part("M4", "FR-RET-2,3,6")
+async def test_s_thoseguys(scratch: Scratch, long_story: r.Story) -> None:
+    """S-THOSEGUYS on the 5,000-turn fixture (5,000 filler memories over 5,000 turns, every one
+    with a vector, an occasion type and two participants): "those guys a month ago at the game"
+    returns the game's episode, its participants and their assessments, as on a small story,
+    with the distractors left out. The vector arm runs (the query is embedded once) without
+    displacing the occasion."""
+    story = long_story
+    ids, people = story.ids, story.people
+    found = await _retrieve(scratch.db, story.story_id, QUERY, embed=_vector())
+    assert _ids(found.episodes) == [ids["game_dan"], ids["game_ann"], ids["game_bobby"]]
+    assert set(found.participants) == {people["Bobby"], people["Ann"], people["Dan"]}
+    assert set(_ids(found.assessments)) == {ids["assess_dan"], ids["assess_bobby"]}
+    assert {p.entity.entity_id for p in found.profiles} == {people["Bobby"], people["Ann"]}
+    assert ids["game_other"] not in _ids(found.episodes)
+    assert ids["game_recent"] not in _ids(found.episodes)
+    assert found.model_calls == 1
+    assert found.degradation == ()
+    assert len(found.memories) == 40  # Structured (M4)'s k
+    assert all(m.narrative_turn is None or m.narrative_turn <= r.TURNS for m in found.memories)
+    scores = [m.score for m in found.memories if m.score is not None]
+    assert len(scores) == len(found.memories)
+    assert scores == sorted(scores, reverse=True)
+    assert found.context.used <= found.context.budget
+
+
+async def test_rehydration_reads_retired_records_without_promoting_them(scratch: Scratch) -> None:
+    """FR-MEM-8's rehydration: a retired episode in the occasion window and a retired memory
+    the lexical lookup matches are returned, read from their rows; the lexically found one has
+    no vector, so it is re-embedded in one batched call (``model_calls`` 2: the query and the
+    batch), its similarity is ranked, and neither row's ``retrieval_tier`` changes or gains a
+    vector. Complements: a dormant (truncated-away) memory is never returned, and without the
+    batch embedder the retired memory is still returned lexically."""
+    db = scratch.db
+    story = await r.build_story(db, turns=r.TURNS)
+    episode = await r.memory(
+        db,
+        story,
+        "retired_game",
+        "Bobby says: Ann, that game was the best one yet.",
+        turn=r.MONTH_AGO,
+        event_type="game",
+        participants=("Bobby", "Ann"),
+        tier=RetrievalTier.RETIRED,
+    )
+    lantern = await r.memory(
+        db,
+        story,
+        "retired_lantern",
+        "Quillon Vexby polished the brass lantern.",
+        turn=300,
+        tier=RetrievalTier.RETIRED,
+    )
+    dormant = await r.memory(db, story, "dormant", "Quillon Vexby buried the lantern.", turn=301)
+    async with db.begin() as conn:
+        await conn.execute(
+            text("UPDATE memories SET membership = 'dormant' WHERE id = :i"), {"i": dormant}
+        )
+    await r.set_vectors(db, story.story_id, NEAR)
+    batches: list[list[str]] = []
+
+    async def embed_batch(texts: Sequence[str]) -> Sequence[Sequence[float]]:
+        batches.append(list(texts))
+        return [Q_VECTOR for _ in texts]
+
+    query = "Those guys a month ago at the game, and the lantern: you were there with Ann."
+    found = await _retrieve(db, story.story_id, query, embed=_vector(), embed_batch=embed_batch)
+    assert episode in _ids(found.episodes)
+    assert lantern in _ids(found.memories)
+    assert set(found.rehydrated) == {episode, lantern}
+    assert dormant not in _ids((*found.episodes, *found.assessments, *found.memories))
+    assert batches == [["Quillon Vexby polished the brass lantern."]]
+    assert found.model_calls == 2
+    ranked = next(m for m in found.memories if m.id == lantern)
+    assert "vector" in ranked.arms
+    assert ranked.similarity is not None
+    rows = await r.access_and_tiers(db, [episode, lantern])
+    assert rows[episode][1] == rows[lantern][1] == "retired"
+    assert rows[episode][0] is not None  # a turn's retrieval touches what it returned
+    stored = await vectors(db, story.story_id)
+    assert stored[lantern].vector is None
+    # Complement: no batch embedder, still returned (lexically).
+    lexical = await _retrieve(db, story.story_id, query, embed=_vector(), touch=False)
+    assert lantern in _ids(lexical.memories)
+    assert lexical.model_calls == 1
+
+
+async def test_a_lite_story_retrieves_nothing(scratch: Scratch) -> None:
+    """The gate: a story whose ``episodic`` module is off (Lite) reads its configuration and
+    nothing else: no memory, no entity, no projection, no canon; the result is empty with
+    ``skipped: ["episodic"]``."""
+    db = scratch.db
+    w = await c.world(db)
+    with r.statements(db) as seen:
+        found = await _retrieve(db, w.story_id, QUERY, embed=_vector())
+    assert found.skipped == ("episodic",)
+    assert found.episodes == found.memories == ()
+    assert found.profiles == ()
+    assert found.context.items == ()
+    for table in ("memories", "entities", "facts", "relationships", "placement", "events"):
+        assert seen.reading(table) == [], table
+
+
+async def test_retrieval_cost_is_fixed_and_indexed(scratch: Scratch, long_story: r.Story) -> None:
+    """NFR-PERF-1's implementation, without timing anything: the same query on the same cast
+    issues the same statements on a story of a few memories and on the 5,000-turn fixture (its
+    cost follows what it resolves, not the story's size), and every statement that reads
+    ``memories`` is served by an index (``EXPLAIN`` with table scans priced out shows no "Seq
+    Scan" of ``memories``; the vector arm reads the HNSW index), and the GIN indexes on
+    ``search`` and ``participants`` serve the lexical, alias and occasion arms' operators."""
+    db = scratch.db
+    small = await r.build_story(db)
+    await _plant_occasion(db, small)
+    await r.set_vectors(db, small.story_id, NEAR)
+
+    async def measure(story: r.Story) -> r.Seen:
+        with r.statements(db) as seen:
+            await _retrieve(db, story.story_id, QUERY, embed=_vector(), touch=False)
+        return seen
+
+    few, many = await measure(small), await measure(long_story)
+    assert len(few) == len(many)
+    reads = many.reading("memories")
+    assert len(reads) >= 5
+    plans = [await r.plan_of(db, sql, params) for sql, params in reads]
+    for (sql, _), plan in zip(reads, plans, strict=True):
+        assert "Seq Scan on memories" not in plan, (sql, plan)
+    assert "ix_memories_embedding_hnsw" in "\n".join(plans)
+    # The lexical, alias and occasion arms' operators are served by their GIN indexes (on this
+    # small table the planner reaches the story's rows by its b-tree first; at 50k memories a
+    # story the GIN indexes are what narrows them).
+    for sql, index in (
+        ("SELECT id FROM memories WHERE search @@ to_tsquery('english', 'quillon')", "search"),
+        (
+            "SELECT id FROM memories WHERE search @@ phraseto_tsquery('english', 'Quillon Vexby')",
+            "search",
+        ),
+        ("SELECT id FROM memories WHERE participants && ARRAY[%(p)s]::char(26)[]", "participants"),
+    ):
+        plan = await r.plan_of(db, sql, {"p": long_story.people["Bobby"]})
+        assert f"ix_memories_{index}" in plan, plan
+
+
+async def test_the_debugging_read_is_omniscient_only(scratch: Scratch) -> None:
+    """``GET /stories/{id}/retrieve`` answers the library's result for ``omniscient`` and
+    touches no memory; a character viewpoint is 403 ``omniscient_required``; ``as_of`` beyond
+    the head is 422; an unknown story 404."""
+    db, client = scratch.db, scratch.client
+    story = await r.build_story(db)
+    await _plant_occasion(db, story)
+    headers = {**bearer(), "X-Epistrel-Principal": c.PRINCIPAL}
+    path = f"/stories/{story.story_id}/retrieve"
+    params = {"q": QUERY, "viewpoint": "omniscient"}
+    response = await client.get(path, params=params, headers=headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [e["id"] for e in body["episodes"]] == [
+        story.ids["game_dan"],
+        story.ids["game_ann"],
+        story.ids["game_bobby"],
+    ]
+    assert body["resolution"]["event_type"] == "game"
+    assert set(body["timings"]) == {*pipeline.STAGES, "total"}
+    library = await scratch.lib.retrieve(CTX, story.story_id, q=QUERY, viewpoint="omniscient")
+    assert [m.id for m in library.episodes] == [e["id"] for e in body["episodes"]]
+    touched = await r.access_and_tiers(db, list(story.ids.values()))
+    assert all(at is None for at, _ in touched.values())
+    async with db.connect() as conn:
+        cast = list(
+            await conn.scalars(
+                text("SELECT id FROM characters WHERE story_id = :s"), {"s": story.story_id}
+            )
+        )
+    as_character = await client.get(
+        path, params={"q": QUERY, "viewpoint": f"character:{cast[0]}"}, headers=headers
+    )
+    assert as_character.status_code == 403
+    assert as_character.json()["error"]["code"] == "omniscient_required"
+    beyond = await client.get(path, params={**params, "as_of": r.TURNS + 5}, headers=headers)
+    assert beyond.status_code == 422
+    missing = await client.get(
+        "/stories/01J9Z8Q4N5V6W7X8Y9Z0A1B2C9/retrieve", params=params, headers=headers
+    )
+    assert missing.status_code == 404
+
+
+async def test_context_sources_fill_tier_one(scratch: Scratch) -> None:
+    """The ``context_sources`` hook (#146's ledger items and #147's pins register on it): its
+    items open the context, ledger items before pins, and the pins together stay within 40% of
+    the budget (one over the share is dropped as ``pin_cap``); the source is asked with the
+    query's position, viewpoint and resolved entities. Complement: a source answering an item
+    of another tier is refused."""
+    db = scratch.db
+    story = await r.build_story(db)
+    await _plant_occasion(db, story)
+    asked: list[pipeline.SourceRequest] = []
+
+    async def source(conn: Any, request: pipeline.SourceRequest) -> list[ContextItem]:
+        del conn
+        asked.append(request)
+        return [
+            ContextItem(Tier.LEDGER_AND_PINS, "pin", "pin-1", "p" * 4_000),  # 1,000 tokens
+            ContextItem(Tier.LEDGER_AND_PINS, "pin", "pin-2", "q" * 1_200),  # 300: over 1,200
+            ContextItem(Tier.LEDGER_AND_PINS, "ledger", "debt", "Cal owes Bobby a game."),
+        ]
+
+    pipeline.register_context_source(source)
+    try:
+        found = await _retrieve(db, story.story_id, QUERY)
+    finally:
+        pipeline.remove_context_source(source)
+    (request,) = asked
+    assert request.position == (r.TURNS + 1, 0)
+    assert request.viewpoint == "omniscient"
+    assert set(request.entities) == {story.people["Bobby"], story.people["Ann"]}
+    kinds = [(i.kind, i.item_id) for i in found.context.items][:2]
+    assert kinds == [("ledger", "debt"), ("pin", "pin-1")]
+    assert ("pin-2", "pin_cap") in {(d.item_id, d.reason) for d in found.context.dropped}
+    assert found.context.used <= 3_000
+
+    async def wrong(conn: Any, request: pipeline.SourceRequest) -> list[ContextItem]:
+        del conn, request
+        return [ContextItem(Tier.MEMORIES, "memory", "x", "x")]
+
+    pipeline.register_context_source(wrong)
+    try:
+        with pytest.raises(ValueError, match="tier-1"):
+            await _retrieve(db, story.story_id, QUERY)
+    finally:
+        pipeline.remove_context_source(wrong)

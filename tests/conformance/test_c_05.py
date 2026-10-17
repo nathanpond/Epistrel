@@ -26,7 +26,7 @@ from epistrel.core.config_changes import read_settings
 from epistrel.core.retrieval import (
     EMBEDDING_PENDING,
     EMBEDDING_UNAVAILABLE,
-    RetrievalResult,
+    SearchResult,
     TsvectorLexicalSearch,
     search,
 )
@@ -87,7 +87,7 @@ async def _embedded_story(s: Scratch) -> tuple[str, dict[str, str], list[str]]:
     return story, cast, memory_ids
 
 
-async def _search(s: Scratch, story: str, query: str) -> RetrievalResult:
+async def _search(s: Scratch, story: str, query: str) -> SearchResult:
     async with s.db.connect() as conn:
         return await search(
             conn,

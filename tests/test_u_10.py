@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from epistrel.core.memory.records import DEFAULT_IMPORTANCE, decayed_importance
+from epistrel.core.profiles.schema import Episodic
+from epistrel.core.retrieval.rank import Candidate, Weights, fuse, rank, recency, score
 from epistrel.core.settings_schema import DEFAULT_IMPORTANCE_HALF_LIFE_TURNS, MemorySettings
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
@@ -83,3 +85,82 @@ def test_the_stub_scores_by_text() -> None:
     assert 0.0 <= two <= 1.0
     assert one == digest_score("episodic memory: a")
     assert one != two
+
+
+@pytest.mark.part("M4", "FR-RET-5")
+def test_u_10__ranking() -> None:
+    """Retrieval ranking combines semantic similarity, recency decay and importance
+    (FR-RET-5): reciprocal-rank fusion scales a memory ranked first by every arm that ran to
+    1.0 and ranks the arms' agreement above one arm's; recency halves every half-life of turns
+    before the query's position (none for a position-less memory, no negative age); the score
+    is ``w_sim·fused + w_rec·recency + w_imp·decayed importance`` with the profile's weights,
+    ties by id. Complements: each weight alone orders by its own term (a zero weight removes its
+    term's influence), and the order is the same on every run."""
+    # Fusion.
+    fused = fuse([["a", "b", "c"], ["b", "a"], ["b"]], k=60)
+    assert fused["b"] > fused["a"] > fused["c"]
+    assert fuse([["x"], ["x"]], k=60)["x"] == pytest.approx(1.0)
+    assert fuse([["x"], []], k=60)["x"] == pytest.approx(0.5)  # an arm that ran and found none
+    assert fuse([], k=60) == {}
+    with pytest.raises(ValueError, match="positive"):
+        fuse([["x"]], k=0)
+    # Recency.
+    assert recency(100, 100, 100) == 1.0
+    assert recency(0, 100, 100) == pytest.approx(0.5)
+    assert recency(0, 200, 100) == pytest.approx(0.25)
+    assert recency(150, 100, 100) == 1.0
+    assert recency(None, 100, 100) == 0.0
+    # The score, with the profile's default weights (0.6 / 0.2 / 0.2).
+    defaults = Episodic()
+    weights = Weights(
+        defaults.weight_similarity, defaults.weight_recency, defaults.weight_importance
+    )
+    assert (weights.similarity, weights.recency, weights.importance) == (0.6, 0.2, 0.2)
+    assert defaults.recency_half_life_turns == 100
+    assert score(1.0, 0.5, 0.25, weights) == pytest.approx(0.6 + 0.1 + 0.05)
+    with pytest.raises(ValueError, match="negative"):
+        Weights(-0.1, 0.2, 0.2)
+
+    candidates = [
+        Candidate("similar", turn=10, importance=0.1, importance_at=10),
+        Candidate("recent", turn=99, importance=0.1, importance_at=99),
+        Candidate("weighty", turn=10, importance=1.0, importance_at=99),
+        Candidate("unscored", turn=None, importance=None, importance_at=None),
+    ]
+    similarity = {"similar": 1.0, "recent": 0.1, "weighty": 0.1}
+
+    def order(w: Weights) -> list[str]:
+        ranked = rank(
+            candidates,
+            similarity,
+            now=100,
+            weights=w,
+            recency_half_life=100,
+            importance_half_life=200,
+        )
+        return [r.memory_id for r in ranked]
+
+    assert order(weights)[0] == "similar"
+    assert order(Weights(1.0, 0.0, 0.0))[0] == "similar"
+    assert order(Weights(0.0, 1.0, 0.0))[0] == "recent"
+    assert order(Weights(0.0, 0.0, 1.0))[0] == "weighty"
+    # The unscored, position-less memory counts its importance as 0.5 and no recency.
+    (unscored,) = [
+        r
+        for r in rank(
+            candidates,
+            similarity,
+            now=100,
+            weights=Weights(0.0, 1.0, 1.0),
+            recency_half_life=100,
+            importance_half_life=200,
+        )
+        if r.memory_id == "unscored"
+    ]
+    assert (unscored.similarity, unscored.recency) == (0.0, 0.0)
+    assert unscored.importance == pytest.approx(DEFAULT_IMPORTANCE)
+    # Ties by id, deterministic.
+    tied = [Candidate(i, turn=50, importance=0.5, importance_at=50) for i in ("b", "a", "c")]
+    once = rank(tied, {}, now=100, weights=weights, recency_half_life=100, importance_half_life=200)
+    assert [r.memory_id for r in once] == ["a", "b", "c"]
+    assert order(weights) == order(weights)

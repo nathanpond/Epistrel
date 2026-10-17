@@ -86,6 +86,7 @@ from epistrel.api.routes.ownership import (
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
 from epistrel.api.routes.respond import RespondResponse
+from epistrel.api.routes.retrieval import RetrievalBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
 from epistrel.api.routes.stories import (
     IngestResponse,
@@ -191,9 +192,18 @@ FINGERPRINT = re.compile(r"^sha256:[0-9a-f]{64}$")
 DROPPED = frozenset({"idempotency_key"})
 """Transport fields: the key REST echoes (generated per request)."""
 ZEROED = frozenset(
-    {"elapsed_ms", "latency_ms", "queued_ms", "first_call_offset_ms", "request_id", "policy_set"}
+    {
+        "elapsed_ms",
+        "latency_ms",
+        "queued_ms",
+        "first_call_offset_ms",
+        "request_id",
+        "policy_set",
+        "timings",
+    }
 )
-"""Durations (#76: a turn's queue wait and first-call delay too), and hashes over ids: the
+"""Durations (#76: a turn's queue wait and first-call delay too; #141: a retrieval's stage
+timings), and hashes over ids: the
 stub's request id (of the prompt) and an operation's ``config_revisions.policy_set`` (of the
 policy ids in force)."""
 
@@ -728,6 +738,16 @@ def _steps() -> list[Step]:
             ),
             lambda e, ids: _entity_profile(e, ids["story"], ids["entity"]),
             prepare=_entity,
+        ),
+        # -- retrieval (#141): the debugging read, omniscient.
+        Step(
+            "retrieve",
+            lambda ids: Rest(
+                "GET",
+                f"{s}/retrieve",
+                params={"q": "Those guys at the game a month ago", "viewpoint": "omniscient"},
+            ),
+            lambda e, ids: _retrieve(e, ids["story"]),
         ),
         # -- turns
         Step(
@@ -2071,6 +2091,13 @@ async def _entity(engine: Engine, ids: Ids) -> None:
 async def _entity_profile(engine: Engine, story_id: str, entity_id: str) -> dict[str, Any]:
     found = await engine.entity_profile(CTX, story_id, entity_id, viewpoint="omniscient")
     return dump(EntityProfileBody.of(found))
+
+
+async def _retrieve(engine: Engine, story_id: str) -> dict[str, Any]:
+    found = await engine.retrieve(
+        CTX, story_id, q="Those guys at the game a month ago", viewpoint="omniscient"
+    )
+    return dump(RetrievalBody.of(found))
 
 
 async def _predicate_decision(call: Awaitable[Any]) -> dict[str, Any]:

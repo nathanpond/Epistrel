@@ -182,3 +182,19 @@ def test_the_seed_runs_every_delivered_module() -> None:
     assert STRUCTURED.budgets.model_dump() == {"model_calls": None, "deadline_ms": 45_000}
     assert STRUCTURED.models.purposes == {}
     assert STRUCTURED.models.generation == LITE.models.generation
+
+
+def test_reranking_is_not_delivered() -> None:
+    """#141: retrieval has no reranker in M4. A profile setting ``memory.episodic.reranking``
+    to ``true`` is invalid, naming it as undelivered; ``false`` (the seeds' value) and the new
+    ranking dials are valid."""
+    document = structured_m4_settings()
+    document["memory"]["episodic"].update(
+        weight_similarity=1.0, weight_recency=0.0, recency_half_life_turns=50
+    )
+    assert validate_profile(document).valid
+    document["memory"]["episodic"]["reranking"] = True
+    refused = validate_profile(document)
+    assert not refused.valid
+    assert [u.setting for u in refused.undelivered] == ["memory.episodic.reranking"]
+    assert refused.undelivered[0].module == "episodic"

@@ -110,6 +110,8 @@ from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.ratings import change as rating_change
 from epistrel.core.ratings import reactivation
 from epistrel.core.ratings import suggest as rating_suggestion
+from epistrel.core.retrieval import lexical_backend
+from epistrel.core.retrieval import pipeline as retrieval_pipeline
 from epistrel.core.settings_schema import ConfigClass, StorySettings
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
@@ -1432,6 +1434,41 @@ class Engine:
         async with self.db.connect() as conn:
             return await structured_projections.profile_view(
                 conn, story_id, entity_id, as_of=as_of, viewpoint=ctx.viewpoint
+            )
+
+    # -- retrieval (FR-RET-2..7; #141) ----------------------------------------------------------
+
+    @refuses_nul()
+    async def retrieve(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        q: str,
+        viewpoint: str | None = None,
+        as_of: int | None = None,
+        actor_character_id: str | None = None,
+    ) -> retrieval_pipeline.RetrievalResult:
+        """What a structured render's context would retrieve for ``q`` asked by
+        ``actor_character_id`` (default the player) just after turn ``as_of`` (default the
+        head), for debugging: the located episodes and assessments, the ranked memories with
+        their scores, the profiles and canon, the assembled context and the per-stage timings.
+        ``omniscient`` only (403 ``omniscient_required`` for a character viewpoint: it shows
+        ranking over private records). A read: no operation, no memory touched. A story whose
+        ``episodic`` module is off answers an empty result (``skipped: ["episodic"]``)."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        embedder = self.models.embeddings
+        async with self.db.connect() as conn:
+            return await retrieval_pipeline.read_retrieve(
+                conn,
+                story_id,
+                q=q,
+                viewpoint=ctx.viewpoint,
+                as_of=as_of,
+                actor_character_id=actor_character_id,
+                embed=embedder.query_embedder(),
+                embed_batch=embedder.batch_embedder(),
+                lexical=lexical_backend(self.settings.lexical_backend),
             )
 
     # -- the predicate registry (FR-PROP-3,4; #131) ---------------------------------------------

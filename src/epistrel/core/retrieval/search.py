@@ -9,7 +9,7 @@ query through two channels, each over **active hot** memories only:
   version is never compared, whatever its dimension (``vector_search``).
 - **lexical**: the swappable backend (``core.retrieval.lexical``).
 
-``RetrievalResult.degradation`` says when the vector channel was left out:
+``SearchResult.degradation`` says when the vector channel was left out:
 
 - ``embedding_pending``: the story's vectors are not all in the pinned version yet (a model
   change's re-embed job has not finished it): lexical only, and no query is embedded;
@@ -17,8 +17,9 @@ query through two channels, each over **active hot** memories only:
   or answered another dimension than the pin's): lexical only.
 
 No ``embed`` (the story's ``episodic`` module is off, or nothing is embedded yet) is lexical
-only with **no** marker: nothing was degraded. Fusing the two channels into one ranking, the
-token budget and the alias channel are #141's.
+only with **no** marker: nothing was degraded. Fusing the channels into one ranking, the token
+budget and the alias channel are ``core.retrieval.pipeline``'s (#141), which runs
+``vector_search`` as its vector arm.
 """
 
 from __future__ import annotations
@@ -33,7 +34,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from epistrel.core import embeddings
 from epistrel.core.enums import RetrievalTier
 from epistrel.core.membership import active_only_sql
-from epistrel.core.retrieval.lexical import LexicalFilters, LexicalSearch
+from epistrel.core.retrieval.lexical import (
+    LexicalFilters,
+    LexicalSearch,
+    position_clause,
+    position_params,
+)
 from epistrel.core.tables.memories import Vector
 
 log = logging.getLogger(__name__)
@@ -57,7 +63,7 @@ class Hit:
 
 
 @dataclass(frozen=True)
-class RetrievalResult:
+class SearchResult:
     """Both channels' hits, best first, and why a channel was left out (``degradation``)."""
 
     vector: tuple[Hit, ...] = ()
@@ -68,21 +74,39 @@ class RetrievalResult:
 
 
 async def vector_search(
-    conn: AsyncConnection, story_id: str, vector: Sequence[float], *, version: str, k: int
+    conn: AsyncConnection,
+    story_id: str,
+    vector: Sequence[float],
+    *,
+    version: str,
+    k: int,
+    through: tuple[int, int] | None = None,
 ) -> list[Hit]:
     """Up to ``k`` of the story's active hot memories nearest ``vector``, among those stamped
-    ``version`` only."""
+    ``version`` only, and none positioned after ``through`` (``(turn, beat)``, when given).
+    Ordered by the HNSW index (cosine distance) in a materialized step, then re-sorted
+    exactly: with pgvector's iterative scan in ``relaxed_order`` (#141 sets it) the index may
+    answer slightly out of order."""
     if k < 1:
         return []
     found = await conn.execute(
         text(
-            "SELECT m.id, m.embedding <=> CAST(:v AS vector) AS distance FROM memories m "  # noqa: S608 - fixed fragments only
+            "WITH nearest AS MATERIALIZED ("  # noqa: S608 - fixed fragments only
+            "SELECT m.id, m.embedding <=> CAST(:v AS vector) AS distance FROM memories m "
             f"WHERE m.story_id = :story AND {active_only_sql('m')} "
             f"AND m.retrieval_tier = '{RetrievalTier.HOT.value}' "
             "AND m.embedding IS NOT NULL AND m.embedding_model_version = :version "
-            "ORDER BY distance, m.id LIMIT :k"
+            f"AND {position_clause('m')} "
+            "ORDER BY distance LIMIT :k) "
+            "SELECT id, distance FROM nearest ORDER BY distance, id"
         ),
-        {"v": _TO_VECTOR(list(vector)), "story": story_id, "version": version, "k": k},
+        {
+            "v": _TO_VECTOR(list(vector)),
+            "story": story_id,
+            "version": version,
+            "k": k,
+            **position_params(through),
+        },
     )
     return [Hit(str(r.id), 1.0 - float(r.distance)) for r in found]
 
@@ -96,27 +120,27 @@ async def search(
     lexical: LexicalSearch,
     embed: Embedder | None = None,
     filters: LexicalFilters | None = None,
-) -> RetrievalResult:
+) -> SearchResult:
     """Both channels for ``query`` (see the module docstring)."""
     lexical_hits = tuple(
         Hit(memory_id, rank)
         for memory_id, rank in await lexical.search(conn, story_id, query, k, filters)
     )
     if embed is None:
-        return RetrievalResult(lexical=lexical_hits)
+        return SearchResult(lexical=lexical_hits)
     pin = await embeddings.read_pin(conn)
     if await embeddings.is_pending(conn, story_id, pin):
-        return RetrievalResult(lexical=lexical_hits, degradation=(EMBEDDING_PENDING,))
+        return SearchResult(lexical=lexical_hits, degradation=(EMBEDDING_PENDING,))
     if not pin.pinned:
-        return RetrievalResult(lexical=lexical_hits)
+        return SearchResult(lexical=lexical_hits)
     try:
         vector = await embed(query)
         embeddings.check_dimension(pin, len(vector), model=str(pin.version))
     except Exception as exc:  # any failure of the injected embedder degrades, never fails
         log.info("query embedding failed story=%s error=%s", story_id, type(exc).__name__)
-        return RetrievalResult(lexical=lexical_hits, degradation=(EMBEDDING_UNAVAILABLE,))
+        return SearchResult(lexical=lexical_hits, degradation=(EMBEDDING_UNAVAILABLE,))
     hits = await vector_search(conn, story_id, vector, version=str(pin.version), k=k)
-    return RetrievalResult(
+    return SearchResult(
         vector=tuple(hits), lexical=lexical_hits, embedding_model_version=pin.version
     )
 
@@ -126,7 +150,7 @@ __all__ = [
     "EMBEDDING_UNAVAILABLE",
     "Embedder",
     "Hit",
-    "RetrievalResult",
+    "SearchResult",
     "search",
     "vector_search",
 ]

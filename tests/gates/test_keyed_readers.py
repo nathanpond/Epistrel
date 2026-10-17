@@ -76,6 +76,35 @@ def test_each_direct_read_is_reported(tmp_path: Path) -> None:
     assert all("only through KeyedLookup" in f for f in findings)
 
 
+PROJECTION_VIOLATIONS = '''"""Reads the projections directly (prose: FROM placement)."""
+from sqlalchemy import select, text
+
+from epistrel.core.projections.structured import profile_view, scene_view
+from epistrel.core.tables.projections import placement, relationships
+
+
+def reads(conn):
+    a = select(relationships.c.id)
+    b = text("SELECT s.turn FROM scene_state s")
+    return a, b, placement, profile_view, scene_view
+'''
+
+
+def test_each_direct_projection_read_is_reported(tmp_path: Path) -> None:
+    """#137's rule, carried by #141: a keyed reader reads the relationship, placement and scene
+    projections only through ``KeyedLookup.profile``/``scene``."""
+    root = _tree(
+        tmp_path,
+        {
+            READSET_MODULE: 'KEYED_READERS = ("epistrel.core.retrieval.pipeline",)\n',
+            "src/epistrel/core/retrieval/pipeline.py": PROJECTION_VIOLATIONS,
+        },
+    )
+    findings = scan(root)
+    lines = sorted(int(f.split(":")[1]) for f in findings)
+    assert lines == [4, 5, 9, 10], findings
+
+
 def test_a_clean_reader_passes_and_prose_is_ignored(tmp_path: Path) -> None:
     root = _tree(
         tmp_path,

@@ -433,6 +433,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "set_content_rating": ("story_archived", "story_paused", "rating_retired"),
     "rebuild_projections": ("story_busy",),
     "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
+    "retrieve": ("omniscient_required", "viewpoint_unresolved"),
     "get_story": ("viewpoint_unresolved",),
     "get_operation": (
         "idempotency_conflict",

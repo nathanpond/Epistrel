@@ -562,6 +562,8 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/entities/{{entity_id}}/profile"): Call(
         200, queries=(OMNISCIENT,), prepare=_profiled
     ),
+    # Retrieval (#141): the debugging read, omniscient.
+    ("GET", f"{S}/retrieve"): Call(200, queries=({"q": "the game", **OMNISCIENT},)),
     # -- stories: message ratings (#112). Each requester rates a fresh story's reply, retracts
     # the owner's rating (none of its own: still 204), and reads its own rating of a reply all
     # three rated alike.

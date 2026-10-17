@@ -268,6 +268,17 @@ class EmbeddingService:
 
         return embed_query
 
+    def batch_embedder(self) -> Callable[[Sequence[str]], Awaitable[Sequence[Sequence[float]]]]:
+        """A ``core.retrieval.pipeline.BatchEmbedder``: several texts to their vectors in one
+        call (a retrieval's rehydration, #141)."""
+
+        async def embed_texts(texts: Sequence[str]) -> Sequence[Sequence[float]]:
+            if not texts:
+                return []
+            return (await self.embed(list(texts))).vectors
+
+        return embed_texts
+
     async def aclose(self) -> None:
         await self.adapter.aclose()
 

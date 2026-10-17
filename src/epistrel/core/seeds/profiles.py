@@ -164,10 +164,30 @@ VERIFY_DEPTH_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
 name it yet."""
 
 
+RETRIEVAL_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
+    {
+        "memory": {
+            "episodic": {
+                "weight_similarity": 0.6,
+                "weight_recency": 0.2,
+                "weight_importance": 0.2,
+                "recency_half_life_turns": 100,
+                "retrieval_token_budget": 3_000,
+            }
+        }
+    }
+)
+"""The retrieval ranking and budget dials (#141), at the schema's defaults: migration
+``0056_retrieval`` adds them to a deployment's ``profile_defaults`` that does not name them
+yet."""
+
+
 def profile_defaults() -> dict[str, Any]:
-    """A deployment's seeded ``profile_defaults``: Lite's settings with ``M4_PROFILE_DEFAULTS``
-    and ``VERIFY_DEPTH_DEFAULTS`` under them (a complete document of every delivered setting)."""
-    return _merged(_merged(_thaw(M4_PROFILE_DEFAULTS), VERIFY_DEPTH_DEFAULTS), LITE_SETTINGS)
+    """A deployment's seeded ``profile_defaults``: Lite's settings with ``M4_PROFILE_DEFAULTS``,
+    ``VERIFY_DEPTH_DEFAULTS`` and ``RETRIEVAL_DEFAULTS`` under them (a complete document of
+    every delivered setting)."""
+    base = _merged(_merged(_thaw(M4_PROFILE_DEFAULTS), VERIFY_DEPTH_DEFAULTS), RETRIEVAL_DEFAULTS)
+    return _merged(base, LITE_SETTINGS)
 
 
 __all__ = [
@@ -175,6 +195,7 @@ __all__ = [
     "LITE_PRESET_ID",
     "LITE_SETTINGS",
     "M4_PROFILE_DEFAULTS",
+    "RETRIEVAL_DEFAULTS",
     "SEED_PRINCIPAL",
     "STRUCTURED_M4_NAME",
     "STRUCTURED_M4_PROFILE_ID",

@@ -6943,3 +6943,64 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (tests):** `test_u_15__weak_predicate` is marked `FR-PROP-10` alone, because docs/04 §15 does not plan U-15 for FR-PROP-4; CONTRADICTION-SOUNDNESS covers FR-PROP-4. The belief-holder check moved out of the M4 part into `tests/integration/test_verify.py::test_other_holders_wait_for_their_stores`, because "belief" is an M5 lexicon term.
   **Why:** The lexicon and traceability gates.
   **Issue:** #140
+- **Decision (Discretion):** Migration 0056 adds three columns to `memories`: `event_type` (text, at most 64), `participants` (ulid[], GIN) and the stored generated `search` tsvector (`to_tsvector('english', text)`, GIN), plus the `(story_id, event_type, narrative_turn)` occasion index. The guard function adds `search` to its pass-through list. PostgreSQL computes a generated column after BEFORE triggers run, so `to_jsonb(NEW)` cannot compare it, and without the change every importance or membership update would be refused. `text` stays guarded, and `search` follows it. Fork no longer copies generated columns (`c.computed`), and it remaps `participants` like any other id.
+  **Why:** The planner's pass-1 Discretion, plus the carried obligation from #138 (the tsvector column and its GIN index).
+  **Issue:** #141, #138, #150
+- **Decision (Discretion):** The episode layer is the episodic memories themselves. A story-time window maps to turns through M4's basis (turn t covers `[zero + 10t, zero + 10(t+1))`), with overlap semantics, so that a minute-level instant still lands on a turn. The occasion step has these rules:
+  - It runs when the text names a window or an event type. Participants match **any** resolved entity, and it returns up to 5 episodes, latest first.
+  - The located participants are the union of the episodes' participants and actors.
+  - Assessments are semantic memories or reflections whose `participants` overlap the located ones, positioned from the window's start or position-less, up to `k`.
+  - Profiles are only for **character** entities. Both profiles and canon leave out the speaker.
+  - The speaker defaults to the player.
+  **Why:** The planner's Discretion leaves the window-to-turn mapping and the assessment window open. Assessments are formed at or after the occasion, so "within the window" reads as "from the window's start".
+  **Issue:** #141
+- **Decision (deviation, Discretion):** The lexical query matches **any** of the query's words: `plainto_tsquery`'s lexemes joined with `|`, ranked by `ts_rank`. The planner named `websearch_to_tsquery`, which ANDs every word, so a conversational question ("What did Quillon Vexby lend me?") would almost never match one memory. The backend now reads the `search` column. `LexicalFilters` gains `through` (no memory after the query's position) and `tiers` (rehydration searches `retired`), so the arm still goes through the swappable `LexicalSearch` protocol (C-07).
+  **Why:** Recall. Keeping the arm behind the protocol keeps NFR-PORT-2's swap meaningful.
+  **Issue:** #141, #138
+- **Decision (Discretion):** The alias arm is an exact-phrase match of the resolved entities' aliases and canonical names (`phraseto_tsquery` over `search`, any casing, at most 32 phrases). It is core SQL in the pipeline, not a lexical-backend method, and it does not match by `participants`. `hybrid_search: false` turns off the lexical and alias arms both (I-06's complement is "vector only"). The lexical arm still runs whenever the vector arm cannot (pending, unavailable, no pin), as #138's search did.
+  **Why:** "Exact proper-noun match" is a text match, and I-06's complement needs one switch for "pure vector".
+  **Issue:** #141
+- **Decision (Discretion):** Ranking has these rules:
+  - RRF over the arms that ran, scaled by `(k + 1) / arms`, so that rank 1 in every arm is 1.0. Without the scaling, raw RRF (about 0.016) would be swamped by recency and importance on the 0..1 scale.
+  - Recency is 0 for a position-less memory.
+  - The "now" for both decay terms is the query's position turn, not `committed_turns`, so that an `as_of` read decays as of that turn.
+  - Ties are broken by id.
+  
+  The weights and `recency_half_life_turns` are prospective, behavioral `memory.episodic` dials, along with `retrieval_token_budget`. The arm sizes, the RRF k, the rehydration cap and `embedding_hnsw_ef_search` are prospective deployment settings: a new `RetrievalSettings` section, plus a field on `EmbeddingSettings`. Migration 0056 adds the dials to `profile_defaults` (`RETRIEVAL_DEFAULTS`) without writing a `config_changes` row, as 0055 did.
+  **Why:** The planner's defaults. The split puts per-story behaviour in profiles and capacity tuning at the deployment.
+  **Issue:** #141, #153
+- **Decision (Discretion):** `memory.episodic.reranking: true` is refused as undelivered through a new `schema.UNDELIVERED_VALUES` (value-level). `false`, the value the seeds and `profile_defaults` already store, stays valid. A separate `reranking` module would have made `false` undelivered as well, and stored profile versions name it.
+  **Why:** "reranking stays undelivered" (Discretion), without rewriting immutable profile versions.
+  **Issue:** #141, #129
+- **Decision (Discretion):** Assembly fills the budget greedily by tier. It skips an item that does not fit and continues, so a smaller later item may still fit. Pins share at most 40% of the budget (`pin_cap`), and a repeated `(kind, id)` is dropped as `duplicate`. Tokens are `len // 4` with at least 1 per item. Tier 1 comes from a `CONTEXT_SOURCES` hook (ledger items, then pins), which #146 (ledger) and #147 (pins) register on. A source answering any other tier or kind is refused.
+  **Why:** FR-RET-7 and the Discretion. The hook is real wiring with a cap, tested with a test-registered source, until #146/#147 land.
+  **Issue:** #141, #146, #147
+- **Decision (Discretion):** Rehydration reads retired rows found by the occasion window or by a second lexical search over the `retired` tier, capped at `retrieval_rehydrate_max_rows` minus the retired episodes, and never one already returned as an episode. When the vector arm ran, a rehydrated row's similarity comes from its stored vector if it is in the pinned version. Otherwise all such rows are re-embedded in **one** batched call (`embed_batch`, `EmbeddingService.batch_embedder`), counted in `model_calls` and excluded from `timings`. The vector is never stored (#147's `memory.hot_set.retain_retired_vectors` will decide storage), and the tier never changes.
+  **Why:** The AC and the planner.
+  **Issue:** #141, #147
+- **Decision (carried #137/#136):** `KeyedLookup` gains `profile`, `scene` and `canon_context`. Each reads #137's views or #133's `canon_at` and records **retrieved** rows (`profile:<entity>` and `scene:<turn>`, versioned by a hash of the facts behind them; `facts`, versioned by `tx_from`). They record no query keys, because semantic retrieval is context. `resolution.context.load_context` takes an optional `lookup` and reads the scene and relationships only through it. `core.retrieval.pipeline` joins `KEYED_READERS`. `check-keyed-readers` now also flags direct reads of `profile_view`/`scene_view` and of the `relationships`/`placement`/`scene_state` tables, with a gate test.
+  **Why:** #137's carried rule: turn-time projection reads go through `KeyedLookup` and its readers are listed. Keys would make every profile change regenerate a turn, which #136 reserves for verdict-bearing reads.
+  **Issue:** #141, #137, #136
+- **Decision (carried #139):** Q-02's `run` resolves every query through `core.retrieval.pipeline.resolve_query`, the function `retrieve`'s first stage calls, instead of calling the resolvers directly (`tests/test_resolution.py::test_q_02_runs_through_the_retrieval_pipeline`). End to end, the S-THOSEGUYS shape runs through `retrieve` in `test_i_05`/`test_s_thoseguys`. #157 registers the Q-02 suite.
+  **Why:** #139's carried obligation.
+  **Issue:** #141, #139, #157
+- **Decision (carried #138):** `TurnBudget.embedding_calls` counts a turn's retrieval embedding calls, failed ones included, through `orchestrator.budget.counted_embedder`. These calls are counted apart from `used` and the cap, and are not added to `report()`. #150's structured turn wraps its embedders with it.
+  **Why:** #138's deferral note: embedding calls are already counted under `purpose=embedding` and are not generation calls of NFR-PERF-6's cap. The Lite turn report's shape stays.
+  **Issue:** #141, #138, #150
+- **Decision (Discretion):** `Engine.retrieve(ctx, story_id, *, q, viewpoint, as_of, actor_character_id)` and `GET /stories/{id}/retrieve` behave as follows:
+  - The viewpoint is resolved like every read (a named one, else the actor's, else the story's default), then must be `omniscient` (403 `omniscient_required`; with nothing to resolve, 422 `viewpoint_unresolved`).
+  - The position is `(as_of + 1, 0)`. `q` is 1..4,000 characters, and an unknown actor is 422.
+  - It is a read: no operation row, and `touch=False`, so a debugging GET never moves `last_accessed_at`, which #147's retirement reads. A turn's call touches by default.
+  - The REST body carries the resolution, the episodes, the participants, the assessments, the memories with their scores and arms, the profiles (#137's body), the canon, the context with what was dropped, the rehydrated ids, the degradation, the skipped stages, `model_calls` and `timings`.
+  - C-03 zeroes `timings`, and an ownership-matrix row covers the route.
+  **Why:** AC5 and the planner. A GET must not change retirement inputs.
+  **Issue:** #141, #73, #147
+- **Decision (Discretion):** The vector arm wraps the HNSW query in a `MATERIALIZED` CTE and re-sorts it exactly, because `relaxed_order` may return rows slightly out of order. `SET LOCAL hnsw.ef_search` / `hnsw.iterative_scan` are issued per retrieval on the caller's transaction.
+  **Why:** pgvector 0.8's documented pattern for iterative scans. The test image carries pgvector 0.8.7.
+  **Issue:** #141
+- **Decision (tests):** The retrieval tests run on a module-scoped scratch database (`embedding_support.embedding_db`, pinned at d = 4 by `retrieval_support.pin`).
+  - **Fixture.** `tests/retrieval_support.build_story` is the 5,000-turn fixture builder, reusable by #153. It bulk-inserts filler memories through `insert_derived`, citing one real turn's operation, and then moves `next_turn_index`, after every canon write, because no operation can commit once the chain no longer holds.
+  - **NFR-PERF-1.** The bound is proved without a clock. The same statement count holds on a small story and the 5,000-turn one. Every `memories` read is served by an index: no sequential scan under `enable_seqscan=off` and `enable_sort=off`, and the vector arm reads `ix_memories_embedding_hnsw`. On this small table the planner prefers the story b-tree for the lexical and occasion arms, so the GIN indexes' service of `@@` and `&&` is shown on the operators. P-01's p95 is #153's.
+  - **Test IDs.** `test_assemble_budget` (FR-RET-7, S) has no part marker, per the test plan. The rehydration, gate, cost, hook and REST tests carry no test ID.
+  **Why:** #138's rule (pin only on a scratch database), and the orchestrator's instruction for NFR-PERF-1.
+  **Issue:** #141, #153

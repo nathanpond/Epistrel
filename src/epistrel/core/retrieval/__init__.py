@@ -16,7 +16,7 @@ from epistrel.core.retrieval.search import (
     EMBEDDING_UNAVAILABLE,
     Embedder,
     Hit,
-    RetrievalResult,
+    SearchResult,
     search,
     vector_search,
 )
@@ -29,7 +29,7 @@ __all__ = [
     "Hit",
     "LexicalFilters",
     "LexicalSearch",
-    "RetrievalResult",
+    "SearchResult",
     "TsvectorLexicalSearch",
     "lexical_backend",
     "search",

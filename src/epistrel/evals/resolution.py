@@ -1,8 +1,8 @@
 """Q-02's resolution accuracy: the metric and a generated fixture (FR-RET-2,3, NFR-QUAL-6; #139).
 
 docs/04 Q-02 measures referential and temporal resolution (S-THOSEGUYS generalised). #139
-contributes the metric and the fixture; #157 registers the Q-02 suite (and #141's retrieval
-joins the run). The metric is **report-only**: docs/04 sets no floor.
+contributes the metric and the fixture; #141's retrieval pipeline runs it (its resolve stage);
+#157 registers the Q-02 suite. The metric is **report-only**: docs/04 sets no floor.
 
 - ``generate(seed, n)`` builds a deterministic fixture: a cast (names, genders, a sibling
   pair) and ``n`` queries, each a text with its speaker, context beats, the mentions it should
@@ -11,7 +11,9 @@ joins the run). The metric is **report-only**: docs/04 sets no floor.
   shapes: a named speaker's "those guys at the game last week", a pronoun with one compatible
   antecedent, a pronoun with two (the complement: ``uncertain``), a relational description, an
   unknown name, a calendar expression without a calendar.
-- ``run(fixture)`` resolves every query through ``core.resolution`` (no model) and
+- ``run(fixture)`` resolves every query through the retrieval pipeline's resolve stage
+  (``core.retrieval.pipeline.resolve_query``, #141: the function ``retrieve`` runs first, over
+  #139's resolvers; no model) and
   ``accuracy`` scores it: **per-mention accuracy** (a mention is right when its entity is the
   expected one, or both are unresolved) and **per-query all-correct** (every mention, the time
   rule or reason, and the event type right).
@@ -29,11 +31,10 @@ from epistrel.core.resolution.entities import (
     EntityIndex,
     Relation,
     ResolutionContext,
-    resolve_mentions,
 )
-from epistrel.core.resolution.events import resolve_event_type
-from epistrel.core.resolution.time import TimeBasis, resolve_time
-from epistrel.core.resolution.types import ResolvedTime
+from epistrel.core.resolution.time import TimeBasis
+from epistrel.core.resolution.types import ReasonCode, ResolvedTime
+from epistrel.core.retrieval import pipeline
 
 MEN = ("Bobby", "Tom", "Raj", "Luis", "Owen", "Felix", "Hugo", "Ivan")
 WOMEN = ("Jenni", "Mara", "Priya", "Ines", "Wendy", "Zoe", "Lena", "Ruth")
@@ -163,28 +164,31 @@ class Accuracy:
 
 def _query(query: Query, fixture: Fixture, index: EntityIndex) -> QueryResult:
     context = ResolutionContext(index, beats=query.beats, relations=fixture.relations)
-    found = resolve_mentions(query.text, query.speaker, context)
+    resolved = pipeline.resolve_query(
+        query.text, speaker=query.speaker, position=0, context=context, basis=fixture.basis
+    )
     by_surface: dict[str, list[str | None]] = {}
-    for mention in found:
+    for mention in resolved.mentions:
         surface = query.text[mention.span[0] : mention.span[1]]
         by_surface.setdefault(surface, []).append(mention.entity_id)
     right = []
     for expected in query.mentions:
         got = by_surface.get(expected.surface, [])
         right.append(bool(got) and got.pop(0) == expected.entity_id)
-    time = resolve_time(query.text, 0, basis=fixture.basis)
+    time = resolved.time
     if query.time_rule is None:
         time_right = not isinstance(time, ResolvedTime)
     elif isinstance(time, ResolvedTime):
         time_right = time.rule == query.time_rule
     else:
-        time_right = time.reason.code.value == query.time_rule
-    event_right = resolve_event_type(query.text) == query.event_type
+        code = ReasonCode.UNRESOLVED_TIME if time is None else time.reason.code
+        time_right = code.value == query.time_rule
+    event_right = resolved.event_type == query.event_type
     return QueryResult(query, tuple(right), time_right, event_right)
 
 
 def run(fixture: Fixture) -> list[QueryResult]:
-    """Every query of ``fixture`` resolved through ``core.resolution``."""
+    """Every query of ``fixture`` resolved through ``pipeline.resolve_query``."""
     index = EntityIndex(fixture.entries)
     return [_query(q, fixture, index) for q in fixture.queries]
 

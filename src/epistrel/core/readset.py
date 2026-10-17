@@ -66,20 +66,25 @@ from epistrel.core.tables.readset import proposition_changes
 if TYPE_CHECKING:
     from epistrel.core.canon.facts import Fact, FactChange, Reading
     from epistrel.core.events.operation import Operation
+    from epistrel.core.projections.structured import ProfileView, SceneView
 
 logger = logging.getLogger(__name__)
 
 KEYED_READERS: tuple[str, ...] = (
     "epistrel.core.resolution.context",
+    "epistrel.core.retrieval.pipeline",
     "epistrel.core.verify.rules",
     "epistrel.core.verify.normalize",
     "epistrel.core.verify.merge",
 )
-"""Modules whose ``facts``/``propositions`` reads decide a verdict, a precondition or a blocker:
-each reads them only through ``KeyedLookup`` (``tools.gates check-keyed-readers``). #139's
-resolution context (a subject's ``born``/``age`` for "when he was seven") and #140's verify
-modules (``rules``, ``normalize``, ``merge``) are listed; #144's permission check and #146's
-ledger lookups add themselves when they land."""
+"""Modules whose ``facts``/``propositions`` reads decide a verdict, a precondition or a blocker,
+or that read canon and the structured projections at turn time: each reads them only through
+``KeyedLookup`` (``tools.gates check-keyed-readers``; the projections ``relationships``,
+``placement`` and ``scene_state`` through ``KeyedLookup.profile``/``scene``, #137/#141). #139's
+resolution context (a subject's ``born``/``age`` for "when he was seven", the scene and the
+relationships), #141's retrieval pipeline and #140's verify modules (``rules``, ``normalize``,
+``merge``) are listed; #144's permission check and #146's ledger lookups add themselves when
+they land."""
 
 READSET_MAX_KEYS = 2_000
 """``readset_max_keys``: a turn recording more keys than this conflicts (409
@@ -472,6 +477,90 @@ class KeyedLookup:
         """Record a row read as generation context only (semantic retrieval): not keyed."""
         self.read_set.record_retrieved(table, row_id, version)
 
+    async def canon_context(
+        self,
+        story_id: str,
+        *,
+        subjects: Sequence[str],
+        story_time: int,
+        viewpoint: str = OMNISCIENT,
+        through_position: tuple[int, int] | None = None,
+        limit: int | None = None,
+    ) -> list[Fact]:
+        """The current canon facts about each of ``subjects`` true at ``story_time`` as
+        ``viewpoint`` may read them (#133's ``canon_at``, its visibility filter included), up
+        to ``limit`` per subject, each recorded as a retrieved row (``facts``, its ``tx_from``):
+        canon a retrieval puts in a render's context (#141), never keyed. Ordered by subject
+        as given, then fact id."""
+        from epistrel.core.canon import facts as canon
+
+        found: dict[str, Fact] = {}
+        for subject in dict.fromkeys(subjects):
+            rows = await canon.canon_at(
+                self.conn,
+                story_id,
+                story_time=story_time,
+                through_position=through_position,
+                viewpoint=viewpoint,
+                subject=subject,
+                limit=limit,
+            )
+            for fact in sorted(rows, key=lambda f: f.id):
+                found.setdefault(fact.id, fact)
+        for fact in found.values():
+            self.retrieved(CANON_TABLE, fact.id, fact.tx_from)
+        return list(found.values())
+
+    # -- the structured projections (#137) as context ---------------------------------------
+
+    async def profile(
+        self,
+        story_id: str,
+        entity_id: str,
+        *,
+        as_of: int | None = None,
+        viewpoint: str = OMNISCIENT,
+    ) -> ProfileView:
+        """``entity_id``'s standing profile (#137's ``profile_view``) as of turn ``as_of`` for
+        ``viewpoint``, recorded as a retrieved row (``profile:<entity>``, versioned by the facts
+        behind it): a turn's reads of the relationship and placement projections go through
+        here (#141), as context, never keyed."""
+        from epistrel.core.projections.structured import profile_view
+
+        found = await profile_view(self.conn, story_id, entity_id, as_of=as_of, viewpoint=viewpoint)
+        sources = [r.source_fact_id for r in found.relationships]
+        sources += [] if found.placement is None else [found.placement.source_fact_id]
+        sources += [i.source_fact_id for i in found.inventory]
+        self.retrieved(PROFILE_TABLE, entity_id, _version_of(found.as_of, sources))
+        return found
+
+    async def scene(
+        self, story_id: str, *, as_of: int | None = None, viewpoint: str = OMNISCIENT
+    ) -> SceneView:
+        """The scene (#137's ``scene_view``) as of turn ``as_of`` for ``viewpoint``, recorded
+        as a retrieved row (``scene:<turn>``, versioned by its location and the entities
+        present): a turn's reads of the scene projection go through here (#141)."""
+        from epistrel.core.projections.structured import scene_view
+
+        found = await scene_view(self.conn, story_id, as_of=as_of, viewpoint=viewpoint)
+        members = [None if found.location is None else found.location.entity_id]
+        members += [e.entity_id for e in found.present]
+        self.retrieved(SCENE_TABLE, str(found.turn), _version_of(found.turn, members))
+        return found
+
+
+CANON_TABLE = "facts"
+PROFILE_TABLE = "profile"
+SCENE_TABLE = "scene"
+"""The ``Retrieved.table`` names of a canon or projection read made as context through
+``KeyedLookup``."""
+
+
+def _version_of(turn: int, members: Iterable[str | None]) -> str:
+    """A projection read's version: the turn it was read as of and what it rested on."""
+    body = json.dumps([turn, [m or "" for m in members]], separators=(",", ":"))
+    return hashlib.sha256(body.encode()).hexdigest()
+
 
 # -- the change index ------------------------------------------------------------------------
 
@@ -642,11 +731,14 @@ async def touched_keys(
 
 __all__ = [
     "CANON",
+    "CANON_TABLE",
     "COMMIT_REVISION_SETTING",
     "EMPTY_RESULT",
     "KEYED_READERS",
+    "PROFILE_TABLE",
     "READSET_MAX_KEYS",
     "REBASE_CHECKS",
+    "SCENE_TABLE",
     "Change",
     "KeyedLookup",
     "QueryKey",

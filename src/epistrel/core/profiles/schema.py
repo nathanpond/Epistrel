@@ -182,7 +182,29 @@ class Episodic(ProfileModel):
     k: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(default=8, ge=1, le=100)
     """How many memories one retrieval returns."""
     hybrid_search: Annotated[bool, BEHAVIORAL, PROSPECTIVE, RELEVANT] = True
+    """Run the lexical and exact-alias arms beside the vector arm (FR-RET-4)."""
     reranking: Annotated[bool, BEHAVIORAL, PROSPECTIVE, RELEVANT] = False
+    """Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``)."""
+    weight_similarity: Annotated[float, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=0.6, ge=0.0, le=10.0
+    )
+    """The ranking's weight on the fused similarity of the search arms (FR-RET-5)."""
+    weight_recency: Annotated[float, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=0.2, ge=0.0, le=10.0
+    )
+    """The ranking's weight on recency (decay over turns before the query's position)."""
+    weight_importance: Annotated[float, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=0.2, ge=0.0, le=10.0
+    )
+    """The ranking's weight on decayed importance (FR-MEM-7)."""
+    recency_half_life_turns: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=100, ge=1, le=1_000_000
+    )
+    """The turns over which a memory's recency halves."""
+    retrieval_token_budget: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=3_000, ge=100, le=200_000
+    )
+    """The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7)."""
 
 
 class Consolidation(ProfileModel):
@@ -603,6 +625,14 @@ the ``structured`` pipeline (with the hot-set budgets it owns), episodic retriev
 consolidation, verification at ``declared``, ``extraction`` and ``entailment`` (with
 ``extraction_mode`` and ``entailment_gate``), contradiction checking, commitment, and the repair
 attempts. A module not listed is not delivered at any level."""
+
+
+UNDELIVERED_VALUES: Mapping[str, tuple[object, ...]] = types.MappingProxyType(
+    {"memory.episodic.reranking": (True,)}
+)
+"""Values of delivered settings that name an undelivered feature: a document setting one is
+refused like an undelivered setting (#141: retrieval has no reranker in M4, so
+``reranking: true`` is refused while ``false`` stays valid)."""
 
 
 def _owners() -> list[tuple[str, str, str | None]]:
@@ -1072,6 +1102,7 @@ __all__ = [
     "RELEVANT",
     "SETTINGS_SCHEMA",
     "SWITCHES",
+    "UNDELIVERED_VALUES",
     "Budgets",
     "Clause",
     "DependencyRule",

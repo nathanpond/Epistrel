@@ -20,7 +20,10 @@ canon, FR-TURN-4). Each row carries:
 - ``visibility``: ``objective`` for narration, ``public`` for a character's beat (#133's
   shape); ``holder_character_id`` ``NULL``: in M4 every render-derived memory is shared
   knowledge;
-- ``proposition_ids``: the beat's propositions; ``importance`` ``NULL`` until scored.
+- ``proposition_ids``: the beat's propositions; ``importance`` ``NULL`` until scored;
+- ``event_type`` and ``participants`` (#141): the beat's occasion and the entities it involves
+  (its actor first, then ``Beat.participants``, which must be the story's entities), which
+  #141's occasion step queries. #150 fills them from the beat's resolved entities.
 
 The writer is **inert** unless the story's effective configuration has the ``episodic`` module
 on (``memory.episodic.enabled``; #129's ``module_on``): no row, no hook, no call. Every text
@@ -90,8 +93,8 @@ from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.settings_schema import MemorySettings
-from epistrel.core.tables import characters, events, operations
-from epistrel.core.tables.memories import TEXT_MAX, memories
+from epistrel.core.tables import characters, entities, events, operations
+from epistrel.core.tables.memories import EVENT_TYPE_MAX, TEXT_MAX, memories
 
 EPISODIC_MODULE = "episodic"
 """The profile module that turns episodic memory on (``memory.episodic.enabled``, #106)."""
@@ -147,6 +150,12 @@ class Beat:
     character_id: str | None = None
     provenance: RecordProvenance = RecordProvenance.RENDER
     proposition_ids: tuple[str, ...] = ()
+    event_type: str | None = None
+    """The beat's occasion (#139's ``resolve_event_type``; #141's occasion step reads it)."""
+    participants: tuple[str, ...] = ()
+    """The entities the beat involves beyond its actor (its resolved mentions). #150 passes
+    both; ``core.retrieval.pipeline.beat_occasion`` derives them from a beat's text and its
+    resolved mentions."""
 
 
 class Memory(BaseModel):
@@ -174,6 +183,8 @@ class Memory(BaseModel):
     membership: Membership
     membership_tx: datetime
     proposition_ids: tuple[str, ...]
+    event_type: str | None = None
+    participants: tuple[str, ...] = ()
     retrieval_tier: RetrievalTier
     embedded: bool
     embedding_model_version: str | None
@@ -204,6 +215,8 @@ def _memory(row: Any) -> Memory:
         membership=Membership(row.membership),
         membership_tx=row.membership_tx,
         proposition_ids=tuple(str(p) for p in row.proposition_ids),
+        event_type=row.event_type,
+        participants=tuple(str(p) for p in row.participants),
         retrieval_tier=RetrievalTier(row.retrieval_tier),
         embedded=row.embedding is not None,
         embedding_model_version=row.embedding_model_version,
@@ -242,6 +255,13 @@ def remove_memory_hook(hook: MemoryHook) -> None:
 
 
 # -- the episodic writer ------------------------------------------------------------------------
+
+
+def participants_of(beat: Beat) -> list[str]:
+    """The ``participants`` a beat's memory carries: its actor first (a story character's
+    entity id is the character's, #139), then its other participants, each once."""
+    found = [beat.character_id] if beat.character_id else []
+    return list(dict.fromkeys([*found, *beat.participants]))
 
 
 def render_line(kind: str, name: str | None, text: str) -> str:
@@ -301,6 +321,26 @@ async def _check_beats(
             "a beat's event is an event of the writing operation",
             {"field": "beats.event_id", "reason": "unknown_event"},
         )
+    if any(b.event_type is not None and not 0 < len(b.event_type) <= EVENT_TYPE_MAX for b in beats):
+        raise InvalidRequest(
+            f"a beat's event type has 1 to {EVENT_TYPE_MAX} characters",
+            {"field": "beats.event_type", "reason": "invalid_event_type"},
+        )
+    named = sorted({p for b in beats for p in b.participants})
+    if named:
+        known = {
+            str(e)
+            for e in await conn.scalars(
+                select(entities.c.id).where(
+                    entities.c.story_id == story_id, entities.c.id.in_(named)
+                )
+            )
+        }
+        if known != set(named):
+            raise InvalidRequest(
+                "a beat's participant is one of the story's entities",
+                {"field": "beats.participants", "reason": "unknown_entity"},
+            )
 
 
 async def write_episodic(
@@ -354,6 +394,8 @@ async def write_episodic(
                 "turn_variant": operation.turn_variant,
                 "beat": beat.beat,
                 "proposition_ids": list(beat.proposition_ids),
+                "event_type": beat.event_type,
+                "participants": participants_of(beat),
             }
         )
     await guard.check_content(
@@ -691,6 +733,7 @@ __all__ = [
     "half_life_turns",
     "memories_by_id",
     "memories_through",
+    "participants_of",
     "register_memory_hook",
     "remove_memory_hook",
     "render_line",

@@ -20573,7 +20573,7 @@
         "type": "object"
       },
       "StoryList": {
-        "description": "The stories, oldest first.",
+        "description": "The stories, newest first.",
         "properties": {
           "items": {
             "items": {

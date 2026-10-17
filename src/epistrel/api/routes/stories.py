@@ -350,7 +350,7 @@ class StoryBody(StorySummaryBody):
 
 
 class StoryList(BaseModel):
-    """The stories, oldest first."""
+    """The stories, newest first."""
 
     items: list[StorySummaryBody]
 

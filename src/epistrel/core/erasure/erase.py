@@ -187,6 +187,7 @@ from epistrel.core.tables import (
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.core.tables.catalog import CATALOG_SCHEMA, ERASURE_GUC
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import (
     MediaState,
     ReferenceScope,
@@ -1216,7 +1217,9 @@ async def _redact_structured(
 ) -> None:
     """The structured stores (#131): an erased character's entity loses its aliases (deleted,
     each with a marker); every other record naming the subject is redacted in place. A story
-    predicate's name keeps its id as a suffix when redacted, so names stay unique per story."""
+    predicate's name keeps its id as a suffix when redacted, so names stay unique per story.
+    Facts (#133) go first: see ``_erase_facts``."""
+    await _erase_facts(conn, story_id, refs, removed, tally, run)
     owned = list(
         await conn.scalars(
             select(entity_aliases.c.id)
@@ -1270,6 +1273,65 @@ async def _redact_structured(
                 update(predicates)
                 .where(predicates.c.id == row.id)
                 .values(name=f"{renamed}_{str(row.id).lower()}")
+            )
+
+
+async def _erase_facts(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """Facts (#133): every version whose subject or object is an erased character's entity is
+    deleted, each with a marker (a fact about the subject is about the subject, whatever its
+    wording); a version whose ``characters`` visibility names an erased character loses that
+    name, and is deleted with a marker when no character is left to see it."""
+    if not removed:
+        return
+    erased_entities = select(entities.c.id).where(
+        entities.c.story_id == story_id, entities.c.character_id.in_(sorted(removed))
+    )
+    about = list(
+        await conn.scalars(
+            select(facts.c.id)
+            .select_from(facts.outerjoin(propositions, propositions.c.id == facts.c.proposition_id))
+            .where(
+                facts.c.story_id == story_id,
+                or_(
+                    facts.c.subject_id.in_(erased_entities),
+                    propositions.c.object_id.in_(erased_entities),
+                ),
+            )
+            .order_by(facts.c.id)
+        )
+    )
+    for fact_id in about:
+        await _delete(
+            conn, run, tally, facts.name, str(fact_id), delete(facts).where(facts.c.id == fact_id)
+        )
+    wanted = sorted(set(refs.get(facts.name, set())) - {str(f) for f in about})
+    if not wanted:
+        return
+    rows = await conn.execute(
+        select(facts.c.id, facts.c.visibility).where(facts.c.id.in_(wanted)).order_by(facts.c.id)
+    )
+    for row in rows:
+        named = [c for c in row.visibility.get("characters") or () if c not in removed]
+        if named == list(row.visibility.get("characters") or ()):
+            continue
+        if not named:
+            await _delete(
+                conn, run, tally, facts.name, str(row.id), delete(facts).where(facts.c.id == row.id)
+            )
+            continue
+        tally.record(facts.name, 1)
+        if run.write:
+            await conn.execute(
+                update(facts)
+                .where(facts.c.id == row.id)
+                .values(visibility={**row.visibility, "characters": named})
             )
 
 

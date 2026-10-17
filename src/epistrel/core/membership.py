@@ -328,6 +328,14 @@ def active_only(table: FromClause) -> ColumnElement[bool]:
     return table.c.membership == Membership.ACTIVE.value
 
 
+def active_as_of(table: FromClause, record_time: Any) -> ColumnElement[bool]:
+    """Whether a row of registered derived ``table`` was in the timeline at record-time
+    ``record_time`` (#133's as-recorded reads): active now, or moved out of it only after
+    ``record_time`` (``membership_tx`` later). A row that left and came back keeps only its last
+    change, so it reads as active throughout; the control events hold the full history."""
+    return or_(active_only(table), table.c.membership_tx > record_time)
+
+
 _ALIAS = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -363,6 +371,7 @@ __all__ = [
     "DERIVED_TABLES",
     "FLIP_TARGETS",
     "DerivedTable",
+    "active_as_of",
     "active_only",
     "active_only_sql",
     "derived_columns",

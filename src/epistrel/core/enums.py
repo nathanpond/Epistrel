@@ -100,6 +100,51 @@ class EntryStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class RecordProvenance(StrEnum):
+    """Where a structured record came from (#133; shared by ``facts`` and #135's memories):
+    the author or the scenario's seed, the engine's consolidation, an in-world source, a
+    render, the director or the player, an external authority (with its timestamp in the
+    record's reference), a resolution, or a backfill. Postgres enum ``record_provenance``."""
+
+    AUTHOR = "author"
+    SEED = "seed"
+    SYSTEM_CONSOLIDATED = "system_consolidated"
+    IN_WORLD = "in_world"
+    RENDER = "render"
+    DIRECTOR = "director"
+    PLAYER = "player"
+    EXTERNAL = "external"
+    RESOLUTION = "resolution"
+    BACKFILL = "backfill"
+
+
+class FactAuthority(StrEnum):
+    """Who stands behind a fact version (FR-BITEMP-4; #133): the author (a retcon, a seed),
+    the engine, or an external authority. Postgres enum ``fact_authority``."""
+
+    AUTHOR = "author"
+    ENGINE = "engine"
+    EXTERNAL = "external"
+
+
+class HolderKind(StrEnum):
+    """Whose record a proposition wrapper is (#133): ``canon`` for objective facts (#150's
+    utterances add theirs). Postgres enum ``holder_kind``."""
+
+    CANON = "canon"
+
+
+class FactCommitState(StrEnum):
+    """Whether a fact's value is settled (#133 creates it, #146 owns its semantics):
+    ``committed`` (the default), ``introduced`` (narrated with an open qualifier) or
+    ``pending`` (awaiting a dependence in the same turn). Postgres enum
+    ``fact_commit_state``."""
+
+    COMMITTED = "committed"
+    INTRODUCED = "introduced"
+    PENDING = "pending"
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -108,6 +153,10 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "authority": Authority,
     "operation_status": OperationStatus,
     "catalog.entry_status": EntryStatus,
+    "record_provenance": RecordProvenance,
+    "fact_authority": FactAuthority,
+    "holder_kind": HolderKind,
+    "fact_commit_state": FactCommitState,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

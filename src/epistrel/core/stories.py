@@ -143,6 +143,7 @@ from epistrel.core.tables import (
 )
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.tables.facts import facts
 from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.core.tables.media import MediaKind
 from epistrel.core.tables.ownership import EntityType
@@ -185,6 +186,8 @@ STORY_TABLES: tuple[Table, ...] = (
     rating_check_jobs,
     guardrail_check_results,
     timers,
+    # Bitemporal canon (#133): a derived table, before the operations it references.
+    facts,
     # The structured stores (#131): story rows only (core predicates have no story).
     predicate_proposals,
     closed_sets,

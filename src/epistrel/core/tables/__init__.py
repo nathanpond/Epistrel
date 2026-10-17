@@ -20,6 +20,7 @@ from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.erasure import erasure_ledger
 from epistrel.core.tables.events import events
+from epistrel.core.tables.facts import facts
 from epistrel.core.tables.genesis import genesis_deferred
 from epistrel.core.tables.idempotency import idempotency_keys
 from epistrel.core.tables.jobs import jobs
@@ -75,6 +76,7 @@ __all__ = [
     "entity_relations",
     "erasure_ledger",
     "events",
+    "facts",
     "genesis_deferred",
     "guardrail_check_results",
     "idempotency_keys",

@@ -142,6 +142,11 @@ ORDER: dict[str, str] = {
     "propositions": f"{_STORY_RANK}, t.created_at, t.valid_span, t.polarity",
     "closed_sets": f"{_STORY_RANK}, t.created_at, t.valid_from NULLS FIRST",
     "predicate_proposals": f"{_STORY_RANK}, t.created_at, t.status",
+    # Bitemporal canon (#133): versions in recording order, then by valid-time.
+    "facts": (
+        f"{_STORY_RANK}, t.tx_from, t.narrative_turn NULLS FIRST, t.valid_from NULLS FIRST, "
+        "t.valid_to NULLS LAST"
+    ),
 }
 """Each compared table's ``ORDER BY`` (``t`` is the table): natural keys, never an id."""
 

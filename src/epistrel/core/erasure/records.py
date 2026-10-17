@@ -43,6 +43,7 @@ from epistrel.core.tables import (
     scenario_versions,
     stories,
 )
+from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import SubjectKind, media_upload_sessions
 from epistrel.core.tables.propositions import (
     closed_sets,
@@ -313,6 +314,24 @@ def entity_record(row: Any) -> Record:
         _str(row.story_id),
         {"canonical_name": row.canonical_name},
         subjects,
+    )
+
+
+def fact_record(row: Any) -> Record:
+    """A fact version (#133): no text of its own (its proposition is indexed); the characters
+    its ``characters`` visibility scope names are declared subjects."""
+    visibility = row.visibility if isinstance(row.visibility, Mapping) else {}
+    named = visibility.get("characters") or ()
+    return Record(
+        facts.name,
+        str(row.id),
+        _str(row.story_id),
+        {},
+        tuple(
+            (SubjectKind.CHARACTER, str(c), "visibility.characters")
+            for c in named
+            if isinstance(c, str)
+        ),
     )
 
 
@@ -601,6 +620,10 @@ async def read_entities(conn: AsyncConnection, story_id: str | None) -> list[Rec
     return await _story_rows(conn, entities, story_id, entity_record)
 
 
+async def read_facts(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    return await _story_rows(conn, facts, story_id, fact_record)
+
+
 async def read_aliases(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     return await _story_rows(conn, entity_aliases, story_id, alias_record)
 
@@ -625,6 +648,7 @@ __all__ = [
     "deferred_record",
     "entity_record",
     "event_record",
+    "fact_record",
     "idempotency_id",
     "idempotency_record",
     "index_rows",

@@ -576,6 +576,11 @@ def _seq_of(event_id: str) -> str:
     return f"(SELECT m.new_seq FROM {_MAP} m WHERE m.old_id = {event_id})"  # noqa: S608
 
 
+def _mapped_or_null(column: str) -> str:
+    """The fork's id for a source row's ``column`` reference, ``NULL`` when it was not copied."""
+    return f'(SELECT m.new_id FROM {_MAP} m WHERE m.old_id = t."{column}"::text)'  # noqa: S608
+
+
 _ACTIVE = f"'{Membership.ACTIVE.value}'"
 
 OVERRIDES: dict[str, dict[str, str]] = {
@@ -590,9 +595,22 @@ OVERRIDES: dict[str, dict[str, str]] = {
     events.name: {"seq": _seq_of("t.id")},
     transcript_messages.name: {"membership": _ACTIVE, "seq": _seq_of("t.message_id")},
     "policies": {"idempotency_key": "NULL"},
+    # Bitemporal canon (#133): links to other versions name the fork's copies; a version
+    # closed by one the fork does not copy (after N) keeps its tx_to but loses the link, and is
+    # current in the fork, since no copied row closes it.
+    "facts": {
+        "superseded_by": _mapped_or_null("superseded_by"),
+        "anchored_to": _mapped_or_null("anchored_to"),
+        "supersedes": (
+            f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.supersedes) "  # noqa: S608
+            f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
+            "ORDER BY s.n) AS char(26)[])"
+        ),
+    },
 }
 """Per-table columns that are not a plain remapped copy: memberships flatten to ``active``,
-events and transcript rows take the new ``seq``, and idempotency keys stay with the source."""
+events and transcript rows take the new ``seq``, idempotency keys stay with the source, and a
+fact's links to other versions keep only the copied ones."""
 
 _SUPERSEDED = f"'{Membership.SUPERSEDED.value}'"
 

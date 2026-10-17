@@ -1,7 +1,8 @@
 """TIME (M4), the registry slices: derived records follow the membership of the operation
 that produced them (FR-STORE-29; TIME (c), docs/04 §6; #130's ``test_membership_registry``).
 
-TIME (M4) has one file, this one: #133 (facts) and #135 (memories) add their (c) slices here.
+TIME (M4) has one file, this one: #133 (facts, ``test_time__m4_facts``) and #135 (memories) add
+their (c) slices here.
 
 The real derived tables land with their stories (facts #133, memories #135, utterances #150,
 thunks, ledger and resolutions #146/#154) and register in ``core.membership.DERIVED_TABLES``.
@@ -41,6 +42,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 from epistrel.core import fork as forking
 from epistrel.core import timeline
+from epistrel.core.canon import facts as canon
 from epistrel.core.enums import Membership
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import (
@@ -66,8 +68,9 @@ from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import operations
 from epistrel.core.tables.base import ulid_type
 from epistrel.core.variants import ChainRef
+from tests.canon_support import at, commit, supersede, world
 from tests.concurrency_support import regenerate
-from tests.event_support import new_story, play_turn
+from tests.event_support import interleave, new_story, play_turn
 from tests.fork_support import fork
 from tests.projection_support import swap, truncate, untruncate
 
@@ -520,3 +523,121 @@ async def test_time__membership_helpers(
             == 0
         )
     assert await _active(engine, table, story) == set(rows.values())
+
+
+# -- facts (#133) -----------------------------------------------------------------------------
+
+
+async def _facts(engine: AsyncEngine, story: str) -> dict[str, Any]:
+    async with engine.connect() as conn:
+        found = await conn.execute(text("SELECT * FROM facts WHERE story_id = :s"), {"s": story})
+        return {str(r.id): r for r in found}
+
+
+def _objects(found: list[Any]) -> list[str | None]:
+    return [f.proposition.object_id for f in found]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-STORE-9; FR-BITEMP-5")
+async def test_time__m4_facts(engine: AsyncEngine) -> None:
+    """TIME (c) for facts: every fact carries the source event and operation that produced it
+    and follows that operation's membership; the three coordinates are asserted independently
+    by three queries on one fixture, and narrative position never comes from ``seq``.
+
+    The fixture: turn 1 puts Bobby in the kitchen over [0, 100); background, audit and
+    control work moves ``seq`` between turns; turn 2 writes a flashback (valid decades
+    earlier); turn 3 supersedes the kitchen with the garden. Complement: a query by one
+    coordinate gives a different answer than either other coordinate would."""
+    assert DERIVED_TABLES["facts"].valid_time == ("valid_from", "valid_to")
+    assert DERIVED_TABLES["facts"].tx_time == ("tx_from", "tx_to")
+    async with engine.connect() as conn:
+        assert await schema_findings(conn) == []
+
+    w = await world(engine)
+    story = w.story_id
+    bobby, kitchen, garden = w.people["Bobby"], w.places["kitchen"], w.places["garden"]
+    first = await commit(engine, story, at(bobby, kitchen, 0, 100))
+    await interleave(engine, story, 1)
+    flashback = await commit(engine, story, at(bobby, garden, -1_000_000, -900_000))
+    await interleave(engine, story, 2)
+    second = await supersede(engine, story, first.id, at(bobby, garden, 0, 100))
+    rows = await _facts(engine, story)
+
+    # FR-STORE-9: source events and operation; position from the operation, never seq.
+    for fact_id, turn in ((first.id, 1), (flashback.id, 2), (second.id, 3)):
+        row = rows[fact_id]
+        async with engine.connect() as conn:
+            op = (
+                await conn.execute(
+                    select(operations).where(operations.c.operation_id == row.operation_id)
+                )
+            ).one()
+            sources = await conn.execute(
+                text("SELECT id, seq, operation_id FROM events WHERE id = ANY(:ids)"),
+                {"ids": list(row.source_event_ids)},
+            )
+            found = list(sources)
+        assert found
+        assert {str(e.operation_id) for e in found} == {row.operation_id}
+        assert (row.narrative_turn, row.turn_variant) == (op.narrative_turn, op.turn_variant)
+        assert row.narrative_turn == turn
+        assert all(e.seq != turn for e in found)
+        assert row.membership_tx == op.membership_tx
+
+    async with engine.connect() as conn:
+        # Narrative position: the corrected view through turn 2 still has the kitchen (the
+        # garden is turn 3's), while valid-time and record-time both say otherwise.
+        through = await canon.canon_at(conn, story, story_time=50, through_position=(2, 0))
+        now = await canon.canon_at(conn, story, story_time=50)
+        assert _objects(through) == [kitchen]
+        assert _objects(now) == [garden]
+        # Valid-time: the flashback is true decades before the kitchen, though written after it.
+        early = await canon.canon_at(conn, story, story_time=-950_000)
+        assert [f.id for f in early] == [flashback.id]
+        assert rows[flashback.id].narrative_turn > rows[first.id].narrative_turn
+        # Transaction-time: the record at turn 2's commit said kitchen and the flashback.
+        recorded = await canon.canon_as_recorded(
+            conn, story, record_time=rows[flashback.id].tx_from
+        )
+        assert {f.id for f in recorded} == {first.id, flashback.id}
+        at_turn_one = await canon.canon_as_recorded(conn, story, record_time=rows[first.id].tx_from)
+        assert [f.id for f in at_turn_one] == [first.id]
+
+    # Membership follows the operation: a regenerate of turn 3 takes the garden dormant and the
+    # kitchen is current again; neither time coordinate moves.
+    before = {k: (r.valid_from, r.valid_to, r.tx_from, r.tx_to) for k, r in rows.items()}
+    again = await regenerate(engine, story)
+    after = await _facts(engine, story)
+    assert str(after[second.id].membership) == "dormant"
+    assert {k: (r.valid_from, r.valid_to, r.tx_from, r.tx_to) for k, r in after.items()} == before
+    async with engine.connect() as conn:
+        assert _objects(await canon.canon_at(conn, story, story_time=50)) == [kitchen]
+    assert again.narrative_turn == 3
+
+    # A fork at turn 2 copies the kitchen and the flashback, not the garden; the kitchen, closed
+    # in the source by a version the fork does not have, is current in the fork.
+    forked = await fork(engine, story, at_turn=2)
+    copied = await _facts(engine, forked.story_id)
+    assert len(copied) == 2
+    assert {str(r.membership) for r in copied.values()} == {"active"}
+    kitchen_copy = next(r for r in copied.values() if r.valid_from == 0)
+    assert kitchen_copy.superseded_by is None
+    assert kitchen_copy.tx_to == rows[first.id].tx_to
+    async with engine.connect() as conn:
+        in_fork = await canon.canon_at(conn, forked.story_id, story_time=50)
+        fork_ops = set(
+            await conn.scalars(
+                select(operations.c.operation_id).where(operations.c.story_id == forked.story_id)
+            )
+        )
+        fork_props = set(
+            await conn.scalars(
+                text("SELECT id FROM propositions WHERE story_id = :s"), {"s": forked.story_id}
+            )
+        )
+    assert [f.id for f in in_fork] == [kitchen_copy.id]
+    for r in copied.values():
+        assert r.operation_id in fork_ops
+        assert r.proposition_id in fork_props
+        assert r.id not in rows

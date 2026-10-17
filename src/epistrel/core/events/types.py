@@ -338,3 +338,33 @@ class ErasureMarker(EventPayload):
     scope: str
     record_table: str
     record_id: str
+
+
+@register("fact_committed", category=EventCategory.DERIVED)
+class FactCommitted(EventPayload):
+    """A fact version written to ``facts`` (FR-BITEMP-1, FR-STORE-9; #133): the new version
+    (``fact_id``, its ``lineage_id`` and ``proposition_id``), the versions it closed
+    (``supersedes``) and the remainders it kept of them (``remainders``: what is left of a
+    trimmed version on either side of the new valid-time). Identifiers only; the fact follows
+    its operation's membership, so this event does too."""
+
+    fact_id: str
+    lineage_id: str
+    proposition_id: str
+    supersedes: tuple[str, ...] = ()
+    remainders: tuple[str, ...] = ()
+
+
+@register("fact_superseded", category=EventCategory.DERIVED)
+class FactSuperseded(EventPayload):
+    """An explicit supersede (FR-BITEMP-2,4; #133): version ``superseded_id`` of a fact was
+    closed in transaction-time by ``fact_id`` (same ``lineage_id``), never deleted; ``authority``
+    is the new version's (``author`` for a retcon). Identifiers only."""
+
+    fact_id: str
+    superseded_id: str
+    lineage_id: str
+    proposition_id: str
+    authority: str
+    supersedes: tuple[str, ...] = ()
+    remainders: tuple[str, ...] = ()

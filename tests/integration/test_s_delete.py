@@ -27,6 +27,7 @@ from epistrel.orchestrator.jobs import timers
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
+from tests import canon_support
 from tests import erasure_support as erasure
 from tests import genesis_support as g
 from tests.event_support import interleave, play_turn, rows
@@ -163,6 +164,18 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
         await store.declare_closed_set(
             conn, story_id, store.ClosedSet(auto.id, ann, (ann,)), found, asserted_by="author"
         )
+    # Bitemporal canon (#133): a fact version, superseded, so both versions are the story's.
+    sailing = Proposition(
+        subject_id=ann, predicate_id=auto.id, object_id=ann, valid_time=Interval.of(10, 20)
+    )
+    first = await canon_support.commit(engine, story_id, sailing)
+    await canon_support.supersede(
+        engine,
+        story_id,
+        first.id,
+        sailing.model_copy(update={"valid_time": Interval.of(5, 25)}),
+        authority="author",
+    )
 
 
 def _due() -> datetime:

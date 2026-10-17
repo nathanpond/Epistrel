@@ -21,7 +21,9 @@ and that version's whole document as genesis copied it; all three or none
 (``ck_stories_scenario_snapshot``). #125 adds the ``blocked_by_erasure`` status and
 ``status_before_block``: the status a story had when the erasure reconciler blocked it (a restored
 backup that predates an erasure the ledger holds), restored when its reapply completes; set
-exactly while the story is blocked (``ck_stories_status_before_block``).
+exactly while the story is blocked (``ck_stories_status_before_block``). #281 adds
+``chain_unchecked``: the story's active turn chain changed in a way a commit's head-only chain
+check cannot see, so the next check is the full one (``Operation._check_chain``).
 
 Nothing references ``stories`` from another story, and story deletion enumerates every table
 with a ``story_id`` (``epistrel.core.stories.STORY_TABLES``) instead of cascading.
@@ -32,6 +34,7 @@ from __future__ import annotations
 from sqlalchemy import (
     TIMESTAMP,
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
     ForeignKey,
@@ -94,6 +97,10 @@ stories = Table(
     Column("last_control_revision", BigInteger, nullable=False, server_default=text("0")),
     Column("last_control_operation_id", ulid_type(), nullable=True),
     Column("settings", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    # FR-STORE-28 (#281): set by the ``operations_chain_changed_*`` triggers (migration 0045)
+    # when the story's active turn set changed outside the commit that checks only the chain's
+    # head; the next commit that checks the chain runs the full check and clears it.
+    Column("chain_unchecked", Boolean, nullable=False, server_default=text("false")),
     # FR-CONC-5 (#63): same-story turn concurrency and the queue's bound (null: the
     # deployment's ``turn_queue_max``), mirrored in ``StorySettings``; and the durable in-flight
     # marker: the turn holding the story's turn slot and its lease (never a lock held across

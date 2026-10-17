@@ -655,6 +655,9 @@ async def _copy_story_row(
         "in_flight_lease_until": "NULL",
         "paused_by": "NULL",
         "created_at": "transaction_timestamp()",
+        # The copied chain is checked in full at the fork's first chain check (#281); the
+        # chain triggers would set it for the copied turns anyway.
+        "chain_unchecked": "true",
     }
     await conn.execute(
         text(_insert_select(stories, overrides, "t.id = :source")),

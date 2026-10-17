@@ -29,7 +29,9 @@ one transaction that does all of the following:
 5. finalises the operation (``committed``, ``membership_tx`` = the commit's ``tx_time``, the
    story's resulting ``timeline_revision``), bumps ``stories.timeline_revision`` by one when the
    operation ``bumps_revision`` (FR-CONC-1), records a control action on the story, and checks
-   the active variants are one chain (FR-STORE-28, ``ChainBroken``);
+   the active variants are one chain (FR-STORE-28, ``ChainBroken``): at the chain's head, by
+   index lookups, unless the commit is a control action or ``stories.chain_unchecked`` says the
+   active turns changed some other way, when every active turn is checked (#281);
 6. under an idempotent call (#61), binds the operation to the call's ``Idempotency-Key``: a late
    original whose key a retry took over is refused, so a key never maps to two commits.
 
@@ -54,9 +56,10 @@ from datetime import datetime
 from types import SimpleNamespace, TracebackType
 from typing import Any, Literal, Self
 
-from sqlalchemy import and_, delete, func, insert, select, text, update
+from sqlalchemy import Integer, Select, and_, delete, func, insert, literal, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.orm import aliased
+from sqlalchemy.sql.elements import ColumnElement
 
 from epistrel.core import (
     clock,
@@ -144,6 +147,80 @@ def _failure_status(error: BaseException) -> OperationStatus:
     if isinstance(error, ErasedSubjectReferenced):
         return OperationStatus.ABANDONED
     return OperationStatus.FAILED
+
+
+CHAIN_OPERATION_SETTING = "epistrel.chain_operation"
+"""Transaction-local: the operation whose commit holds the story lock. Migration 0045's chain
+triggers leave that operation's own finalising update to its head check (#281)."""
+
+ACTIVE_TURN_SQL = (
+    "operations.kind = 'turn' AND operations.status = 'committed' "
+    "AND operations.membership = 'active'"
+)
+"""``ACTIVE_TURN_PREDICATE`` as literal SQL, so the planner can use the partial unique index
+``uq_operations_active_turn`` (bound parameters would hide the predicate from a generic plan)."""
+
+
+def _active_turns(story_id: str | None) -> ColumnElement[bool]:
+    return and_(operations.c.story_id == story_id, text(ACTIVE_TURN_SQL))
+
+
+async def chain_violation(conn: AsyncConnection, story_id: str) -> dict[str, Any] | None:
+    """The full FR-STORE-28 chain check over every active turn of the story (TIME (f)): ``None``
+    when the active turn variants are turns 1..k, one variant each, every parent link points to
+    the active variant of the turn before it, and the next turn index is k+1; otherwise the
+    ``ChainBroken`` details. Its cost grows with the story, so a commit runs it only when its
+    head check cannot decide (``Operation._check_chain``, #281)."""
+    active = (
+        await conn.execute(
+            select(
+                func.count(),
+                func.count(func.distinct(operations.c.narrative_turn)),
+                func.coalesce(func.min(operations.c.narrative_turn), 1),
+                func.coalesce(func.max(operations.c.narrative_turn), 0),
+            ).where(
+                operations.c.story_id == story_id,
+                operations.c.kind == OperationKind.TURN.value,
+                operations.c.status == OperationStatus.COMMITTED.value,
+                operations.c.membership == Membership.ACTIVE.value,
+            )
+        )
+    ).one()
+    count, distinct, lowest, highest = (int(v) for v in active)
+    next_turn = await conn.scalar(select(stories.c.next_turn_index).where(stories.c.id == story_id))
+    parent = aliased(operations)
+    orphans = await conn.scalar(
+        select(func.count())
+        .select_from(operations)
+        .outerjoin(
+            parent,
+            and_(
+                parent.c.story_id == operations.c.story_id,
+                parent.c.narrative_turn == operations.c.narrative_turn - 1,
+                parent.c.kind == OperationKind.TURN.value,
+                parent.c.status == OperationStatus.COMMITTED.value,
+                parent.c.membership == Membership.ACTIVE.value,
+            ),
+        )
+        .where(
+            operations.c.story_id == story_id,
+            operations.c.kind == OperationKind.TURN.value,
+            operations.c.status == OperationStatus.COMMITTED.value,
+            operations.c.membership == Membership.ACTIVE.value,
+            operations.c.narrative_turn > 1,
+            operations.c.parent_variant.is_not(None),
+            parent.c.turn_variant.is_distinct_from(operations.c.parent_variant),
+        )
+    )
+    if count == distinct == highest and lowest == 1 and next_turn == highest + 1 and not orphans:
+        return None
+    return {
+        "story_id": story_id,
+        "active_turns": count,
+        "highest_turn": highest,
+        "next_turn_index": next_turn,
+        "orphaned_turns": int(orphans or 0),
+    }
 
 
 class Withdrawn(Exception):
@@ -645,6 +722,9 @@ class Operation:
                         stories.c.last_control_revision,
                         stories.c.last_control_operation_id,
                         stories.c.status,
+                        # The chain triggers leave this operation's own finalising update to
+                        # the head check (#281).
+                        func.set_config(CHAIN_OPERATION_SETTING, self.operation_id, True),
                     )
                     .where(stories.c.id == self.story_id)
                     .with_for_update()
@@ -866,66 +946,70 @@ class Operation:
 
     async def _check_chain(self, conn: AsyncConnection) -> None:
         """The active turn variants must be one chain: turns 1..k, one variant each, and the
-        story's next turn index k+1 (FR-STORE-28, TIME (f)). Raises ``ChainBroken``."""
-        active = (
+        story's next turn index k+1 (FR-STORE-28, TIME (f)). Raises ``ChainBroken``.
+
+        The head check (#281) decides it without reading every active turn: given a chain that
+        was valid before this commit, the only way this commit can have changed it is at the head.
+        The partial unique index ``uq_operations_active_turn`` keeps one active variant per turn,
+        so the head check reads the lowest and the highest active turn and the story's next turn
+        index. For a turn it also reads the active variant of the turn before it, which must be
+        this turn's ``parent_variant``. Each of these is one index lookup. The full check
+        (``chain_violation``) runs instead for a control action, and for a story whose
+        ``chain_unchecked`` flag says its active turn set changed some other way, through a
+        commit step, a fork's copy or SQL run outside an operation; a passing full check clears
+        the flag. When the head check fails, the full check runs, so the refusal and its details
+        are always the full check's."""
+        assert self.story_id is not None  # noqa: S101 - only a story's commit checks its chain
+        probe = (await conn.execute(self._head_probe())).one()
+        if not self.control_action and not probe.chain_unchecked and self._head_holds(probe):
+            return
+        violation = await chain_violation(conn, self.story_id)
+        if violation is not None:
+            raise ChainBroken("the active turn variants would not form a single chain", violation)
+        if probe.chain_unchecked:
             await conn.execute(
-                select(
-                    func.count(),
-                    func.count(func.distinct(operations.c.narrative_turn)),
-                    func.coalesce(func.min(operations.c.narrative_turn), 1),
-                    func.coalesce(func.max(operations.c.narrative_turn), 0),
-                ).where(
-                    operations.c.story_id == self.story_id,
-                    operations.c.kind == OperationKind.TURN.value,
-                    operations.c.status == OperationStatus.COMMITTED.value,
-                    operations.c.membership == Membership.ACTIVE.value,
-                )
+                update(stories).where(stories.c.id == self.story_id).values(chain_unchecked=False)
             )
-        ).one()
-        count, distinct, lowest, highest = (int(v) for v in active)
-        next_turn = await conn.scalar(
-            select(stories.c.next_turn_index).where(stories.c.id == self.story_id)
+
+    def _head_probe(self) -> Select[Any]:
+        """One statement, index lookups only: the story's next turn index and change marker,
+        its lowest and highest active turn, and (for a turn after turn 1) the active variant of
+        the turn before this one."""
+        turn = self.narrative_turn if self.kind is OperationKind.TURN else None
+        parent = (
+            select(operations.c.turn_variant)
+            .where(_active_turns(self.story_id), operations.c.narrative_turn == turn - 1)
+            .scalar_subquery()
+            if turn is not None and turn > 1
+            else literal(None, Integer)
         )
-        parent = aliased(operations)
-        orphans = await conn.scalar(
-            select(func.count())
-            .select_from(operations)
-            .outerjoin(
-                parent,
-                and_(
-                    parent.c.story_id == operations.c.story_id,
-                    parent.c.narrative_turn == operations.c.narrative_turn - 1,
-                    parent.c.kind == OperationKind.TURN.value,
-                    parent.c.status == OperationStatus.COMMITTED.value,
-                    parent.c.membership == Membership.ACTIVE.value,
-                ),
-            )
-            .where(
-                operations.c.story_id == self.story_id,
-                operations.c.kind == OperationKind.TURN.value,
-                operations.c.status == OperationStatus.COMMITTED.value,
-                operations.c.membership == Membership.ACTIVE.value,
-                operations.c.narrative_turn > 1,
-                operations.c.parent_variant.is_not(None),
-                parent.c.turn_variant.is_distinct_from(operations.c.parent_variant),
-            )
+        return select(
+            stories.c.next_turn_index,
+            stories.c.chain_unchecked,
+            select(func.min(operations.c.narrative_turn))
+            .where(_active_turns(self.story_id))
+            .scalar_subquery()
+            .label("lowest"),
+            select(func.max(operations.c.narrative_turn))
+            .where(_active_turns(self.story_id))
+            .scalar_subquery()
+            .label("highest"),
+            parent.label("parent"),
+        ).where(stories.c.id == self.story_id)
+
+    def _head_holds(self, probe: Any) -> bool:
+        """The full check's conditions, at the head of a chain that was valid before."""
+        lowest = 1 if probe.lowest is None else int(probe.lowest)
+        highest = 0 if probe.highest is None else int(probe.highest)
+        if lowest != 1 or probe.next_turn_index != highest + 1:
+            return False
+        if self.kind is not OperationKind.TURN or self.narrative_turn is None:
+            return True
+        if self.narrative_turn <= 1:
+            return True
+        return probe.parent is not None and (
+            self.parent_variant is None or probe.parent == self.parent_variant
         )
-        if not (
-            count == distinct == highest
-            and lowest == 1
-            and next_turn == highest + 1
-            and not orphans
-        ):
-            raise ChainBroken(
-                "the active turn variants would not form a single chain",
-                {
-                    "story_id": self.story_id,
-                    "active_turns": count,
-                    "highest_turn": highest,
-                    "next_turn_index": next_turn,
-                    "orphaned_turns": int(orphans or 0),
-                },
-            )
 
     def _log_events(self, story_id: str, ids: list[str]) -> list[projections.LogEvent]:
         """The staged events as projections see them (this operation is ``active``)."""

@@ -135,6 +135,19 @@ def refuse_nul(value: Any, loc: tuple[int | str, ...] = ()) -> None:
         )
 
 
+def without_nul(value: Any) -> Any:
+    """``value`` (a JSON-like document) with every NUL character removed from its keys and
+    strings (#275). For text the Engine did not receive from a caller, a model's answer above
+    all: refusing it would answer the caller for what the model wrote."""
+    if isinstance(value, str):
+        return value.replace(NUL, "")
+    if isinstance(value, dict):
+        return {without_nul(key): without_nul(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [without_nul(item) for item in value]
+    return value
+
+
 def _error_field(error: Any, prefix: ValidationLoc) -> str:
     loc = (*prefix, *tuple(error.get("loc", ())))
     if error.get("type") in NON_FIELD_ERRORS:

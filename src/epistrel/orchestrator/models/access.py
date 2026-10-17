@@ -24,6 +24,11 @@ the unreserved remainder, and a call the budget cannot afford is not made (``Bud
 every SDK exception becomes a ``ModelError`` (``errors.map_provider_error``). An unstructured
 call that answers only whitespace raises ``EmptyCompletion``. Structured results go through
 ``structured_call`` (``structured.py``), which never returns a partially parsed object.
+
+A completion's text leaves ``send`` without NUL characters (#275): PostgreSQL cannot store one,
+and a model's answer reaches event payloads (a generation, a guardrail's reason), so a NUL failed
+the commit with a database error. The model wrote it, not the caller, so it is removed rather
+than refused; only the purpose and the count are logged (invariant 3).
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.errors import NUL
 from epistrel.core.settings_schema import StructuredSettings
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models import config as model_config
@@ -172,6 +178,16 @@ NOT_ATTEMPTED = frozenset({"not_configured", "no_api_key"})
 
 def _attempted(error: ModelError) -> bool:
     return error.details.get("reason") not in NOT_ATTEMPTED
+
+
+def _without_nul(purpose: str, result: ModelResult) -> ModelResult:
+    """``result`` with the NUL characters removed from its text (#275; see the module
+    docstring)."""
+    count = result.text.count(NUL)
+    if not count:
+        return result
+    log.warning("model answer held NUL characters purpose=%s removed=%d", purpose, count)
+    return result.model_copy(update={"text": result.text.replace(NUL, "")})
 
 
 def _elapsed_ms(started: float) -> int:
@@ -312,6 +328,7 @@ class ModelAccessLayer:
                 budget.refund()  # nothing was sent: the budget counts recorded calls only
             # ``from None``: the provider's message can echo the prompt (invariant 3).
             raise mapped from None
+        result = _without_nul(purpose, result)
         outcome: Outcome = "ok" if usable is None or usable(result) else "invalid_output"
         record(
             ModelCall(

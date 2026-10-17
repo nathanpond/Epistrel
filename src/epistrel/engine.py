@@ -400,6 +400,34 @@ def _policy_items(raw: Any) -> list[StoryPolicyItem]:
 LIBRARY_ONLY_ATTRIBUTE = "__epistrel_library_only__"
 
 
+NUL_CHECKED_ATTRIBUTE = "__epistrel_nul_checked__"
+
+
+def refuses_nul[F: Callable[..., Any]](*own: str) -> Callable[[F], F]:
+    """Mark an ``Engine`` read whose arguments are refused when they hold a NUL character
+    (#278): PostgreSQL cannot compare text holding one, so a read passing it to SQL failed with a
+    database error. ``guard_nul_methods`` wraps every marked read; ``own`` names the arguments
+    the read checks itself, under its own fields. Every operation a ``GET`` route serves carries
+    it (``tests/test_nul_text.py``)."""
+
+    def mark(method: F) -> F:
+        setattr(method, NUL_CHECKED_ATTRIBUTE, own)
+        return method
+
+    return mark
+
+
+def nul_checked_methods(engine_class: type[Engine] | None = None) -> dict[str, tuple[str, ...]]:
+    """``{method: own}`` for every ``refuses_nul`` coroutine method of ``engine_class``."""
+    cls = engine_class or Engine
+    marked: dict[str, tuple[str, ...]] = {}
+    for name in dir(cls):
+        own = getattr(inspect.getattr_static(cls, name), NUL_CHECKED_ATTRIBUTE, None)
+        if isinstance(own, tuple):
+            marked[name] = own
+    return marked
+
+
 def library_only[F: Callable[..., Any]](reason: str) -> Callable[[F], F]:
     """Mark an ``Engine`` coroutine method that has no REST route of its own, and say why.
 
@@ -917,6 +945,7 @@ class Engine:
         """
         return await check_expected_revision(self.db, story_id, ctx.expected_revision)
 
+    @refuses_nul()
     async def history(
         self,
         ctx: RequestContext,
@@ -953,6 +982,7 @@ class Engine:
             include_summary=include_summary,
         )
 
+    @refuses_nul()
     async def get_operation(
         self, ctx: RequestContext, operation_id: str, *, viewpoint: str | None = None
     ) -> operation_view.OperationView:
@@ -1306,6 +1336,7 @@ class Engine:
 
     # -- story-level text: pinned memories and custom instructions (FR-LITE-3) ---------------
 
+    @refuses_nul()
     async def pinned_memories(
         self, ctx: RequestContext, story_id: str
     ) -> story_texts.PinnedMemories:
@@ -1342,6 +1373,7 @@ class Engine:
             material={"story_id": story_id, "body": _body(request)},
         )
 
+    @refuses_nul()
     async def custom_instructions(
         self, ctx: RequestContext, story_id: str
     ) -> story_texts.CustomInstructions:
@@ -1387,6 +1419,7 @@ class Engine:
 
         return gate
 
+    @refuses_nul()
     async def story_settings(
         self, ctx: RequestContext, story_id: str
     ) -> tuple[StorySettings, policy_store.StoryGuardrails]:
@@ -1397,6 +1430,7 @@ class Engine:
         return StorySettings.from_row(story.settings), guardrails
 
     @library_only("served as `effective_budget` in `GET`/`PATCH /stories/{id}/settings`")
+    @refuses_nul()
     async def effective_budget(self, ctx: RequestContext, story_id: str) -> EffectiveBudget:
         """The turn budget the story's next turn would plan with (#69), from its effective
         configuration's ``budgets`` (#113): the call cap and where it comes from (``story``: its
@@ -1499,6 +1533,7 @@ class Engine:
             material={"story_id": story_id, "body": _body(request)},
         )
 
+    @refuses_nul()
     async def get_rating_check(
         self, ctx: RequestContext, story_id: str, job_id: str
     ) -> rating_change.RatingCheckView:
@@ -1508,6 +1543,7 @@ class Engine:
         that is not one of its checks."""
         return await rating_change.get_check(self.db, story_id, job_id)
 
+    @refuses_nul()
     async def get_story(
         self, ctx: RequestContext, story_id: str, *, viewpoint: str | None = None
     ) -> stories.StoryView:
@@ -1530,6 +1566,7 @@ class Engine:
         return await stories.get_story(self.db, story_id, omniscient=True)
 
     @library_only("served as `undo_available`/`dormant_chains` in `GET /stories/{id}`")
+    @refuses_nul()
     async def undo_state(self, ctx: RequestContext, story_id: str) -> timeline.UndoState:
         """Whether the story's latest truncation can be undone, and the discarded tails that
         have newer turns over them (``GET /stories/{id}``, #65)."""
@@ -1695,6 +1732,7 @@ class Engine:
             ctx, "fork", run, material={"story_id": story_id, "body": _body(request)}
         )
 
+    @refuses_nul()
     async def variants(self, ctx: RequestContext, story_id: str) -> list[variants.Chain]:
         """The story's variant chains (``GET /stories/{id}/variants``, #66); a chain that is
         not active says whether making it active would first check its turns
@@ -1747,6 +1785,7 @@ class Engine:
             },
         )
 
+    @refuses_nul()
     async def list_stories(
         self,
         ctx: RequestContext,
@@ -1906,14 +1945,17 @@ class Engine:
 
     # -- content ratings and deployment settings (FR-RATE-1,2; deployment-scoped) --------------
 
+    @refuses_nul()
     async def list_content_ratings(
         self, ctx: RequestContext, *, include_retired: bool = False
     ) -> list[ratings.Rating]:
         return await ratings.list_ratings(self.db, include_retired=include_retired)
 
+    @refuses_nul()
     async def get_content_rating(self, ctx: RequestContext, rating_id: str) -> ratings.RatingDetail:
         return await ratings.get_rating(self.db, rating_id)
 
+    @refuses_nul()
     async def content_rating_versions(
         self, ctx: RequestContext, rating_id: str
     ) -> list[ratings.Rating]:
@@ -1952,6 +1994,7 @@ class Engine:
             material={"rating_id": rating_id},
         )
 
+    @refuses_nul()
     async def deployment_settings(self, ctx: RequestContext) -> deployment.DeploymentState:
         return await deployment.read_settings(self.db)
 
@@ -1968,6 +2011,7 @@ class Engine:
             material={"body": patch.model_dump(mode="json", exclude_unset=True)},
         )
 
+    @refuses_nul()
     async def config_changes(
         self,
         ctx: RequestContext,
@@ -1999,6 +2043,7 @@ class Engine:
     # The writes below are the only callers of ``orchestrator.policies.admin``: the operator
     # surface (``/admin/policies``) and story settings (#63). Nothing on a turn's path calls them.
 
+    @refuses_nul()
     async def policies_list(
         self,
         ctx: RequestContext,
@@ -2020,6 +2065,7 @@ class Engine:
             exclude_blocked=True,
         )
 
+    @refuses_nul()
     async def policies_get(self, ctx: RequestContext, policy_id: str) -> Policy:
         """One policy, retired or not. A policy of a blocked story is 503 ``erasure_pending``,
         as every call naming the story is (#363)."""
@@ -2031,6 +2077,7 @@ class Engine:
         return policy
 
     @library_only("served as `effective_policies` in `GET /stories/{id}/settings`")
+    @refuses_nul()
     async def policies_effective(self, ctx: RequestContext, story_id: str) -> tuple[Policy, ...]:
         """The story's effective policies: global, the rating closure, story, character."""
         return await policy_store.effective_policies(self.db, story_id)
@@ -2095,12 +2142,14 @@ class Engine:
     # Deployment-scoped: every write bumps ``config_revision`` and records a prospective
     # ``config_changes`` row; the next model call reads the new configuration (no restart).
 
+    @refuses_nul()
     async def model_configuration(
         self, ctx: RequestContext
     ) -> tuple[int, dict[str, model_config.ConfigEntry]]:
         """``config_revision`` and every configurable purpose, ``default`` included."""
         return await self.models.configuration()
 
+    @refuses_nul()
     async def model_config_entry(
         self, ctx: RequestContext, purpose: str
     ) -> tuple[int, model_config.ConfigEntry]:
@@ -2276,6 +2325,7 @@ class Engine:
             material={"character_id": character_id},
         )
 
+    @refuses_nul()
     async def get_character(
         self,
         ctx: RequestContext,
@@ -2292,12 +2342,14 @@ class Engine:
             self.db, character_id, version=version, draft=draft, projection=projection
         )
 
+    @refuses_nul()
     async def list_character_versions(
         self, ctx: RequestContext, character_id: str
     ) -> list[catalog_characters.VersionSummary]:
         """Every published version of the entry, oldest first: number, time and publisher."""
         return await catalog_characters.versions(self.db, character_id)
 
+    @refuses_nul()
     async def get_companion(
         self,
         ctx: RequestContext,
@@ -2437,6 +2489,7 @@ class Engine:
             material={"scenario_id": scenario_id},
         )
 
+    @refuses_nul()
     async def get_scenario(
         self,
         ctx: RequestContext,
@@ -2453,6 +2506,7 @@ class Engine:
             self.db, scenario_id, version=version, draft=draft, projection=projection
         )
 
+    @refuses_nul()
     async def list_scenario_versions(
         self, ctx: RequestContext, scenario_id: str
     ) -> list[catalog_scenarios.VersionSummary]:
@@ -2538,6 +2592,7 @@ class Engine:
             },
         )
 
+    @refuses_nul("q", "label", "content_rating", "listing_status", "owner", "relation")
     async def search_catalog(
         self,
         ctx: RequestContext,
@@ -2607,10 +2662,12 @@ class Engine:
             material={"body": _body(request)},
         )
 
+    @refuses_nul()
     async def get_persona(self, ctx: RequestContext, persona_id: str) -> catalog_personas.Persona:
         """The persona; 404 for an unknown one."""
         return await catalog_personas.get(self.db, persona_id)
 
+    @refuses_nul("owner", "relation", "cursor")
     async def list_personas(
         self,
         ctx: RequestContext,
@@ -2782,6 +2839,7 @@ class Engine:
             {"relation": name, "principal": related},
         )
 
+    @refuses_nul()
     async def list_relations(
         self, ctx: RequestContext, entity_type: EntityType | str, entity_id: str
     ) -> ownership.Relations:
@@ -2795,6 +2853,7 @@ class Engine:
     # offboarding request is deployment-scoped and keyed per deployment; its job runs as
     # ``system``.
 
+    @refuses_nul("principal_id", "cursors")
     async def lookup_principal(
         self,
         ctx: RequestContext,
@@ -2878,6 +2937,7 @@ class Engine:
             keep=offboarding.stored,
         )
 
+    @refuses_nul()
     async def get_offboarding(
         self, ctx: RequestContext, job_id: str
     ) -> offboarding.OffboardingView:
@@ -3080,6 +3140,7 @@ class Engine:
         erasure_ledger.log_summary(marked, report)
         return report
 
+    @refuses_nul()
     async def erasure_status(self, ctx: RequestContext) -> erasure_ledger.ReconcileStatus:
         """The erasure ledger's reconciliation (FR-ADMIN-7): the entries this database has not
         applied yet (``pending``, each with its story) and their count, how many are applied,
@@ -3104,6 +3165,7 @@ class Engine:
             pending_count=pending,
         )
 
+    @refuses_nul()
     async def erasure_boundary(self, ctx: RequestContext) -> erasure_boundary.ErasureBoundary:
         """What an erasure covers and what it cannot reach (FR-ADMIN-8), as data: the same
         text as ``docs/OPERATIONS.md`` and the API description."""
@@ -3200,10 +3262,12 @@ class Engine:
             await media.discard(staged)
             await media.discard(poster)
 
+    @refuses_nul()
     async def get_media(self, ctx: RequestContext, media_id: str) -> media.MediaAsset:
         """An asset's metadata, ``live`` or ``retired``; 404 for an unknown asset."""
         return await media.get(self.db, media_id)
 
+    @refuses_nul()
     async def get_media_content(
         self,
         ctx: RequestContext,
@@ -3241,6 +3305,7 @@ class Engine:
             with_bytes=with_bytes,
         )
 
+    @refuses_nul()
     async def get_media_url(
         self, ctx: RequestContext, media_id: str, *, ttl: int | None = None
     ) -> media.MediaUrl:
@@ -3255,6 +3320,7 @@ class Engine:
             self.db, self.media, media_id, ttl_s=ttl, settings=settings, signer=self.signer
         )
 
+    @refuses_nul()
     async def list_media(
         self,
         ctx: RequestContext,
@@ -3327,6 +3393,7 @@ class Engine:
             material={"body": _body(request)},
         )
 
+    @refuses_nul()
     async def get_upload(self, ctx: RequestContext, upload_id: str) -> media_uploads.UploadSession:
         """A session's state and the parts it has received, so an interrupted upload resumes
         by sending the others. 404 for an unknown session."""
@@ -3435,6 +3502,7 @@ class Engine:
             material={"body": _body(request)},
         )
 
+    @refuses_nul()
     async def get_profile(
         self, ctx: RequestContext, profile_id: str, *, version: int | None = None
     ) -> profiles.EngineProfile:
@@ -3442,6 +3510,7 @@ class Engine:
         unknown profile or version."""
         return await profiles.get_profile(self.db, profile_id, version=version)
 
+    @refuses_nul()
     async def list_profiles(
         self,
         ctx: RequestContext,
@@ -3544,12 +3613,14 @@ class Engine:
             material={"profile_id": profile_id},
         )
 
+    @refuses_nul()
     async def list_profile_versions(
         self, ctx: RequestContext, profile_id: str
     ) -> list[profiles.ProfileVersion]:
         """Every version of the profile, oldest first: number, time and author."""
         return await profiles.list_versions(self.db, profile_id)
 
+    @refuses_nul()
     async def profile_schema(self, ctx: RequestContext) -> profiles.ProfileSchema:
         """What a profile may set on this deployment (FR-PROF-2): the JSON Schema of the
         delivered modules and levels, every delivered setting's three tags, the delivered
@@ -3582,6 +3653,7 @@ class Engine:
             purposes=self.purposes,
         )
 
+    @refuses_nul()
     async def get_effective_config(
         self, ctx: RequestContext, story_id: str
     ) -> effective.EffectiveConfig:
@@ -3694,6 +3766,7 @@ class Engine:
         principal = self.require_principal(ctx)
         return await feedback.retract(self.db, story_id, message_id, principal=principal)
 
+    @refuses_nul()
     async def get_feedback(
         self, ctx: RequestContext, story_id: str, message_id: str
     ) -> feedback.Feedback:
@@ -3709,6 +3782,7 @@ class Engine:
     # Flag-only: these read feedback for people to look at; nothing in a turn, a profile or a
     # guardrail reads them (the import-linter contract ``feedback-is-flag-only``).
 
+    @refuses_nul()
     async def feedback_aggregates(
         self,
         ctx: RequestContext,
@@ -3727,6 +3801,7 @@ class Engine:
             self.db, group_by, start=start, end=end, story_id=story_id
         )
 
+    @refuses_nul()
     async def feedback_review(
         self,
         ctx: RequestContext,
@@ -3780,6 +3855,7 @@ class Engine:
             material={"body": request.model_dump(mode="json", by_alias=True)},
         )
 
+    @refuses_nul()
     async def list_feedback_exports(
         self,
         ctx: RequestContext,
@@ -3790,12 +3866,14 @@ class Engine:
         """The export log (FR-FB-4), newest first: who exported what, and when."""
         return await feedback_export.list_exports(self.db, limit=limit, cursor=cursor)
 
+    @refuses_nul()
     async def get_feedback_export(
         self, ctx: RequestContext, export_id: str
     ) -> feedback_export.FeedbackExport:
         """One export's record; 404 for an unknown export."""
         return await feedback_export.read(self.db, export_id)
 
+    @refuses_nul()
     async def get_feedback_export_content(
         self, ctx: RequestContext, export_id: str
     ) -> feedback_export.FeedbackExportContent:
@@ -3961,7 +4039,82 @@ def gate_catalog_methods(engine_class: type) -> None:
             setattr(engine_class, name, _catalog_gated(member))
 
 
+NUL_GATED_PARAMETERS = frozenset({"story_id", "entity_id", "entry_id", *CATALOG_PARAMETERS})
+"""What the erasure and catalog gates (#125, #346) look up before a method runs: in a method
+that is not a ``refuses_nul`` read (a mutation), these are the arguments checked for NUL ahead
+of the gates, which would otherwise pass one to SQL before ``_keyed`` refuses it (#278)."""
+
+
+def _plain(value: Any) -> Any:
+    """``value`` as the JSON-like data ``refuse_nul`` walks: strings, and sequences and mappings
+    of them (``None`` for anything else: a model, bytes, a number)."""
+    if isinstance(value, str | dict | list | tuple):
+        return value
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, Sequence | set | frozenset) and not isinstance(value, bytes | bytearray):
+        return list(value)
+    return None
+
+
+def nul_location_of(parameter: inspect.Parameter) -> tuple[str, ...]:
+    """The field a NUL in ``parameter`` is refused at: its name when positional (as ``_keyed``
+    names a ``story_id``), ``query.<name>`` when keyword-only (as the reads with their own
+    filters name theirs)."""
+    keyword = parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    return ("query", parameter.name) if keyword else (parameter.name,)
+
+
+def nul_guarded_parameters(method: Callable[..., Any]) -> list[inspect.Parameter]:
+    """The parameters of an ``Engine`` coroutine method that ``guard_nul_methods`` checks: every
+    one of a ``refuses_nul`` read but ``self``, ``ctx`` and its ``own``; a gated method's
+    ``NUL_GATED_PARAMETERS``; none otherwise."""
+    parameters = inspect.signature(method).parameters
+    own = getattr(method, NUL_CHECKED_ATTRIBUTE, None)
+    if isinstance(own, tuple):
+        return [p for name, p in parameters.items() if name not in {"self", "ctx", *own}]
+    if getattr(method, ERASURE_GATED_ATTRIBUTE, False) or getattr(
+        method, CATALOG_GATED_ATTRIBUTE, False
+    ):
+        return [p for name, p in parameters.items() if name in NUL_GATED_PARAMETERS]
+    return []
+
+
+def _nul_guarded[F: Callable[..., Awaitable[Any]]](
+    method: F, checked: Sequence[inspect.Parameter]
+) -> F:
+    signature = inspect.signature(method)
+    locations = [(parameter.name, nul_location_of(parameter)) for parameter in checked]
+
+    @functools.wraps(method)
+    async def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            bound = signature.bind(*args, **kwargs)
+        except TypeError:
+            return await method(*args, **kwargs)  # the call's own TypeError
+        for name, loc in locations:
+            if name in bound.arguments:
+                refuse_nul(_plain(bound.arguments[name]), loc)
+        return await method(*args, **kwargs)
+
+    return guarded  # type: ignore[return-value]
+
+
+def guard_nul_methods(engine_class: type) -> None:
+    """Refuse a NUL character (422 ``validation_error``, ``string_nul``: ``refuse_nul``, as #73
+    made it for request bodies) in the arguments of every ``refuses_nul`` read and in the
+    arguments the gates look up, before the gates run (#278). Run after the gates are in place,
+    so the check is in front of them."""
+    for name, member in list(vars(engine_class).items()):
+        if name.startswith("_") or not inspect.iscoroutinefunction(member):
+            continue
+        checked = nul_guarded_parameters(member)
+        if checked:
+            setattr(engine_class, name, _nul_guarded(member, checked))
+
+
 gate_story_methods(Engine)
 gate_catalog_methods(Engine)
+guard_nul_methods(Engine)
 # One span, summary line and count per outermost call of every public coroutine method (#74).
 instrument.instrument_engine(Engine)

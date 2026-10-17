@@ -12,7 +12,10 @@ any leading `LicenseRef-` or `GNU` (`GPL-3.0-only`, `GPLv3`, `GNU-GPL`, `GPL.v3`
 qualified as another license (`Lesser GPL`, `Library GPL`, `Nethack GPL`) is that license. A
 bare `GNU` names no single family, so an exception can admit it (#313). A table entry settles
 its own spelling. A license text (a value spanning several lines) is judged by its title line
-only, since full texts cite or bundle other licenses in their body.
+only, since full texts cite or bundle other licenses in their body. So a text whose first line
+does not name its license, such as the FSF notice that opens "This program is free software;",
+reads UNKNOWN: it fails without an exception, and an exception admits it (#312, the owner's
+decision to keep the rule). Whoever writes an exception reads the package's license first.
 """
 
 from __future__ import annotations
@@ -412,7 +415,10 @@ def unread_family(raw: str, deny: tuple[str, ...]) -> str | None:
     SPDX expression, an unlisted classifier), and a license text's title line. A
     table entry is authoritative for its spelling. A text's body is not searched: permissive
     texts name the GPL in passing (MPL-2.0's "Secondary License"), and numpy's and scipy's
-    `License` fields carry the GPL notice of the runtime library bundled in their wheels.
+    `License` fields carry the GPL notice of the runtime library bundled in their wheels. The
+    cost (#312): a text that opens without its license's name, such as the FSF notice "This
+    program is free software; you can redistribute it …", names no family here, so it reads
+    UNKNOWN and an exception admits it.
     """
     if _is_text(raw):
         return named_family(raw.strip().splitlines()[0], deny)

@@ -477,6 +477,38 @@ def test_an_exception_still_admits_what_names_no_denied_family(raw: str, status:
     assert judge("pkg", raw, cfg).status == "excepted"
 
 
+# The FSF's notice for a GPL program (#312): its first line does not name the license.
+FSF_NOTICE = (
+    "This program is free software; you can redistribute it and/or modify\n"
+    "it under the terms of the GNU General Public License as published by\n"
+    "the Free Software Foundation; either version 3 of the License, or\n"
+    "(at your option) any later version."
+)
+
+
+def test_a_license_text_is_judged_by_its_first_line_only() -> None:
+    """The rule the owner kept for #312 (option 1): a license text is judged by its first line,
+    so a GPL notice that does not open with the license's name reads UNKNOWN. It still fails
+    without an exception, and an exception admits it, so the maintainer who writes one reads the
+    text first. The same notice behind a title line that names the GPL is denied and its
+    exception refused."""
+    cfg = LicensesConfig(CONFIG.allow, CONFIG.deny, {"pkg": "vendor says fine"})
+    assert parse_expression(FSF_NOTICE) == [[UNKNOWN]]
+    assert judge("pkg", FSF_NOTICE, CONFIG).status == "unknown"
+    assert judge("pkg", FSF_NOTICE, cfg).status == "excepted"
+    titled = "GNU General Public License v3\n" + FSF_NOTICE
+    assert (judge("pkg", titled, CONFIG).status, judge("pkg", titled, CONFIG).detail) == (
+        "denied",
+        "GPL",
+    )
+    assert judge("pkg", titled, cfg).detail == "exception refused: GPL family"
+    finding = evaluate(_records(fastapi=FSF_NOTICE), {"fastapi": {"epistrel"}}, CONFIG).findings
+    assert finding == [
+        "fastapi: 'This program is free software; you can redistribute it and/o…' UNKNOWN"
+        " license [invariant 2] via (direct)"
+    ]
+
+
 def test_a_table_spelling_is_read_as_listed_not_searched(monkeypatch: pytest.MonkeyPatch) -> None:
     """Only what the parser cannot read is searched for a family name, so a free-text spelling
     that names the GPL without being GPL is settled by a table entry."""

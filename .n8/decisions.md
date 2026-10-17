@@ -6525,3 +6525,6 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision:** #329 test hygiene: the new tests leave no `turn_queue` row and no `in_flight` holder behind (`close_item`, `_settle`). In a first version, `test_acquire_refuses_a_failed_head` left a queued item holding a 60 s slot. That made `test_turn_concurrency::test_restart_drains_the_queue` time out when it ran afterwards, because its `start_workers()` recovery pass drains every queue in the shared database, and `drainer.idle()` waits for all of them.
   **Why:** The tests share one database; the M3 lesson about leaked rows applies.
   **Issue:** #329
+- **Decision:** #276 follows the owner's 2026-10-16 triage: #60's always-run `@example` in `tests/integration/test_i_02.py` gains `turn` ×3, `truncate`, `untruncate`, `truncate`, `turn`, `swap` before its existing steps, so the explicit example alone makes truncate, untruncate, swap, regenerate, pins and instructions occur. The occurrence assertion and the random strategy are unchanged.
+  **Why:** The occurrence check then cannot fail for want of a draw. Proof: with a scratch profile `phases=[Phase.explicit]`, HEAD's example fails the check and the new one passes; 30 runs with `--hypothesis-seed=1..30`, 10 unseeded runs and one `CI=1` run all pass.
+  **Issue:** #276

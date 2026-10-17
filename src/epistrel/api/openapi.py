@@ -454,6 +454,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "lock_fact": _FACT_VERSION,
     "unlock_fact": _FACT_VERSION,
     "list_facts": ("module_off", "omniscient_required", "viewpoint_unresolved"),
+    "inspect_ledger": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
     "retrieve": ("omniscient_required", "viewpoint_unresolved"),
     "get_story": ("viewpoint_unresolved",),

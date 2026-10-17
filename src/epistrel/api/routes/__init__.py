@@ -19,6 +19,7 @@ from epistrel.api.routes import (
     feedback_reports,
     health,
     history,
+    inspect,
     media,
     operations,
     personas,
@@ -46,6 +47,7 @@ router.include_router(respond.router)
 router.include_router(story_texts.router)
 router.include_router(predicates.router)
 router.include_router(scene.router)
+router.include_router(inspect.router)
 router.include_router(retrieval.router)
 router.include_router(timeline.router)
 router.include_router(operations.router)

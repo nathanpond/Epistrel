@@ -618,6 +618,24 @@ OVERRIDES: dict[str, dict[str, str]] = {
             "ORDER BY s.n) AS char(26)[])"
         ),
     },
+    # Commitments (#146): a thunk's resolution and an entry's discharge name the fork's copies;
+    # one made after N is not copied, so the thunk is open and the entry undischarged there (the
+    # stored state is read through the resolving operation's membership).
+    "thunks": {
+        "resolved_fact_id": _mapped_or_null("resolved_fact_id"),
+        "resolution_operation_id": _mapped_or_null("resolution_operation_id"),
+        "state": (
+            "CASE WHEN t.state = 'resolved' AND "
+            f"{_mapped_or_null('resolution_operation_id')} IS NULL THEN 'open' ELSE t.state END"
+        ),
+    },
+    "promissory_ledger": {
+        "discharged_by_operation": _mapped_or_null("discharged_by_operation"),
+        "discharged_mode": (
+            f"CASE WHEN {_mapped_or_null('discharged_by_operation')} IS NULL THEN NULL "
+            "ELSE t.discharged_mode END"
+        ),
+    },
     # Memory records (#135): the propositions a memory wraps are the fork's copies, (#141)
     # its participants the fork's entities and (#143) the outputs that cover it the fork's
     # copies of them (an output positioned after N is not copied, so it covers nothing there).

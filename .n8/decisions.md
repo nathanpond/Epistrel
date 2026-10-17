@@ -7277,3 +7277,33 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - `test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run`.
   **Why:** The test plan, traceability (one file per test ID and milestone), and the brief's route-test list.
   **Issue:** #145
+- **Decision (Discretion, deviation from #130's plan):** `thunks` and `promissory_ledger` register in `DERIVED_TABLES` with `operation_id` as their only flip column. A thunk's resolution and an entry's discharge are read through the resolving/discharging operation's membership (`resolution_operation_id`, `discharged_by_operation`), not flipped with it.
+  **Why:** #130's "flip the whole row when any extra operation column matches" would discard a turn-1 thunk when its turn-3 resolution is truncated, instead of reopening it. #154's own plan says the same (derive state at read time, keep the pre-M thunk row active). TIME (c) `test_time__commitments` and `test_reverting_the_resolving_turn_reopens_it` prove reopen-on-revert.
+  **Issue:** #146
+- **Decision (Discretion):** The fact lifecycle moves in place. Migration 0060 adds `revised` to `fact_commit_state`, and the facts guard lets `commit_state`/`committed_at_position` change along `lifecycle.TRANSITIONS` only: introduced→pending→committed, introduced→committed, pending→introduced (demotion at the close), committed→revised and revised→committed (#154's revert and swap-back). `canon.supersede` keeps the old state, as #154 planned. #140's verify reads only `committed`/`revised` facts as evidence (`rules.EVIDENCE_STATES`).
+  **Why:** FR-COMMIT-1 names the four states. Facts are otherwise append-only. #154 planned the same allow-list extension.
+  **Issue:** #146
+- **Decision (Discretion):** The thunk table stores its matching columns normalized (`predicate_id`, `subject_id`, `object_id`, `open_slot`), and its index is `(story_id, state, predicate_id)`, not `predicate_text`. Dedupe is on the predicate, the known arguments and the slot (`ThunkSketch.key`), which is stricter than "(predicate, subject)". The open-argument lexicon is applied before entity resolution, so an indefinite ("a stranger") is open even when an entity of that name exists. A sketch with two open arguments, or one with nothing known, is texture.
+  **Why:** Matching needs #140-normalized ids. An indefinite says the speaker does not identify the thing.
+  **Issue:** #146
+- **Decision (Discretion):** The minimal commit writes `<predicate>_occurred` (an auto predicate, object `none`) about the reference's known argument, at the thunk's `valid_time`, provenance `render`, with the entry's beat. So a knock at the door is `knocked_at_occurred(door)`, not the discretion's `knock_occurred`: there is no stemming.
+  **Why:** Deterministic and generic, with no anonymous entity, and the thunk stays open (U-16).
+  **Issue:** #146
+- **Decision (Rule 2):** `core.commit.lifecycle` is a `DIRECT` write path that calls `check_content(` on the sketch's texts and its referenced entity ids before inserting, instead of the AC's `OPERATION`.
+  **Why:** The sketch is text written into its own table, not through `Operation`'s events. The `OPERATION` claim would pass the resurrection-guard source check only textually.
+  **Issue:** #146
+- **Decision (Discretion):** The turn-time thunk lookup (`core.commit.matching`, a `KEYED_READERS` member) records a query key with `reading = "thunk"` and any subject, whose result is the open thunks' ids/states.
+  **Why:** A subject-open thunk is resolved by a fact of whatever subject the dependence names. The distinct `reading` keeps the key's identity apart from a canon key of the same predicate, which would otherwise trip `ReadSetInconsistent`. `test_a_concurrent_resolution_touches_the_lookup` proves the touch.
+  **Issue:** #146
+- **Decision (Discretion):** `salience_detection` input is `{beats: [{index, kind, speaker, text}], scene_context: {present_entities, last_beats}}` (new categories `render_text`, `scene`). Output spans are `{beat, start, end}` objects rather than tuples. `deterministic_first` is conclusive only for an empty render.
+  **Why:** Object spans are friendlier to constrained decoding than tuple `prefixItems`.
+  **Issue:** #146
+- **Decision (Discretion):** The inspection route is in a new `api/routes/inspect.py`: `limit`/`after_id` page the thunks, with their entries embedded in `ledger` (the first page also lists the proposition entries), and there are `state` and `discharged` filters. It answers 409 `module_off` when commitment is off. The ownership matrix's row switches the story to `Structured (M4)` first.
+  **Why:** Following `list_facts` (#145).
+  **Issue:** #146
+- **Decision (scope):** #146 ships the lifecycle and salience as callable steps (`record_salience`, `depend`, `close_turn` with a `follow_up` hook). The structured pipeline that calls them per beat, renders the follow-up and stores `turn_report.commit` is #150. #148 is the detection that finds dependences, #156 the budget slotting, #157 the E-05 set, and #154 the reconciliation (`BEFORE_RESOLVE` hook) and the S-THUNK-RESOLVE test that carries FR-COMMIT-10's part. FR-COMMIT-10 is proven behaviourally here (`test_a_global_thunk_resolves_once`) without a part marker, since docs/04 names S-THUNK-RESOLVE for it.
+  **Why:** Those stories own those parts. The brief says not to stub them.
+  **Issue:** #146
+- **Decision (Rule 1, separate commit):** #145's `mutation.Reason` lacked #366's `trim_as_sent` raw-length check, which broke `tests/test_trimmed.py` at HEAD. It is fixed in its own commit, and `test_trimmed`'s per-type check now covers it.
+  **Why:** The orchestrator asked for it.
+  **Issue:** #145

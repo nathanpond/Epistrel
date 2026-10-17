@@ -1,8 +1,9 @@
 """TIME (M4), the registry slices: derived records follow the membership of the operation
 that produced them (FR-STORE-29; TIME (c), docs/04 §6; #130's ``test_membership_registry``).
 
-TIME (M4) has one file, this one: #133 (facts, ``test_time__m4_facts``) and #135 (memories,
-``test_time__memories`` and ``test_time__m4_memories``) add their (c) slices here.
+TIME (M4) has one file, this one: #133 (facts, ``test_time__m4_facts``), #135 (memories,
+``test_time__memories`` and ``test_time__m4_memories``) and #146 (thunks and the promissory
+ledger, ``test_time__commitments``) add their (c) slices here.
 
 The real derived tables land with their stories (facts #133, memories #135, utterances #150,
 thunks, ledger and resolutions #146/#154) and register in ``core.membership.DERIVED_TABLES``.
@@ -43,6 +44,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 from epistrel.core import fork as forking
 from epistrel.core import timeline
 from epistrel.core.canon import facts as canon
+from epistrel.core.commit import lifecycle
 from epistrel.core.enums import Membership
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import (
@@ -69,7 +71,8 @@ from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import operations
 from epistrel.core.tables.base import ulid_type
 from epistrel.core.variants import ChainRef
-from tests.canon_support import at, commit, supersede, world
+from tests import commit_support as c
+from tests.canon_support import at, commit, run, supersede, world
 from tests.concurrency_support import regenerate
 from tests.event_support import interleave, new_story, play_turn
 from tests.fork_support import fork
@@ -741,3 +744,89 @@ async def test_time__m4_memories(engine: AsyncEngine) -> None:
 
     await untruncate(engine, story)
     assert await view(None) == {*episodic.values(), narrow, wide}
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-STORE-29")
+async def test_time__commitments(engine: AsyncEngine) -> None:
+    """TIME (c) for thunks and the promissory ledger (#146): each row carries the operation that
+    introduced it and follows that operation's membership, stamped with the control's time; its
+    narrative position, beat and valid-time are never written by a flip. A thunk introduced in
+    turn 1 and resolved in turn 2 stays in the timeline when turn 2 is truncated (its row is
+    turn 1's) and reads open again, because the resolution follows turn 2's membership; the
+    entry turn 2 discharged reads undischarged. Untruncating restores both. Complement:
+    truncating turn 1 takes the thunk and its entry out of the timeline (``discarded``), and
+    untruncating brings them back exactly."""
+    async with engine.connect() as conn:
+        assert await schema_findings(conn) == []
+    assert {"thunks", "promissory_ledger"} <= set(DERIVED_TABLES)
+    assert DERIVED_TABLES["thunks"].operation_columns == ("operation_id",)
+    k = await c.knock_story(engine)
+
+    async def introduce(conn: AsyncConnection, op: Any) -> str:
+        report = await c.salient(conn, op, k, k.beat(2, "narration", "A knock."), c.KNOCK)
+        return str(report.recorded[0].thunk_id)
+
+    _, thunk_id = await play(engine, k.story_id, introduce)
+
+    async def resolve(conn: AsyncConnection, op: Any) -> None:
+        found = await lifecycle.depend(
+            conn, op, thunk_id, c.knocker(k, k.mailman, 0), beat=2, channel="do"
+        )
+        assert found.kind == "committed"
+
+    await play(engine, k.story_id, resolve)
+    await play(engine, k.story_id, resolve_nothing)
+    before = {
+        t: {r.id: r for r in await c.rows(engine, t, k.story_id)}
+        for t in ("thunks", "promissory_ledger")
+    }
+    kept = ("narrative_turn", "turn_variant", "beat", "operation_id", "source_event_ids")
+
+    await truncate(engine, k.story_id, 1)
+    after = {
+        t: {r.id: r for r in await c.rows(engine, t, k.story_id)}
+        for t in ("thunks", "promissory_ledger")
+    }
+    for table, found in after.items():
+        for row_id, row in found.items():
+            was = before[table][row_id]
+            assert str(row.membership) == "active"
+            assert row.membership_tx == was.membership_tx
+            assert all(getattr(row, col) == getattr(was, col) for col in kept)
+    assert after["thunks"][thunk_id].valid_time == before["thunks"][thunk_id].valid_time
+    assert (await c.thunk(engine, k.story_id, thunk_id)).state.value == "open"
+    assert [b.thunk_id for b in await c.blockers(engine, k.story_id)] == [thunk_id]
+
+    await untruncate(engine, k.story_id)
+    assert (await c.thunk(engine, k.story_id, thunk_id)).state.value == "resolved"
+    assert await c.blockers(engine, k.story_id) == []
+
+    await truncate(engine, k.story_id, 0)
+    gone = {
+        t: {r.id: r for r in await c.rows(engine, t, k.story_id)}
+        for t in ("thunks", "promissory_ledger")
+    }
+    for table, found in gone.items():
+        for row_id, row in found.items():
+            assert str(row.membership) == "discarded", (table, row_id)
+            assert row.membership_tx > before[table][row_id].membership_tx
+    async with engine.connect() as conn:
+        assert (await lifecycle.inspect(conn, k.story_id)).thunks == ()
+    await untruncate(engine, k.story_id)
+    restored = {
+        t: {r.id: r for r in await c.rows(engine, t, k.story_id)}
+        for t in ("thunks", "promissory_ledger")
+    }
+    for table, found in restored.items():
+        for row_id, row in found.items():
+            assert str(row.membership) == "active"
+            assert all(getattr(row, col) == getattr(before[table][row_id], col) for col in kept)
+
+
+async def resolve_nothing(conn: AsyncConnection, op: Any) -> None:
+    """A turn that touches no commitment (so the head is past turn 2)."""
+
+
+async def play(engine: AsyncEngine, story_id: str, step: Any) -> tuple[Any, Any]:
+    return await run(engine, story_id, step)

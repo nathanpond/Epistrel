@@ -6,14 +6,17 @@ from datetime import datetime
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel import Engine, ProfileOverridesPatch, RelationRequest
 from epistrel.config import Settings
 from epistrel.core import clock, turn_gate
+from epistrel.core.commit import lifecycle
+from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.context import RequestContext
-from epistrel.core.enums import OperationKind
+from epistrel.core.enums import OpenSlot, OperationKind
 from epistrel.core.errors import GuardrailViolation
+from epistrel.core.events import Operation
 from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
@@ -197,6 +200,20 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
     )
     # Memory records (#135): a memory of the story, written by its own operation.
     await memory_support.derived_memory(engine, story_id, "Ann sails at dawn.", [])
+    # Commitments (#146): a salient thunk (someone sails with Ann) and its ledger entry.
+    sketch = ThunkSketch(
+        subject_text="someone",
+        relation_text=auto.name,
+        object_text="Ann",
+        predicate_id=auto.id,
+        object_id=ann,
+        open_slot=OpenSlot.SUBJECT,
+    )
+
+    async def owe(conn: AsyncConnection, op: Operation) -> None:
+        await lifecycle.introduce(conn, op, sketch, valid_time=0, salient=True, on=True)
+
+    await canon_support.run(engine, story_id, owe)
 
 
 def _due() -> datetime:

@@ -10147,6 +10147,48 @@
         "title": "Kind",
         "type": "string"
       },
+      "LedgerBody": {
+        "description": "A page of the story's thunks and their ledger entries, the story's revision, and\n``next_after_id`` (``null`` on the last page).",
+        "properties": {
+          "ledger": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerItemBody"
+            },
+            "title": "Ledger",
+            "type": "array"
+          },
+          "next_after_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After Id"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "thunks": {
+            "items": {
+              "$ref": "#/components/schemas/ThunkBody"
+            },
+            "title": "Thunks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "thunks",
+          "ledger",
+          "revision",
+          "next_after_id"
+        ],
+        "title": "LedgerBody",
+        "type": "object"
+      },
       "LedgerEntryBody": {
         "additionalProperties": false,
         "description": "The erasure ledger's row: identifiers, the scope and the counts; never a name.",
@@ -10189,6 +10231,77 @@
           "counts"
         ],
         "title": "LedgerEntryBody",
+        "type": "object"
+      },
+      "LedgerItemBody": {
+        "description": "One promissory-ledger entry: what it is owed on (a thunk, or a hidden fact's\nproposition), its kind, where it was introduced, and the operation that discharged it and\nhow (``null`` while undischarged; reverting that operation makes it undischarged again).",
+        "properties": {
+          "discharged_by_operation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discharged By Operation"
+          },
+          "discharged_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discharged Mode"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "introduced_position": {
+            "$ref": "#/components/schemas/PositionBody"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "proposition_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposition Id"
+          },
+          "thunk_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thunk Id"
+          }
+        },
+        "required": [
+          "id",
+          "thunk_id",
+          "proposition_id",
+          "kind",
+          "introduced_position",
+          "discharged_by_operation",
+          "discharged_mode"
+        ],
+        "title": "LedgerItemBody",
         "type": "object"
       },
       "LikesDislikes": {
@@ -14672,6 +14785,51 @@
           "message"
         ],
         "title": "PolicyReplacement",
+        "type": "object"
+      },
+      "PositionBody": {
+        "description": "A narrative position: the turn, its variant and the beat (``null`` when position-less).",
+        "properties": {
+          "beat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beat"
+          },
+          "turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
+          }
+        },
+        "required": [
+          "turn",
+          "variant",
+          "beat"
+        ],
+        "title": "PositionBody",
         "type": "object"
       },
       "PredicateBody": {
@@ -24783,6 +24941,13 @@
             "title": "Structured Retry Budget",
             "type": "integer"
           },
+          "thunks_max_open": {
+            "default": 500,
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Thunks Max Open",
+            "type": "integer"
+          },
           "timer_lag_alert": {
             "default": 300.0,
             "maximum": 86400.0,
@@ -25891,6 +26056,17 @@
               }
             ],
             "title": "Structured Retry Budget"
+          },
+          "thunks_max_open": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thunks Max Open"
           },
           "timer_lag_alert": {
             "anyOf": [
@@ -27964,6 +28140,84 @@
         "title": "ThreatResponseDispositionPatch",
         "type": "object"
       },
+      "ThunkBody": {
+        "description": "One thunk: its proposition sketch (texts, the predicate and the known arguments by id,\nthe open slot, the candidates), its effective ``state`` (``resolved`` only while the\nresolving turn is in the timeline), where it was introduced, whether it was made salient,\nthe story-minute it is about, and the fact that resolved it.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "open_slot": {
+            "title": "Open Slot",
+            "type": "string"
+          },
+          "position": {
+            "$ref": "#/components/schemas/PositionBody"
+          },
+          "resolved_fact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Fact Id"
+          },
+          "salient": {
+            "title": "Salient",
+            "type": "boolean"
+          },
+          "sketch": {
+            "additionalProperties": true,
+            "title": "Sketch",
+            "type": "object"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "valid_time": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Time"
+          }
+        },
+        "required": [
+          "id",
+          "sketch",
+          "description",
+          "open_slot",
+          "state",
+          "position",
+          "salient",
+          "valid_time",
+          "resolved_fact_id"
+        ],
+        "title": "ThunkBody",
+        "type": "object"
+      },
+      "ThunkState": {
+        "description": "A thunk's stored state (FR-COMMIT-5,10; #146): ``open`` (undetermined), ``resolved``\n(a dependence fixed its value) or ``expired`` (pruned past ``thunks_max_open``, or its\nsubject erased: ignored from then on). A ``resolved`` row whose resolving operation left the\ntimeline reads as ``open`` (``core.commit.lifecycle``). Postgres enum ``thunk_state``.",
+        "enum": [
+          "open",
+          "resolved",
+          "expired"
+        ],
+        "title": "ThunkState",
+        "type": "string"
+      },
       "TruncateRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/truncate``: keep turns 1..``to_turn``; ``0`` keeps only genesis.",
@@ -29494,6 +29748,7 @@
                           "retrieval_rrf_k",
                           "retrieval_vector_k",
                           "structured_retry_budget",
+                          "thunks_max_open",
                           "timer_lag_alert",
                           "turn_queue_max",
                           "uncertain_below",
@@ -50706,6 +50961,203 @@
           }
         ],
         "summary": "Record consumer events without generating",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/inspect/ledger": {
+      "get": {
+        "description": "The introduced-but-undetermined references (thunks) and the salient references awaiting commitment (FR-COMMIT-7,13), `omniscient` only (403 `omniscient_required`). A page of thunks by id (`limit`, at most 500; `after_id` continues), optionally only those `open`, `resolved` or `expired`, with the ledger entries on them (`discharged` keeps the discharged or the undischarged ones); the first page also lists the entries on hidden facts' propositions. 409 `module_off` for a story that does not run commitment.",
+        "operationId": "inspect_ledger",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ThunkState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "discharged",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Discharged"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `module_off`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inspect the story's thunks and promissory ledger",
         "tags": [
           "stories"
         ]

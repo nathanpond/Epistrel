@@ -402,6 +402,50 @@ class FactSuperseded(EventPayload):
     remainders: tuple[str, ...] = ()
 
 
+# -- commitments (FR-COMMIT-1..3,5..7,10,13; #146) ---------------------------------------------
+
+
+@register("thunk_introduced", category=EventCategory.DERIVED)
+class ThunkIntroduced(EventPayload):
+    """A thunk was introduced (#146): ``thunk_id``, which slot of its proposition is open
+    (``open_slot``) and whether a salient reference introduced it. Identifiers only; the sketch
+    lives in the ``thunks`` row."""
+
+    thunk_id: str
+    open_slot: str
+    salient: bool = False
+
+
+@register("thunk_resolved", category=EventCategory.DERIVED)
+class ThunkResolved(EventPayload):
+    """A dependence resolved a thunk, once, globally (FR-COMMIT-2,10; #146): the committed
+    ``fact_id``. Identifiers only."""
+
+    thunk_id: str
+    fact_id: str
+
+
+@register("ledger_entry", category=EventCategory.DERIVED)
+class LedgerEntryCreated(EventPayload):
+    """A salient reference created a promissory-ledger entry (FR-COMMIT-7,13; #146): on a
+    thunk (``thunk_id``) or on a hidden fact's proposition (``proposition_id``), exactly one.
+    Identifiers only."""
+
+    entry_id: str
+    thunk_id: str | None = None
+    proposition_id: str | None = None
+
+
+@register("ledger_discharged", category=EventCategory.DERIVED)
+class LedgerDischarged(EventPayload):
+    """A ledger entry was discharged (#146): how (``mode``: ``dependence``, ``render`` or
+    ``minimal``) and, for a minimal commit, the fact it wrote. Identifiers only."""
+
+    entry_id: str
+    mode: str
+    fact_id: str | None = None
+
+
 # -- the mutation primitives (FR-GUARD-4,5; #145) --------------------------------------------------
 
 

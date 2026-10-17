@@ -8,7 +8,7 @@ A structured turn's read set is #47's Lite members plus what its deterministic l
   *, holder, viewpoint, valid window, result_hash)`` beside the result, **an empty result
   included** (it hashes to ``EMPTY_RESULT``). ``KEYED_READERS`` names the modules whose reads of
   ``facts``/``propositions`` are verdict-bearing (#140's ``verify``, #144's permission check,
-  #146's ledger lookups register on landing); ``python -m tools.gates check-keyed-readers``
+  #146's thunk lookups, ``core.commit.matching``); ``python -m tools.gates check-keyed-readers``
   fails the build when one of them reads those tables other than through ``KeyedLookup``.
 - **retrieved rows** (``Retrieved``): semantic retrieval used only as generation context,
   ``{table, id, version}`` (``version``: a fact's ``tx_from``, a memory's ``membership_tx``).
@@ -78,6 +78,7 @@ KEYED_READERS: tuple[str, ...] = (
     "epistrel.core.verify.merge",
     "epistrel.core.verify.neighborhood",
     "epistrel.core.verify.permission",
+    "epistrel.core.commit.matching",
 )
 """Modules whose ``facts``/``propositions`` reads decide a verdict, a precondition or a blocker,
 or that read canon and the structured projections at turn time: each reads them only through
@@ -87,7 +88,7 @@ resolution context (a subject's ``born``/``age`` for "when he was seven", the sc
 relationships), #141's retrieval pipeline and #140's verify modules (``rules``, ``normalize``,
 ``merge``) are listed, and #142's ``neighborhood`` (its canon through ``KeyedLookup.canon_rows``
 and its projections through ``KeyedLookup.profile``), and #144's permission check (its lock and
-placement reads); #146's ledger lookups add themselves when they land."""
+placement reads); #146's thunk and ledger lookups (``core.commit.matching``)."""
 
 READSET_MAX_KEYS = 2_000
 """``readset_max_keys``: a turn recording more keys than this conflicts (409

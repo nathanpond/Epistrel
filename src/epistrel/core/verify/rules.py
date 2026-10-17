@@ -120,6 +120,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core.enums import FactCommitState
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.propositions.model import (
@@ -161,6 +162,12 @@ if TYPE_CHECKING:
     from epistrel.core.events.operation import Operation
 
 log = logging.getLogger(__name__)
+
+EVIDENCE_STATES: frozenset[FactCommitState] = frozenset(
+    {FactCommitState.COMMITTED, FactCommitState.REVISED}
+)
+"""The commit states a canon fact is evidence in (#146): an ``introduced`` or ``pending`` fact
+is not settled yet. (A ``revised`` version is out of the timeline anyway, #154.)"""
 
 CONTAINMENT_MAX_DEPTH = 3
 """How many ``containment_of`` hops relate two objects (Columbus → Ohio → USA is two)."""
@@ -1163,7 +1170,8 @@ async def check_with(
             viewpoint=viewpoint,
             through_position=through_position,
         )
-        return [Record.of_fact(f) for f in facts]
+        # #146: an introduced or pending fact is not settled, so it is no evidence yet.
+        return [Record.of_fact(f) for f in facts if f.commit_state in EVIDENCE_STATES]
 
     records: list[Record] = []
     subjects = {c.subject_id}
@@ -1340,6 +1348,7 @@ __all__ = [
     "CONFIDENCE",
     "CONTAINMENT_MAX_DEPTH",
     "CONTRADICTION_RULES",
+    "EVIDENCE_STATES",
     "ClosedSetRecord",
     "Evidence",
     "Holder",

@@ -1179,3 +1179,7 @@ __all__ = [
     "retrieve",
     "turn_window",
 ]
+
+# #146's ``## Open threads`` registers itself on ``CONTEXT_SOURCES`` (after everything above is
+# defined, so the import cycle is harmless).
+from epistrel.core.commit import threads as _threads  # noqa: E402, F401 - registers a source

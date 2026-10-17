@@ -65,6 +65,13 @@ class ContentCategory(StrEnum):
     """One of the claim holder's records (#142): a canon fact rendered like a claim, its holder
     and its valid-time. Only the records the deterministic check fetched for the claim and their
     neighborhood, never unrelated story content."""
+    RENDER_TEXT = "render_text"
+    """The observable beats of one render (#146): each beat's index, kind, speaker's name and
+    text, as ``salience_detection`` reads them. Never a ``think``/``latent`` beat or the
+    player's input."""
+    SCENE = "scene"
+    """What a render's scene holds (#146): the names of the entities present and the text of the
+    last few observable beats before it (``scene_context``)."""
 
 
 class StructuredOutput(StrEnum):
@@ -435,6 +442,85 @@ class ConsolidationResult(BaseModel):
     )
 
 
+SALIENCE_MAX_BEATS = 50
+"""The most beats one ``salience_detection`` request carries (one render's)."""
+SALIENCE_LAST_BEATS = 6
+"""How many earlier beats ``scene_context.last_beats`` holds."""
+SALIENCE_MAX_SPANS = 50
+"""The most salient spans, and texture spans, one answer may hold."""
+
+
+class SalienceBeat(InputSchema):
+    """One observable beat of the render being read (#146)."""
+
+    index: Annotated[int, Field(ge=0), C.RENDER_TEXT]
+    kind: Annotated[Literal["say", "do", "narration"], C.RENDER_TEXT] = "narration"
+    speaker: Annotated[str | None, Field(max_length=200), C.RENDER_TEXT] = None
+    text: Annotated[str, Field(max_length=4_000), C.RENDER_TEXT]
+
+
+class SceneContext(InputSchema):
+    """What the scene holds around the render (#146): who and what is present, by name, and
+    the last observable beats before it."""
+
+    present_entities: Annotated[list[str], Field(max_length=100), C.SCENE] = Field(
+        default_factory=list
+    )
+    last_beats: Annotated[list[str], Field(max_length=SALIENCE_LAST_BEATS), C.SCENE] = Field(
+        default_factory=list
+    )
+
+
+class SalienceInputs(InputSchema):
+    """One render's observable beats and its scene (FR-COMMIT-3; #146)."""
+
+    beats: Annotated[list[SalienceBeat], Field(max_length=SALIENCE_MAX_BEATS)] = Field(
+        default_factory=list
+    )
+    scene_context: SceneContext = Field(default_factory=SceneContext)
+
+
+class SalienceSpan(BaseModel):
+    """A span of one beat: its index and ``[start, end)`` in the beat's text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    beat: int = Field(ge=0)
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+
+
+class SalienceSketch(BaseModel):
+    """The proposition a salient span makes salient, as text (#140 normalizes it): its
+    subject, relation and object, any of them an indefinite ("someone") when unknown."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    subject: str = Field(default="", max_length=500)
+    relation: str = Field(default="", max_length=500)
+    object: str | None = Field(default=None, max_length=500)
+    time: str | None = Field(default=None, max_length=200)
+
+
+class SalientSpan(BaseModel):
+    """Content placed to be noticed (FR-COMMIT-3): where, and the proposition it raises."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    span: SalienceSpan
+    proposition_sketch: SalienceSketch
+
+
+class SalienceResult(BaseModel):
+    """The structured result of one ``salience_detection`` call. The defaults (nothing
+    salient) are the safe answer: every beat is texture, and nothing is owed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    salient: list[SalientSpan] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
+    texture: list[SalienceSpan] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
+
+
 class EmbeddingInputs(InputSchema):
     """One text to embed (FR-EMBED-1; #138): a memory's text, or a retrieval query's."""
 
@@ -638,9 +724,25 @@ ENTAILMENT = Purpose(
     response_schema=EntailmentVerdict,
 )
 
+SALIENCE_DETECTION = Purpose(
+    name="salience_detection",
+    description=(
+        "Tells content placed to be noticed from background texture in one render's beats, "
+        "naming the proposition each salient span raises (FR-COMMIT-3)."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=SalienceInputs,
+    template="salience.j2",
+    hot_path=True,
+    # The render's own observable beats and its scene only: never a definition, a memory, a
+    # policy, an age, a think/latent beat or eval text.
+    never_receives=_EVERYTHING - {C.RENDER_TEXT, C.SCENE},
+    response_schema=SalienceResult,
+)
+
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("regeneration", "Regenerates a span under corrected constraints.", "M4"),
-    ReservedPurpose("salience_detection", "Detects signals that need commitment.", "M4"),
     ReservedPurpose("extraction_backstop", "Model layer of claim detection.", "M4"),
     ReservedPurpose(
         "belief_adjudication", "Adjudicated belief transitions.", "M5", defaults_to="entailment"
@@ -810,6 +912,7 @@ DELIVERED: Mapping[str, Purpose] = _build(
         QUALITY_JUDGE,
         IMPORTANCE_SCORING,
         ENTAILMENT,
+        SALIENCE_DETECTION,
     )
 )
 """Purposes a model call may use now, by name."""
@@ -846,6 +949,10 @@ __all__ = [
     "QUALITY_JUDGE",
     "RATING_SUGGESTION",
     "RESERVED",
+    "SALIENCE_DETECTION",
+    "SALIENCE_LAST_BEATS",
+    "SALIENCE_MAX_BEATS",
+    "SALIENCE_MAX_SPANS",
     "STORY_PURPOSES",
     "SUBJECT_LABEL_PATTERN",
     "CapabilityFloor",
@@ -881,6 +988,13 @@ __all__ = [
     "RecordKind",
     "RegistryError",
     "ReservedPurpose",
+    "SalienceBeat",
+    "SalienceInputs",
+    "SalienceResult",
+    "SalienceSketch",
+    "SalienceSpan",
+    "SalientSpan",
+    "SceneContext",
     "StructuredOutput",
     "Subject",
     "SuggestedConcern",

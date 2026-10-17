@@ -111,6 +111,12 @@ _PLACED_RANK = (
     "WHERE e.id = coalesce(t.location_id, t.container_id))"
 )
 
+_THUNK_PREDICATE_RANK = "(SELECT p.name FROM predicates p WHERE p.id = t.predicate_id)"
+_ENTRY_THUNK_RANK = (
+    "(SELECT h.proposition_sketch::text FROM thunks h WHERE h.id = t.thunk_id) NULLS FIRST"
+)
+"""A thunk by its predicate's name, and a ledger entry by its thunk's sketch (#146)."""
+
 ORDER: dict[str, str] = {
     "deployment_state": "t.id",
     "stories": "t.created_at",
@@ -172,6 +178,16 @@ ORDER: dict[str, str] = {
     "relationships": f"{_STORY_RANK}, {_STRUCTURED_RANK}, {_RELATION_RANK}",
     "placement": f"{_STORY_RANK}, {_STRUCTURED_RANK}, {_PLACED_RANK}",
     "scene_state": f"{_STORY_RANK}, t.turn, t.variant",
+    # Commitments (#146): thunks and ledger entries by narrative position and beat, then by
+    # what they are about (the predicate's name, the open slot, the sketch).
+    "thunks": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
+        f"t.beat NULLS FIRST, {_THUNK_PREDICATE_RANK}, t.open_slot, t.proposition_sketch::text"
+    ),
+    "promissory_ledger": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
+        f"t.beat NULLS FIRST, t.kind, t.discharged_mode NULLS FIRST, {_ENTRY_THUNK_RANK}"
+    ),
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

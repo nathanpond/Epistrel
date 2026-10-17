@@ -57,8 +57,8 @@ with (``core.erasure.records``). ``tests/integration/test_subject_index.py`` che
 ``information_schema``: a new story-content table without a registration (or a registered
 writer that never calls the indexer) fails it. Tables M4+ adds register here when they land
 (#131's predicate registry, propositions and entities did, #133's facts and #135's memories,
-#143's reflections among them; beliefs, States and the outbox will). ``EXEMPT_TABLES`` names
-the story and catalog tables that are not indexed, and why.
+#143's reflections among them, and #146's thunks; beliefs, States and the outbox will).
+``EXEMPT_TABLES`` names the story and catalog tables that are not indexed, and why.
 
 ``drop_references``/``drop_many`` remove a record's rows; every delete path of an indexed record
 calls one. ``reindex_story`` recomputes one story's rows (a fork after its copy; an ad-hoc
@@ -650,6 +650,7 @@ _PROPOSITIONS = "epistrel.core.propositions.store"
 _FACTS = "epistrel.core.canon.facts"
 _MEMORIES = "epistrel.core.memory.records"
 _MUTATION = "epistrel.core.mutation"
+_COMMITMENTS = "epistrel.core.commit.lifecycle"
 
 SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
@@ -733,6 +734,8 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     # Memory records (#135): a memory's text (positional), its holder and its actor; #145's
     # mutation primitives rewrite a sanitized text and write a quarantine's reason.
     SubjectWriter("memories", (_MEMORIES, _MUTATION), f"{_RECORDS}:read_memories"),
+    # Commitments (#146): a thunk's proposition sketch, walked whole (positional mentions).
+    SubjectWriter("thunks", (_COMMITMENTS,), f"{_RECORDS}:read_thunks"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 
@@ -751,6 +754,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "story_profile_overrides": "engine-profile dial values (numbers and enums)",
     "rating_check_jobs": "a rating check's progress and verdicts by record key and policy id",
     "guardrail_check_results": "verdicts by record key and policy id",
+    "promissory_ledger": "the promissory ledger (#146): ids, positions, kinds and discharge "
+    "modes; the thunk it names is indexed",
     "proposition_changes": "the read set's change index: ids, hashes, windows and visibility "
     "scopes of committed proposition changes (#136)",
     "relationships": "a projection of facts, which are erased; refolded by erasure's rebuilt "

@@ -92,6 +92,15 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "valid-time: only those the check fetched for the claim and the claim subject's own "
         "facts (#142)."
     ),
+    ContentCategory.RENDER_TEXT: (
+        "The observable beats of one render (`say`, `do`, narration: index, kind, speaker's "
+        "name, text), read by salience detection (#146). Never a `think` or `latent` beat or "
+        "the player's input."
+    ),
+    ContentCategory.SCENE: (
+        "The names of the entities present in the render's scene and the last six observable "
+        "beats before it, read by salience detection (#146)."
+    ),
 }
 
 STRUCTURED_LABELS: Mapping[StructuredOutput, str] = {

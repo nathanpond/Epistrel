@@ -135,14 +135,53 @@ class HolderKind(StrEnum):
 
 
 class FactCommitState(StrEnum):
-    """Whether a fact's value is settled (#133 creates it, #146 owns its semantics):
-    ``committed`` (the default), ``introduced`` (narrated with an open qualifier) or
-    ``pending`` (awaiting a dependence in the same turn). Postgres enum
-    ``fact_commit_state``."""
+    """Whether a fact's value is settled (FR-COMMIT-1; #133 creates it, #146 owns its
+    semantics): ``committed`` (the default), ``introduced`` (narrated with an open qualifier),
+    ``pending`` (awaiting a dependence in the same turn) or ``revised`` (#146 adds it; #154's
+    regeneration revert writes it). ``core.commit.lifecycle.TRANSITIONS`` names the moves.
+    Postgres enum ``fact_commit_state``."""
 
     COMMITTED = "committed"
     INTRODUCED = "introduced"
     PENDING = "pending"
+    REVISED = "revised"
+
+
+class ThunkState(StrEnum):
+    """A thunk's stored state (FR-COMMIT-5,10; #146): ``open`` (undetermined), ``resolved``
+    (a dependence fixed its value) or ``expired`` (pruned past ``thunks_max_open``, or its
+    subject erased: ignored from then on). A ``resolved`` row whose resolving operation left the
+    timeline reads as ``open`` (``core.commit.lifecycle``). Postgres enum ``thunk_state``."""
+
+    OPEN = "open"
+    RESOLVED = "resolved"
+    EXPIRED = "expired"
+
+
+class OpenSlot(StrEnum):
+    """Which argument of a thunk's proposition is undetermined (#146): its ``subject``
+    ("someone knocked"), its ``object`` or its ``literal``. Postgres enum ``thunk_open_slot``."""
+
+    SUBJECT = "subject"
+    OBJECT = "object"
+    LITERAL = "literal"
+
+
+class LedgerKind(StrEnum):
+    """A promissory-ledger entry's kind (FR-COMMIT-7; #146): a ``salient_reference``.
+    Postgres enum ``ledger_kind``."""
+
+    SALIENT_REFERENCE = "salient_reference"
+
+
+class DischargeMode(StrEnum):
+    """How a ledger entry was discharged (FR-COMMIT-7,13; #146): by a ``dependence`` on the
+    value, by a follow-up ``render`` that settled it, or by the deterministic ``minimal`` commit
+    at budget exhaustion. Postgres enum ``ledger_discharge_mode``."""
+
+    DEPENDENCE = "dependence"
+    RENDER = "render"
+    MINIMAL = "minimal"
 
 
 class MemoryKind(StrEnum):
@@ -188,6 +227,10 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "fact_authority": FactAuthority,
     "holder_kind": HolderKind,
     "fact_commit_state": FactCommitState,
+    "thunk_state": ThunkState,
+    "thunk_open_slot": OpenSlot,
+    "ledger_kind": LedgerKind,
+    "ledger_discharge_mode": DischargeMode,
     "memory_kind": MemoryKind,
     "memory_trust_tier": MemoryTrustTier,
     "retrieval_tier": RetrievalTier,

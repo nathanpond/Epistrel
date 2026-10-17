@@ -1,0 +1,322 @@
+"""U-01 (M4): the commitment lifecycle (FR-COMMIT-1,2,3,5,6,7; docs/04 §3; #146). One file per
+test ID and milestone; U-01's M5 part (FR-COMMIT-4,5's determined-but-unknown) joins it.
+
+The knock fixture (``tests/commit_support``): "Someone knocks at the door" made salient by a
+scripted ``salience_detection`` verdict, a mention, a dependence, a second dependence, a hidden
+fact and the fact lifecycle's moves."""
+
+from __future__ import annotations
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+
+from epistrel.core.canon import facts as canon
+from epistrel.core.canon.facts import Visibility
+from epistrel.core.commit import lifecycle
+from epistrel.core.enums import (
+    DischargeMode,
+    FactCommitState,
+    OpenSlot,
+    RecordProvenance,
+)
+from epistrel.core.errors import InvalidRequest
+from epistrel.core.events import Operation
+from epistrel.core.readset import KeyedLookup, StructuredReadSet
+from epistrel.core.verify.normalize import ClaimSketch
+from epistrel.core.verify.rules import VerdictKind, check_with
+from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.commit.salience import (
+    detect_salience,
+    rules_salient,
+)
+from epistrel.orchestrator.models.registry import (
+    SALIENCE_DETECTION,
+    SalienceSketch,
+    SceneContext,
+)
+from tests import commit_support as c
+from tests.canon_support import commit
+from tests.verify_support import stub_models
+
+pytestmark = pytest.mark.integration
+
+COMMITTED, INTRODUCED, PENDING, REVISED = (
+    FactCommitState.COMMITTED,
+    FactCommitState.INTRODUCED,
+    FactCommitState.PENDING,
+    FactCommitState.REVISED,
+)
+
+SCENE = SceneContext(present_entities=["Bobby", "Jenni"], last_beats=["Jenni sets the table."])
+
+
+@pytest.mark.part("M4", "FR-COMMIT-1,2,3,5,6,7")
+async def test_u_01(engine: AsyncEngine) -> None:
+    """Salience triggers commitment and texture needs none (FR-COMMIT-3): the scripted verdict
+    makes beat 2's knock salient and beat 3 texture, so one thunk (its knocker open: a global
+    thunk with no world value, FR-COMMIT-5,6) and one ledger entry are recorded, and nothing
+    for the texture. While the entry is undischarged the turn has a blocker (FR-COMMIT-7).
+    Bobby's ``say`` "Who's that?" naming the mailman only mentions: the thunk stays open and
+    no fact is written (complement). Jenni's ``do`` (she opens the door to the mailman) depends
+    on the value: it commits at that beat (FR-COMMIT-2), ``committed``, from the thunk's
+    story-minute, discharging the entry by dependence, and the turn closes with no minimal
+    commit. The value is then global: every viewpoint reads one knocker (FR-COMMIT-6)."""
+    k = await c.knock_story(engine)
+    mal = stub_models()
+    mal.stub.script(
+        SALIENCE_DETECTION.name,
+        [c.salience_answer((2, 0, 26, c.KNOCK), texture=[(3, 0, 23)])],
+    )
+    beats = [
+        k.beat(2, "narration", "Someone knocks at the door."),
+        k.beat(3, "narration", "The kettle hums softly."),
+    ]
+    verdict = await detect_salience(beats, SCENE, models=mal, budget=TurnBudget(max_calls=4))
+    assert verdict.called
+    assert verdict.degradation == ()
+    assert [s.span.beat for s in verdict.salient] == [2]
+    assert [t.beat for t in verdict.texture] == [3]
+    (call,) = [x for x in mal.stub.calls if x.purpose == SALIENCE_DETECTION.name]
+    assert "Someone knocks at the door." in call.messages[-1].content
+
+    async def first(conn: AsyncConnection, op: Operation) -> dict[str, object]:
+        report = await c.salient(conn, op, k, beats[0], verdict.salient[0].proposition_sketch)
+        held = await lifecycle.blockers(conn, k.story_id)
+        mention = await lifecycle.depend(
+            conn,
+            op,
+            report.recorded[0].thunk_id or "",
+            c.knocker(k, k.mailman, 0),
+            beat=4,
+            channel="say",
+        )
+        mentioned = await lifecycle.read_thunk(conn, k.story_id, report.recorded[0].thunk_id or "")
+        facts_after_mention = await conn.scalar(
+            text("SELECT count(*) FROM facts WHERE story_id = :s AND predicate_id = :p"),
+            {"s": k.story_id, "p": k.knocked_at},
+        )
+        dependence = await lifecycle.depend(
+            conn,
+            op,
+            report.recorded[0].thunk_id or "",
+            c.knocker(k, k.mailman, 0),
+            beat=5,
+            channel="do",
+        )
+        closed = await lifecycle.close_turn(conn, op)
+        return {
+            "report": report,
+            "held": held,
+            "mention": mention,
+            "mentioned": mentioned,
+            "facts_after_mention": facts_after_mention,
+            "dependence": dependence,
+            "closed": closed,
+            "op": op,
+        }
+
+    found = await c.in_turn(engine, k.story_id, first)
+    (recorded,) = found["report"].recorded
+    assert recorded.outcome == "entry"
+    thunks = await c.rows(engine, "thunks", k.story_id)
+    ledger = await c.rows(engine, "promissory_ledger", k.story_id)
+    assert len(thunks) == 1
+    assert len(ledger) == 1
+    assert str(thunks[0].open_slot) == OpenSlot.SUBJECT.value
+    assert thunks[0].subject_id is None
+    assert thunks[0].object_id == k.door
+    assert thunks[0].salient is True
+    assert [e.thunk_id for e in found["held"]] == [thunks[0].id]
+
+    assert found["mention"].kind == "mention"
+    assert found["mentioned"].state.value == "open"
+    assert found["facts_after_mention"] == 0  # complement: a mention writes no fact
+
+    dependence = found["dependence"]
+    assert dependence.kind == "committed"
+    assert dependence.discharged == (ledger[0].id,)
+    fact = dependence.fact
+    assert fact.commit_state is COMMITTED
+    assert fact.thunk_id == thunks[0].id
+    assert fact.valid_from == thunks[0].valid_time
+    rows = await c.rows(engine, "facts", k.story_id)
+    (fact_row,) = [r for r in rows if r.id == fact.id]
+    assert fact_row.committed_at_position == {
+        "turn": found["op"].narrative_turn,
+        "variant": found["op"].turn_variant,
+        "beat": 5,
+    }
+    resolved = await c.thunk(engine, k.story_id, thunks[0].id)
+    assert resolved.state.value == "resolved"
+    assert resolved.resolved_fact_id == fact.id
+    closed = found["closed"]
+    assert (closed.minimal_commits, closed.dependences, closed.ledger_discharged) == (0, 1, 1)
+    assert closed.degradation == []
+    assert await c.blockers(engine, k.story_id) == []
+    (entry,) = await c.rows(engine, "promissory_ledger", k.story_id)
+    assert str(entry.discharged_mode) == DischargeMode.DEPENDENCE.value
+
+    # Determined globally: one knocker, whoever reads.
+    async with engine.connect() as conn:
+        for viewpoint in ("omniscient", "narrator", f"character:{k.bobby}", f"character:{k.jenni}"):
+            seen = await canon.canon(conn, k.story_id, predicate=k.knocked_at, viewpoint=viewpoint)
+            assert [f.proposition.subject_id for f in seen] == [k.mailman], viewpoint
+
+
+@pytest.mark.part("M4", "FR-COMMIT-5,6")
+async def test_u_01__hidden_and_undetermined(engine: AsyncEngine) -> None:
+    """Hidden is not undetermined (FR-COMMIT-5): a fact committed with Bobby's ``characters``
+    visibility (he knows what the parcel holds) is decided and sticky: Jenni's read does not
+    see it, the omniscient read does, it has no thunk, and a salient reference to it owes no
+    ledger entry because canon already settles it. An undetermined value is a thunk with no
+    world value for anyone, the omniscient reader included (FR-COMMIT-6: "unknown to Jenni" is
+    absence, "undetermined" is global). Complement: the undetermined knock does get an
+    entry."""
+    k = await c.knock_story(engine)
+    hidden = await commit(
+        engine,
+        k.story_id,
+        c.knocker(k, k.bobby, 0).model_copy(update={"object_id": k.parcel}),
+        visibility=Visibility(scope="characters", characters=(k.bobby,)),
+    )
+    async with engine.connect() as conn:
+        mine = await canon.canon(conn, k.story_id, viewpoint=f"character:{k.bobby}")
+        hers = await canon.canon(conn, k.story_id, viewpoint=f"character:{k.jenni}")
+        everyone = await canon.canon(conn, k.story_id)
+    assert hidden.id in {f.id for f in mine}
+    assert hidden.id in {f.id for f in everyone}
+    assert hidden.id not in {f.id for f in hers}
+
+    parcel = SalienceSketch(subject="Bobby", relation="knocked_at", object="the parcel")
+    hidden_reference = SalienceSketch(subject="someone", relation="knocked_at", object="the parcel")
+
+    async def step(conn: AsyncConnection, op: Operation) -> list[str]:
+        out = []
+        for sketch in (parcel, hidden_reference, c.KNOCK):
+            report = await c.salient(conn, op, k, k.beat(2, "narration", "x"), sketch)
+            out.append(report.recorded[0].outcome)
+        return out
+
+    outcomes = await c.in_turn(engine, k.story_id, step)
+    # A fully stated reference is a plain claim; the hidden one is settled; the knock is owed.
+    assert outcomes == ["determined", "settled", "entry"]
+    thunks = await c.rows(engine, "thunks", k.story_id)
+    assert [t.object_id for t in thunks] == [k.door]
+    async with engine.connect() as conn:
+        knocks = await canon.canon(conn, k.story_id, predicate=k.knocked_at, object=k.door)
+    assert knocks == []  # the global thunk has no world value, even for omniscient
+
+
+@pytest.mark.part("M4", "FR-COMMIT-1")
+async def test_u_01__fact_lifecycle(engine: AsyncEngine) -> None:
+    """FR-COMMIT-1's states: a fact narrated with an open qualifier is ``introduced``; it may
+    be ``pending`` a dependence in its turn; a dependence commits it at its beat (``settle_fact``
+    records ``committed_at_position``); a pending fact nobody leaned on is demoted back to
+    ``introduced`` at the close; a committed fact can be ``revised`` (#154's revert) and
+    restored. Complement: a ``say`` settles nothing, any other move is refused (422, and the
+    facts guard refuses it in the database too, as it refuses any other in-place change), and
+    an introduced fact is no evidence for verify."""
+    k = await c.knock_story(engine)
+
+    async def introduce(conn: AsyncConnection, op: Operation) -> tuple[str, str]:
+        a = await canon.commit_fact(
+            conn,
+            k.story_id,
+            c.knocker(k, k.mailman, 0),
+            provenance=RecordProvenance.RENDER,
+            operation=op,
+            commit_state=INTRODUCED,
+            beat=2,
+        )
+        b = await canon.commit_fact(
+            conn,
+            k.story_id,
+            c.knocker(k, k.bobby, 0).model_copy(update={"object_id": k.parcel}),
+            provenance=RecordProvenance.RENDER,
+            operation=op,
+            commit_state=PENDING,
+            beat=3,
+        )
+        await lifecycle.transition(conn, k.story_id, a.id, PENDING)
+        said = await lifecycle.settle_fact(conn, op, a.id, beat=4, channel="say")
+        done = await lifecycle.settle_fact(conn, op, a.id, beat=5, channel="do")
+        assert (said, done) == (False, True)
+        report = await lifecycle.close_turn(conn, op)
+        assert report.demoted == 1
+        return a.id, b.id
+
+    settled, demoted = await c.in_turn(engine, k.story_id, introduce)
+    states = {
+        r.id: (str(r.commit_state), r.committed_at_position)
+        for r in await c.rows(engine, "facts", k.story_id)
+    }
+    assert states[settled][0] == "committed"
+    assert states[settled][1]["beat"] == 5
+    assert states[demoted][0] == "introduced"
+
+    async with engine.begin() as conn:
+        assert await lifecycle.transition(conn, k.story_id, settled, REVISED) is COMMITTED
+        await lifecycle.transition(conn, k.story_id, settled, COMMITTED)
+        with pytest.raises(InvalidRequest):
+            await lifecycle.transition(conn, k.story_id, demoted, REVISED)
+    for statement in (
+        "UPDATE facts SET commit_state = 'revised' WHERE id = :f",  # introduced -> revised
+        "UPDATE facts SET beat = 9 WHERE id = :f",
+    ):
+        with pytest.raises(DBAPIError, match="append-only"):
+            async with engine.begin() as conn:
+                await conn.execute(text(statement), {"f": demoted})
+
+    # An introduced fact is no evidence: verify reads canon past it.
+    async with engine.connect() as conn:
+        lookup = KeyedLookup(conn, StructuredReadSet())
+        claim = c.knocker(k, k.bobby, 0).model_copy(update={"object_id": k.parcel})
+        verdict = await check_with(lookup, k.story_id, claim)
+        assert verdict.kind is not VerdictKind.SUPPORTED
+
+
+@pytest.mark.part("M4", "FR-COMMIT-3")
+async def test_u_01__rules_and_degradation() -> None:
+    """Under ``commitment.salience = rules`` no model is called, and only open-slot claims on
+    ``do`` and narration beats are salient (a ``say`` never is; a fully stated claim is no
+    reference to an unknown). Salience is optional work: no model, a spent budget, a failed or
+    unparseable answer each degrade to all texture with the reason in ``degradation``; the
+    stub's unscripted answer is all texture; a span outside its beat is texture."""
+    mal = stub_models()
+    beats = [c.beat(1, "narration", "Someone knocks.")]
+    assert (await detect_salience(beats, SCENE, mode="rules", models=mal)).called is False
+    assert mal.stub.calls == []
+    claims = [
+        (
+            beats[0],
+            ClaimSketch(subject_text="someone", relation_text="knocked_at", object_text="door"),
+        ),
+        (
+            c.beat(2, "say", "Someone knocked!"),
+            ClaimSketch(subject_text="someone", relation_text="knocked_at", object_text="door"),
+        ),
+        (
+            beats[0],
+            ClaimSketch(subject_text="Bobby", relation_text="knocked_at", object_text="door"),
+        ),
+    ]
+    assert [b.index for b, _ in rules_salient(claims)] == [1]
+
+    assert (await detect_salience(beats, SCENE)).degradation == ("salience_unavailable",)
+    spent = await detect_salience(beats, SCENE, models=mal, budget=TurnBudget(max_calls=0))
+    assert spent.salient == ()
+    assert spent.degradation == ("salience_skipped",)
+    mal.stub.fault(SALIENCE_DETECTION.name, "garbage", n=10)
+    failed = await detect_salience(beats, SCENE, models=mal, budget=TurnBudget(max_calls=9))
+    assert failed.salient == ()
+    assert failed.degradation == ("salience_failed",)
+    mal.stub.reset()
+    default = await detect_salience(beats, SCENE, models=mal, budget=TurnBudget(max_calls=4))
+    assert default.salient == ()
+    assert default.degradation == ()
+    mal.stub.script(SALIENCE_DETECTION.name, [c.salience_answer((1, 0, 999, c.KNOCK))])
+    outside = await detect_salience(beats, SCENE, models=mal, budget=TurnBudget(max_calls=4))
+    assert outside.salient == ()
+    assert [t.beat for t in outside.texture] == [1]

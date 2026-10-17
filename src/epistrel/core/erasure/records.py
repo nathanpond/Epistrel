@@ -43,6 +43,7 @@ from epistrel.core.tables import (
     scenario_versions,
     stories,
 )
+from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import SubjectKind, media_upload_sessions
 from epistrel.core.tables.memories import memories
@@ -337,6 +338,18 @@ def fact_record(row: Any) -> Record:
             for c in named
             if isinstance(c, str)
         ),
+    )
+
+
+def thunk_record(row: Any) -> Record:
+    """A thunk (#146): its ``proposition_sketch`` walked whole (the subject, relation and
+    object texts and every candidate's text, positionally, ADR-154); its ids name entities and
+    the predicate, never a person directly."""
+    return Record(
+        thunks.name,
+        str(row.id),
+        _str(row.story_id),
+        text_fields(row.proposition_sketch, "proposition_sketch"),
     )
 
 
@@ -648,6 +661,11 @@ async def read_facts(conn: AsyncConnection, story_id: str | None) -> list[Record
     return await _story_rows(conn, facts, story_id, fact_record)
 
 
+async def read_thunks(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's thunks, as ``thunk_record`` indexes them."""
+    return await _story_rows(conn, thunks, story_id, thunk_record)
+
+
 async def read_memories(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     """A story's memories, as ``memory_record`` indexes them (the vector is not read)."""
     if story_id is None:
@@ -699,8 +717,10 @@ __all__ = [
     "proposal_record",
     "proposition_record",
     "rating_record_id",
+    "read_thunks",
     "snapshot_record",
     "story_record",
     "text_fields",
+    "thunk_record",
     "upload_session_record",
 ]

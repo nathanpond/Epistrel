@@ -146,6 +146,7 @@ from epistrel.core.tables import (
     worker_heartbeats,
 )
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
+from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.feedback import feedback_history, message_feedback
@@ -196,6 +197,10 @@ STORY_TABLES: tuple[Table, ...] = (
     rating_check_jobs,
     guardrail_check_results,
     timers,
+    # Commitments (#146): derived tables, before the operations they reference (the ledger
+    # names thunks, and a thunk the fact that resolved it; none of them has a foreign key).
+    promissory_ledger,
+    thunks,
     # Bitemporal canon (#133): a derived table, before the operations it references.
     facts,
     # Memory records (#135): a derived table, before the operations it references.

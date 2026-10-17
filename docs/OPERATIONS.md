@@ -134,6 +134,12 @@ A model answer that is unparseable, below the floor, or `novel` never counts as 
 
 Two deployment settings bound what one verification reads. `neighborhood_max_facts` (default 50) caps the facts, closed sets, projections and memories of a repair's dependency cluster. `entailment_max_records` (default 30) caps the records one entailment request carries.
 
+## Commitments
+
+A structured story with `commitment.enabled` tracks what its prose leaves undecided. A reference with an unknown part, such as "someone knocks at the door", becomes a *thunk*: an open value nobody has decided yet. When the prose draws attention to it (salience), the reference also gets an entry in the *promissory ledger*, and the turn may not close until the entry is settled. Either a character's `think` or `do` beat depends on a value, which commits it for everyone, or the close commits the most generic fact the prose supports ("a knock occurred") and reports `ledger_minimal_commit`. Under `commitment.salience = rules_and_model` the `salience_detection` model purpose decides what is salient; under `rules` no model is called. Salience is optional work: when no budget is left, the turn treats every beat as background.
+
+`thunks_max_open` (deployment setting, default 500) caps the open thunks a story keeps; past it, the oldest one that nothing drew attention to expires. `GET /stories/{id}/inspect/ledger?viewpoint=omniscient` lists the thunks and the ledger. The counters `epistrel_thunks_total{event}`, `epistrel_ledger_total{event}` and `epistrel_minimal_commits_total` count the lifecycle.
+
 ## Consolidation
 
 A structured story with `memory.consolidation.enabled` compresses old episodic memories into standing facts and reflections in the background (the `consolidation` job and model purpose). Two engine-profile dials start a run, whichever is reached first: `memory.consolidation.window_memories` (default 50) uncovered episodic memories, or `memory.consolidation.cadence_turns` (default 20) turns since the last consolidated turn. A window holds at most `window_memories` memories, and every fifth window is folded again into higher-level reflections.

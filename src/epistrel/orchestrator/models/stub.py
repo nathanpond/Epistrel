@@ -34,6 +34,8 @@ schema in its prompt would. ``importance_scoring`` (#135) answers ``{"importance
 its own score, the same in every process. ``entailment`` (#142) answers its schema's defaults,
 ``{"confidence": 0.0, "verdict": "novel"}``: the most conservative answer, which the verifier
 resolves to the safe disposition, so an unscripted escalation never supports a claim.
+``salience_detection`` (#146) answers its schema's defaults too, ``{"salient": [], "texture":
+[]}``: every beat is texture, so an unscripted turn owes nothing.
 """
 
 from __future__ import annotations

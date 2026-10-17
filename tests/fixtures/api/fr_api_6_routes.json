@@ -1151,6 +1151,11 @@
       "method": "POST",
       "path": "/admin/reembed/retry",
       "requirement": "FR-EMBED-3"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/inspect/ledger",
+      "requirement": "FR-COMMIT-13"
     }
   ]
 }

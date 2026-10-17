@@ -218,6 +218,7 @@ class Fact(BaseModel):
     supersedes: tuple[str, ...] = ()
     anchored_to: str | None = None
     commit_state: FactCommitState = FactCommitState.COMMITTED
+    thunk_id: str | None = None
     superseded_ids: tuple[str, ...] = ()
     remainder_ids: tuple[str, ...] = Field(default=())
 
@@ -447,6 +448,7 @@ def _fact_of(row: Any, **extra: Any) -> Fact:
         supersedes=tuple(str(s) for s in m["supersedes"] or ()),
         anchored_to=None if m["anchored_to"] is None else str(m["anchored_to"]),
         commit_state=FactCommitState(m["commit_state"]),
+        thunk_id=None if m["thunk_id"] is None else str(m["thunk_id"]),
         **extra,
     )
 
@@ -574,6 +576,7 @@ class _Write:
     author_locked: bool = False
     commit_state: FactCommitState = FactCommitState.COMMITTED
     replaces: Fact | None = None
+    thunk_id: str | None = None
 
 
 def _event_provenance(operation: FactOperation) -> Provenance:
@@ -779,6 +782,7 @@ async def _write(conn: AsyncConnection, w: _Write, registry: Registry | None) ->
             w.anchored_to,
             w.commit_state,
             position,
+            thunk_id=w.thunk_id,
         )
     )
     if old is not None:
@@ -856,6 +860,8 @@ def _row(
     anchored_to: str | None,
     commit_state: FactCommitState,
     position: dict[str, Any] | None,
+    *,
+    thunk_id: str | None = None,
 ) -> dict[str, Any]:
     return {
         "id": fact_id,
@@ -881,6 +887,7 @@ def _row(
         "anchored_to": anchored_to,
         "commit_state": commit_state.value,
         "committed_at_position": position,
+        "thunk_id": thunk_id,
     }
 
 
@@ -907,6 +914,7 @@ async def commit_fact(
     author_locked: bool = False,
     commit_state: FactCommitState = FactCommitState.COMMITTED,
     registry: Registry | None = None,
+    thunk_id: str | None = None,
 ) -> Fact:
     """Write ``proposition`` as a new fact version in ``operation``'s commit transaction (see
     the module docstring); answers the version, with the versions it closed in
@@ -915,7 +923,8 @@ async def commit_fact(
     ``authority`` defaults from ``provenance`` (``default_authority``); ``valid_time``, when
     given, replaces the proposition's declared bounds; ``source_event_ids`` are the events that
     caused the fact (its own ``fact_committed`` event when none); ``beat`` and ``slot_k``
-    refine its narrative position, which is the operation's."""
+    refine its narrative position, which is the operation's; ``thunk_id`` names the thunk a
+    dependence resolved with it (#146's ``core.commit.lifecycle.depend``)."""
     return await _write(
         conn,
         _Write(
@@ -934,6 +943,7 @@ async def commit_fact(
             slot_k=slot_k,
             author_locked=author_locked,
             commit_state=commit_state,
+            thunk_id=thunk_id,
         ),
         registry,
     )

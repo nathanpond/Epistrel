@@ -20,7 +20,10 @@ The registry holds:
 - ``epistrel_turn_stage_seconds{stage}`` (``observability.stages``, #76): Lite turn latency by
   stage;
 - ``epistrel_quarantines_total{reason}`` (``author`` or ``repeated_implication``) and
-  ``epistrel_sanitizes_total``: #145's mutation primitives (``core.mutation``).
+  ``epistrel_sanitizes_total``: #145's mutation primitives (``core.mutation``);
+- ``epistrel_thunks_total{event}`` (``introduced``, ``resolved``, ``expired``),
+  ``epistrel_ledger_total{event}`` (``created``, ``discharged``) and
+  ``epistrel_minimal_commits_total``: #146's commitment lifecycle (``core.commit.lifecycle``).
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -80,6 +83,20 @@ QUARANTINES = Counter(
     ("reason",),
 )
 SANITIZES = Counter("epistrel_sanitizes", "Memory texts sanitized by a surrogate.")
+THUNKS = Counter(
+    "epistrel_thunks",
+    "Thunks by lifecycle event (introduced, resolved by a dependence, expired).",
+    ("event",),
+)
+LEDGER = Counter(
+    "epistrel_ledger",
+    "Promissory-ledger entries by event (created by a salient reference, discharged).",
+    ("event",),
+)
+MINIMAL_COMMITS = Counter(
+    "epistrel_minimal_commits",
+    "Salient references discharged by the deterministic minimal commit.",
+)
 
 _GAUGES_SQL = text(
     """
@@ -214,10 +231,13 @@ async def metrics() -> Response:
 __all__ = [
     "GAUGES",
     "HTTP_DURATION",
+    "LEDGER",
+    "MINIMAL_COMMITS",
     "OPERATIONS",
     "QUARANTINES",
     "REQUEST_BUCKETS",
     "SANITIZES",
+    "THUNKS",
     "SchedulerGauges",
     "render_metrics",
     "router",

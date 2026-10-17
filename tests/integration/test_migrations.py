@@ -856,3 +856,58 @@ def test_the_quarantine_columns_guard_and_dial(scratch_database: str) -> None:
         assert "'covered_by'" in guard()
     finally:
         engine.dispose()
+
+
+def test_the_commitment_tables_and_lifecycle_guard(scratch_database: str) -> None:
+    """0060 (#146): ``thunks`` and ``promissory_ledger`` are created, ``fact_commit_state``
+    gains ``revised``, and the facts guard lets ``commit_state`` move along the lifecycle's
+    edges only; the downgrade drops the tables and types, takes ``revised`` out of the enum and
+    restores 0049's guard."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0059")
+    engine = make_sync_engine(scratch_database)
+
+    def tables() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_name IN ('thunks', 'promissory_ledger')"
+                    )
+                )
+            )
+
+    def states() -> list[str]:
+        with engine.connect() as conn:
+            return list(
+                conn.scalars(
+                    text(
+                        "SELECT e.enumlabel FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
+                        "WHERE t.typname = 'fact_commit_state' ORDER BY e.enumsortorder"
+                    )
+                )
+            )
+
+    def guard() -> str:
+        with engine.connect() as conn:
+            return str(
+                conn.scalar(
+                    text("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_facts_append_only'")
+                )
+            )
+
+    try:
+        assert tables() == set()
+        assert states() == ["committed", "introduced", "pending"]
+        command.upgrade(cfg, "0060")
+        assert tables() == {"thunks", "promissory_ledger"}
+        assert states() == ["committed", "introduced", "pending", "revised"]
+        assert "'committed>revised'" in guard()
+        assert "'introduced>revised'" not in guard()
+        command.downgrade(cfg, "0059")
+        assert tables() == set()
+        assert states() == ["committed", "introduced", "pending"]
+        assert "commit_state" not in guard()
+    finally:
+        engine.dispose()

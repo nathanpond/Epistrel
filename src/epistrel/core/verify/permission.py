@@ -43,11 +43,19 @@ sibling introduces Jenni's backstory too.
 - ``protected_content``: the claim's text matched protected content (#148's detector, passed
   in): repaired.
 
+**The resolution exemption** (#146): a claim that resolves an open global thunk (the caller
+passes the thunk ``core.commit.matching.dependence_target`` matched, ``resolves``) is a
+``resolution``: a render may introduce resolutions of global thunks (FR-VERIFY-11), so the
+character-ownership and protected-content rules do not apply to it (a thunk's candidate values
+are protected content, and the resolution names one). Binding the thunk to another modeled
+character is reconciled by #154 (FR-COMMIT-11,14), not refused here. External values and
+author-locked canon still win.
+
 A permitted claim carries its basis: ``own`` (the asserter's own actions, thoughts and minor
 backstory within its constraints), ``texture`` (incidental scene texture, an unmodeled person
-included), ``arrival``, ``world`` (a director's world fact) or ``author``. An **arrival** is a
-``located_at``/``present_at`` claim on a person with no prior placement (no current fact of
-either predicate).
+included), ``arrival``, ``world`` (a director's world fact), ``author`` or ``resolution``. An
+**arrival** is a ``located_at``/``present_at`` claim on a person with no prior placement (no
+current fact of either predicate).
 
 **Reads** (``check``): the predicate registry, the claim's entities and their characters, the
 story's ``allow_new_arrivals`` setting, and through ``KeyedLookup`` (this module is a
@@ -125,6 +133,7 @@ class Basis(StrEnum):
     ARRIVAL = "arrival"
     WORLD = "world"
     AUTHOR = "author"
+    RESOLUTION = "resolution"
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +228,8 @@ class PermissionFacts:
     allow_new_arrivals: bool = True
     protected: bool = False
     """The claim's text matched protected content (#148's detector)."""
+    resolves: str | None = None
+    """The open thunk the claim resolves (#146's resolution exemption), or ``None``."""
 
 
 # -- the matrix ---------------------------------------------------------------------------------
@@ -265,6 +276,8 @@ def permission(
         name in LOCKED_FIELDS and subject_owner.kind in ("modeled_character", "player_character")
     ):
         return Denied(Reason.LOCKED_CANON)
+    if facts.resolves is not None:
+        return Permitted(Basis.RESOLUTION)
     modeled = [
         e for i in _argument_ids(claim) if (e := facts.entities.get(i)) is not None and e.modeled
     ]
@@ -366,6 +379,7 @@ async def facts_for(
     asserter: Asserter | None = None,
     through_position: tuple[int, int] | None = None,
     protected: bool = False,
+    resolves: str | None = None,
 ) -> PermissionFacts:
     """The structured data ``claim``'s permission is decided over (the claim's entities and
     the asserter's own), its canon reads keyed."""
@@ -409,6 +423,7 @@ async def facts_for(
         placed=placed,
         allow_new_arrivals=await arrival_policy(conn, story_id),
         protected=protected,
+        resolves=resolves,
     )
 
 
@@ -426,6 +441,7 @@ class _Call:
     through_position: tuple[int, int] | None
     protected: bool
     code: str
+    resolves: str | None = None
 
 
 _CALLS: dict[int, tuple[weakref.ref[StructuredReadSet], list[_Call]]] = {}
@@ -459,10 +475,12 @@ async def check(
     protected: bool = False,
     registry: Registry | None = None,
     remember: bool = True,
+    resolves: str | None = None,
 ) -> Permission | None:
     """``claim``'s permission for ``asserter`` over the story's structured data, its canon
     reads keyed in ``read_set``; ``None`` (inert, nothing read) when verification is off. The
-    answer is recorded for the turn's rebase re-check unless ``remember`` is off."""
+    answer is recorded for the turn's rebase re-check unless ``remember`` is off. ``resolves``
+    names the open thunk the claim resolves (the resolution exemption)."""
     if await options_for(conn, story_id) is None:
         return None
     facts = await facts_for(
@@ -473,6 +491,7 @@ async def check(
         asserter=asserter,
         through_position=through_position,
         protected=protected,
+        resolves=resolves,
     )
     found = permission(claim, asserter, owner_of(claim, facts), facts)
     if remember:
@@ -486,6 +505,7 @@ async def check(
                 through_position,
                 protected,
                 found.code(),
+                resolves,
             ),
         )
     return found
@@ -510,6 +530,7 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
             through_position=call.through_position,
             protected=call.protected,
             remember=False,
+            resolves=call.resolves,
         )
         if again is None or again.code() != call.code:
             log.debug("rebase re-check: a permission changed (%d checked)", len(calls))

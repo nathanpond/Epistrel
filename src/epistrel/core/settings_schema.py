@@ -848,6 +848,23 @@ class VerifySettings(BaseModel):
     )
 
 
+DEFAULT_THUNKS_MAX_OPEN = 500
+THUNKS_MAX_OPEN_LIMIT = 100_000
+
+
+class CommitmentSettings(BaseModel):
+    """How many open thunks a story keeps (FR-COMMIT-10; #146), stored under
+    ``deployment_state.settings``: past ``thunks_max_open``, introducing one more expires the
+    oldest open thunk that is not salient (``core.commit.lifecycle``), and the turn-time match
+    scans at most that many. Prospective: an introduction reads it when it runs."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    thunks_max_open: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_THUNKS_MAX_OPEN, ge=1, le=THUNKS_MAX_OPEN_LIMIT
+    )
+
+
 # -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
 
 DEFAULT_MINOR_AGE_THRESHOLD = 18
@@ -938,6 +955,7 @@ class DeploymentSettings(
     FeedbackSettings,
     ErasureSettings,
     MemorySettings,
+    CommitmentSettings,
     EmbeddingSettings,
     RetrievalSettings,
     VerifySettings,

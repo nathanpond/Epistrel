@@ -387,6 +387,7 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.canon.facts", DIRECT),
     WritePath("epistrel.core.memory.records", DIRECT),
     WritePath("epistrel.core.mutation", DIRECT),
+    WritePath("epistrel.core.commit.lifecycle", DIRECT),
 )
 """Every content write path (``SUBJECT_WRITERS``' writer modules, plus ingest, the job commit
 and the Lite pipeline); ``tests/integration/test_erasure_resurrection.py`` checks the set and

@@ -17,6 +17,7 @@ from epistrel.core.tables.catalog import (
 )
 from epistrel.core.tables.characters import character_snapshots, characters
 from epistrel.core.tables.client_events import client_events
+from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.erasure import erasure_ledger
 from epistrel.core.tables.events import events
@@ -99,6 +100,7 @@ __all__ = [
     "policies",
     "predicate_proposals",
     "predicates",
+    "promissory_ledger",
     "proposition_changes",
     "propositions",
     "rating_check_jobs",
@@ -112,6 +114,7 @@ __all__ = [
     "story_profile_overrides",
     "story_texts",
     "subject_references",
+    "thunks",
     "timers",
     "transcript_messages",
     "turn_queue",

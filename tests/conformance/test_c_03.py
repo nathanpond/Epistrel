@@ -74,6 +74,7 @@ from epistrel.api.routes.engine_profiles import (
     ProfileVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
+from epistrel.api.routes.inspect import LedgerBody
 from epistrel.api.routes.media import (
     MediaListBody,
     MediaUploadedBody,
@@ -337,6 +338,7 @@ MUTATION_ANSWERS = [
     ("lock_fact", 200),
     ("unlock_fact", 200),
     ("list_facts", 200),
+    ("inspect_ledger", 200),
     ("quarantine_memory", 200),
     ("unquarantine_memory", 200),
     ("sanitize_memory", 200),
@@ -391,6 +393,10 @@ async def _memory_written(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _fact_list(engine: Engine, story_id: str) -> dict[str, Any]:
     return dump(FactListBody.of(await engine.list_facts(CTX, story_id, viewpoint="omniscient")))
+
+
+async def _ledger(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(LedgerBody.of(await engine.inspect_ledger(CTX, story_id, viewpoint="omniscient")))
 
 
 def _keep(name: str, *path: str | int) -> Callable[[dict[str, Any], Ids], None]:
@@ -1081,6 +1087,15 @@ def _steps() -> list[Step]:
                 "GET", "/admin/stories/{fork}/facts", params={"viewpoint": "omniscient"}
             ),
             lambda e, ids: _fact_list(e, ids["fork"]),
+            group=MUTATION_GROUP,
+        ),
+        # The thunks and the promissory ledger (#146), omniscient, on the structured fork.
+        Step(
+            "inspect_ledger",
+            lambda ids: Rest(
+                "GET", "/stories/{fork}/inspect/ledger", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _ledger(e, ids["fork"]),
             group=MUTATION_GROUP,
         ),
         Step(

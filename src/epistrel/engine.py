@@ -61,9 +61,10 @@ from epistrel.core.catalog import scenario_models
 from epistrel.core.catalog import scenarios as catalog_scenarios
 from epistrel.core.catalog import search as catalog_search
 from epistrel.core.catalog.report import ValidationResult
+from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext
-from epistrel.core.enums import EntryStatus, StoryStatus
+from epistrel.core.enums import EntryStatus, StoryStatus, ThunkState
 from epistrel.core.erasure import boundary as erasure_boundary
 from epistrel.core.erasure import catalog_block
 from epistrel.core.erasure import erase as erasure
@@ -1672,6 +1673,36 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
+        )
+
+    # -- commitments (FR-COMMIT-13; #146) -------------------------------------------------------
+
+    @refuses_nul()
+    async def inspect_ledger(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        state: ThunkState | None = None,
+        discharged: bool | None = None,
+        limit: int = commitment.INSPECT_LIMIT_DEFAULT,
+        after_id: str | None = None,
+    ) -> commitment.LedgerPage:
+        """The story's thunks and promissory ledger (docs/02 §9's ``inspect/ledger``; FR-ADMIN-5
+        is M5's), ``omniscient`` only (403 ``omniscient_required`` otherwise): a page of
+        ``limit`` thunks by id after ``after_id`` (only those in effective ``state`` when
+        given), with their ledger entries (``discharged`` filters them). 409 ``module_off`` when
+        the story does not run commitment."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        return await commitment.inspect_ledger(
+            self.db,
+            story_id,
+            state=state,
+            discharged=discharged,
+            limit=limit,
+            after_id=after_id,
         )
 
     # -- the structured projections (FR-STORE-3, FR-RET-6; #137) ---------------------------------

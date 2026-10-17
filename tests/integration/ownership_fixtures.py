@@ -447,6 +447,24 @@ async def _fresh_proposal(client: httpx.AsyncClient, kind: Kind, entity: Entity)
     return {"predicate_id": await _propose(client, entity.id, f"rides with {new_ulid()}")}
 
 
+async def _committing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The story on the seeded ``Structured (M4)`` profile, which runs commitment (#146's
+    ledger inspection answers 409 ``module_off`` otherwise), confirmed past the impact report's
+    warnings (capabilities gained)."""
+    from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
+
+    await _send(
+        client,
+        kind,
+        entity,
+        "PUT",
+        "/engine-profile",
+        {"profile_id": STRUCTURED_M4_PROFILE_ID, "ignore_warnings": True},
+        200,
+    )
+    return {}
+
+
 async def _profiled(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     """An entity of the story (#137's profile read), the same one for every requester: created
     once as #139's resolver would, on the app's own database."""
@@ -562,6 +580,8 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/entities/{{entity_id}}/profile"): Call(
         200, queries=(OMNISCIENT,), prepare=_profiled
     ),
+    # Commitments (#146): the thunks and the promissory ledger, omniscient.
+    ("GET", f"{S}/inspect/ledger"): Call(200, queries=(OMNISCIENT,), prepare=_committing),
     # Retrieval (#141): the debugging read, omniscient.
     ("GET", f"{S}/retrieve"): Call(200, queries=({"q": "the game", **OMNISCIENT},)),
     # -- stories: message ratings (#112). Each requester rates a fresh story's reply, retracts

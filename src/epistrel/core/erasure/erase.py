@@ -128,6 +128,7 @@ from epistrel.core.enums import (
     OperationKind,
     OperationStatus,
     Provenance,
+    ThunkState,
 )
 from epistrel.core.erasure import index
 from epistrel.core.erasure import ledger as ledger_store
@@ -187,6 +188,7 @@ from epistrel.core.tables import (
 )
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.core.tables.catalog import CATALOG_SCHEMA, ERASURE_GUC
+from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import (
@@ -1220,9 +1222,11 @@ async def _redact_structured(
     """The structured stores (#131): an erased character's entity loses its aliases (deleted,
     each with a marker); every other record naming the subject is redacted in place. A story
     predicate's name keeps its id as a suffix when redacted, so names stay unique per story.
-    Facts (#133) and memories (#135) go first: see ``_erase_facts`` and ``_erase_memories``."""
+    Facts (#133), memories (#135) and thunks (#146) go first: see ``_erase_facts``,
+    ``_erase_memories`` and ``_erase_thunks``."""
     await _erase_facts(conn, story_id, refs, removed, tally, run)
     await _erase_memories(conn, story_id, refs, removed, redactor, tally, run)
+    await _erase_thunks(conn, story_id, refs, removed, redactor, tally, run)
     owned = list(
         await conn.scalars(
             select(entity_aliases.c.id)
@@ -1335,6 +1339,73 @@ async def _erase_facts(
                 update(facts)
                 .where(facts.c.id == row.id)
                 .values(visibility={**row.visibility, "characters": named})
+            )
+
+
+async def _erase_thunks(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    redactor: Redactor,
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """Thunks (#146): every thunk about the subject (an argument or a candidate is an erased
+    character's entity, or its sketch mentions them) has its sketch redacted in place and is
+    expired, so no later dependence resolves it and the ledger no longer counts it (its
+    ledger entries hold ids only)."""
+    t = thunks.c
+    erased: list[str] = []
+    if removed:
+        erased = [
+            str(e)
+            for e in await conn.scalars(
+                select(entities.c.id).where(
+                    entities.c.story_id == story_id,
+                    entities.c.character_id.in_(sorted(removed)),
+                )
+            )
+        ]
+    about: set[str] = set(refs.get(thunks.name, set()))
+    if erased:
+        named = or_(
+            t.subject_id.in_(erased),
+            t.object_id.in_(erased),
+            *(
+                t.proposition_sketch["candidates"].contains([{"entity_id": e}])
+                for e in sorted(erased)
+            ),
+        )
+        about |= {
+            str(i) for i in await conn.scalars(select(t.id).where(t.story_id == story_id, named))
+        }
+    if not about:
+        return
+    rows = await conn.execute(
+        select(t.id, t.proposition_sketch, t.state)
+        .where(t.story_id == story_id, t.id.in_(sorted(about)))
+        .order_by(t.id)
+    )
+    for row in rows:
+        sketch, changed = redactor.document(
+            row.proposition_sketch, (thunks.name, str(row.id)), "proposition_sketch"
+        )
+        if isinstance(sketch, Mapping) and erased:
+            sketch = {
+                **sketch,
+                "candidates": [
+                    c
+                    for c in sketch.get("candidates") or ()
+                    if not (isinstance(c, Mapping) and c.get("entity_id") in erased)
+                ],
+            }
+        tally.record(thunks.name, changed)
+        if run.write:
+            await conn.execute(
+                update(thunks)
+                .where(t.id == row.id)
+                .values(proposition_sketch=sketch, state=ThunkState.EXPIRED.value)
             )
 
 

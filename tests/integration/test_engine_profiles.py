@@ -115,6 +115,7 @@ from epistrel.orchestrator.models.registry import (
     CONSOLIDATION,
     ENTAILMENT,
     IMPORTANCE_SCORING,
+    SALIENCE_DETECTION,
     STORY_PURPOSES,
 )
 from epistrel.orchestrator.models.registry import RESERVED as RESERVED_PURPOSES
@@ -161,12 +162,17 @@ A = "p-profiles-a"
 B = "p-profiles-b"
 PURPOSES = Purposes.of(list(STORY_PURPOSES), list(RESERVED_PURPOSES))
 
-LITE_ROUTED = set(STORY_PURPOSES) - {IMPORTANCE_SCORING.name, ENTAILMENT.name, CONSOLIDATION.name}
+LITE_ROUTED = set(STORY_PURPOSES) - {
+    IMPORTANCE_SCORING.name,
+    ENTAILMENT.name,
+    CONSOLIDATION.name,
+    SALIENCE_DETECTION.name,
+}
 """The story purposes the Lite preset names in ``models.purposes``: every one a Lite story calls.
 ``importance_scoring`` (#135) needs episodic memory, ``entailment`` (#142) verification at
-``entailment`` and ``consolidation`` (#143) the consolidation module, which Lite has off;
-unnamed, each inherits the deployment's model configuration, as every purpose does under
-``Structured (M4)``."""
+``entailment``, ``consolidation`` (#143) the consolidation module and ``salience_detection``
+(#146) commitment, which Lite has off; unnamed, each inherits the deployment's model
+configuration, as every purpose does under ``Structured (M4)``."""
 
 
 def headers(principal: str, key: str | None = None) -> dict[str, str]:

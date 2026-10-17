@@ -9,6 +9,9 @@ from pathlib import Path
 
 ID_PATTERN = r"(?:FR|NFR)-[A-Z]+-\d+"
 ID_RE = re.compile(rf"^{ID_PATTERN}$")
+# A docs/04 test ID as a §15 Tests entry can hold it (`I-18`, `S-ERASURE-BOUNDARY`, `OUTBOX`).
+TEST_ID_PATTERN = r"[A-Z][A-Z0-9-]*"
+TEST_ID_RE = re.compile(rf"^{TEST_ID_PATTERN}$")
 DEFINITION_RE = re.compile(rf"^- \*\*(?P<id>{ID_PATTERN}) \((?P<priority>[MSC])\)\.\*\*")
 SECTION_22_RE = re.compile(r"^## 22\. Delivery milestones")
 ASSIGNMENT_HEADER = "| Milestone | Requirements first gated at this milestone |"

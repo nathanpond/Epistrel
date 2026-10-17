@@ -49,7 +49,8 @@ complete erasure:
    subject authored (its ``character_id`` is theirs, or it is a reply whose
    ``render_character_ids`` are theirs alone) becomes ``[erased]`` whole, keeping its type,
    position and operation, with ``redacted_at``; their ids leave ``render_character_ids`` and
-   the events' ``character_id``;
+   the events' ``character_id``; a memory the subject holds or voiced is deleted with a marker,
+   and every other memory naming them is redacted with its vector nulled (#135);
    the story's default viewpoint is cleared when it names them; stored idempotency results that
    name them are purged (``result`` null: a replay answers the reference); the projections are
    refolded and the story's index rebuilt (the subject's rows go last); nothing in flight can
@@ -196,6 +197,7 @@ from epistrel.core.tables.media import (
     media_upload_sessions,
     subject_references,
 )
+from epistrel.core.tables.memories import memories
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.tables.propositions import (
     closed_sets,
@@ -1218,8 +1220,9 @@ async def _redact_structured(
     """The structured stores (#131): an erased character's entity loses its aliases (deleted,
     each with a marker); every other record naming the subject is redacted in place. A story
     predicate's name keeps its id as a suffix when redacted, so names stay unique per story.
-    Facts (#133) go first: see ``_erase_facts``."""
+    Facts (#133) and memories (#135) go first: see ``_erase_facts`` and ``_erase_memories``."""
     await _erase_facts(conn, story_id, refs, removed, tally, run)
+    await _erase_memories(conn, story_id, refs, removed, redactor, tally, run)
     owned = list(
         await conn.scalars(
             select(entity_aliases.c.id)
@@ -1332,6 +1335,66 @@ async def _erase_facts(
                 update(facts)
                 .where(facts.c.id == row.id)
                 .values(visibility={**row.visibility, "characters": named})
+            )
+
+
+async def _erase_memories(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    redactor: Redactor,
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """Memories (#135): a memory an erased character holds or voiced (its holder or its beat's
+    actor) is deleted, with a marker; every other memory naming the subject has its certain
+    mentions redacted in place (a candidate only when confirmed), and its vector and
+    embedding-model version are nulled in this transaction, so no vector of the old text is
+    left (the embed job re-embeds the redacted text)."""
+    m = memories.c
+    owned = (
+        list(
+            await conn.scalars(
+                select(m.id)
+                .where(
+                    m.story_id == story_id,
+                    or_(
+                        m.holder_character_id.in_(sorted(removed)),
+                        m.character_id.in_(sorted(removed)),
+                    ),
+                )
+                .order_by(m.id)
+            )
+        )
+        if removed
+        else []
+    )
+    for memory_id in owned:
+        await _delete(
+            conn,
+            run,
+            tally,
+            memories.name,
+            str(memory_id),
+            delete(memories).where(m.id == memory_id),
+        )
+    wanted = sorted(set(refs.get(memories.name, set())) - {str(i) for i in owned})
+    if not wanted:
+        return
+    rows = await conn.execute(
+        select(m.id, m.text).where(m.story_id == story_id, m.id.in_(wanted)).order_by(m.id)
+    )
+    for row in rows:
+        new = redactor.text(row.text, (memories.name, str(row.id), "text"))
+        if new == row.text:
+            continue
+        tally.record(memories.name, 1)
+        if run.write:
+            await conn.execute(
+                update(memories)
+                .where(m.id == row.id)
+                .values(text=new, embedding=None, embedding_model_version=None)
             )
 
 

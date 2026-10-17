@@ -5,7 +5,8 @@ recurring safety net), and the recurring
 sweeps ``retention_sweep`` / ``idempotency_purge`` (``retention``) and ``turn_queue_drain``
 (``turn_queue``), registered with their recurring tasks (``recurring``; #71). M3 adds the
 recurring ``media_sweep`` (#105), ``offboarding`` (#117), ``rating_check`` (#118) and the
-recurring ``erasure_reconcile_retry`` (#125). A kind
+recurring ``erasure_reconcile_retry`` (#125). M4 adds ``importance_scoring`` (#135, with its daily
+recurring safety net). A kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -17,6 +18,7 @@ from epistrel.orchestrator.jobs.handlers.erasure_reconcile import (
     ERASURE_RECONCILE_HANDLER,
     ERASURE_RECONCILE_TASK,
 )
+from epistrel.orchestrator.jobs.handlers.importance import IMPORTANCE_HANDLER, IMPORTANCE_TASK
 from epistrel.orchestrator.jobs.handlers.lite_summary import (
     LITE_SUMMARY_HANDLER,
     LITE_SUMMARY_TASK,
@@ -69,6 +71,7 @@ for _handler in (
     OFFBOARDING_HANDLER,
     RATING_CHECK_HANDLER,
     ERASURE_RECONCILE_HANDLER,
+    IMPORTANCE_HANDLER,
 ):
     register(_handler)
 for _task in (
@@ -78,6 +81,7 @@ for _task in (
     LITE_SUMMARY_TASK,
     MEDIA_SWEEP_TASK_DEFINITION,
     ERASURE_RECONCILE_TASK,
+    IMPORTANCE_TASK,
 ):
     register_recurring(_task)
 

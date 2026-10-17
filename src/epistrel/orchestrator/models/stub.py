@@ -25,7 +25,9 @@ so a chaos test can draw faults at random. ``hold(purpose)`` latches calls until
 
 A purpose that declares a response schema (``guardrail_check``) answers schema-conformant JSON
 by default whether or not the request carried ``response_format``, as a model following the
-schema in its prompt would.
+schema in its prompt would. ``importance_scoring`` (#135) answers ``{"importance": x}`` with
+``x`` derived from the SHA-256 of the last user message (``digest_score``), so each memory gets
+its own score, the same in every process.
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ from epistrel.orchestrator.models.adapter import (
     ProbeResult,
     eval_case_of,
 )
-from epistrel.orchestrator.models.registry import DELIVERED
+from epistrel.orchestrator.models.registry import DELIVERED, IMPORTANCE_SCORING
 
 STUB_URL = "http://stub.invalid/v1/chat/completions"
 STUB_MODEL = "stub"
@@ -115,6 +117,12 @@ def canonical_digest(purpose: str, messages: Sequence[Message], params: ModelPar
     }
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def digest_score(text: str) -> float:
+    """A number in 0..1 from the SHA-256 of ``text`` (four decimals): the stub's importance."""
+    value = int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
+    return round(value / 0xFFFFFFFF, 4)
 
 
 def _bound(metadata: list[Any], name: str, fallback: float) -> float:
@@ -299,6 +307,12 @@ class StubAdapter:
                 continue
             if all(any(n in m.content for m in messages) for n in needles):
                 return response
+        if purpose == IMPORTANCE_SCORING.name and response_schema in (
+            None,
+            IMPORTANCE_SCORING.response_schema,
+        ):
+            last_user = next((m.content for m in reversed(messages) if m.role == "user"), "")
+            return json.dumps({"importance": digest_score(last_user)})
         declared = DELIVERED.get(purpose)
         schema = response_schema or (declared.response_schema if declared else None)
         if schema is not None:
@@ -386,4 +400,5 @@ __all__ = [
     "StubLatch",
     "canonical_digest",
     "conformant_example",
+    "digest_score",
 ]

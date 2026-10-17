@@ -714,6 +714,25 @@ class ErasureSettings(BaseModel):
     erasure_shared_media: Annotated[ErasureSharedMedia, INTERPRETIVE] = DEFAULT_ERASURE_SHARED_MEDIA
 
 
+DEFAULT_IMPORTANCE_HALF_LIFE_TURNS = 200
+"""A memory's importance halves every this many committed turns (FR-MEM-7; #135)."""
+IMPORTANCE_HALF_LIFE_MAX = 1_000_000
+
+
+class MemorySettings(BaseModel):
+    """How memory importance decays (FR-MEM-7; #135), stored under
+    ``deployment_state.settings``: ``memory_importance_half_life_turns`` committed turns of the
+    active chain halve a memory's importance (``core.memory.records.decayed_importance``, read
+    by #141's ranking and #147's retirement). Prospective: a ranking or retirement run reads
+    the value when it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    memory_importance_half_life_turns: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMPORTANCE_HALF_LIFE_TURNS, ge=1, le=IMPORTANCE_HALF_LIFE_MAX
+    )
+
+
 # -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
 
 DEFAULT_MINOR_AGE_THRESHOLD = 18
@@ -803,6 +822,7 @@ class DeploymentSettings(
     CatalogValidationSettings,
     FeedbackSettings,
     ErasureSettings,
+    MemorySettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

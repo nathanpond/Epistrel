@@ -1,8 +1,8 @@
 """TIME (M4), the registry slices: derived records follow the membership of the operation
 that produced them (FR-STORE-29; TIME (c), docs/04 §6; #130's ``test_membership_registry``).
 
-TIME (M4) has one file, this one: #133 (facts, ``test_time__m4_facts``) and #135 (memories) add
-their (c) slices here.
+TIME (M4) has one file, this one: #133 (facts, ``test_time__m4_facts``) and #135 (memories,
+``test_time__memories`` and ``test_time__m4_memories``) add their (c) slices here.
 
 The real derived tables land with their stories (facts #133, memories #135, utterances #150,
 thunks, ledger and resolutions #146/#154) and register in ``core.membership.DERIVED_TABLES``.
@@ -64,6 +64,7 @@ from epistrel.core.membership import (
     tx_time_of,
     valid_time_of,
 )
+from epistrel.core.memory import records as memory_records
 from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import operations
 from epistrel.core.tables.base import ulid_type
@@ -72,6 +73,8 @@ from tests.canon_support import at, commit, supersede, world
 from tests.concurrency_support import regenerate
 from tests.event_support import interleave, new_story, play_turn
 from tests.fork_support import fork
+from tests.memory_support import derived_memory, event_ids, memory_rows, use_structured
+from tests.memory_support import turn as memory_turn
 from tests.projection_support import swap, truncate, untruncate
 
 NAME = "derived_fixture"
@@ -641,3 +644,97 @@ async def test_time__m4_facts(engine: AsyncEngine) -> None:
         assert r.operation_id in fork_ops
         assert r.proposition_id in fork_props
         assert r.id not in rows
+
+
+# -- memories (#135) --------------------------------------------------------------------------
+
+
+async def _memory_story(engine: AsyncEngine, turns: int) -> tuple[str, dict[int, Any]]:
+    """A ``Structured (M4)`` story of ``turns`` turns, each with one episodic memory (the
+    player's ``say``): its id and ``{turn: (operation, memory)}``."""
+    w = await world(engine)
+    await use_structured(engine, w.story_id)
+    made: dict[int, Any] = {}
+    for n in range(1, turns + 1):
+        op, (memory,) = await memory_turn(
+            engine, w.story_id, actor=w.characters["Cal"], say=f"line {n}", reply=None
+        )
+        made[n] = (op, memory)
+    return w.story_id, made
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-STORE-9")
+async def test_time__memories(engine: AsyncEngine) -> None:
+    """TIME (c) for episodic memories: each carries its source event and the operation that
+    produced it, and follows that operation's membership. A truncation flips the memories of
+    the discarded turns to ``discarded`` (stamped with the control's time) and changes nothing
+    else of them; an untruncation restores them exactly. Complement: the memories of the turns
+    kept are untouched."""
+    async with engine.connect() as conn:
+        assert await schema_findings(conn) == []
+    assert DERIVED_TABLES["memories"].valid_time is None
+    assert DERIVED_TABLES["memories"].tx_time is None
+    story, made = await _memory_story(engine, 3)
+    before = await memory_rows(engine, story)
+    for _n, (op, memory) in made.items():
+        row = before[memory.id]
+        assert row.operation_id == op.operation_id
+        assert list(row.source_event_ids) == [
+            (await event_ids(engine, op.operation_id))["player_input"]
+        ]
+        assert row.membership_tx == await _op_tx(engine, op.operation_id)
+
+    await truncate(engine, story, 1)
+    after = await memory_rows(engine, story)
+    unchanged = ("text", "narrative_turn", "turn_variant", "beat", "created_at", "source_event_ids")
+    for n, (_, memory) in made.items():
+        row, was = after[memory.id], before[memory.id]
+        assert str(row.membership) == ("active" if n == 1 else "discarded"), n
+        assert all(getattr(row, c) == getattr(was, c) for c in unchanged), n
+        if n > 1:
+            assert row.membership_tx > was.membership_tx
+        else:
+            assert row.membership_tx == was.membership_tx
+    async with engine.connect() as conn:
+        assert [m.id for m in await memory_records.memories_through(conn, story)] == [made[1][1].id]
+
+    await untruncate(engine, story)
+    restored = await memory_rows(engine, story)
+    assert {str(r.membership) for r in restored.values()} == {"active"}
+    for memory_id, row in restored.items():
+        assert all(getattr(row, c) == getattr(before[memory_id], c) for c in unchanged)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-STORE-9,13")
+async def test_time__m4_memories(engine: AsyncEngine) -> None:
+    """FR-STORE-13: a derived memory is in the view through N iff all of its sources are active
+    with position <= N. A semantic memory over turns 1 and 3 (#143's kind, written here by a
+    consolidation-shaped operation) is out of the view through 2 and in the view through 3;
+    truncating turn 3 takes it out at the head too, without deleting it; untruncating brings it
+    back. Complement: one over turns 1 and 2 stays in through 2 and after the truncation."""
+    story, made = await _memory_story(engine, 3)
+    sources = {
+        n: (await event_ids(engine, op.operation_id))["player_input"] for n, (op, _) in made.items()
+    }
+    wide = await derived_memory(engine, story, "Cal talked a lot.", [sources[1], sources[3]])
+    narrow = await derived_memory(engine, story, "Cal started talking.", [sources[1], sources[2]])
+
+    async def view(through: int | None) -> set[str]:
+        async with engine.connect() as conn:
+            return {m.id for m in await memory_records.memories_through(conn, story, through)}
+
+    episodic = {n: memory.id for n, (_, memory) in made.items()}
+    assert await view(2) == {episodic[1], episodic[2], narrow}
+    assert await view(3) == {*episodic.values(), narrow, wide}
+    assert await view(None) == {*episodic.values(), narrow, wide}
+
+    await truncate(engine, story, 2)
+    assert await view(None) == {episodic[1], episodic[2], narrow}
+    rows_now = await memory_rows(engine, story)
+    assert wide in rows_now  # kept, not deleted
+    assert str(rows_now[wide].membership) == "active"
+
+    await untruncate(engine, story)
+    assert await view(None) == {*episodic.values(), narrow, wide}

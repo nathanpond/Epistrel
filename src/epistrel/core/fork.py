@@ -607,10 +607,19 @@ OVERRIDES: dict[str, dict[str, str]] = {
             "ORDER BY s.n) AS char(26)[])"
         ),
     },
+    # Memory records (#135): the propositions a memory wraps are the fork's copies.
+    "memories": {
+        "proposition_ids": (
+            f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.proposition_ids) "  # noqa: S608
+            f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
+            "ORDER BY s.n) AS char(26)[])"
+        ),
+    },
 }
 """Per-table columns that are not a plain remapped copy: memberships flatten to ``active``,
-events and transcript rows take the new ``seq``, idempotency keys stay with the source, and a
-fact's links to other versions keep only the copied ones."""
+events and transcript rows take the new ``seq``, idempotency keys stay with the source, a
+fact's links to other versions keep only the copied ones, and a memory's propositions are the
+fork's."""
 
 _SUPERSEDED = f"'{Membership.SUPERSEDED.value}'"
 

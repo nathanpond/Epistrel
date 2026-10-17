@@ -78,6 +78,7 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "rating_check_model_calls_per_record": ConfigClass.prospective,
         "rating_check_retention_days": ConfigClass.prospective,
         "erasure_shared_media": ConfigClass.interpretive,
+        "memory_importance_half_life_turns": ConfigClass.prospective,
     },
 }
 

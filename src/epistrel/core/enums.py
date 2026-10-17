@@ -145,6 +145,37 @@ class FactCommitState(StrEnum):
     PENDING = "pending"
 
 
+class MemoryKind(StrEnum):
+    """A memory record's tier (FR-MEM-1..3; #135): ``episodic`` (one observable beat),
+    ``semantic`` (a distilled standing fact) or ``reflection`` (a higher-level abstraction; the
+    last two are written by #143's consolidation). Postgres enum ``memory_kind``."""
+
+    EPISODIC = "episodic"
+    SEMANTIC = "semantic"
+    REFLECTION = "reflection"
+
+
+class MemoryTrustTier(StrEnum):
+    """How far a memory is trusted (FR-MEM-4; #135), derived mechanically from its provenance
+    (``core.memory.records.trust_tier_of``): ``author`` (the author or a scenario seed),
+    ``external`` (an external authority), ``engine`` (consolidation, a resolution, a backfill)
+    or ``in_world`` (what happened or was said in the story). Postgres enum
+    ``memory_trust_tier``."""
+
+    AUTHOR = "author"
+    EXTERNAL = "external"
+    ENGINE = "engine"
+    IN_WORLD = "in_world"
+
+
+class RetrievalTier(StrEnum):
+    """Whether a memory is searched (FR-MEM-8; #135 creates it, #147 retires): ``hot`` or
+    ``retired``, independent of timeline membership. Postgres enum ``retrieval_tier``."""
+
+    HOT = "hot"
+    RETIRED = "retired"
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -157,6 +188,9 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "fact_authority": FactAuthority,
     "holder_kind": HolderKind,
     "fact_commit_state": FactCommitState,
+    "memory_kind": MemoryKind,
+    "memory_trust_tier": MemoryTrustTier,
+    "retrieval_tier": RetrievalTier,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

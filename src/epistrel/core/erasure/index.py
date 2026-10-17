@@ -56,9 +56,9 @@ the terms) delete the record's rows and write them again:
 with (``core.erasure.records``). ``tests/integration/test_subject_index.py`` checks it against
 ``information_schema``: a new story-content table without a registration (or a registered
 writer that never calls the indexer) fails it. Tables M4+ adds register here when they land
-(#131's predicate registry, propositions and entities did, and #133's facts; memories,
-reflections, beliefs, States and the outbox will). ``EXEMPT_TABLES`` names the story and
-catalog tables that are not indexed, and why.
+(#131's predicate registry, propositions and entities did, #133's facts and #135's memories,
+#143's reflections among them; beliefs, States and the outbox will). ``EXEMPT_TABLES`` names
+the story and catalog tables that are not indexed, and why.
 
 ``drop_references``/``drop_many`` remove a record's rows; every delete path of an indexed record
 calls one. ``reindex_story`` recomputes one story's rows (a fork after its copy; an ad-hoc
@@ -648,6 +648,7 @@ _RECORDS = "epistrel.core.erasure.records"
 _REGISTRY = "epistrel.core.propositions.registry"
 _PROPOSITIONS = "epistrel.core.propositions.store"
 _FACTS = "epistrel.core.canon.facts"
+_MEMORIES = "epistrel.core.memory.records"
 
 SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
@@ -728,6 +729,8 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter("entity_aliases", (_PROPOSITIONS,), f"{_RECORDS}:read_aliases"),
     # Bitemporal canon (#133): a fact's characters visibility scope names characters.
     SubjectWriter("facts", (_FACTS,), f"{_RECORDS}:read_facts"),
+    # Memory records (#135): a memory's text (positional), its holder and its actor.
+    SubjectWriter("memories", (_MEMORIES,), f"{_RECORDS}:read_memories"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 

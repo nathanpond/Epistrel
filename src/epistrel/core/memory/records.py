@@ -1,0 +1,702 @@
+"""Memory records: what a character can remember, where it came from, who may know it, how
+important it is now, and whether it is still on the active timeline (FR-MEM-1,2,4,5,7,
+FR-STORE-9,13; docs/02 §4.2, §4.4; #135). ``core.tables.memories`` describes the table.
+
+**Episodic memories** (FR-MEM-1). ``write_episodic(conn, operation, beats)`` runs inside the
+writing operation's commit transaction (a commit step: #150's structured pipeline calls it at
+its commit point, with the turn's beats) and writes one ``episodic`` row per **observable**
+beat: ``say``, ``do`` and ``narration``, never ``think`` or ``latent`` (``latent`` routes to
+canon, FR-TURN-4). Each row carries:
+
+- ``text``: the beat as an attributed line (``Bobby says: …``, ``Bobby does: …``, narration
+  verbatim), cut to ``TEXT_MAX`` characters;
+- ``source_event_ids = [the beat's event]``, the operation's id and narrative position
+  (``narrative_turn``/``turn_variant``, never ``seq``) and the beat number, and membership
+  ``active`` (``core.membership.insert_derived``): a truncation, untruncation, swap or
+  regenerate moves it with its operation;
+- ``provenance``: ``render`` for a character's beat, ``director`` for narration, ``player`` for
+  the player's input (the beat says which), and ``trust_tier`` derived from it
+  (``trust_tier_of``);
+- ``visibility``: ``objective`` for narration, ``public`` for a character's beat (#133's
+  shape); ``holder_character_id`` ``NULL``: in M4 every render-derived memory is shared
+  knowledge;
+- ``proposition_ids``: the beat's propositions; ``importance`` ``NULL`` until scored.
+
+The writer is **inert** unless the story's effective configuration has the ``episodic`` module
+on (``memory.episodic.enabled``; #129's ``module_on``): no row, no hook, no call. Every text
+and the actor pass the resurrection guard first (``guard.check_content``, a ``DIRECT`` write
+path, #127), and every row is indexed for erasure in the same transaction (``index_records``:
+its text positionally, its holder declared and its actor authored; ADR-154).
+``MEMORY_HOOKS`` run last, in the same transaction, with the new ids: the importance job
+(``orchestrator.jobs.handlers.importance``) enqueues itself there, so core never imports the
+orchestrator. ``beats_of_operation`` reads an operation's beats from its M2/M3 beat events
+(``player_input``, ``message_rendered``, ``think``, ``latent``) for callers that have no typed
+beats of their own.
+
+**Working memory** (FR-MEM-5) is a function over events, never a table:
+``working_memory(conn, story_id, character_id, through_position, n)`` answers the last ``n``
+beats of the active timeline at or before the position, as the character perceives them. M4
+is shared knowledge: a character perceives every beat except other characters' ``think`` and
+every ``latent``; ``character_id=None`` (the narrator, omniscient) perceives everything.
+
+**Importance** (FR-MEM-7). The ``importance_scoring`` purpose scores a memory 0..1 through the
+Model Access Layer (the importance job); ``set_importance`` writes a score only where none is
+set, so an author-set importance is never overwritten. ``importance_at`` is the committed turn
+the importance holds from (the memory's own turn). ``decayed_importance`` is pure:
+``importance · 0.5^((now - importance_at) / half_life)`` over committed turns of the active
+chain (``committed_turns``; a truncation shrinks the count), never stored. An unscored memory
+counts as ``DEFAULT_IMPORTANCE``.
+
+**The view through N** (FR-STORE-13). ``memories_through(conn, story_id, through_turn)``
+answers the active memories whose own position is at or before N (position-less rows always
+qualify, FR-STORE-26) and every one of whose source events belongs to an active operation at
+or before N: an episodic memory follows its beat, and #143's semantic memories and reflections
+leave the view with any of their sources.
+
+Log lines carry identifiers and counts only (invariant 3); this module logs nothing.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from types import SimpleNamespace
+from typing import Any, Literal, Protocol
+
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import and_, any_, exists, func, not_, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from epistrel.core.canon.facts import Visibility
+from epistrel.core.config_changes import read_section
+from epistrel.core.enums import (
+    EventCategory,
+    Membership,
+    MemoryKind,
+    MemoryTrustTier,
+    OperationKind,
+    OperationStatus,
+    RecordProvenance,
+    RetrievalTier,
+)
+from epistrel.core.erasure import guard
+from epistrel.core.erasure.index import index_records
+from epistrel.core.erasure.records import memory_record
+from epistrel.core.errors import InvalidRequest
+from epistrel.core.ids import new_ulid
+from epistrel.core.membership import active_only, active_operation, insert_derived
+from epistrel.core.profiles.capabilities import module_on
+from epistrel.core.profiles.effective import effective_configuration
+from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.settings_schema import MemorySettings
+from epistrel.core.tables import characters, events, operations
+from epistrel.core.tables.memories import TEXT_MAX, memories
+
+EPISODIC_MODULE = "episodic"
+"""The profile module that turns episodic memory on (``memory.episodic.enabled``, #106)."""
+
+DEFAULT_IMPORTANCE = 0.5
+"""What an unscored memory's importance counts as in ranking and retirement."""
+
+DEFAULT_WORKING_MEMORY_BEATS = 20
+"""How many beats working memory holds when the caller names no number."""
+
+BeatKind = Literal["say", "do", "narration", "think", "latent"]
+OBSERVABLE: frozenset[str] = frozenset({"say", "do", "narration"})
+"""The beats an episodic memory is written for; ``think`` and ``latent`` never are."""
+
+BEAT_EVENT_TYPES: tuple[str, ...] = ("player_input", "message_rendered", "think", "latent")
+"""The M2/M3 beat events ``beats_of_operation`` and ``working_memory`` read (#150's typed beat
+events join them when it lands)."""
+
+_TRUST: Mapping[RecordProvenance, MemoryTrustTier] = {
+    RecordProvenance.AUTHOR: MemoryTrustTier.AUTHOR,
+    RecordProvenance.SEED: MemoryTrustTier.AUTHOR,
+    RecordProvenance.EXTERNAL: MemoryTrustTier.EXTERNAL,
+    RecordProvenance.SYSTEM_CONSOLIDATED: MemoryTrustTier.ENGINE,
+    RecordProvenance.RESOLUTION: MemoryTrustTier.ENGINE,
+    RecordProvenance.BACKFILL: MemoryTrustTier.ENGINE,
+    RecordProvenance.IN_WORLD: MemoryTrustTier.IN_WORLD,
+    RecordProvenance.RENDER: MemoryTrustTier.IN_WORLD,
+    RecordProvenance.DIRECTOR: MemoryTrustTier.IN_WORLD,
+    RecordProvenance.PLAYER: MemoryTrustTier.IN_WORLD,
+}
+
+
+def trust_tier_of(provenance: RecordProvenance | str) -> MemoryTrustTier:
+    """A memory's trust tier, derived mechanically from its provenance (FR-MEM-4): the author
+    and a seed are ``author``; an external authority ``external``; consolidation, a resolution
+    and a backfill ``engine``; anything said or done in the story ``in_world``."""
+    return _TRUST[RecordProvenance(provenance)]
+
+
+# -- models -----------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Beat:
+    """One beat of a turn as the episodic writer takes it: its kind, its text, the event that
+    recorded it, its number in the turn, its actor (``None`` for narration), its provenance and
+    its propositions."""
+
+    kind: BeatKind
+    text: str
+    event_id: str
+    beat: int | None = None
+    character_id: str | None = None
+    provenance: RecordProvenance = RecordProvenance.RENDER
+    proposition_ids: tuple[str, ...] = ()
+
+
+class Memory(BaseModel):
+    """One ``memories`` row (see ``core.tables.memories`` for the columns; the vector itself is
+    not carried, only whether there is one)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    story_id: str
+    kind: MemoryKind
+    text: str
+    holder_character_id: str | None
+    character_id: str | None
+    visibility: Visibility
+    provenance: RecordProvenance
+    trust_tier: MemoryTrustTier
+    importance: float | None
+    importance_at: int | None
+    operation_id: str
+    source_event_ids: tuple[str, ...]
+    narrative_turn: int | None
+    turn_variant: int | None
+    beat: int | None
+    membership: Membership
+    membership_tx: datetime
+    proposition_ids: tuple[str, ...]
+    retrieval_tier: RetrievalTier
+    embedded: bool
+    embedding_model_version: str | None
+    created_at: datetime
+    last_accessed_at: datetime | None
+
+
+def _memory(row: Any) -> Memory:
+    return Memory(
+        id=str(row.id),
+        story_id=str(row.story_id),
+        kind=MemoryKind(row.kind),
+        text=row.text,
+        holder_character_id=None
+        if row.holder_character_id is None
+        else str(row.holder_character_id),
+        character_id=None if row.character_id is None else str(row.character_id),
+        visibility=Visibility.model_validate(row.visibility),
+        provenance=RecordProvenance(row.provenance),
+        trust_tier=MemoryTrustTier(row.trust_tier),
+        importance=None if row.importance is None else float(row.importance),
+        importance_at=row.importance_at,
+        operation_id=str(row.operation_id),
+        source_event_ids=tuple(str(e) for e in row.source_event_ids),
+        narrative_turn=row.narrative_turn,
+        turn_variant=row.turn_variant,
+        beat=row.beat,
+        membership=Membership(row.membership),
+        membership_tx=row.membership_tx,
+        proposition_ids=tuple(str(p) for p in row.proposition_ids),
+        retrieval_tier=RetrievalTier(row.retrieval_tier),
+        embedded=row.embedding is not None,
+        embedding_model_version=row.embedding_model_version,
+        created_at=row.created_at,
+        last_accessed_at=row.last_accessed_at,
+    )
+
+
+class MemoryOperation(Protocol):
+    """What a memory needs of the operation writing it (an ``Operation`` inside its commit):
+    its id, story, narrative position and base revision."""
+
+    operation_id: str
+    story_id: str | None
+    narrative_turn: int | None
+    turn_variant: int | None
+    base_revision: int | None
+
+
+MemoryHook = Callable[[AsyncConnection, str, tuple[str, ...]], Awaitable[None]]
+"""Called in the writer's transaction with the story and the new memories' ids."""
+
+MEMORY_HOOKS: list[MemoryHook] = []
+
+
+def register_memory_hook(hook: MemoryHook) -> MemoryHook:
+    """Run ``hook`` after every episodic write (once per hook)."""
+    if hook not in MEMORY_HOOKS:
+        MEMORY_HOOKS.append(hook)
+    return hook
+
+
+def remove_memory_hook(hook: MemoryHook) -> None:
+    if hook in MEMORY_HOOKS:
+        MEMORY_HOOKS.remove(hook)
+
+
+# -- the episodic writer ------------------------------------------------------------------------
+
+
+def render_line(kind: str, name: str | None, text: str) -> str:
+    """A beat as an attributed line (``Bobby says: …``, ``Bobby does: …``; narration and a beat
+    without a named actor verbatim), cut to ``TEXT_MAX`` characters."""
+    body = text.strip()
+    if name and kind == "say":
+        line = f"{name} says: {body}"
+    elif name and kind == "do":
+        line = f"{name} does: {body}"
+    else:
+        line = body
+    return line[:TEXT_MAX]
+
+
+async def episodic_on(
+    conn: AsyncConnection, story_id: str, settings: ProfileSettings | None = None
+) -> bool:
+    """Whether the story's effective configuration has the ``episodic`` module on."""
+    if settings is None:
+        settings = (await effective_configuration(conn, story_id, validate=False)).settings
+    return module_on(settings, EPISODIC_MODULE)
+
+
+async def _names(conn: AsyncConnection, story_id: str) -> dict[str, str]:
+    found = await conn.execute(
+        select(characters.c.id, characters.c.name).where(characters.c.story_id == story_id)
+    )
+    return {str(r.id): str(r.name) for r in found}
+
+
+async def _check_beats(
+    conn: AsyncConnection,
+    story_id: str,
+    operation_id: str,
+    beats: Sequence[Beat],
+    cast: Mapping[str, str],
+) -> None:
+    unknown = sorted({b.character_id for b in beats if b.character_id} - cast.keys())
+    if unknown:
+        raise InvalidRequest(
+            "a beat's actor is one of the story's characters",
+            {"field": "beats.character_id", "reason": "unknown_character"},
+        )
+    ids = sorted({b.event_id for b in beats})
+    found = set(
+        await conn.scalars(
+            select(events.c.id).where(
+                events.c.story_id == story_id,
+                events.c.operation_id == operation_id,
+                events.c.id.in_(ids),
+            )
+        )
+    )
+    if found != set(ids):
+        raise InvalidRequest(
+            "a beat's event is an event of the writing operation",
+            {"field": "beats.event_id", "reason": "unknown_event"},
+        )
+
+
+async def write_episodic(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    beats: Sequence[Beat],
+    *,
+    settings: ProfileSettings | None = None,
+) -> list[Memory]:
+    """Write one episodic memory per observable beat of ``beats`` (see the module docstring),
+    inside ``operation``'s commit transaction; answers the memories written (none when the
+    ``episodic`` module is off). ``settings`` is the story's effective configuration when the
+    caller already holds it."""
+    story_id = operation.story_id
+    if story_id is None:
+        raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
+    if not await episodic_on(conn, story_id, settings):
+        return []
+    observable = [b for b in beats if b.kind in OBSERVABLE and b.text.strip()]
+    if not observable:
+        return []
+    cast = await _names(conn, story_id)
+    await _check_beats(conn, story_id, operation.operation_id, observable, cast)
+    rows: list[dict[str, Any]] = []
+    contents: list[guard.Content] = []
+    for beat in observable:
+        line = render_line(beat.kind, cast.get(beat.character_id or ""), beat.text)
+        provenance = RecordProvenance(beat.provenance)
+        visibility = Visibility(scope="objective" if beat.kind == "narration" else "public")
+        contents.append(
+            guard.Content(
+                (line,),
+                frozenset({beat.character_id}) if beat.character_id else frozenset(),
+                consumer=provenance is RecordProvenance.PLAYER,
+            )
+        )
+        rows.append(
+            {
+                "id": new_ulid(),
+                "story_id": story_id,
+                "kind": MemoryKind.EPISODIC.value,
+                "text": line,
+                "holder_character_id": None,
+                "character_id": beat.character_id,
+                "visibility": visibility.document(),
+                "provenance": provenance.value,
+                "trust_tier": trust_tier_of(provenance).value,
+                "operation_id": operation.operation_id,
+                "source_event_ids": [beat.event_id],
+                "narrative_turn": operation.narrative_turn,
+                "turn_variant": operation.turn_variant,
+                "beat": beat.beat,
+                "proposition_ids": list(beat.proposition_ids),
+            }
+        )
+    await guard.check_content(
+        conn, story_id, contents, base_revision=operation.base_revision, path=__name__
+    )
+    await insert_derived(conn, memories, rows)
+    await index_records(conn, [memory_record(SimpleNamespace(**r)) for r in rows])
+    ids = tuple(str(r["id"]) for r in rows)
+    for hook in list(MEMORY_HOOKS):
+        await hook(conn, story_id, ids)
+    return await memories_by_id(conn, story_id, ids)
+
+
+def _beat_parts(
+    type_: str, actor: str | None, payload: Mapping[str, Any]
+) -> list[tuple[BeatKind, str | None, str]]:
+    """``(kind, actor, text)`` of each beat an M2/M3 beat event records: a player input's
+    ``say`` and ``do`` (its ``text`` when it has neither); a reply voiced by one character as
+    that character's ``say``, any other reply as narration; ``think`` and ``latent`` as
+    themselves."""
+    if type_ == "player_input":
+        parts: list[tuple[BeatKind, str | None, str]] = []
+        for part in ("say", "do"):
+            value = payload.get(part)
+            if isinstance(value, str) and value.strip():
+                parts.append(("say" if part == "say" else "do", actor, value))
+        return parts or [("say", actor, str(payload.get("text") or ""))]
+    if type_ == "message_rendered":
+        voiced = [str(c) for c in payload.get("render_character_ids") or ()]
+        text = str(payload.get("text") or "")
+        if len(voiced) == 1:
+            return [("say", voiced[0], text)]
+        return [("narration", None, text)]
+    kind: BeatKind = "think" if type_ == "think" else "latent"
+    return [(kind, actor, str(payload.get("text") or ""))]
+
+
+async def beats_of_operation(conn: AsyncConnection, operation_id: str) -> list[Beat]:
+    """The beats operation ``operation_id`` recorded in its M2/M3 beat events, in ``seq``
+    order: the player input's ``say`` and ``do`` (provenance ``player``); a reply voiced by one
+    character as that character's ``say`` (``render``), any other reply as ``narration``
+    (``director``); and ``think``/``latent`` as themselves."""
+    found = await conn.execute(
+        select(events.c.id, events.c.type, events.c.beat, events.c.character_id, events.c.payload)
+        .where(events.c.operation_id == operation_id, events.c.type.in_(BEAT_EVENT_TYPES))
+        .order_by(events.c.seq)
+    )
+    beats: list[Beat] = []
+    for row in found:
+        payload = dict(row.payload or {})
+        actor = None if row.character_id is None else str(row.character_id)
+        for kind, character, text in _beat_parts(row.type, actor, payload):
+            if row.type == "player_input":
+                provenance = RecordProvenance.PLAYER
+            elif kind == "narration":
+                provenance = RecordProvenance.DIRECTOR
+            else:
+                provenance = RecordProvenance.RENDER
+            beats.append(
+                Beat(
+                    kind,
+                    text,
+                    str(row.id),
+                    beat=row.beat,
+                    character_id=character,
+                    provenance=provenance,
+                )
+            )
+    return beats
+
+
+# -- working memory -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class WorkingBeat:
+    """One beat of working memory: where it is, what kind, whose and what it says."""
+
+    event_id: str
+    narrative_turn: int
+    turn_variant: int | None
+    beat: int | None
+    kind: BeatKind
+    character_id: str | None
+    text: str
+
+
+Position = int | tuple[int, int]
+"""A narrative position: a turn, or ``(turn, beat)``."""
+
+
+def _working(row: Any) -> list[WorkingBeat]:
+    actor = None if row.character_id is None else str(row.character_id)
+    return [
+        WorkingBeat(
+            event_id=str(row.id),
+            narrative_turn=int(row.narrative_turn),
+            turn_variant=row.turn_variant,
+            beat=row.beat,
+            kind=kind,
+            character_id=character,
+            text=text,
+        )
+        for kind, character, text in _beat_parts(row.type, actor, dict(row.payload or {}))
+    ]
+
+
+async def working_memory(
+    conn: AsyncConnection,
+    story_id: str,
+    character_id: str | None,
+    through_position: Position | None = None,
+    n: int = DEFAULT_WORKING_MEMORY_BEATS,
+) -> list[WorkingBeat]:
+    """The last ``n`` beat events of the active timeline at or before ``through_position`` (the
+    head when ``None``), oldest first, as ``character_id`` perceives them (see the module
+    docstring). Read from ``events``; nothing is stored."""
+    if n < 1:
+        return []
+    e, o = events, operations
+    where = [
+        e.c.story_id == story_id,
+        e.c.type.in_(BEAT_EVENT_TYPES),
+        e.c.category.in_([EventCategory.NARRATIVE_STATE.value, EventCategory.INPUT.value]),
+        e.c.narrative_turn.is_not(None),
+        e.c.slot_k.is_(None),
+        o.c.status == OperationStatus.COMMITTED.value,
+        active_operation(o),
+    ]
+    if through_position is not None:
+        turn, beat = (
+            (through_position, None) if isinstance(through_position, int) else through_position
+        )
+        if beat is None:
+            where.append(e.c.narrative_turn <= turn)
+        else:
+            where.append(
+                or_(
+                    e.c.narrative_turn < turn,
+                    and_(e.c.narrative_turn == turn, or_(e.c.beat.is_(None), e.c.beat <= beat)),
+                )
+            )
+    if character_id is not None:
+        where.append(
+            or_(
+                e.c.type.in_(("player_input", "message_rendered")),
+                and_(e.c.type == "think", e.c.character_id == character_id),
+            )
+        )
+    found = await conn.execute(
+        select(
+            e.c.id,
+            e.c.type,
+            e.c.narrative_turn,
+            e.c.turn_variant,
+            e.c.beat,
+            e.c.character_id,
+            e.c.payload,
+        )
+        .join(o, o.c.operation_id == e.c.operation_id)
+        .where(*where)
+        .order_by(e.c.narrative_turn.desc(), e.c.seq.desc())
+        .limit(n)
+    )
+    beats = [b for row in reversed(found.all()) for b in _working(row)]
+    return beats[-n:]
+
+
+# -- importance ----------------------------------------------------------------------------------
+
+
+def decayed_importance(
+    importance: float | None, importance_at: int | None, now: int, half_life: float
+) -> float:
+    """``importance`` decayed from committed turn ``importance_at`` to ``now`` with
+    ``half_life`` turns: ``importance · 0.5^((now - importance_at) / half_life)``. An unscored
+    memory counts as ``DEFAULT_IMPORTANCE``; no age (``importance_at`` unknown, or ``now``
+    earlier, as after a truncation) is no decay. Pure; never stored."""
+    if half_life <= 0:
+        raise ValueError("an importance half-life is a positive number of turns")
+    value = DEFAULT_IMPORTANCE if importance is None else float(importance)
+    age = 0 if importance_at is None else max(0, now - importance_at)
+    decayed: float = value * 0.5 ** (age / half_life)
+    return decayed
+
+
+async def half_life_turns(conn: AsyncConnection) -> int:
+    """The deployment's ``memory_importance_half_life_turns``."""
+    return (await read_section(conn, MemorySettings)).memory_importance_half_life_turns
+
+
+async def committed_turns(conn: AsyncConnection, story_id: str) -> int:
+    """How many committed turns the story's active chain holds (the clock importance decays
+    by: a truncation shrinks it, an untruncation restores it)."""
+    found = await conn.scalar(
+        select(func.count(func.distinct(operations.c.narrative_turn))).where(
+            operations.c.story_id == story_id,
+            operations.c.kind == OperationKind.TURN.value,
+            operations.c.status == OperationStatus.COMMITTED.value,
+            active_operation(operations),
+        )
+    )
+    return int(found or 0)
+
+
+async def unscored(conn: AsyncConnection, story_id: str, limit: int) -> list[Memory]:
+    """The story's active hot memories that have no importance yet, oldest first."""
+    found = await conn.execute(
+        select(memories)
+        .where(
+            memories.c.story_id == story_id,
+            active_only(memories),
+            memories.c.retrieval_tier == RetrievalTier.HOT.value,
+            memories.c.importance.is_(None),
+        )
+        .order_by(memories.c.created_at, memories.c.id)
+        .limit(limit)
+    )
+    return [_memory(r) for r in found]
+
+
+async def stories_with_unscored(conn: AsyncConnection) -> list[str]:
+    """Every story with an active hot memory that has no importance yet."""
+    found = await conn.scalars(
+        select(memories.c.story_id)
+        .where(
+            active_only(memories),
+            memories.c.retrieval_tier == RetrievalTier.HOT.value,
+            memories.c.importance.is_(None),
+        )
+        .group_by(memories.c.story_id)
+        .order_by(memories.c.story_id)
+    )
+    return [str(s) for s in found]
+
+
+async def set_importance(conn: AsyncConnection, story_id: str, scores: Mapping[str, float]) -> int:
+    """Write each scored memory's importance (clamped to 0..1), with ``importance_at`` its own
+    turn (or, position-less, the story's committed turns now), only where no importance is set
+    yet: an author's or an earlier score is never overwritten. Answers the rows written."""
+    if not scores:
+        return 0
+    now = await committed_turns(conn, story_id)
+    written = 0
+    for memory_id, score in sorted(scores.items()):
+        result = await conn.execute(
+            update(memories)
+            .where(
+                memories.c.story_id == story_id,
+                memories.c.id == memory_id,
+                memories.c.importance.is_(None),
+            )
+            .values(
+                importance=min(1.0, max(0.0, float(score))),
+                importance_at=func.coalesce(memories.c.narrative_turn, now),
+            )
+        )
+        written += int(result.rowcount)
+    return written
+
+
+# -- reads ---------------------------------------------------------------------------------------
+
+
+async def memories_by_id(conn: AsyncConnection, story_id: str, ids: Iterable[str]) -> list[Memory]:
+    """The story's memories ``ids`` (any membership), in the order given."""
+    wanted = list(ids)
+    found = await conn.execute(
+        select(memories).where(memories.c.story_id == story_id, memories.c.id.in_(wanted))
+    )
+    by_id = {str(r.id): _memory(r) for r in found}
+    return [by_id[i] for i in wanted if i in by_id]
+
+
+async def memories_through(
+    conn: AsyncConnection, story_id: str, through_turn: int | None = None
+) -> list[Memory]:
+    """The story's memories in the corrected view through ``through_turn`` (the head when
+    ``None``): active, at or before it (position-less rows always), and every source event of
+    an active committed operation at or before it (FR-STORE-13). Ordered by position."""
+    m, e, o = memories, events, operations
+    source_out = and_(
+        e.c.id == any_(m.c.source_event_ids),
+        or_(
+            not_(active_operation(o)),
+            o.c.status != OperationStatus.COMMITTED.value,
+            *(
+                ()
+                if through_turn is None
+                else (and_(e.c.narrative_turn.is_not(None), e.c.narrative_turn > through_turn),)
+            ),
+        ),
+    )
+    where = [
+        m.c.story_id == story_id,
+        active_only(m),
+        not_(
+            exists(select(e.c.id).join(o, o.c.operation_id == e.c.operation_id).where(source_out))
+        ),
+    ]
+    if through_turn is not None:
+        where.append(or_(m.c.narrative_turn.is_(None), m.c.narrative_turn <= through_turn))
+    found = await conn.execute(
+        select(m)
+        .where(*where)
+        .order_by(
+            m.c.narrative_turn.asc().nulls_first(),
+            m.c.turn_variant.asc().nulls_first(),
+            m.c.beat.asc().nulls_first(),
+            m.c.created_at,
+            m.c.id,
+        )
+    )
+    return [_memory(r) for r in found]
+
+
+__all__ = [
+    "BEAT_EVENT_TYPES",
+    "DEFAULT_IMPORTANCE",
+    "DEFAULT_WORKING_MEMORY_BEATS",
+    "EPISODIC_MODULE",
+    "MEMORY_HOOKS",
+    "OBSERVABLE",
+    "Beat",
+    "BeatKind",
+    "Memory",
+    "MemoryHook",
+    "MemoryOperation",
+    "Position",
+    "WorkingBeat",
+    "beats_of_operation",
+    "committed_turns",
+    "decayed_importance",
+    "episodic_on",
+    "half_life_turns",
+    "memories_by_id",
+    "memories_through",
+    "register_memory_hook",
+    "remove_memory_hook",
+    "render_line",
+    "set_importance",
+    "stories_with_unscored",
+    "trust_tier_of",
+    "unscored",
+    "working_memory",
+]

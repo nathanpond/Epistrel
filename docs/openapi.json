@@ -21048,6 +21048,13 @@
             "title": "Media Upload Ttl",
             "type": "integer"
           },
+          "memory_importance_half_life_turns": {
+            "default": 200,
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Memory Importance Half Life Turns",
+            "type": "integer"
+          },
           "minor_age_threshold": {
             "default": 18,
             "maximum": 120.0,
@@ -21896,6 +21903,17 @@
               }
             ],
             "title": "Media Upload Ttl"
+          },
+          "memory_importance_half_life_turns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Importance Half Life Turns"
           },
           "minor_age_threshold": {
             "anyOf": [
@@ -25645,6 +25663,7 @@
                           "media_signed_url_ttl",
                           "media_sweep_interval",
                           "media_upload_ttl",
+                          "memory_importance_half_life_turns",
                           "minor_age_threshold",
                           "offboarding_report_retention_days",
                           "profile_defaults",

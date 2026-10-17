@@ -328,6 +328,15 @@ def active_only(table: FromClause) -> ColumnElement[bool]:
     return table.c.membership == Membership.ACTIVE.value
 
 
+def active_operation(table: FromClause) -> ColumnElement[bool]:
+    """The predicate on ``operations`` (or an alias of it) for an operation on the active
+    timeline, for derived-record reads that join their sources' operations (#135's working
+    memory and view through N)."""
+    if _base_table(table).name != "operations":
+        raise TypeError(f"{table!r} is not the operations table")
+    return table.c.membership == Membership.ACTIVE.value
+
+
 def active_as_of(table: FromClause, record_time: Any) -> ColumnElement[bool]:
     """Whether a row of registered derived ``table`` was in the timeline at record-time
     ``record_time`` (#133's as-recorded reads): active now, or moved out of it only after
@@ -374,6 +383,7 @@ __all__ = [
     "active_as_of",
     "active_only",
     "active_only_sql",
+    "active_operation",
     "derived_columns",
     "derived_entry",
     "derived_index_names",

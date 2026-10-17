@@ -146,6 +146,7 @@ from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.core.tables.media import MediaKind
+from epistrel.core.tables.memories import memories
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.tables.propositions import (
     closed_sets,
@@ -188,6 +189,8 @@ STORY_TABLES: tuple[Table, ...] = (
     timers,
     # Bitemporal canon (#133): a derived table, before the operations it references.
     facts,
+    # Memory records (#135): a derived table, before the operations it references.
+    memories,
     # The structured stores (#131): story rows only (core predicates have no story).
     predicate_proposals,
     closed_sets,

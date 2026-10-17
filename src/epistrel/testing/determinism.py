@@ -147,6 +147,11 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, t.tx_from, t.narrative_turn NULLS FIRST, t.valid_from NULLS FIRST, "
         "t.valid_to NULLS LAST"
     ),
+    # Memory records (#135): by narrative position, beat and kind, then by text.
+    "memories": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
+        "t.beat NULLS FIRST, t.kind, t.created_at, t.text"
+    ),
 }
 """Each compared table's ``ORDER BY`` (``t`` is the table): natural keys, never an id."""
 

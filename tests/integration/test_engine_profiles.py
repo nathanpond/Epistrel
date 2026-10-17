@@ -111,8 +111,8 @@ from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
 from epistrel.core.settings_schema import ConfigClass
 from epistrel.core.stories import delete_story
 from epistrel.orchestrator.jobs.handlers import retention
+from epistrel.orchestrator.models.registry import IMPORTANCE_SCORING, STORY_PURPOSES
 from epistrel.orchestrator.models.registry import RESERVED as RESERVED_PURPOSES
-from epistrel.orchestrator.models.registry import STORY_PURPOSES
 from epistrel.testing import pauses
 from epistrel.testing.profiles import TEST_CLAUSE, extra_rule
 from tests.auth_support import auth_settings, bearer
@@ -155,6 +155,11 @@ READ = bearer()
 A = "p-profiles-a"
 B = "p-profiles-b"
 PURPOSES = Purposes.of(list(STORY_PURPOSES), list(RESERVED_PURPOSES))
+
+LITE_ROUTED = set(STORY_PURPOSES) - {IMPORTANCE_SCORING.name}
+"""The story purposes the Lite preset names in ``models.purposes``: every one a Lite story calls.
+``importance_scoring`` (#135) needs episodic memory, which Lite has off; unnamed, it inherits
+the deployment's model configuration, as every purpose does under ``Structured (M4)``."""
 
 
 def headers(principal: str, key: str | None = None) -> dict[str, str]:
@@ -327,7 +332,7 @@ async def test_u_28__schema(engine: AsyncEngine) -> None:
         "compress_threshold_tokens": 6_000,
     }
     assert shipped["budgets"] == {"model_calls": None, "deadline_ms": 45_000}
-    assert set(shipped["models"]["purposes"]) == set(STORY_PURPOSES)
+    assert set(shipped["models"]["purposes"]) == LITE_ROUTED
     (stored,) = await rows(
         engine,
         "SELECT p.name, p.owner_principal, p.preset, v.settings, v.created_by, "
@@ -1754,7 +1759,7 @@ def test_lite_settings_validate_as_a_model() -> None:
     assert lite.repair == defaults.repair
     assert lite.budgets == defaults.budgets
     assert lite.models.generation == defaults.models.generation
-    assert set(lite.models.purposes) == set(STORY_PURPOSES)
+    assert set(lite.models.purposes) == LITE_ROUTED
     assert all(route.model is None for route in lite.models.purposes.values())
 
 

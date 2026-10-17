@@ -45,6 +45,7 @@ from epistrel.core.tables import (
 )
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import SubjectKind, media_upload_sessions
+from epistrel.core.tables.memories import memories
 from epistrel.core.tables.propositions import (
     closed_sets,
     entities,
@@ -332,6 +333,20 @@ def fact_record(row: Any) -> Record:
             for c in named
             if isinstance(c, str)
         ),
+    )
+
+
+def memory_record(row: Any) -> Record:
+    """A memory (#135): its ``text``, indexed positionally (ADR-154); its holder a declared
+    subject; its actor (the beat's character) its author."""
+    holder = _str(row.holder_character_id)
+    return Record(
+        memories.name,
+        str(row.id),
+        _str(row.story_id),
+        {"text": row.text},
+        ((SubjectKind.CHARACTER, holder, "holder_character_id"),) if holder else (),
+        authored_by=_str(row.character_id),
     )
 
 
@@ -624,6 +639,19 @@ async def read_facts(conn: AsyncConnection, story_id: str | None) -> list[Record
     return await _story_rows(conn, facts, story_id, fact_record)
 
 
+async def read_memories(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's memories, as ``memory_record`` indexes them (the vector is not read)."""
+    if story_id is None:
+        return []
+    m = memories.c
+    found = await conn.execute(
+        select(m.id, m.story_id, m.text, m.holder_character_id, m.character_id).where(
+            m.story_id == story_id
+        )
+    )
+    return [memory_record(r) for r in found]
+
+
 async def read_aliases(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     return await _story_rows(conn, entity_aliases, story_id, alias_record)
 
@@ -653,6 +681,7 @@ __all__ = [
     "idempotency_record",
     "index_rows",
     "media_record",
+    "memory_record",
     "operation_record",
     "persona_record",
     "policy_record",

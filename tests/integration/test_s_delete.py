@@ -27,7 +27,7 @@ from epistrel.orchestrator.jobs import timers
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
-from tests import canon_support
+from tests import canon_support, memory_support
 from tests import erasure_support as erasure
 from tests import genesis_support as g
 from tests.event_support import interleave, play_turn, rows
@@ -176,6 +176,8 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
         sailing.model_copy(update={"valid_time": Interval.of(5, 25)}),
         authority="author",
     )
+    # Memory records (#135): a memory of the story, written by its own operation.
+    await memory_support.derived_memory(engine, story_id, "Ann sails at dawn.", [])
 
 
 def _due() -> datetime:

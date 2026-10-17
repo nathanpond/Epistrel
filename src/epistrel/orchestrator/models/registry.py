@@ -46,6 +46,9 @@ class ContentCategory(StrEnum):
     EVAL_TEXT = "eval_text"
     """Text an eval case supplies or an eval's scratch story produced (#134): what the
     ``quality_judge`` compares. Never a live story's content."""
+    MEMORY_TEXT = "memory_text"
+    """A memory record's text and kind (#135): what ``importance_scoring`` rates (and #143's
+    consolidation compresses)."""
 
 
 class StructuredOutput(StrEnum):
@@ -300,6 +303,21 @@ class QualityJudgeVerdict(BaseModel):
     preferred: Literal["first", "second", "tie"] = "tie"
 
 
+class ImportanceScoringInputs(InputSchema):
+    """One memory to score (FR-MEM-7; #135): its text and its kind."""
+
+    text: Annotated[str, C.MEMORY_TEXT]
+    kind: Annotated[Literal["episodic", "semantic", "reflection"], C.MEMORY_TEXT] = "episodic"
+
+
+class ImportanceScore(BaseModel):
+    """The structured result of one ``importance_scoring`` call: a number, no free text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    importance: float = Field(ge=0.0, le=1.0)
+
+
 # -- purposes ---------------------------------------------------------------------------------
 
 
@@ -417,11 +435,23 @@ QUALITY_JUDGE = Purpose(
     story_scoped=False,
 )
 
+IMPORTANCE_SCORING = Purpose(
+    name="importance_scoring",
+    description="Scores one memory's importance, 0 (trivia) to 1 (pivotal) (FR-MEM-7).",
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=ImportanceScoringInputs,
+    template="importance_scoring.j2",
+    hot_path=False,
+    # The memory's own text and kind only: never a definition, a policy, an age or eval text.
+    never_receives=_EVERYTHING - {C.MEMORY_TEXT},
+    response_schema=ImportanceScore,
+)
+
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("regeneration", "Regenerates a span under corrected constraints.", "M4"),
     ReservedPurpose("entailment", "The fuzzy residual of verify.", "M4"),
     ReservedPurpose("consolidation", "Summaries and reflections (worker).", "M4"),
-    ReservedPurpose("importance_scoring", "Scores one memory's importance.", "M4"),
     ReservedPurpose("salience_detection", "Detects signals that need commitment.", "M4"),
     ReservedPurpose("extraction_backstop", "Model layer of claim detection.", "M4"),
     ReservedPurpose(
@@ -544,7 +574,14 @@ def _build(purposes: tuple[Purpose, ...]) -> Mapping[str, Purpose]:
 
 
 DELIVERED: Mapping[str, Purpose] = _build(
-    (GENERATION, GUARDRAIL_CHECK, LITE_SUMMARY, RATING_SUGGESTION, QUALITY_JUDGE)
+    (
+        GENERATION,
+        GUARDRAIL_CHECK,
+        LITE_SUMMARY,
+        RATING_SUGGESTION,
+        QUALITY_JUDGE,
+        IMPORTANCE_SCORING,
+    )
 )
 """Purposes a model call may use now, by name."""
 
@@ -569,6 +606,7 @@ def get_purpose(name: str) -> Purpose:
 __all__ = [
     "DEFAULT_MODEL_KEY",
     "DELIVERED",
+    "IMPORTANCE_SCORING",
     "QUALITY_JUDGE",
     "RATING_SUGGESTION",
     "RESERVED",
@@ -581,6 +619,8 @@ __all__ = [
     "GenerationInputs",
     "GuardrailCheckInputs",
     "GuardrailVerdict",
+    "ImportanceScore",
+    "ImportanceScoringInputs",
     "InputSchema",
     "KnownHit",
     "LiteSummaryInputs",

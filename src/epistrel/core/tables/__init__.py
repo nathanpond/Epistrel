@@ -25,6 +25,7 @@ from epistrel.core.tables.genesis import genesis_deferred
 from epistrel.core.tables.idempotency import idempotency_keys
 from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.media import media_assets, subject_references
+from epistrel.core.tables.memories import memories
 from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.offboarding import offboarding_jobs
 from epistrel.core.tables.operations import operations
@@ -83,6 +84,7 @@ __all__ = [
     "jobs",
     "lite_summary_segments",
     "media_assets",
+    "memories",
     "metadata",
     "model_config",
     "offboarding_jobs",

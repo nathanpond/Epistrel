@@ -67,6 +67,10 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "Text an eval case supplies or an eval's scratch story produced, compared by the quality "
         "judge; never a live story's content (#134)."
     ),
+    ContentCategory.MEMORY_TEXT: (
+        "One memory record of the story: its text (an attributed line of a beat) and its kind, "
+        "scored by importance scoring (#135)."
+    ),
 }
 
 STRUCTURED_LABELS: Mapping[StructuredOutput, str] = {

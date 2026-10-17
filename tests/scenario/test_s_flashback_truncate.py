@@ -1,5 +1,5 @@
 """S-FLASHBACK-TRUNCATE: membership, not valid-time (FR-STORE-10, FR-BITEMP-5; docs/04 §7), its
-canon half (#133).
+canon half (#133) and its memory half (#135, ``test_s_flashback_truncate__memories``).
 
 Scaled down by a hundred: turn 9 ("message 900") introduces "Bobby broke his arm at age seven",
 valid decades before the story-time of checkpoint 8 ("800"). Truncating to 8 takes the fact out
@@ -26,6 +26,7 @@ from tests.canon_support import (
     world,
 )
 from tests.event_support import play_turn
+from tests.memory_support import memory_rows, turn, use_structured
 from tests.projection_support import truncate, untruncate
 
 pytestmark = pytest.mark.integration
@@ -96,3 +97,31 @@ async def test_s_flashback_truncate(engine: AsyncEngine) -> None:
     assert str(restored[arm.id].membership) == "active"
     assert restored[arm.id].valid_from == rows[arm.id].valid_from
     assert [f.id for f in await at_time(engine, story, flashback_time)] == [arm.id]
+
+
+@pytest.mark.part("M4", "FR-STORE-10")
+async def test_s_flashback_truncate__memories(engine: AsyncEngine) -> None:
+    """The memory half: turn 9 narrates the flashback ("Bobby broke his arm at age seven");
+    its episodic memory leaves the active timeline when the story is truncated to 8, every
+    other column unchanged, and comes back with the untruncation. Complement: turn 7's memory,
+    before the checkpoint, stays active."""
+    w = await world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    made: dict[int, str] = {}
+    for n in range(1, 10):
+        reply = "Bobby broke his arm at age seven." if n == 9 else f"message {n}"
+        _, (memory,) = await turn(engine, story, say=None, reply=reply)
+        made[n] = memory.id
+    before = await memory_rows(engine, story)
+    assert before[made[9]].narrative_turn == 9
+
+    await truncate(engine, story, 8)
+    after = await memory_rows(engine, story)
+    assert str(after[made[9]].membership) == "discarded"
+    assert str(after[made[7]].membership) == "active"
+    for column in ("text", "narrative_turn", "created_at", "source_event_ids", "importance"):
+        assert getattr(after[made[9]], column) == getattr(before[made[9]], column), column
+
+    await untruncate(engine, story)
+    assert str((await memory_rows(engine, story))[made[9]].membership) == "active"

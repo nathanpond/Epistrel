@@ -126,6 +126,7 @@ from epistrel.orchestrator.budget import (
 )
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs.handlers import erasure_reconcile as erasure_reconcile_job
+from epistrel.orchestrator.jobs.handlers import importance as importance_job
 from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
@@ -598,6 +599,7 @@ class Engine:
         mode = mode or self.settings.mode
         turn_queue_job.bind(self.drainer.recover)
         lite_summary_job.bind(self.models)
+        importance_job.bind(self.models)
         rating_check_job.bind(self.models)
         media_sweep_job.bind(self.media)
         erasure_reconcile_job.bind(self._reconcile_run)

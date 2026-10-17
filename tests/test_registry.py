@@ -61,7 +61,8 @@ def bad_template_env(source: str) -> Environment:
 
 def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
     # M3 delivers rating_suggestion (#121), which defaults to guardrail_check's row (FR-MODEL-2);
-    # M4 the eval harness's quality_judge (#134) and memory importance_scoring (#135).
+    # M4 the eval harness's quality_judge (#134), memory importance_scoring (#135) and
+    # verify's entailment (#142).
     assert set(DELIVERED) == {
         "generation",
         "guardrail_check",
@@ -69,6 +70,7 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
         "rating_suggestion",
         "quality_judge",
         "importance_scoring",
+        "entailment",
     }
     for purpose in DELIVERED.values():
         expected = "guardrail_check" if purpose.name == "rating_suggestion" else "default"
@@ -94,12 +96,12 @@ def test_registry_enumerates_every_named_purpose() -> None:
 
 def test_reserved_and_unknown_purposes_are_refused() -> None:
     with pytest.raises(UnknownPurpose) as reserved:
-        get_delivered("entailment")
+        get_delivered("consolidation")
     details = dict(reserved.value.details)
     assert len(details.pop("errors")) == 1
     assert details == {
         "field": "body",
-        "purpose": "entailment",
+        "purpose": "consolidation",
         "reason": "reserved",
         "milestone": "M4",
     }

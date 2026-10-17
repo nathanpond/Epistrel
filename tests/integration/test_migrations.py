@@ -693,3 +693,51 @@ def test_the_retrieval_columns_and_dials(scratch_database: str) -> None:
         assert defaults() == before
     finally:
         engine.dispose()
+
+
+def test_the_escalation_dials_join_the_profile_defaults(scratch_database: str) -> None:
+    """0057 (#142): ``verification.entailment_min_confidence`` (0.6) and
+    ``verification.safe_disposition`` (``repair``) join the deployment's ``profile_defaults``
+    and the rest of the document is kept; a stored ``entailment_gate`` of 0.5 (the unreleased
+    0047's default) becomes 1.0, and any other value is kept; the downgrade removes the dials
+    and leaves the gate."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0056")
+    engine = make_sync_engine(scratch_database)
+
+    def defaults() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+
+    def set_gate(value: str) -> None:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE deployment_state SET profile_defaults = jsonb_set(profile_defaults, "
+                    "'{verification,entailment_gate}', CAST(:v AS jsonb))"
+                ),
+                {"v": value},
+            )
+
+    try:
+        set_gate("0.5")
+        before = defaults()
+        assert "safe_disposition" not in before["verification"]
+        command.upgrade(cfg, "0057")
+        after = defaults()
+        verification = after["verification"]
+        assert verification.pop("entailment_min_confidence") == 0.6
+        assert verification.pop("safe_disposition") == "repair"
+        assert verification.pop("entailment_gate") == 1.0
+        before["verification"].pop("entailment_gate")
+        assert after == before
+        command.downgrade(cfg, "0056")
+        reverted = defaults()["verification"]
+        assert "safe_disposition" not in reverted
+        assert "entailment_min_confidence" not in reverted
+        assert reverted["entailment_gate"] == 1.0
+        set_gate("0.8")
+        command.upgrade(cfg, "0057")
+        assert defaults()["verification"]["entailment_gate"] == 0.8
+    finally:
+        engine.dispose()

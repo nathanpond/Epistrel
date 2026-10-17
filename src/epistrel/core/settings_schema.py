@@ -817,6 +817,29 @@ class RetrievalSettings(BaseModel):
     )
 
 
+DEFAULT_NEIGHBORHOOD_MAX_FACTS = 50
+DEFAULT_ENTAILMENT_MAX_RECORDS = 30
+ENTAILMENT_MAX_RECORDS_LIMIT = 200
+"""The most records an ``entailment`` request may carry (``EntailmentInputs.records``)."""
+
+
+class VerifySettings(BaseModel):
+    """How much the verifier reads around a claim (FR-VERIFY-3,6; #142), stored under
+    ``deployment_state.settings``: the most rows one ``fact_neighborhood`` returns
+    (``neighborhood_max_facts``) and the most holder records one entailment request carries
+    (``entailment_max_records``). The gate, the confidence floor and the safe disposition are
+    engine-profile dials (``verification``). Prospective: a verify reads them when it runs."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    neighborhood_max_facts: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_NEIGHBORHOOD_MAX_FACTS, ge=1, le=1_000
+    )
+    entailment_max_records: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_ENTAILMENT_MAX_RECORDS, ge=1, le=ENTAILMENT_MAX_RECORDS_LIMIT
+    )
+
+
 # -- the deployment's settings (FR-CONC-14,15; #64) ---------------------------------------------
 
 DEFAULT_MINOR_AGE_THRESHOLD = 18
@@ -909,6 +932,7 @@ class DeploymentSettings(
     MemorySettings,
     EmbeddingSettings,
     RetrievalSettings,
+    VerifySettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

@@ -121,3 +121,15 @@ The embedding vectors' HNSW index (`ix_memories_embedding_hnsw`, cosine) is buil
 `embedding_hnsw_ef_search` (default 40) is the candidate list size of each retrieval's vector search. Every retrieval sets it on its own transaction (`SET LOCAL hnsw.ef_search`) together with pgvector's iterative scan (`hnsw.iterative_scan = relaxed_order`), so filtered searches still fill their top-k. A change applies to the next retrieval and needs no rebuild.
 
 `retrieval_vector_k`, `retrieval_lexical_k` (50 each), `retrieval_rrf_k` (60) and `retrieval_rehydrate_max_rows` (20) size and fuse the search arms. The ranking weights, the recency half-life and the token budget are engine-profile dials (`memory.episodic`).
+
+## Verification escalation
+
+A structured story checks each claim deterministically first. Only a claim the engine cannot decide is sent to the `entailment` model, and only when the story's profile has `verification.level = entailment`. Three engine-profile dials control this:
+
+- `verification.entailment_gate` (default 1.0) sends every undecided claim to the model. The gate is tightened per predicate shape, never by lowering this default.
+- `verification.entailment_min_confidence` (default 0.6) is the least confidence a model answer needs.
+- `verification.safe_disposition` (`repair`, the default, or `surface`) sets what happens to a claim nobody could decide. With `repair`, the sentence is rewritten. With `surface`, it stands and the claim is listed for the author.
+
+A model answer that is unparseable, below the floor, or `novel` never counts as `supported`, and neither does an unreachable model: each takes the safe disposition.
+
+Two deployment settings bound what one verification reads. `neighborhood_max_facts` (default 50) caps the facts, closed sets, projections and memories of a repair's dependency cluster. `entailment_max_records` (default 30) caps the records one entailment request carries.

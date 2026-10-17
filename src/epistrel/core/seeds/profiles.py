@@ -144,7 +144,7 @@ M4_PROFILE_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
         "verification": {
             "level": "off",
             "extraction_mode": "gated",
-            "entailment_gate": 0.5,
+            "entailment_gate": 1.0,
             "contradiction_checking": False,
         },
         "commitment": {"enabled": False, "salience": "rules"},
@@ -182,19 +182,34 @@ RETRIEVAL_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
 yet."""
 
 
+ESCALATION_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
+    {"verification": {"entailment_min_confidence": 0.6, "safe_disposition": "repair"}}
+)
+"""The escalation dials (#142), at the schema's defaults: migration
+``0057_verify_escalation_defaults`` adds them to a deployment's ``profile_defaults`` that does
+not name them yet. ``verification.entailment_gate``'s default moved from 0.5 to 1.0 in the same
+story (``M4_PROFILE_DEFAULTS``)."""
+
+PREVIOUS_ENTAILMENT_GATE = 0.5
+"""The ``verification.entailment_gate`` default the unreleased ``0047`` seeded before #142:
+``0057`` moves a stored 0.5 to the new default."""
+
+
 def profile_defaults() -> dict[str, Any]:
     """A deployment's seeded ``profile_defaults``: Lite's settings with ``M4_PROFILE_DEFAULTS``,
-    ``VERIFY_DEPTH_DEFAULTS`` and ``RETRIEVAL_DEFAULTS`` under them (a complete document of
-    every delivered setting)."""
+    ``VERIFY_DEPTH_DEFAULTS``, ``RETRIEVAL_DEFAULTS`` and ``ESCALATION_DEFAULTS`` under them (a
+    complete document of every delivered setting)."""
     base = _merged(_merged(_thaw(M4_PROFILE_DEFAULTS), VERIFY_DEPTH_DEFAULTS), RETRIEVAL_DEFAULTS)
-    return _merged(base, LITE_SETTINGS)
+    return _merged(_merged(base, ESCALATION_DEFAULTS), LITE_SETTINGS)
 
 
 __all__ = [
+    "ESCALATION_DEFAULTS",
     "LITE_NAME",
     "LITE_PRESET_ID",
     "LITE_SETTINGS",
     "M4_PROFILE_DEFAULTS",
+    "PREVIOUS_ENTAILMENT_GATE",
     "RETRIEVAL_DEFAULTS",
     "SEED_PRINCIPAL",
     "STRUCTURED_M4_NAME",

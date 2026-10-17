@@ -68,7 +68,20 @@ from types import SimpleNamespace
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import and_, any_, exists, func, not_, or_, select, update
+from sqlalchemy import (
+    and_,
+    any_,
+    bindparam,
+    case,
+    exists,
+    false,
+    func,
+    not_,
+    or_,
+    select,
+    update,
+)
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.facts import Visibility
@@ -94,6 +107,7 @@ from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.settings_schema import MemorySettings
 from epistrel.core.tables import characters, entities, events, operations
+from epistrel.core.tables.base import ulid_type
 from epistrel.core.tables.memories import EVENT_TYPE_MAX, TEXT_MAX, memories
 
 EPISODIC_MODULE = "episodic"
@@ -670,6 +684,46 @@ async def memories_by_id(conn: AsyncConnection, story_id: str, ids: Iterable[str
     return [by_id[i] for i in wanted if i in by_id]
 
 
+async def memories_linked(
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    proposition_ids: Sequence[str] = (),
+    source_event_ids: Sequence[str] = (),
+    limit: int | None = None,
+) -> list[Memory]:
+    """The story's active memories that wrap one of ``proposition_ids`` or come from one of
+    ``source_event_ids`` (#142's ``fact_neighborhood``): first those linked by proposition,
+    then those linked only by source event, each by position then id, up to ``limit``."""
+    props, sources = list(dict.fromkeys(proposition_ids)), list(dict.fromkeys(source_event_ids))
+    if (not props and not sources) or limit == 0:
+        return []
+    m = memories
+    by_proposition = (
+        m.c.proposition_ids.overlap(bindparam("linked_props", props, type_=ARRAY(ulid_type())))
+        if props
+        else false()
+    )
+    by_source = (
+        m.c.source_event_ids.overlap(bindparam("linked_sources", sources, type_=ARRAY(ulid_type())))
+        if sources
+        else false()
+    )
+    query = (
+        select(m)
+        .where(m.c.story_id == story_id, active_only(m), or_(by_proposition, by_source))
+        .order_by(
+            case((by_proposition, 0), else_=1),
+            m.c.narrative_turn.asc().nulls_first(),
+            m.c.beat.asc().nulls_first(),
+            m.c.id,
+        )
+    )
+    if limit is not None:
+        query = query.limit(limit)
+    return [_memory(r) for r in await conn.execute(query)]
+
+
 async def memories_through(
     conn: AsyncConnection, story_id: str, through_turn: int | None = None
 ) -> list[Memory]:
@@ -732,6 +786,7 @@ __all__ = [
     "episodic_on",
     "half_life_turns",
     "memories_by_id",
+    "memories_linked",
     "memories_through",
     "participants_of",
     "register_memory_hook",

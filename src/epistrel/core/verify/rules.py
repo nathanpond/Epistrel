@@ -1095,9 +1095,11 @@ def _antecedents(registry: Registry, predicate_id: str, depth: int) -> tuple[set
     return found, vias
 
 
-async def _closed_sets(
+async def closed_sets_for(
     conn: AsyncConnection, story_id: str, predicate_id: str
 ) -> list[ClosedSetRecord]:
+    """The story's asserted closed sets of ``predicate_id``, by id (``check_with``'s read, and
+    #142's ``fact_neighborhood``)."""
     t = closed_sets_table
     rows = await conn.execute(
         select(t.c.id, t.c.key, t.c.members, t.c.valid_from, t.c.valid_to)
@@ -1133,11 +1135,13 @@ async def check_with(
     viewpoint: str = OMNISCIENT,
     registry: Registry | None = None,
     options: Options = Options(),  # noqa: B008 - frozen
+    fetched: list[Record] | None = None,
 ) -> Verdict:
     """Fetch what ``claim`` needs through ``lookup`` (each read a query key of the turn's read
     set) and ``check`` it. ``viewpoint`` filters canon (a character's claim is checked only
     against what that character may read). Canon holders only: an utterance holder's records
-    are #150's to fetch and pass to ``check``."""
+    are #150's to fetch and pass to ``check``. ``fetched``, when given, receives the records
+    the verdict was decided over (#142's entailment call is shown exactly those)."""
     if holder.kind == "utterance":
         raise ValueError("check_with reads canon; pass an utterance holder's records to check()")
     registry = registry or await load(lookup.conn, story_id)
@@ -1177,7 +1181,7 @@ async def check_with(
     records += await read(c.predicate_id, subject_set, window)
     if predicate.containment_of is not None:
         records += await read(predicate.containment_of, None, None)
-    closed = await _closed_sets(lookup.conn, story_id, c.predicate_id)
+    closed = await closed_sets_for(lookup.conn, story_id, c.predicate_id)
     if options.contradictions:
         excluded = set(predicate.exclusions) | {
             q.id for q in registry.predicates.values() if predicate.id in q.exclusions
@@ -1191,6 +1195,8 @@ async def check_with(
             for x in sorted(vias):
                 records += await read(x, None, _window(c.valid_time))
     unique = list({(r.fact_id, r.proposition_id): r for r in records}.values())
+    if fetched is not None:
+        fetched.extend(unique)
     log.debug("verify fetched %d records, %d closed sets", len(unique), len(closed))
     return check(
         claim,
@@ -1265,10 +1271,12 @@ async def verify(
     through_position: tuple[int, int] | None = None,
     viewpoint: str = OMNISCIENT,
     remember: bool = True,
+    fetched: list[Record] | None = None,
 ) -> Verdict | None:
     """The deterministic verdict on ``claim`` under the story's effective profile, its reads
     keyed in ``read_set``; ``None`` (inert, nothing read) when verification is off. The verdict
-    is recorded for the turn's rebase re-check unless ``remember`` is off."""
+    is recorded for the turn's rebase re-check unless ``remember`` is off. ``fetched`` receives
+    the records it was decided over (``check_with``)."""
     options = await options_for(conn, story_id)
     if options is None:
         return None
@@ -1281,6 +1289,7 @@ async def verify(
         through_position=through_position,
         viewpoint=viewpoint,
         options=options,
+        fetched=fetched,
     )
     if remember:
         _remember(
@@ -1343,6 +1352,7 @@ __all__ = [
     "VerdictReason",
     "check",
     "check_with",
+    "closed_sets_for",
     "intersect",
     "options_for",
     "recheck",

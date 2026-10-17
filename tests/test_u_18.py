@@ -89,6 +89,8 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "retrieval_lexical_k": ConfigClass.prospective,
         "retrieval_rrf_k": ConfigClass.prospective,
         "retrieval_rehydrate_max_rows": ConfigClass.prospective,
+        "neighborhood_max_facts": ConfigClass.prospective,
+        "entailment_max_records": ConfigClass.prospective,
     },
 }
 

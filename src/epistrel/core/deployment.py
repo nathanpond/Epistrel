@@ -20,7 +20,9 @@ and how fast memory importance decays (``memory_importance_half_life_turns``, #1
 and the embedding port's batches and HNSW index (``embedding_batch_max``,
 ``reembed_batch_size``, ``embedding_hnsw_m``, ``embedding_hnsw_ef_construction``; #138; and
 ``embedding_hnsw_ef_search``, #141), and the retrieval's arms (``retrieval_vector_k``,
-``retrieval_lexical_k``, ``retrieval_rrf_k``, ``retrieval_rehydrate_max_rows``; #141).
+``retrieval_lexical_k``, ``retrieval_rrf_k``, ``retrieval_rehydrate_max_rows``; #141), and how
+much the verifier reads around a claim (``neighborhood_max_facts``, ``entailment_max_records``;
+#142).
 ``media_sweep_interval`` also moves its recurring task's ``recurring_tasks`` row
 (``RECURRING_INTERVAL_SETTINGS``).
 
@@ -199,6 +201,8 @@ class SettingsPatch(BaseModel):
     retrieval_lexical_k: StrictInt | None = None
     retrieval_rrf_k: StrictInt | None = None
     retrieval_rehydrate_max_rows: StrictInt | None = None
+    neighborhood_max_facts: StrictInt | None = None
+    entailment_max_records: StrictInt | None = None
     profile_defaults: SettingsDocument | None = None
 
     @model_validator(mode="before")

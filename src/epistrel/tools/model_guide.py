@@ -17,9 +17,9 @@ rendered: ``GuideError`` names it, so the generator and the check both fail.
 
 from __future__ import annotations
 
-import json
 import sys
 from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
@@ -75,6 +75,15 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "scored by importance scoring (#135) and embedded by the embedding port, as is a "
         "retrieval query (#138)."
     ),
+    ContentCategory.CLAIM_TEXT: (
+        "One claim the deterministic check left uncertain, normalized and rendered with entity "
+        "names and its valid-time in story-minutes, judged by entailment (#142)."
+    ),
+    ContentCategory.CANON_RECORD: (
+        "One of the claim holder's records, rendered the same way with its holder and "
+        "valid-time: only those the check fetched for the claim and the claim subject's own "
+        "facts (#142)."
+    ),
 }
 
 STRUCTURED_LABELS: Mapping[StructuredOutput, str] = {
@@ -123,6 +132,18 @@ self-hosted models.
 
 class GuideError(Exception):
     """A purpose the guide cannot describe (no capability floor, or no data-flow row)."""
+
+
+def _has_free_text(node: Any) -> bool:
+    """Whether a JSON Schema holds a string that is not one of a fixed set of values (an
+    ``enum`` or ``const``, such as a verdict's literal, is no free text)."""
+    if isinstance(node, Mapping):
+        if node.get("type") == "string" and "enum" not in node and "const" not in node:
+            return True
+        return any(_has_free_text(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_free_text(v) for v in node)
+    return False
 
 
 def _code(text: str) -> str:
@@ -192,7 +213,7 @@ def _purpose(purpose: Purpose) -> list[str]:
         lines.append("- **Returns:** free text")
     else:
         fields = ", ".join(_code(name) for name in schema.model_fields)
-        free_text = '"type": "string"' in json.dumps(schema.model_json_schema())
+        free_text = _has_free_text(schema.model_json_schema())
         lines.append(
             f"- **Returns:** {_code(schema.__name__)} ({fields}), validated strictly; "
             + ("its free text is author-facing" if free_text else "no free-text field")

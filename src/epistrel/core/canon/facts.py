@@ -1019,12 +1019,13 @@ async def canon(
     object: str | None = None,
     reading: Reading = "every",
     limit: int | None = None,
+    ids: Sequence[str] | None = None,
 ) -> list[Fact]:
     """Fact versions of ``story_id`` as ``viewpoint`` may read them; each coordinate filters
     only when given (see the module docstring): ``story_time`` (valid-time covering it),
     ``record_time`` (the record as it stood then; ``None``: the corrected record now) and
-    ``through_position`` (``(turn, slot_k)``: written at or before it). Ordered by
-    ``valid_from``, then id."""
+    ``through_position`` (``(turn, slot_k)``: written at or before it); ``ids`` keeps only those
+    versions (#142's neighborhood seed). Ordered by ``valid_from``, then id."""
     await _check_viewpoint(conn, story_id, viewpoint)
     f = facts.alias("f")
     where: list[ColumnElement[bool]] = [
@@ -1052,6 +1053,8 @@ async def canon(
         where.append(f.c.predicate_id == predicate)
     if object is not None:
         where.append(propositions.c.object_id == object)
+    if ids is not None:
+        where.append(f.c.id.in_(list(ids)))
     query = _select(f).where(*where).order_by(f.c.valid_from.nulls_first(), f.c.id)
     if limit is not None:
         query = query.limit(limit)

@@ -1,6 +1,7 @@
 """Fixtures for the deterministic verify tests (#140): a story registry of core and test
 predicates, fixed entity ids, story-time helpers, and record and claim builders. ``check`` is
-pure, so these tests need no database."""
+pure, so these tests need no database. #142's verifier tests add ``stub_models``, a stub Model
+Access Layer with no database."""
 
 from __future__ import annotations
 
@@ -23,7 +24,11 @@ from epistrel.core.propositions.model import (
 )
 from epistrel.core.propositions.registry import Registry
 from epistrel.core.propositions.vocabulary import CORE_BY_ID, CORE_BY_NAME
+from epistrel.core.settings_schema import StructuredSettings
 from epistrel.core.verify.rules import Record
+from epistrel.orchestrator.models.access import ModelAccessLayer
+from tests.auth_support import auth_settings
+from tests.conftest import DUMMY_DSN
 
 STORY = "01JS0000000000000000000001"
 
@@ -174,3 +179,15 @@ def records(*props: Proposition) -> list[Record]:
 
 def int_literal(value: int) -> TypedLiteral:
     return TypedLiteral(kind="int", value=value)
+
+
+def stub_models(*, retries: int = 2, uncertain_below: float = 0.5) -> ModelAccessLayer:
+    """A stub Model Access Layer with no database and the given structured settings (#142)."""
+    mal = ModelAccessLayer(auth_settings(DUMMY_DSN, model_adapter="stub"))
+    chosen = StructuredSettings(structured_retry_budget=retries, uncertain_below=uncertain_below)
+
+    async def settings() -> StructuredSettings:
+        return chosen
+
+    mal.structured_settings = settings  # type: ignore[method-assign]
+    return mal

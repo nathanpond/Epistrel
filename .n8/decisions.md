@@ -7004,3 +7004,96 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - **Test IDs.** `test_assemble_budget` (FR-RET-7, S) has no part marker, per the test plan. The rehydration, gate, cost, hook and REST tests carry no test ID.
   **Why:** #138's rule (pin only on a scratch database), and the orchestrator's instruction for NFR-PERF-1.
   **Issue:** #141, #153
+- **Decision (Discretion):** `orchestrator/verify/verifier.py` reaches the deterministic verdict through a `ClaimSource`, which has two forms:
+  - **`CanonSource`** calls #140's `rules.verify` on the turn's connection. That keeps the profile gate, the keyed reads and the rebase re-check registration.
+  - **`RecordsSource`** calls #140's pure `check` over records passed in. It serves utterance holders, whose records #150 fetches, and `test_u_04`.
+
+  `Verifier.verify(claim, viewpoint, position)` returns a `VerifyResult`, or `None` when verification is off. The result wraps #140's `Verdict` with `kind` (the final kind), `source` (`deterministic` or `entailment`), `escalated`, the model's verdict, confidence and `Uncertain` reason, `disposition`, `degradation` and `sub_results`. An undecided claim keeps `kind = uncertain` and sets `disposition` to `repair` or `surface`. #151 reads `needs_repair`, which is true for `contradicted` or a `repair` disposition. The claim is not relabelled `contradicted`, so the record never misstates what was decided, and it is never `supported`. `position` is a `(turn, slot)` and is passed as #140's `through_position` too. `story_verifier(conn, read_set, story_id, models, budget)` builds one from the story's effective configuration and routes it by its `models.purposes`.
+  **Why:** The planner's `VerifyResult` and the owner's round-two decision (an undecidable claim's default is `repair`). Keeping `kind = uncertain` makes FR-VERIFY-8's "never a silent supported" checkable on every result.
+  **Issue:** #142, #151, #150
+- **Decision (Discretion):** These rules settle the residual:
+  - **`partial_coverage` and `granularity_refinement`** never reach the gate. The top-level claim settles from #140's remainder verdicts and takes the worst of them, in the order `contradicted` > `uncertain` > `novel`. All remainders `supported` (by entailment) makes it `supported`. No remainder at all makes it `uncertain`; #140 always splits one off, so this is only a guard. A remainder that is itself partly covered or a refinement is `novel`, because #140 does not split further and no contradiction rule fired.
+  - **The gate** (`gate.py`) maps (a) `unresolved_predicate`, (b) `world_knowledge` and `weak_semantics`, and (c) `approximate_bounds`. It escalates when `confidence < min(verification.entailment_gate, per-shape threshold)`.
+  - **`unresolved_entity`, `unresolved_time` and `argument_type`** never escalate.
+  - **Per-shape thresholds** come through a `ShapeThresholds` protocol, which is #155's hook. `FixedThresholds` maps shape keys and is empty by default.
+  - **`PredicateShape`** is `(layer, cardinality, temporal, polarity)`, keyed `a|b|c|d`. An unregistered predicate is `(auto, unknown, unknown, polarity)`.
+  **Why:** FR-VERIFY-3 and the planner's pass-1 mapping. "Worst of" keeps a partly covered claim from ever being called supported by its covered part alone.
+  **Issue:** #142, #155
+- **Decision (deviation):** A claim #140's `normalize` could not turn into a proposition goes through `Verifier.unnormalizable(Unnormalizable)`. It takes the safe disposition directly with gate outcome `unnormalized`, even when the reason is `unresolved_predicate`. An `unresolved_predicate` from `check` (a normalized claim whose predicate the registry lacks) still escalates.
+  **Why:** With no normalized proposition there is nothing to render or to judge against the records. The planner's "`Unnormalizable` → `uncertain` directly" says the same.
+  **Issue:** #142
+- **Decision (Discretion):** The `entailment` purpose moved from `RESERVED_PURPOSES` to `DELIVERED` (story-scoped, hot path, `default_model_key = default`, floor `parse_validate_retry`). It has these parts:
+  - **Inputs:** `EntailmentInputs {claim, records: [{text, holder, valid_time}]}`, with records capped at 200, under two new content categories, `claim_text` and `canon_record`. `never_receives` is everything else.
+  - **Response:** `EntailmentVerdict {verdict: supported|contradicted|novel = novel, confidence = 0.0}`. The stub's default is the schema's own defaults, which resolve to the safe disposition. The template is `entailment.j2`.
+  - **Params:** `temperature 0`, `max_tokens 100`; the story's `entailment` route params win.
+  - **Model guide:** the guide describes both new categories.
+  - **Lite:** `LITE_ROUTED` in `test_engine_profiles` excludes `entailment` like `importance_scoring`, because Lite's verification is off.
+  **Why:** AC2 and the planner. The `importance_scoring`/`quality_judge` pattern.
+  **Issue:** #142
+- **Decision (Discretion):** The model is shown, as `canon` records:
+  1. first, the records the deterministic verdict was decided over, through a new optional `fetched` out-list on #140's `check_with`/`verify`, so nothing is fetched twice and those reads stay query keys;
+  2. then the facts of the claim subject's neighborhood at depth 1, as retrieved rows;
+  3. capped at `entailment_max_records`.
+
+  Each record renders as `<subject> [not] <predicate> <object> [qualifiers]` with entity canonical names, and its time as `T+<lo>..T+<hi>`. An approximate bound renders as `T+<outer>~<inner>`, an instant as `at T+<m> (<granularity>)`, a permanent predicate or an unbounded interval as `always`. Identical `(claim, records)` inputs within one verifier reuse the first validated answer through `structured_call`'s `deterministic_first`. Escalations run one after another.
+  **Why:** AC2 says the holder's records only, never unrelated story content (asserted on the captured request in `test_verifier`). The planner gave the rendering.
+  **Issue:** #142, #140
+- **Decision (Discretion):** The following take the safe disposition, never `supported`:
+  - a `structured_call` `Uncertain` (parse, schema, low confidence, budget);
+  - a confidence below `entailment_min_confidence`;
+  - a model `novel`;
+  - `ModelUnavailable`, with degradation `entailment_unavailable`; the turn goes on;
+  - `BudgetExhausted` or `Uncertain("budget_exhausted")`, with degradation `entailment_budget_exhausted`.
+
+  `surface` adds `uncertain_surfaced`. A validated model `contradicted` carries `rule = "entailment"` and no evidence. #140's `Rule` enum was not extended, because its "every rule exercised" properties enumerate it.
+  **Why:** FR-VERIFY-8 and the planner.
+  **Issue:** #142
+- **Decision (deviation, Discretion):** On a rebase, model verdicts are not reused or dropped by rule. The model's records are the deterministic fetch's query keys, so a change to any of them conflicts and regenerates the turn under #136. A neighborhood-only change is context and rebases. Nothing outlives the per-turn `Verifier`, so a stale answer is never reused.
+  **Why:** The keys already give the planner's "reused when the keyed records are unchanged, else dropped" without a second mechanism.
+  **Issue:** #142, #136
+- **Decision (hook for #155):** Every residual that reaches the gate leaves an `EscalationRecord`. That covers every escalation, every no-call safe disposition (`called = false`, `model_verdict = None`) and every unnormalizable claim, but not conclusive or resolved-in-core verdicts. The record holds `claim_id`, `gate_reason`, `predicate_shape` key, `deterministic_confidence`, `threshold`, `called`, `reused`, `model_verdict`, `model_confidence`, `model_uncertain`, `final_kind`, `disposition`, `degradation` and `tentative_verdict = "uncertain"`. The records collect in `Verifier.escalations`, and an `on_escalation` sink gets each as it is made. #155 writes them as `escalations` rows in the turn's transaction. #142 adds no table.
+  **Why:** AC3 ("both leave an escalation record (#155)") without a new table (Rule 4), since #155 owns the table. The hook points are the list and the sink.
+  **Issue:** #142, #155
+- **Decision (Discretion):** These are the turn-report shapes. #150 wires them into the structured turn.
+  - **`Verifier.report()`** is `turn_report.verify = {claims, deterministic, escalated, verdicts}`. `deterministic` counts claims decided with no model call, which makes P-05's escalation rate `escalated / claims`. Each verdict entry is `{claim_id, kind, reason, rule, evidence_ids, escalated, disposition}`.
+  - **`uncertain_claims()`** lists surfaced claims as `{claim, claim_id, span, beat, reason, confidence}`, where `claim` is the rendered claim for the author.
+  - **`degradation()`** is the union.
+  - **`objective_relation`** is `true`/`false`/`unresolved`.
+  - **`ClaimRef(claim_id, beat, span)`** carries the claim's position, which #150 mints.
+  **Why:** AC3 and AC5, and the planner. The structured pipeline itself is #150's.
+  **Issue:** #142, #150, #155
+- **Decision (Discretion):** These are the settings changes:
+  - **`verification.entailment_gate`'s schema default** goes from 0.5 to 1.0, and `M4_PROFILE_DEFAULTS` follows. Its stored `0047` value only exists on the unreleased M4 branch; main ends at 0044.
+  - **New profile dials** (behavioral, interpretive, relevant): `verification.safe_disposition ∈ {repair, surface}` (default `repair`), owned at every verification level, and `verification.entailment_min_confidence` (0.6), owned at `entailment`.
+  - **New deployment section `VerifySettings`** (prospective): `neighborhood_max_facts` (50, from 1 to 1,000) and `entailment_max_records` (30, from 1 to 200).
+  - **Migration 0057** adds the two dials to `profile_defaults` and moves a stored gate of exactly 0.5 to 1.0, keeping any other value. Its downgrade removes the dials and leaves the gate. It writes no `config_changes` row.
+  - **Docs:** `docs/openapi.json` and `docs/models.md` were regenerated, and `docs/OPERATIONS.md` and docs/02 §4.9 were updated.
+  **Why:** AC1 ("stored profile versions keep their stored value": the gate rewrite touches only the deployment's defaults, at the old default) and AC3, with the planner's settings classes.
+  **Issue:** #142, #129, #106
+- **Decision (Discretion):** `core/verify/neighborhood.py` defines `fact_neighborhood(lookup, story_id, Seed.entity|fact, depth=2, viewpoint, through_position, max_facts)`. It is a `KEYED_READERS` member.
+  - **Reads.** Canon goes through a new `KeyedLookup.canon_rows(subject|object|predicate|ids)`. These are current active versions, viewpoint-filtered, recorded as retrieved rows and never keyed. They rest on a new `ids` filter on `canon.canon`. Projections go through `KeyedLookup.profile` for the seed's entities; an id that is not a story entity is skipped. Closed sets go through #140's `_closed_sets`, now public as `closed_sets_for`. Memories go through a new `records.memories_linked`: active rows, by `proposition_ids` first, then `source_event_ids`, filtered with canon's `visible_to`.
+  - **Edges.** The edge labels are `seed`, `predicate`, `implication` (a declared rule in either direction, plus its `via`), `closed_set`, `subject`, `object`, `projection` and `memory`.
+  - **Truncation.** The priority is seed, predicate, implication, closed set, shared subject (both directions), projection, memory. Within a class, lower depth comes first, then read order. The planner listed no place for the shared-subject facts that are none of the first three. They go after closed sets.
+  - **Seeds.** A superseded, inactive or hidden seed fact has an empty neighborhood.
+  **Why:** FR-VERIFY-6 and the planner. Reading canon as context avoids making every neighborhood fact a regeneration trigger.
+  **Issue:** #142, #151, #154
+- **Decision (tests, deviation):** These are the tests and their markers:
+  - **`tests/test_u_04.py::test_u_04`** is `part("M4", "FR-PROP-1; FR-VERIFY-1,3")`. FR-VERIFY-4 (canonize) is left to #144's `test_u_04__canonize` in the same file, since `verify` returns `novel` and canonizing is #144's. No `Canonizer` protocol was added, because it would have been a stub.
+  - **`test_u_04__escalation`** is `part("M4", "FR-VERIFY-3")`, not "FR-VERIFY-3,8". docs/04 §15 maps FR-VERIFY-8 to E-02 (#155) only, and check-traceability would report "missing from §15". FR-VERIFY-8's behaviour is asserted in `test_u_04__escalation` and in `tests/integration/test_verifier.py` (docstring-named, no marker).
+  - **`tests/integration/test_i_12.py::test_i_12__neighborhood`** is `part("M4", "FR-VERIFY-6")` over real canon. It covers supersession, truncation, viewpoint, the cap and depth.
+  - **`tests/integration/test_migrations.py`** covers 0057.
+  - **`tests/verify_support.stub_models()`** is shared.
+  **Why:** The traceability gate and the one-file rule.
+  **Issue:** #142, #144, #155, #151
+- **Decision (Rule 1):** The model guide's "Returns" line called any schema with a JSON `"type": "string"` free text, so a `Literal` verdict read "its free text is author-facing". `_has_free_text` now ignores `enum`/`const` strings. `quality_judge`'s line in `docs/models.md` changes to "no free-text field", which is correct: `preferred` is a literal.
+  **Why:** The new `entailment` row would have been documented wrongly.
+  **Issue:** #142
+- **Decision (Discretion, not delivered):** No `Engine.verify`/`Engine.fact_neighborhood` and no `/admin/stories/{id}/verify` or `/neighborhood` routes in this story (the planner's pass-1 suggestion). The verifier and the neighborhood are library entry points (`story_verifier`, `fact_neighborhood`). #150's turn, #151's repair and #157's E-01 call them in-process.
+  **Why:** A REST verify needs a claim body (a normalized proposition) and a model call on a GET-like read. Its shape is better decided with the Console surface that would use it, and no AC needs it. Cost if wrong: a later story adds two read-only routes.
+  **Issue:** #142
+- **Decision (Lite):** Lite is unchanged. Its verification is `off`, so `Verifier.verify` returns `None` with nothing read or called (`test_verifier`). Its preset routes no `entailment`, and nothing structured enters a Lite prompt.
+  **Why:** Brief rule.
+  **Issue:** #142
+- **Decision (tests):** Several tests used `entailment` as their example of a reserved purpose: `test_registry`, `test_api_key_at_rest`, `test_model_config_api` and `test_engine_profiles`' undelivered-route case. They now use `consolidation`, which is still reserved for M4. `test_profile_routing`'s recorded models gain `entailment`, at its resolved model. `test_config_changes`' every-section sample gains `neighborhood_max_facts` for the new `VerifySettings` section, and `test_u_18`'s class table gains both new deployment settings.
+  **Why:** The purpose is delivered now, and the new section must round-trip like every other.
+  **Issue:** #142

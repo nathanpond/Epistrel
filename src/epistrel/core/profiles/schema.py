@@ -294,9 +294,22 @@ class Verification(ProfileModel):
         Literal["gated", "always"], DATA_PRODUCING, INTERPRETIVE, RELEVANT
     ] = "gated"
     entailment_gate: Annotated[float, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
-        default=0.5, ge=0.0, le=1.0
+        default=1.0, ge=0.0, le=1.0
     )
-    """The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3)."""
+    """The predicate-resolution confidence below which an ``uncertain`` verdict escalates to
+    the entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches
+    conservatively and is tightened per predicate shape (#155)."""
+    entailment_min_confidence: Annotated[float, BEHAVIORAL, INTERPRETIVE, RELEVANT] = Field(
+        default=0.6, ge=0.0, le=1.0
+    )
+    """The least confidence an entailment verdict needs to count; below it the claim takes the
+    safe disposition (FR-VERIFY-8)."""
+    safe_disposition: Annotated[
+        Literal["repair", "surface"], BEHAVIORAL, INTERPRETIVE, RELEVANT
+    ] = "repair"
+    """What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the
+    sentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and
+    lists the claim in the turn report's ``uncertain_claims`` for the author."""
     contradiction_checking: Annotated[bool, BEHAVIORAL, INTERPRETIVE, RELEVANT] = False
     implication_max_depth: Annotated[int, BEHAVIORAL, INTERPRETIVE, RELEVANT] = Field(
         default=3, ge=1, le=10
@@ -579,7 +592,10 @@ MODULES: tuple[Module, ...] = (
         owns=("verification",),
         owns_at=(
             ("extraction", ("verification.extraction_mode",)),
-            ("entailment", ("verification.entailment_gate",)),
+            (
+                "entailment",
+                ("verification.entailment_gate", "verification.entailment_min_confidence"),
+            ),
         ),
     ),
     _flag("contradiction_checking", "verification.contradiction_checking"),
@@ -623,7 +639,8 @@ DELIVERED: Mapping[str, frozenset[str]] = types.MappingProxyType(
 pipeline, the rolling summary, pinned memories, the polish pass, budgets and models. M4 (#129):
 the ``structured`` pipeline (with the hot-set budgets it owns), episodic retrieval,
 consolidation, verification at ``declared``, ``extraction`` and ``entailment`` (with
-``extraction_mode`` and ``entailment_gate``), contradiction checking, commitment, and the repair
+``extraction_mode``, ``entailment_gate`` and ``entailment_min_confidence``; #142 adds the
+latter and ``safe_disposition``), contradiction checking, commitment, and the repair
 attempts. A module not listed is not delivered at any level."""
 
 

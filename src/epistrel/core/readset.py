@@ -76,6 +76,7 @@ KEYED_READERS: tuple[str, ...] = (
     "epistrel.core.verify.rules",
     "epistrel.core.verify.normalize",
     "epistrel.core.verify.merge",
+    "epistrel.core.verify.neighborhood",
 )
 """Modules whose ``facts``/``propositions`` reads decide a verdict, a precondition or a blocker,
 or that read canon and the structured projections at turn time: each reads them only through
@@ -83,8 +84,9 @@ or that read canon and the structured projections at turn time: each reads them 
 ``placement`` and ``scene_state`` through ``KeyedLookup.profile``/``scene``, #137/#141). #139's
 resolution context (a subject's ``born``/``age`` for "when he was seven", the scene and the
 relationships), #141's retrieval pipeline and #140's verify modules (``rules``, ``normalize``,
-``merge``) are listed; #144's permission check and #146's ledger lookups add themselves when
-they land."""
+``merge``) are listed, and #142's ``neighborhood`` (its canon through ``KeyedLookup.canon_rows``
+and its projections through ``KeyedLookup.profile``); #144's permission check and #146's ledger
+lookups add themselves when they land."""
 
 READSET_MAX_KEYS = 2_000
 """``readset_max_keys``: a turn recording more keys than this conflicts (409
@@ -472,6 +474,42 @@ class KeyedLookup:
             )
         )
         return result
+
+    async def canon_rows(
+        self,
+        story_id: str,
+        *,
+        subject: str | None = None,
+        object: str | None = None,
+        predicate: str | None = None,
+        ids: Sequence[str] | None = None,
+        viewpoint: str = OMNISCIENT,
+        through_position: tuple[int, int] | None = None,
+        limit: int | None = None,
+    ) -> list[Fact]:
+        """The current canon facts (at any valid-time) with ``subject``, ``object``,
+        ``predicate`` or ``ids`` (each only when given) as ``viewpoint`` may read them, up to
+        ``limit``, each recorded as a retrieved row (``facts``, its ``tx_from``): the context a
+        repair or an entailment call reads around a claim (#142's ``fact_neighborhood``),
+        never keyed. Ordered by ``valid_from``, then id."""
+        from epistrel.core.canon import facts as canon
+
+        if ids is not None and not ids:
+            return []
+        rows = await canon.canon(
+            self.conn,
+            story_id,
+            through_position=through_position,
+            viewpoint=viewpoint,
+            subject=subject,
+            object=object,
+            predicate=predicate,
+            ids=ids,
+            limit=limit,
+        )
+        for fact in rows:
+            self.retrieved(CANON_TABLE, fact.id, fact.tx_from)
+        return rows
 
     def retrieved(self, table: str, row_id: str, version: str | datetime) -> None:
         """Record a row read as generation context only (semantic retrieval): not keyed."""

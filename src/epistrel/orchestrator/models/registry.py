@@ -53,6 +53,13 @@ class ContentCategory(StrEnum):
     """A memory record's text and kind (#135): what ``importance_scoring`` rates, the
     ``embedding`` port embeds (#138; a retrieval query is embedded as one) and #143's
     consolidation compresses."""
+    CLAIM_TEXT = "claim_text"
+    """A normalized claim rendered as ``<subject> <predicate> <object> [T+minutes]`` (#142): what
+    the ``entailment`` purpose judges. Names and ids only, never the beat's prose."""
+    CANON_RECORD = "canon_record"
+    """One of the claim holder's records (#142): a canon fact rendered like a claim, its holder
+    and its valid-time. Only the records the deterministic check fetched for the claim and their
+    neighborhood, never unrelated story content."""
 
 
 class StructuredOutput(StrEnum):
@@ -322,6 +329,40 @@ class ImportanceScore(BaseModel):
     importance: float = Field(ge=0.0, le=1.0)
 
 
+class EntailmentRecord(InputSchema):
+    """One holder record the ``entailment`` model judges a claim against (#142)."""
+
+    text: Annotated[str, C.CANON_RECORD] = Field(max_length=1_000)
+    holder: Annotated[str, C.CANON_RECORD] = Field(default="canon", max_length=200)
+    valid_time: Annotated[str, C.CANON_RECORD] = Field(default="always", max_length=200)
+
+
+ENTAILMENT_MAX_RECORDS = 200
+"""The most records one ``entailment`` request may carry (the deployment's
+``entailment_max_records`` is at most this)."""
+
+
+class EntailmentInputs(InputSchema):
+    """The fuzzy residual of one ``verify`` (FR-VERIFY-3; #142): the normalized claim and the
+    holder's records it rests on, nothing else."""
+
+    claim: Annotated[str, C.CLAIM_TEXT] = Field(max_length=1_000)
+    records: Annotated[list[EntailmentRecord], C.CANON_RECORD] = Field(
+        default_factory=list, max_length=ENTAILMENT_MAX_RECORDS
+    )
+
+
+class EntailmentVerdict(BaseModel):
+    """The structured result of one ``entailment`` call: a verdict from the enum and a
+    confidence, no free text. The defaults (``novel`` at confidence 0) are the most conservative
+    answer: validated, they take the safe disposition (FR-VERIFY-8)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    verdict: Literal["supported", "contradicted", "novel"] = "novel"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class EmbeddingInputs(InputSchema):
     """One text to embed (FR-EMBED-1; #138): a memory's text, or a retrieval query's."""
 
@@ -489,9 +530,25 @@ IMPORTANCE_SCORING = Purpose(
     response_schema=ImportanceScore,
 )
 
+ENTAILMENT = Purpose(
+    name="entailment",
+    description=(
+        "Judges the fuzzy residual of verify: one claim the deterministic check left uncertain, "
+        "against the holder's records only (FR-VERIFY-3,8)."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=EntailmentInputs,
+    template="entailment.j2",
+    hot_path=True,
+    # The claim and the holder's records only: never a transcript, a definition, a memory, a
+    # policy, an age or eval text.
+    never_receives=_EVERYTHING - {C.CLAIM_TEXT, C.CANON_RECORD},
+    response_schema=EntailmentVerdict,
+)
+
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("regeneration", "Regenerates a span under corrected constraints.", "M4"),
-    ReservedPurpose("entailment", "The fuzzy residual of verify.", "M4"),
     ReservedPurpose("consolidation", "Summaries and reflections (worker).", "M4"),
     ReservedPurpose("salience_detection", "Detects signals that need commitment.", "M4"),
     ReservedPurpose("extraction_backstop", "Model layer of claim detection.", "M4"),
@@ -661,6 +718,7 @@ DELIVERED: Mapping[str, Purpose] = _build(
         RATING_SUGGESTION,
         QUALITY_JUDGE,
         IMPORTANCE_SCORING,
+        ENTAILMENT,
     )
 )
 """Purposes a model call may use now, by name."""
@@ -687,6 +745,8 @@ __all__ = [
     "DEFAULT_MODEL_KEY",
     "DELIVERED",
     "EMBEDDING",
+    "ENTAILMENT",
+    "ENTAILMENT_MAX_RECORDS",
     "IMPORTANCE_SCORING",
     "PORTS",
     "QUALITY_JUDGE",
@@ -700,6 +760,9 @@ __all__ = [
     "ElementKind",
     "EmbeddingFloor",
     "EmbeddingInputs",
+    "EntailmentInputs",
+    "EntailmentRecord",
+    "EntailmentVerdict",
     "GenerationInputs",
     "GuardrailCheckInputs",
     "GuardrailVerdict",

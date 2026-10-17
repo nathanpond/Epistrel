@@ -121,6 +121,7 @@ async def test_a_turn_calls_each_purpose_with_its_routed_model(
         summary_model = (await lib.models.resolve("lite_summary")).model
         # A purpose the turn does not call (#135's importance_scoring) records its resolved model.
         scoring_model = (await lib.models.resolve("importance_scoring")).model
+        entailment_model = (await lib.models.resolve("entailment")).model
         story, actor = await _routed_story(client, lib)
 
         stub.reset()
@@ -145,6 +146,7 @@ async def test_a_turn_calls_each_purpose_with_its_routed_model(
             "guardrail_check": {"id": "routed-guardrail", "reported_version": None},
             "lite_summary": {"id": summary_model, "reported_version": None},
             "importance_scoring": {"id": scoring_model, "reported_version": None},
+            "entailment": {"id": entailment_model, "reported_version": None},
         }
         assert turn["fingerprint"] == recorded["fingerprint"] == await _fingerprint(client, story)
         profiled = turn["fingerprint"]

@@ -127,6 +127,7 @@ STORED: dict[str, Any] = {
     "memory_importance_half_life_turns": 150,
     "reembed_batch_size": 400,
     "retrieval_rrf_k": 61,
+    "neighborhood_max_facts": 40,
 }
 """A non-default value of one setting or more in every section of the settings document
 (all of #315's three missing sections' settings among them)."""

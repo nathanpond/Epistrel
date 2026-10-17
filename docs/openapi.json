@@ -4118,11 +4118,19 @@
                     "type": "boolean"
                   },
                   "entailment_gate": {
-                    "default": 0.5,
-                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "default": 1.0,
+                    "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                     "maximum": 1.0,
                     "minimum": 0.0,
                     "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "entailment_min_confidence": {
+                    "default": 0.6,
+                    "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Min Confidence",
                     "type": "number"
                   },
                   "extraction_mode": {
@@ -4152,6 +4160,16 @@
                       "entailment"
                     ],
                     "title": "Level",
+                    "type": "string"
+                  },
+                  "safe_disposition": {
+                    "default": "repair",
+                    "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                    "enum": [
+                      "repair",
+                      "surface"
+                    ],
+                    "title": "Safe Disposition",
                     "type": "string"
                   }
                 },
@@ -4599,11 +4617,19 @@
                     "type": "boolean"
                   },
                   "entailment_gate": {
-                    "default": 0.5,
-                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "default": 1.0,
+                    "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                     "maximum": 1.0,
                     "minimum": 0.0,
                     "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "entailment_min_confidence": {
+                    "default": 0.6,
+                    "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Min Confidence",
                     "type": "number"
                   },
                   "extraction_mode": {
@@ -4633,6 +4659,16 @@
                       "entailment"
                     ],
                     "title": "Level",
+                    "type": "string"
+                  },
+                  "safe_disposition": {
+                    "default": "repair",
+                    "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                    "enum": [
+                      "repair",
+                      "surface"
+                    ],
+                    "title": "Safe Disposition",
                     "type": "string"
                   }
                 },
@@ -5321,11 +5357,19 @@
                     "type": "boolean"
                   },
                   "entailment_gate": {
-                    "default": 0.5,
-                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "default": 1.0,
+                    "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                     "maximum": 1.0,
                     "minimum": 0.0,
                     "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "entailment_min_confidence": {
+                    "default": 0.6,
+                    "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Min Confidence",
                     "type": "number"
                   },
                   "extraction_mode": {
@@ -5355,6 +5399,16 @@
                       "entailment"
                     ],
                     "title": "Level",
+                    "type": "string"
+                  },
+                  "safe_disposition": {
+                    "default": "repair",
+                    "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                    "enum": [
+                      "repair",
+                      "surface"
+                    ],
+                    "title": "Safe Disposition",
                     "type": "string"
                   }
                 },
@@ -8843,11 +8897,26 @@
                           "entailment_gate": {
                             "anyOf": [
                               {
-                                "default": 0.5,
-                                "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                                "default": 1.0,
+                                "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                                 "maximum": 1.0,
                                 "minimum": 0.0,
                                 "title": "Entailment Gate",
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "entailment_min_confidence": {
+                            "anyOf": [
+                              {
+                                "default": 0.6,
+                                "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                                "maximum": 1.0,
+                                "minimum": 0.0,
+                                "title": "Entailment Min Confidence",
                                 "type": "number"
                               },
                               {
@@ -8898,6 +8967,23 @@
                                   "entailment"
                                 ],
                                 "title": "Level",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "safe_disposition": {
+                            "anyOf": [
+                              {
+                                "default": "repair",
+                                "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                                "enum": [
+                                  "repair",
+                                  "surface"
+                                ],
+                                "title": "Safe Disposition",
                                 "type": "string"
                               },
                               {
@@ -12147,11 +12233,19 @@
                     "type": "boolean"
                   },
                   "entailment_gate": {
-                    "default": 0.5,
-                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "default": 1.0,
+                    "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                     "maximum": 1.0,
                     "minimum": 0.0,
                     "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "entailment_min_confidence": {
+                    "default": 0.6,
+                    "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Min Confidence",
                     "type": "number"
                   },
                   "extraction_mode": {
@@ -12181,6 +12275,16 @@
                       "entailment"
                     ],
                     "title": "Level",
+                    "type": "string"
+                  },
+                  "safe_disposition": {
+                    "default": "repair",
+                    "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                    "enum": [
+                      "repair",
+                      "surface"
+                    ],
+                    "title": "Safe Disposition",
                     "type": "string"
                   }
                 },
@@ -14539,11 +14643,19 @@
                     "type": "boolean"
                   },
                   "entailment_gate": {
-                    "default": 0.5,
-                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "default": 1.0,
+                    "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                     "maximum": 1.0,
                     "minimum": 0.0,
                     "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "entailment_min_confidence": {
+                    "default": 0.6,
+                    "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Min Confidence",
                     "type": "number"
                   },
                   "extraction_mode": {
@@ -14573,6 +14685,16 @@
                       "entailment"
                     ],
                     "title": "Level",
+                    "type": "string"
+                  },
+                  "safe_disposition": {
+                    "default": "repair",
+                    "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                    "enum": [
+                      "repair",
+                      "surface"
+                    ],
+                    "title": "Safe Disposition",
                     "type": "string"
                   }
                 },
@@ -15122,11 +15244,19 @@
                     "type": "boolean"
                   },
                   "entailment_gate": {
-                    "default": 0.5,
-                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "default": 1.0,
+                    "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                     "maximum": 1.0,
                     "minimum": 0.0,
                     "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "entailment_min_confidence": {
+                    "default": 0.6,
+                    "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Min Confidence",
                     "type": "number"
                   },
                   "extraction_mode": {
@@ -15156,6 +15286,16 @@
                       "entailment"
                     ],
                     "title": "Level",
+                    "type": "string"
+                  },
+                  "safe_disposition": {
+                    "default": "repair",
+                    "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                    "enum": [
+                      "repair",
+                      "surface"
+                    ],
+                    "title": "Safe Disposition",
                     "type": "string"
                   }
                 },
@@ -16109,11 +16249,26 @@
                       "entailment_gate": {
                         "anyOf": [
                           {
-                            "default": 0.5,
-                            "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                            "default": 1.0,
+                            "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                             "maximum": 1.0,
                             "minimum": 0.0,
                             "title": "Entailment Gate",
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "entailment_min_confidence": {
+                        "anyOf": [
+                          {
+                            "default": 0.6,
+                            "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                            "maximum": 1.0,
+                            "minimum": 0.0,
+                            "title": "Entailment Min Confidence",
                             "type": "number"
                           },
                           {
@@ -16164,6 +16319,23 @@
                               "entailment"
                             ],
                             "title": "Level",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "safe_disposition": {
+                        "anyOf": [
+                          {
+                            "default": "repair",
+                            "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                            "enum": [
+                              "repair",
+                              "surface"
+                            ],
+                            "title": "Safe Disposition",
                             "type": "string"
                           },
                           {
@@ -16741,11 +16913,19 @@
                     "type": "boolean"
                   },
                   "entailment_gate": {
-                    "default": 0.5,
-                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "default": 1.0,
+                    "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                     "maximum": 1.0,
                     "minimum": 0.0,
                     "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "entailment_min_confidence": {
+                    "default": 0.6,
+                    "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Min Confidence",
                     "type": "number"
                   },
                   "extraction_mode": {
@@ -16775,6 +16955,16 @@
                       "entailment"
                     ],
                     "title": "Level",
+                    "type": "string"
+                  },
+                  "safe_disposition": {
+                    "default": "repair",
+                    "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                    "enum": [
+                      "repair",
+                      "surface"
+                    ],
+                    "title": "Safe Disposition",
                     "type": "string"
                   }
                 },
@@ -17255,11 +17445,19 @@
                         "type": "boolean"
                       },
                       "entailment_gate": {
-                        "default": 0.5,
-                        "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                        "default": 1.0,
+                        "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                         "maximum": 1.0,
                         "minimum": 0.0,
                         "title": "Entailment Gate",
+                        "type": "number"
+                      },
+                      "entailment_min_confidence": {
+                        "default": 0.6,
+                        "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Entailment Min Confidence",
                         "type": "number"
                       },
                       "extraction_mode": {
@@ -17289,6 +17487,16 @@
                           "entailment"
                         ],
                         "title": "Level",
+                        "type": "string"
+                      },
+                      "safe_disposition": {
+                        "default": "repair",
+                        "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                        "enum": [
+                          "repair",
+                          "surface"
+                        ],
+                        "title": "Safe Disposition",
                         "type": "string"
                       }
                     },
@@ -22605,6 +22813,13 @@
             "title": "Embedding Hnsw M",
             "type": "integer"
           },
+          "entailment_max_records": {
+            "default": 30,
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Entailment Max Records",
+            "type": "integer"
+          },
           "erasure_shared_media": {
             "default": "purge",
             "enum": [
@@ -22811,6 +23026,13 @@
             "maximum": 120.0,
             "minimum": 0.0,
             "title": "Minor Age Threshold",
+            "type": "integer"
+          },
+          "neighborhood_max_facts": {
+            "default": 50,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Neighborhood Max Facts",
             "type": "integer"
           },
           "offboarding_report_retention_days": {
@@ -23257,11 +23479,19 @@
                     "type": "boolean"
                   },
                   "entailment_gate": {
-                    "default": 0.5,
-                    "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                    "default": 1.0,
+                    "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                     "maximum": 1.0,
                     "minimum": 0.0,
                     "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "entailment_min_confidence": {
+                    "default": 0.6,
+                    "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Min Confidence",
                     "type": "number"
                   },
                   "extraction_mode": {
@@ -23291,6 +23521,16 @@
                       "entailment"
                     ],
                     "title": "Level",
+                    "type": "string"
+                  },
+                  "safe_disposition": {
+                    "default": "repair",
+                    "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                    "enum": [
+                      "repair",
+                      "surface"
+                    ],
+                    "title": "Safe Disposition",
                     "type": "string"
                   }
                 },
@@ -23527,6 +23767,17 @@
               }
             ],
             "title": "Embedding Hnsw M"
+          },
+          "entailment_max_records": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entailment Max Records"
           },
           "erasure_shared_media": {
             "anyOf": [
@@ -23812,6 +24063,17 @@
               }
             ],
             "title": "Minor Age Threshold"
+          },
+          "neighborhood_max_facts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Neighborhood Max Facts"
           },
           "offboarding_report_retention_days": {
             "anyOf": [
@@ -24263,11 +24525,19 @@
                         "type": "boolean"
                       },
                       "entailment_gate": {
-                        "default": 0.5,
-                        "description": "The predicate-resolution confidence below which a verdict escalates (FR-VERIFY-3).",
+                        "default": 1.0,
+                        "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
                         "maximum": 1.0,
                         "minimum": 0.0,
                         "title": "Entailment Gate",
+                        "type": "number"
+                      },
+                      "entailment_min_confidence": {
+                        "default": 0.6,
+                        "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Entailment Min Confidence",
                         "type": "number"
                       },
                       "extraction_mode": {
@@ -24297,6 +24567,16 @@
                           "entailment"
                         ],
                         "title": "Level",
+                        "type": "string"
+                      },
+                      "safe_disposition": {
+                        "default": "repair",
+                        "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                        "enum": [
+                          "repair",
+                          "surface"
+                        ],
+                        "title": "Safe Disposition",
                         "type": "string"
                       }
                     },
@@ -27687,6 +27967,7 @@
                           "embedding_hnsw_ef_construction",
                           "embedding_hnsw_ef_search",
                           "embedding_hnsw_m",
+                          "entailment_max_records",
                           "erasure_shared_media",
                           "feedback_export",
                           "feedback_regen_window_s",
@@ -27718,6 +27999,7 @@
                           "media_upload_ttl",
                           "memory_importance_half_life_turns",
                           "minor_age_threshold",
+                          "neighborhood_max_facts",
                           "offboarding_report_retention_days",
                           "profile_defaults",
                           "profile_defaults.budgets",
@@ -27782,9 +28064,11 @@
                           "profile_defaults.verification",
                           "profile_defaults.verification.contradiction_checking",
                           "profile_defaults.verification.entailment_gate",
+                          "profile_defaults.verification.entailment_min_confidence",
                           "profile_defaults.verification.extraction_mode",
                           "profile_defaults.verification.implication_max_depth",
                           "profile_defaults.verification.level",
+                          "profile_defaults.verification.safe_disposition",
                           "public_base_url",
                           "rating_check_model_calls_per_record",
                           "rating_check_retention_days",
@@ -45215,9 +45499,11 @@
                           "profile_overrides.verification",
                           "profile_overrides.verification.contradiction_checking",
                           "profile_overrides.verification.entailment_gate",
+                          "profile_overrides.verification.entailment_min_confidence",
                           "profile_overrides.verification.extraction_mode",
                           "profile_overrides.verification.implication_max_depth",
                           "profile_overrides.verification.level",
+                          "profile_overrides.verification.safe_disposition",
                           "regenerate_retry_budget",
                           "turn_concurrency",
                           "turn_deadline",

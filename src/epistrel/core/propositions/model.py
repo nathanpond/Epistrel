@@ -487,7 +487,10 @@ class PredicateOwner(StrEnum):
 
 
 ENTITY_KINDS = ("person", "place", "organization", "item", "event", "other")
-"""The entity kinds argument types name (#139 resolves mentions to them)."""
+"""The entity kinds argument types name (#139 resolves mentions to them). FR-PROP-6's
+"character" is ``person`` and its "object" is ``item``."""
+GENDERS = (None, "masculine", "feminine")
+"""An entity's gender, the pronoun source of #139's resolver (``None``: any pronoun)."""
 ANY = "any"
 NONE = "none"
 """The object type of an object-less predicate (``alive``, ``dead``, ``born``)."""
@@ -632,6 +635,7 @@ __all__ = [
     "ARGUMENT_TYPES",
     "DEFAULT_EPOCH",
     "ENTITY_KINDS",
+    "GENDERS",
     "GRANULARITY_ORDER",
     "NONE",
     "Bound",

@@ -1,0 +1,454 @@
+{
+ "language": "en",
+ "coverage": "English only in M4 (#139): now; today, yesterday, tomorrow and two days either side; times of day (this morning, last night, tonight); last/this/next week, month and year; vague spans (recently, the other day, a while ago, long ago, soon); N units ago, in N units, N units from now; calendar years, months, dates, seasons (northern hemisphere) and weekdays, which need the story's calendar anchor (stories.story_epoch); and ages (when he was seven, at the age of seven), which need the subject's born or age facts. Anything else is uncertain(unresolved_time). Another language is another table.",
+ "minutes": {
+  "minute": 1,
+  "hour": 60,
+  "day": 1440,
+  "week": 10080,
+  "month": 43200,
+  "year": 525960
+ },
+ "units": {
+  "minute": {
+   "granularity": "minute",
+   "tolerance_minutes": 0
+  },
+  "hour": {
+   "granularity": "hour",
+   "tolerance_minutes": 0
+  },
+  "day": {
+   "granularity": "day",
+   "tolerance_minutes": 0
+  },
+  "week": {
+   "granularity": null,
+   "tolerance_minutes": 1440
+  },
+  "month": {
+   "granularity": null,
+   "tolerance_minutes": 10080
+  },
+  "year": {
+   "granularity": null,
+   "tolerance_minutes": 43200
+  }
+ },
+ "unit_words": {
+  "minute": "minute",
+  "minutes": "minute",
+  "min": "minute",
+  "mins": "minute",
+  "hour": "hour",
+  "hours": "hour",
+  "day": "day",
+  "days": "day",
+  "week": "week",
+  "weeks": "week",
+  "month": "month",
+  "months": "month",
+  "year": "year",
+  "years": "year"
+ },
+ "numbers": {
+  "a": 1,
+  "an": 1,
+  "one": 1,
+  "two": 2,
+  "three": 3,
+  "four": 4,
+  "five": 5,
+  "six": 6,
+  "seven": 7,
+  "eight": 8,
+  "nine": 9,
+  "ten": 10,
+  "eleven": 11,
+  "twelve": 12,
+  "thirteen": 13,
+  "fourteen": 14,
+  "fifteen": 15,
+  "sixteen": 16,
+  "seventeen": 17,
+  "eighteen": 18,
+  "nineteen": 19,
+  "twenty": 20,
+  "thirty": 30,
+  "forty": 40,
+  "fifty": 50,
+  "sixty": 60,
+  "seventy": 70,
+  "eighty": 80,
+  "ninety": 90,
+  "a couple of": 2,
+  "a couple": 2,
+  "a few": 3,
+  "few": 3,
+  "several": 4
+ },
+ "months": {
+  "january": 1,
+  "jan": 1,
+  "february": 2,
+  "feb": 2,
+  "march": 3,
+  "april": 4,
+  "apr": 4,
+  "may": 5,
+  "june": 6,
+  "jun": 6,
+  "july": 7,
+  "jul": 7,
+  "august": 8,
+  "aug": 8,
+  "september": 9,
+  "sep": 9,
+  "sept": 9,
+  "october": 10,
+  "oct": 10,
+  "november": 11,
+  "nov": 11,
+  "december": 12,
+  "dec": 12
+ },
+ "weekdays": {
+  "monday": 0,
+  "tuesday": 1,
+  "wednesday": 2,
+  "thursday": 3,
+  "friday": 4,
+  "saturday": 5,
+  "sunday": 6
+ },
+ "seasons": {
+  "spring": [
+   3,
+   6
+  ],
+  "summer": [
+   6,
+   9
+  ],
+  "autumn": [
+   9,
+   12
+  ],
+  "fall": [
+   9,
+   12
+  ],
+  "winter": [
+   12,
+   15
+  ]
+ },
+ "times_of_day": {
+  "morning": [
+   6,
+   12
+  ],
+  "afternoon": [
+   12,
+   18
+  ],
+  "evening": [
+   18,
+   22
+  ],
+  "night": [
+   22,
+   30
+  ],
+  "tonight": [
+   18,
+   30
+  ]
+ },
+ "day_words": {
+  "this": 0,
+  "today": 0,
+  "in the": 0,
+  "yesterday": -1,
+  "last": -1,
+  "tomorrow": 1
+ },
+ "rules": [
+  {
+   "rule": "now",
+   "kind": "now",
+   "pattern": "right now|at the moment|at present|currently|now"
+  },
+  {
+   "rule": "day_before_yesterday",
+   "kind": "day",
+   "days": -2,
+   "pattern": "the day before yesterday"
+  },
+  {
+   "rule": "day_after_tomorrow",
+   "kind": "day",
+   "days": 2,
+   "pattern": "the day after tomorrow"
+  },
+  {
+   "rule": "yesterday",
+   "kind": "day",
+   "days": -1,
+   "pattern": "yesterday"
+  },
+  {
+   "rule": "today",
+   "kind": "day",
+   "days": 0,
+   "pattern": "today"
+  },
+  {
+   "rule": "tomorrow",
+   "kind": "day",
+   "days": 1,
+   "pattern": "tomorrow"
+  },
+  {
+   "rule": "time_of_day",
+   "kind": "time_of_day",
+   "pattern": "(?P<day>this|today|in the|yesterday|last|tomorrow) (?P<tod>morning|afternoon|evening|night)"
+  },
+  {
+   "rule": "tonight",
+   "kind": "time_of_day",
+   "day": "today",
+   "tod": "tonight",
+   "pattern": "tonight"
+  },
+  {
+   "rule": "last_week",
+   "kind": "range",
+   "outer": [
+    -14,
+    -7
+   ],
+   "inner": [
+    -13,
+    -8
+   ],
+   "pattern": "last week"
+  },
+  {
+   "rule": "this_week",
+   "kind": "range",
+   "outer": [
+    -7,
+    7
+   ],
+   "inner": [
+    -1,
+    1
+   ],
+   "pattern": "this week"
+  },
+  {
+   "rule": "next_week",
+   "kind": "range",
+   "outer": [
+    7,
+    14
+   ],
+   "inner": [
+    8,
+    13
+   ],
+   "pattern": "next week"
+  },
+  {
+   "rule": "last_month",
+   "kind": "range",
+   "outer": [
+    -60,
+    -28
+   ],
+   "inner": [
+    -50,
+    -35
+   ],
+   "pattern": "last month"
+  },
+  {
+   "rule": "next_month",
+   "kind": "range",
+   "outer": [
+    28,
+    60
+   ],
+   "inner": [
+    35,
+    50
+   ],
+   "pattern": "next month"
+  },
+  {
+   "rule": "last_year",
+   "kind": "range",
+   "outer": [
+    -730,
+    -365
+   ],
+   "inner": [
+    -600,
+    -450
+   ],
+   "pattern": "last year"
+  },
+  {
+   "rule": "next_year",
+   "kind": "range",
+   "outer": [
+    365,
+    730
+   ],
+   "inner": [
+    450,
+    600
+   ],
+   "pattern": "next year"
+  },
+  {
+   "rule": "recently",
+   "kind": "range",
+   "outer": [
+    -7,
+    0
+   ],
+   "inner": [
+    -1,
+    0
+   ],
+   "pattern": "recently|lately|not long ago|just now"
+  },
+  {
+   "rule": "the_other_day",
+   "kind": "range",
+   "outer": [
+    -4,
+    -1
+   ],
+   "inner": [
+    -3,
+    -2
+   ],
+   "pattern": "the other day"
+  },
+  {
+   "rule": "a_while_ago",
+   "kind": "range",
+   "outer": [
+    -180,
+    -30
+   ],
+   "inner": [
+    -90,
+    -60
+   ],
+   "pattern": "a while ago|a while back|some time ago"
+  },
+  {
+   "rule": "long_ago",
+   "kind": "range",
+   "outer": [
+    -36500,
+    -730
+   ],
+   "inner": [
+    -3650,
+    -1825
+   ],
+   "pattern": "a long time ago|long ago|years ago"
+  },
+  {
+   "rule": "soon",
+   "kind": "range",
+   "outer": [
+    0,
+    7
+   ],
+   "inner": [
+    0,
+    1
+   ],
+   "pattern": "soon|shortly"
+  },
+  {
+   "rule": "ago",
+   "kind": "offset",
+   "sign": -1,
+   "pattern": "{number} {unit} (?:ago|back)"
+  },
+  {
+   "rule": "from_now",
+   "kind": "offset",
+   "sign": 1,
+   "pattern": "{number} {unit} from now"
+  },
+  {
+   "rule": "in_offset",
+   "kind": "offset",
+   "sign": 1,
+   "pattern": "in {number} {unit}"
+  },
+  {
+   "rule": "date",
+   "kind": "date",
+   "pattern": "{month} (?P<day>\\d{1,2})(?:st|nd|rd|th)?(?:,? (?P<year>\\d{4}))?"
+  },
+  {
+   "rule": "date_day_first",
+   "kind": "date",
+   "pattern": "(?:the )?(?P<day>\\d{1,2})(?:st|nd|rd|th)? (?:of )?{month}(?:,? (?P<year>\\d{4}))?"
+  },
+  {
+   "rule": "month_year",
+   "kind": "month",
+   "pattern": "{month} (?P<year>\\d{4})"
+  },
+  {
+   "rule": "month",
+   "kind": "month",
+   "pattern": "(?:in|during|since|by|last|this|next) {month}"
+  },
+  {
+   "rule": "year",
+   "kind": "year",
+   "pattern": "(?:in|back in|during|since|by|of) (?P<year>[12]\\d{3})"
+  },
+  {
+   "rule": "season",
+   "kind": "season",
+   "pattern": "(?P<which>last|this|next|in the|in|during the|during) {season}"
+  },
+  {
+   "rule": "weekday",
+   "kind": "weekday",
+   "pattern": "(?P<which>last|this|next|on) {weekday}"
+  },
+  {
+   "rule": "age_when",
+   "kind": "age",
+   "pattern": "when (?P<subject>[\\w'’]+(?: [\\w'’]+)?) (?:was|were) (?P<number>{numbers})(?: years? old)?"
+  },
+  {
+   "rule": "age_at",
+   "kind": "age",
+   "pattern": "at (?:the )?age (?:of )?(?P<number>{numbers})"
+  },
+  {
+   "rule": "age_years_old",
+   "kind": "age",
+   "pattern": "at (?P<number>{numbers}) years? old"
+  },
+  {
+   "rule": "age_year_old",
+   "kind": "age",
+   "pattern": "as an? (?P<number>{numbers})[- ]year[- ]old"
+  }
+ ]
+}

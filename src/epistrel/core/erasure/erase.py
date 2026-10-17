@@ -1244,7 +1244,7 @@ async def _redact_structured(
         )
     for table, columns, others in (
         (entity_aliases, ("alias",), {str(a) for a in owned}),
-        (entities, ("canonical_name",), set()),
+        (entities, ("canonical_name", "descriptors"), set()),
         (propositions, ("literal", "qualifiers"), set()),
         (closed_sets, ("key",), set()),
         (predicate_proposals, ("proposed", "decision"), set()),

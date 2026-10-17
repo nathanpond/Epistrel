@@ -105,6 +105,7 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.impact import ImpactReport
 from epistrel.core.ratings import require_assignable
+from epistrel.core.resolution.entities import add_entities, character_spec
 from epistrel.core.settings_schema import (
     CHARACTER_VIEWPOINT_PREFIX,
     COLUMN_SETTINGS,
@@ -598,6 +599,13 @@ async def create_story_from(
             )
         )
         await index_rows(conn, characters, characters.c.story_id == story_id, character_record)
+        # Every character is an entity of the story, Lite included (FR-PROP-6; #139).
+        await add_entities(
+            conn,
+            story_id,
+            [character_spec(character_id, character.name) for character_id, character in cast],
+            operation_id=op.operation_id,
+        )
         # The story row after its cast (#123): a name that mentions a character needs the
         # character to exist when the row is scanned.
         await index_rows(conn, stories, stories.c.id == story_id, story_record)
@@ -881,8 +889,14 @@ async def add_story_character(
                 images=list(request.images),
             )
         )
-        # The new name may already be in the story's records: they are scanned again
-        # (FR-ADMIN-6; #123), the new row with them.
+        # The character's entity (FR-PROP-6; #139), then the new name may already be in the
+        # story's records: they are scanned again (FR-ADMIN-6; #123), the new rows with them.
+        await add_entities(
+            conn,
+            story_id,
+            [character_spec(character_id, request.name)],
+            operation_id=op.operation_id,
+        )
         await reindex_story(conn, story_id)
 
     async with op:

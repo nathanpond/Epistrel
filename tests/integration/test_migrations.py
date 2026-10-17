@@ -527,3 +527,62 @@ def test_sent_hash_is_added_null_and_dropped_on_downgrade(scratch_database: str)
         engine.dispose()
     assert [tuple(r) for r in legacy] == [("old", None)]
     assert kept == ["old"]
+
+
+def test_every_character_gets_an_entity(scratch_database: str) -> None:
+    """0054 (#139): each existing character gets a ``person`` entity with the character's id,
+    its name as a ``canonical`` alias and its persona's gender; the downgrade drops the new
+    columns and keeps the rows."""
+    from epistrel.core.seeds.profiles import LITE_PRESET_ID
+
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0053")
+    engine = make_sync_engine(scratch_database)
+    story, player, npc = new_ulid(), new_ulid(), new_ulid()
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO stories (id, owner_principal, engine_profile_id) "
+                    "VALUES (:s, 'p-test', :p)"
+                ),
+                {"s": story, "p": LITE_PRESET_ID},
+            )
+            for character, ordinal, name, persona in (
+                (player, 0, "Sam", '{"name": "Sam", "gender": "Woman"}'),
+                (npc, 1, "Tom", None),
+            ):
+                conn.execute(
+                    text(
+                        "INSERT INTO characters (id, story_id, ordinal, name, definition, "
+                        "true_age, is_player, persona_snapshot) VALUES (:c, :s, :o, :n, 'x', 30, "
+                        ":player, CAST(:persona AS jsonb))"
+                    ),
+                    {
+                        "c": character,
+                        "s": story,
+                        "o": ordinal,
+                        "n": name,
+                        "player": ordinal == 0,
+                        "persona": persona,
+                    },
+                )
+        command.upgrade(cfg, "0054")
+        with engine.connect() as conn:
+            found = conn.execute(
+                text(
+                    "SELECT e.id, e.kind, e.canonical_name, e.character_id, e.gender, "
+                    "e.descriptors, a.alias, a.source FROM entities e "
+                    "JOIN entity_aliases a ON a.entity_id = e.id ORDER BY e.canonical_name"
+                )
+            ).all()
+        command.downgrade(cfg, "0053")
+        with engine.connect() as conn:
+            kept = conn.scalar(text("SELECT count(*) FROM entities"))
+    finally:
+        engine.dispose()
+    assert [tuple(r) for r in found] == [
+        (player, "person", "Sam", player, "feminine", [], "Sam", "canonical"),
+        (npc, "person", "Tom", npc, None, [], "Tom", "canonical"),
+    ]
+    assert kept == 2

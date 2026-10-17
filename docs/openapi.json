@@ -19814,7 +19814,7 @@
       },
       "ScenarioEntity": {
         "additionalProperties": false,
-        "description": "A named entity of the world (an organisation, an item, a place) with its aliases.",
+        "description": "A named entity of the world (an organisation, an item, a place) with its aliases and,\noptionally, its ``kind`` (#139: without one it is ``other``).",
         "properties": {
           "aliases": {
             "items": {
@@ -19842,6 +19842,25 @@
             "pattern": "^[a-z0-9_]{1,40}$",
             "title": "Id",
             "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "person",
+                  "place",
+                  "organization",
+                  "item",
+                  "event",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
           },
           "name": {
             "maxLength": 120,
@@ -21095,7 +21114,7 @@
       },
       "ScenarioWorld": {
         "additionalProperties": false,
-        "description": "The world: its description (setting and lore, seeded as canon), named locations and\nnamed entities.",
+        "description": "The world: its description (setting and lore, seeded as canon), named locations, named\nentities and, optionally, the story's own event types (#139: occasion words beyond the\nengine's vocabulary, each its own word, e.g. ``joust``).",
         "properties": {
           "description": {
             "anyOf": [
@@ -21116,6 +21135,23 @@
             "maxItems": 100,
             "title": "Entities",
             "type": "array"
+          },
+          "event_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 60,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Types"
           },
           "locations": {
             "items": {

@@ -6,8 +6,9 @@ check_content``: a text or an entity naming an erased subject is refused, 409
 ``erased_subject_referenced``) and indexes what it wrote (``index_records``), so erasure finds
 it (FR-ADMIN-6,9).
 
-- ``add_entity`` records an entity with its canonical name and aliases (#139's resolver is the
-  caller).
+- ``add_entity`` records an entity with its canonical name (also an alias, ``source =
+  canonical``), its aliases and what the mention resolver reads (gender, descriptors; #139):
+  ``core.resolution.entities`` writes the characters' and the scenario's entities through it.
 - ``write_proposition`` stores a proposition in its predicate's canonical direction
   (``registry.canonical``) after checking it against the registry: a predicate the registry
   holds, declared qualifiers of the declared kinds, a set-valued object only where the
@@ -21,12 +22,13 @@ it (FR-ADMIN-6,9).
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Literal
 
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.erasure import guard
@@ -40,9 +42,10 @@ from epistrel.core.erasure.records import (
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.propositions.codec import proposition_row
-from epistrel.core.propositions.model import ENTITY_KINDS, NONE, Proposition
+from epistrel.core.propositions.model import ENTITY_KINDS, GENDERS, NONE, Proposition
 from epistrel.core.propositions.registry import Registry, canonical
 from epistrel.core.tables import closed_sets, entities, entity_aliases, propositions
+from epistrel.core.tables.propositions import ALIAS_SOURCES
 
 AssertedBy = Literal["author", "canon"]
 
@@ -65,32 +68,73 @@ async def _guarded(
     await guard.check_content(conn, story_id, contents, base_revision=base_revision, path=__name__)
 
 
+AliasSpec = str | tuple[str, str]
+"""An alias to record: its text (``source = detected``) or ``(text, source)``, a source of
+``tables.propositions.ALIAS_SOURCES``."""
+
+
+def alias_key(alias: str) -> str:
+    """The form two aliases of one entity are the same alias in: NFKC, case-folded, with
+    whitespace collapsed (``core.resolution`` matches mentions in the same form, possessives
+    stripped too)."""
+    return " ".join(unicodedata.normalize("NFKC", alias).casefold().split())
+
+
 async def add_entity(
     conn: AsyncConnection,
     story_id: str,
     kind: str,
     canonical_name: str,
     *,
-    aliases: Sequence[str] = (),
+    aliases: Sequence[AliasSpec] = (),
     character_id: str | None = None,
     base_revision: int | None = None,
+    entity_id: str | None = None,
+    gender: str | None = None,
+    descriptors: Sequence[str] = (),
+    operation_id: str | None = None,
 ) -> str:
     """Record an entity of the story (its kind, canonical name, the character it is, if any)
-    and its aliases; answers its id."""
+    and its aliases; answers its id. The canonical name is recorded as an alias too
+    (``source = canonical``); an alias whose ``alias_key`` repeats an earlier one is dropped.
+    A character has one entity: for a ``character_id`` that already has one, the names are
+    added to it as aliases and its id is answered.
+    ``entity_id`` defaults to a new id (a story character's entity takes the character's,
+    #139); ``gender`` is ``masculine``, ``feminine`` or ``None``; ``descriptors`` are the words
+    a description of the entity matches (``core.resolution``)."""
     if kind not in ENTITY_KINDS:
         raise InvalidRequest(f"{kind!r} is not an entity kind", {"field": "kind"})
-    entity_id = new_ulid()
+    if gender not in GENDERS:
+        raise InvalidRequest(f"{gender!r} is not an entity gender", {"field": "gender"})
+    existing = None
+    if character_id is not None:
+        existing = await conn.scalar(
+            select(entities.c.id).where(
+                entities.c.story_id == story_id, entities.c.character_id == character_id
+            )
+        )
+    if existing is not None:
+        # One entity per character: a second write adds its names as aliases.
+        return await _add_aliases(
+            conn,
+            story_id,
+            str(existing),
+            [(canonical_name, "detected"), *aliases],
+            references=(character_id,) if character_id else (),
+            base_revision=base_revision,
+        )
+    entity_id = entity_id or new_ulid()
     entity = SimpleNamespace(
         id=entity_id,
         story_id=story_id,
         kind=kind,
         canonical_name=canonical_name,
         character_id=character_id,
+        gender=gender,
+        descriptors=list(dict.fromkeys(descriptors)),
+        created_by_operation_id=operation_id,
     )
-    alias_rows = [
-        SimpleNamespace(id=new_ulid(), story_id=story_id, entity_id=entity_id, alias=alias)
-        for alias in dict.fromkeys(aliases)
-    ]
+    alias_rows = _alias_rows(story_id, entity_id, [(canonical_name, "canonical"), *aliases], set())
     records = [entity_record(entity), *(alias_record(a) for a in alias_rows)]
     await _guarded(
         conn,
@@ -105,6 +149,76 @@ async def add_entity(
         await conn.execute(insert(entity_aliases), [vars(a) for a in alias_rows])
     await index_records(conn, records)
     return entity_id
+
+
+def _alias_rows(
+    story_id: str, entity_id: str, specs: Sequence[AliasSpec], seen: set[str]
+) -> list[SimpleNamespace]:
+    rows = []
+    for spec in specs:
+        alias, source = (spec, "detected") if isinstance(spec, str) else spec
+        if source not in ALIAS_SOURCES:
+            raise InvalidRequest(f"{source!r} is not an alias source", {"field": "source"})
+        key = alias_key(alias)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        rows.append(
+            SimpleNamespace(
+                id=new_ulid(),
+                story_id=story_id,
+                entity_id=entity_id,
+                alias=alias.strip(),
+                source=source,
+            )
+        )
+    return rows
+
+
+async def _add_aliases(
+    conn: AsyncConnection,
+    story_id: str,
+    entity_id: str,
+    specs: Sequence[AliasSpec],
+    *,
+    references: Iterable[str],
+    base_revision: int | None,
+) -> str:
+    known = {
+        alias_key(a)
+        for a in await conn.scalars(
+            select(entity_aliases.c.alias).where(entity_aliases.c.entity_id == entity_id)
+        )
+    }
+    rows = _alias_rows(story_id, entity_id, specs, known)
+    if rows:
+        records = [alias_record(a) for a in rows]
+        await _guarded(
+            conn,
+            story_id,
+            records,
+            references=references,
+            base_revision=base_revision,
+            consumer=False,
+        )
+        await conn.execute(insert(entity_aliases), [vars(a) for a in rows])
+        await index_records(conn, records)
+    return entity_id
+
+
+async def add_aliases(
+    conn: AsyncConnection,
+    story_id: str,
+    entity_id: str,
+    aliases: Sequence[AliasSpec],
+    *,
+    base_revision: int | None = None,
+) -> str:
+    """Add ``aliases`` to an entity of the story (those whose ``alias_key`` it already has are
+    skipped; #144 records a canonized name this way); answers its id."""
+    return await _add_aliases(
+        conn, story_id, entity_id, aliases, references=(), base_revision=base_revision
+    )
 
 
 async def write_proposition(
@@ -215,4 +329,13 @@ async def declare_closed_set(
     return closed_id
 
 
-__all__ = ["AssertedBy", "ClosedSet", "add_entity", "declare_closed_set", "write_proposition"]
+__all__ = [
+    "AliasSpec",
+    "AssertedBy",
+    "ClosedSet",
+    "add_aliases",
+    "add_entity",
+    "alias_key",
+    "declare_closed_set",
+    "write_proposition",
+]

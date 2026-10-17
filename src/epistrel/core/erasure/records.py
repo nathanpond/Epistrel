@@ -305,7 +305,8 @@ def closed_set_record(row: Any) -> Record:
 
 
 def entity_record(row: Any) -> Record:
-    """An entity: its canonical name, declaring the character it is (if any)."""
+    """An entity: its canonical name and its descriptors (#139), declaring the character it is
+    (if any)."""
     subjects: tuple[Declared, ...] = ()
     if row.character_id is not None:
         subjects = ((SubjectKind.CHARACTER, str(row.character_id), "character_id"),)
@@ -313,7 +314,10 @@ def entity_record(row: Any) -> Record:
         entities.name,
         str(row.id),
         _str(row.story_id),
-        {"canonical_name": row.canonical_name},
+        {
+            "canonical_name": row.canonical_name,
+            **text_fields(getattr(row, "descriptors", None) or [], "descriptors"),
+        },
         subjects,
     )
 

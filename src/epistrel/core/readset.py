@@ -69,9 +69,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-KEYED_READERS: tuple[str, ...] = ()
+KEYED_READERS: tuple[str, ...] = ("epistrel.core.resolution.context",)
 """Modules whose ``facts``/``propositions`` reads decide a verdict, a precondition or a blocker:
-each reads them only through ``KeyedLookup`` (``tools.gates check-keyed-readers``). #140's
+each reads them only through ``KeyedLookup`` (``tools.gates check-keyed-readers``). #139's
+resolution context (a subject's ``born``/``age`` for "when he was seven") is the first; #140's
 ``epistrel.core.verify.rules``, #144's permission check and #146's ledger lookups add
 themselves when they land."""
 

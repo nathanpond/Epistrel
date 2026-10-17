@@ -34,6 +34,14 @@ from epistrel.core.propositions.model import (
     story_minute,
 )
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+from epistrel.core.resolution.time import (
+    YEAR,
+    SubjectTimeline,
+    TimeBasis,
+    resolve_time,
+    story_time_at,
+)
+from epistrel.core.resolution.types import ReasonCode, ResolvedTime, Uncertain
 from tests.event_support import new_story, rows, scalar
 
 BOBBY = "01JA0000000000000000000001"
@@ -223,3 +231,55 @@ async def test_u_15__registry(engine: AsyncEngine) -> None:
     assert [p.predicate_id for p in capped.derived] == steps[1:3]
     assert capped.truncated
     assert not registry.imply(facts[:1], chain, max_depth=10).truncated
+
+
+@pytest.mark.part("M4", "FR-PROP-9")
+def test_u_15__resolution_time() -> None:
+    """Relative time resolves against the story-time of the claim's narrative position and the
+    subject's established timeline (#139): "now" is the position's minute, "last week" moves
+    with the position, "when he was seven" anchors on the subject's birth or age facts, and two
+    values of a functional fluent in non-overlapping intervals do not overlap. Complement: an
+    expression that cannot be resolved is ``uncertain``, never a default date."""
+    basis = TimeBasis(minute_zero=year(2020), epoch=datetime(2000, 1, 1, tzinfo=UTC))
+    early, late = (2, 0), (2 + 7 * 144, 3)  # a week of ten-minute turns later
+    assert story_time_at(late, basis) - story_time_at(early, basis) == 7 * 24 * 60
+    now = resolve_time("now", late, basis=basis)
+    assert isinstance(now, ResolvedTime)
+    assert now.valid_time == Instant.of(story_time_at(late, basis), Granularity.MINUTE)
+    # U-15: "last week resolves against the claim's position", not against the head.
+    first = resolve_time("I saw him last week", early, basis=basis)
+    second = resolve_time("I saw him last week", late, basis=basis)
+    assert isinstance(first, ResolvedTime)
+    assert isinstance(second, ResolvedTime)
+    lo, hi = first.valid_time.possible()
+    assert lo is not None
+    assert hi is not None
+    assert second.valid_time.possible() == (lo + 7 * 24 * 60, hi + 7 * 24 * 60)
+    assert hi <= story_time_at(early, basis)
+    # The subject's established timeline: born 2001-03-04 makes "seven" 2008-03-04 to 2009.
+    born = Instant.of(minute("2001-03-04T00:00"), Granularity.DAY)
+    seven = resolve_time("when he was seven", late, SubjectTimeline(born=born), basis=basis)
+    assert isinstance(seven, ResolvedTime)
+    assert seven.valid_time == Interval.of(born.at + 7 * YEAR, born.at + 8 * YEAR)
+    assert covers(seven.valid_time, Instant.of(year(2008) + 200 * 24 * 60, Granularity.DAY))
+    # An age fact alone anchors approximately (birth year +/- 1).
+    aged = SubjectTimeline(ages=((19, Interval.of(year(2020), year(2021))),))
+    approx = resolve_time("at the age of seven", late, aged, basis=basis)
+    assert isinstance(approx, ResolvedTime)
+    assert approx.approximate
+    # Fluents change over time: ages 19 and 20 in non-overlapping intervals do not overlap.
+    assert overlaps(Interval.of(year(2020), year(2021)), Interval.of(year(2021), year(2022))) is (
+        False
+    )
+    # Complement: unresolvable expressions are uncertain with a reason, never a default.
+    for expression, subject, code in (
+        ("when he was seven", None, ReasonCode.NO_ANCHOR),
+        ("once upon a time", None, ReasonCode.UNRESOLVED_TIME),
+    ):
+        found = resolve_time(expression, late, subject, basis=basis)
+        assert isinstance(found, Uncertain)
+        assert found.reason.code is code
+        assert found.reason.gate == "unresolved_time"
+    unanchored = resolve_time("in 2012", late, basis=TimeBasis())
+    assert isinstance(unanchored, Uncertain)
+    assert unanchored.reason.code is ReasonCode.NO_CALENDAR

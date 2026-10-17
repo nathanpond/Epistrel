@@ -263,8 +263,19 @@ async def test_the_store_writes_canonical_checked_propositions(engine: AsyncEngi
     assert stored[never].polarity is Polarity.NEGATED
     assert stored[born].valid_time == Instant.of(60 * 24 * 40, Granularity.DAY)
     assert stored[aged].literal == TypedLiteral(kind=LiteralKind.INT, value=40)
-    aliases = await rows(engine, "SELECT alias FROM entity_aliases WHERE story_id = :s", s=story)
-    assert [r.alias for r in aliases] == ["Annie"]
+    # The player character's entity (#139: written with the character) took "Ann" and "Annie"
+    # as aliases, the repeat dropped; every entity's canonical name is an alias row too.
+    assert ann == player
+    aliases = await rows(
+        engine,
+        "SELECT alias, source FROM entity_aliases WHERE entity_id = :e ORDER BY alias",
+        e=ann,
+    )
+    assert [(r.alias, r.source) for r in aliases] == [
+        ("Ann", "detected"),
+        ("Annie", "detected"),
+        ("Player", "canonical"),
+    ]
     for bad, field in (
         (_fact(new_ulid(), ann, bea, 0, 5), "predicate_id"),
         (
@@ -296,7 +307,11 @@ async def test_the_store_writes_canonical_checked_propositions(engine: AsyncEngi
         "WHERE story_id = :s AND record_table = 'entities'",
         s=story,
     )
-    assert [(r.record_id, r.ref_kind) for r in indexed] == [(ann, "declared")]
+    # The player's entity declares its character and its canonical name mentions it (#139).
+    assert sorted((r.record_id, r.ref_kind) for r in indexed) == [
+        (ann, "declared"),
+        (ann, "mentioned"),
+    ]
 
 
 async def test_the_writers_are_registered_for_erasure() -> None:
@@ -739,7 +754,12 @@ async def test_erasure_reaches_the_structured_stores(pg_url: str, engine: AsyncE
     aliases = await rows(
         engine, "SELECT entity_id, alias FROM entity_aliases WHERE story_id = :s", s=story
     )
-    assert [(a.entity_id, a.alias) for a in aliases] == [(ty, "the boy")]
+    # The erased character's entity keeps no alias; the others keep theirs (#139: each
+    # character's entity has its name as an alias).
+    assert marisol not in {a.entity_id for a in aliases}
+    assert sorted((a.entity_id, a.alias) for a in aliases) == sorted(
+        [(cast["Wren"], "Wren"), (ty, "Ty"), (ty, "the boy")]
+    )
     markers = await rows(
         engine,
         "SELECT payload FROM events WHERE story_id = :s AND type = 'erasure_marker'",

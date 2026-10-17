@@ -322,7 +322,12 @@ async def test_save_is_a_json_merge_patch(client: httpx.AsyncClient) -> None:
     )
     assert [r["id"] for r in replaced.json()["cast"]["roles"]] == ["aunt", "player"]
     reset = await save(client, sid, 3, world=None, metadata={"labels": ["Dark Theme", "RPG"]})
-    assert reset.json()["world"] == {"description": None, "locations": [], "entities": []}
+    assert reset.json()["world"] == {
+        "description": None,
+        "locations": [],
+        "entities": [],
+        "event_types": None,
+    }
     assert reset.json()["metadata"]["labels"] == ["dark theme", "rpg"]
     nothing = await save(client, sid, 4)
     assert (nothing.status_code, nothing.json()["draft_revision"]) == (200, 5)

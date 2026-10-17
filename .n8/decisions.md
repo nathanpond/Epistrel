@@ -6816,3 +6816,57 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 1, test isolation):** The tests that write memories on the shared session database (`test_memory_records`, `test_time_m4`, `test_s_flashback_truncate`) now use `drained_embedding_jobs`, which deletes the queued or running `embed`/`reembed` jobs their writes enqueued. An autouse guard in `tests/conftest.py`, `_no_embedding_jobs_left`, fails any test that uses `pg_url` and leaves such a job there. The guard was shown to work: with the cleanup reverted, `test_memory_records` gets 8 errors.
   **Why:** If one of these jobs were left queued, a later test's worker could claim it and pin the shared deployment, retyping `memories.embedding` and writing `deployment_state`. That would make the suite's results depend on test order. M3 set the rule that deployment-scope state is rolled back.
   **Issue:** #138
+- **Decision (scope, deviation from the replan line):** #131's migration 0048 had already created `entities` and `entity_aliases`, so #139's migration 0054 only adds columns, which is not Rule 4: `entities.gender` (CHECK `masculine|feminine`, NULL means any pronoun), `entities.descriptors`, `entities.created_by_operation_id`, and `entity_aliases.source` (CHECK over `canonical|catalog_alias|name_override|scenario_entity|persona|canonized|detected`; older rows are `detected`). It also backfills one `person` entity per existing `characters` row: same id, a canonical alias, and the persona's gender. The backfilled rows are not in the erasure index. Erasure still deletes their aliases through the `entities.character_id` join.
+  **Why:** The replan was written before #131 shipped the tables. A second CREATE would have failed.
+  **Issue:** #139
+- **Decision (deviation):** `descriptors` is JSONB, not the planner's `text[]`. The creator column is `created_by_operation_id`, not `created_by_operation`. Alias uniqueness per entity is enforced by the writer (by `alias_key`: NFKC, casefold, collapsed spaces), not by a unique index on `(entity_id, alias)`.
+  **Why:** Erasure redacts JSON and text through `_redact_json_rows`, and indexes JSON leaves with `text_fields`. A fork remaps `*_id` columns but not other columns. A redaction can make two aliases of one entity identical, and a unique index would then fail the erasure.
+  **Issue:** #139
+- **Decision (Discretion):** Entity kinds stay #131's `ENTITY_KINDS` (`person|place|organization|item|event|other`). The AC's `character` is `person` and its `object` is `item`. `ScenarioEntity.kind` takes the same values, optional (default `other`). `world.event_types` is an optional list of `Alias` strings (≤ 50, distinct, `None` when unset, so stored documents stay as they were), and each type is its own word. docs/02 §4.9/§4.10 are amended and `docs/openapi.json` is regenerated. `test_scenario_catalog`'s full-world expectation gains `event_types: null`.
+  **Why:** Predicate argument types already name these kinds, so a second name for the same kind would split the vocabulary.
+  **Issue:** #139
+- **Decision (Rule 2):** A character has exactly one entity, with the character's id. `add_entity` with a `character_id` that already has an entity adds the names it was given as aliases (`detected`) and returns the existing id. `add_aliases` is the public form of the same operation, for #144. The canonical name is always stored as an alias row (`canonical`). Three tests were updated for this: `test_propositions_store`'s alias, index (an entity's name now also `mentioned`s its character) and erasure assertions. The test helpers that created a second entity for a character (`canon_support.world`, `test_s_delete`) are unchanged: they now get the character's own entity back. C-15's field-class map gains `world.entities[].kind` and `world.event_types`, and `test_migrations` gains a test of 0054's backfill.
+  **Why:** With characters' entities written at creation, a second entity for the same character made `_actor` (#137's scene) pick the wrong one, and S-DELETE's scene came out empty.
+  **Issue:** #139
+- **Decision:** Character entities are written in the same transaction as their `characters` rows, in every profile, Lite included. The write paths are `create_story_from`'s `insert_cast`, `add_story_character`'s commit step, and `genesis.create.insert_cast`, which now takes the operation id. `character_spec` builds each one: aliases from the catalog's `metadata.aliases`, the role's `name_overrides` (`canonical` and `aliases`) and the persona's name; gender from the persona, otherwise the one gender noun in the appearance; descriptors from the stopword-filtered words of the appearance. Scenario locations and entities are only *built* here (`scenario_entity_specs`). Writing them is #149's structured genesis (the AC names #149, and `materialize` defers `world.*` as `structured`).
+  **Why:** This follows the AC and the planner's pass-1 line. A Lite prompt never reads `entities`, so the Lite path is unchanged (the Lite genesis, prompt and cast tests pass).
+  **Issue:** #139, #149
+- **Decision (Discretion):** The resolver is pure: `resolve_mentions(text, speaker, ResolutionContext)`, where the context holds the index, the beats (oldest first), the entities present, the player id and the relations. `core.resolution.context` loads all of it once per operation: entities and aliases, `working_memory` (20 beats, as the speaker perceives them), #137's `scene_view` and `profile_view` (omniscient, no visibility filter in M4), and the subject's `born`/`age` through `KeyedLookup` (`subject_timeline`). It is the first entry in `KEYED_READERS`. `resolve_reference(phrase, …)` covers #140's sketch arguments.
+  **Why:** The caller controls what the resolver reads, so verdict-bearing canon reads stay keyed (FR-CONC-11), and the pure functions can be unit-tested without a database.
+  **Issue:** #139
+- **Decision (Discretion):** These mention rules go beyond the planner line:
+  - A sentence-initial capitalized word is never an `unknown_name`, so "Rain fell." does not produce a false uncertainty.
+  - With no scene rows, "you" is the one other actor of the context window. The narrator's "you" is the player character.
+  - An entity with no gender is compatible with he and she, but a non-person without a gender is compatible with neither.
+  - "it" needs a non-person.
+  - A gendered basic noun (`man`/`woman`/`guy`/`lady`/`gentleman`) matches by the entity's gender alone (`the woman`).
+  - The definite noun phrase is `the` plus up to 3 non-stop words.
+  - A relational description takes a possessor (`his`, `my`, `Bobby's`) plus at most one adjective plus a relation noun, read from `lexicon.json` (19 nouns over `parent_of`, `sibling_of`, `married_to`, `friend_of`, `enemy_of`, `employed_by`).
+  - An explicit alias outranks another entity's implicit one-word token.
+  - No fuzzy matching at all in M4. The planner allowed fuzzy matches as candidates only; this is stricter.
+  - Mentions are not yet persisted on beat payloads: `Mention.as_payload()` (spans and ids, no text) is what #148/#150's beat writers will store, since nothing calls the resolver in a turn yet.
+  **Why:** These are deterministic tie-breaks that never guess. Everything else is `uncertain` with candidates.
+  **Issue:** #139, #148, #150
+- **Decision (Discretion):** Time rules:
+  - `story_minutes_per_turn` is the constant `STORY_MINUTES_PER_TURN = 10` (a `TimeBasis` field; the name avoids "clock", an M6 lexicon term), not a story setting.
+  - A year is 525,960 minutes for offsets and ages. Calendar expressions use `granule()` on `story_epoch`.
+  - Coarse spans take inner and outer day bounds from `time_grammar.json`. `last week` has outer `[-14, -7]` and inner `[-13, -8]`; the table defines the others the same way.
+  - `N weeks/months/years ago` is approximate around the offset (±1 day inner; ±1/7/30 days outer). Minutes, hours and days are exact instants.
+  - A bare year needs a preposition (`in 2012`), so "1500 gold" is not a year. Bare months need `in/during/since/by/last/this/next`, so the modal "may" is never a month.
+  - Weekdays are calendar weeks (Monday first).
+  - Seasons are northern-hemisphere months.
+  - Ages use `born` (±1 year when its granule is coarser than a day) or, failing that, the first `age` fact (birth ≈ start − age, ±1 year).
+  **Why:** A setting would retroactively move every earlier position's story-time when changed, and M6's clock replaces the rule anyway. The rest are the planner's tolerances made concrete.
+  **Issue:** #139
+- **Decision (Discretion):** `events.json` holds 42 types with their words. The primary type is the leftmost word in the text, the longer one when two start at the same place. A scenario's own types arrive as `extra`. The reason codes are the planner's set: `Reason(code, detail)`, where `.gate` maps each code to `unresolved_entity`, `unresolved_time` or `unresolved_event_type`. `Uncertain(reason, candidates)` lives in `resolution/types.py` for #140.
+  **Why:** This is the planner's line.
+  **Issue:** #139
+- **Decision (Discretion, partial by dependency):** Q-02 lives in `epistrel/evals/resolution.py`. It defines the metric (per-mention accuracy and per-query all-correct, report-only) and a deterministic S-THOSEGUYS-generalised fixture generator with six query shapes, ambiguous and unknown-name complements among them. `run` resolves the fixture through #139 alone (the stub run scores 1.0 / 1.0). #141's retrieval and #157's registered Q-02 suite are still to come. S-ENTITY-IDENTITY's "no contradiction arises" complement is asserted as "the mention is `uncertain` with no entity", and #140 adds the verdict assertion.
+  **Why:** #141 and #140 have not landed. The AC's parts that need them cannot be finished here.
+  **Issue:** #139, #140, #141, #157
+- **Decision (Discretion):** Zero model calls is enforced two ways. The import-linter contract `resolution-calls-no-model` forbids `epistrel.orchestrator`, `epistrel.engine` and `epistrel.api` from `epistrel.core.resolution`. `tests/test_resolution.py` has an autouse fixture that makes `StubAdapter.complete` and `probe` raise and asserts no call was recorded. The tests are `tests/test_resolution.py` (unit), `test_u_15__resolution_time` (`part("M4", "FR-PROP-9")`), `tests/scenario/test_s_entity_identity.py::test_s_entity_identity__m4` (`part("M4", "FR-PROP-6")`) and `tests/integration/test_retrieval.py::test_i_05__resolution` (`part("M4", "FR-RET-2")`).
+  **Why:** The test plan's IDs and its model-call complement.
+  **Issue:** #139
+- **Decision (scope):** The structured projections (#137) still treat "now" as `story_minute_zero` for every turn. Filed as #438 rather than changed here.
+  **Why:** Changing it alters #137's fold and its tests.
+  **Issue:** #139, #438

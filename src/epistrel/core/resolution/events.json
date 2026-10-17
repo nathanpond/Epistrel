@@ -1,0 +1,369 @@
+{
+ "language": "en",
+ "notes": "The event-type vocabulary #141's occasion lookup and #150's episodic writer use (#139): one primary type per text, the earliest word that names one (the longer word where two start together). A scenario extends it with world.event_types (each name its own word).",
+ "types": [
+  {
+   "type": "game",
+   "words": [
+    "game",
+    "games",
+    "match",
+    "matches",
+    "tournament"
+   ]
+  },
+  {
+   "type": "party",
+   "words": [
+    "party",
+    "parties",
+    "celebration",
+    "bash"
+   ]
+  },
+  {
+   "type": "dinner",
+   "words": [
+    "dinner",
+    "dinners",
+    "supper",
+    "feast"
+   ]
+  },
+  {
+   "type": "lunch",
+   "words": [
+    "lunch",
+    "lunches",
+    "luncheon"
+   ]
+  },
+  {
+   "type": "breakfast",
+   "words": [
+    "breakfast",
+    "breakfasts",
+    "brunch"
+   ]
+  },
+  {
+   "type": "meal",
+   "words": [
+    "meal",
+    "meals"
+   ]
+  },
+  {
+   "type": "fight",
+   "words": [
+    "fight",
+    "fights",
+    "fought",
+    "brawl",
+    "brawls",
+    "scuffle",
+    "fistfight"
+   ]
+  },
+  {
+   "type": "battle",
+   "words": [
+    "battle",
+    "battles",
+    "skirmish",
+    "siege"
+   ]
+  },
+  {
+   "type": "argument",
+   "words": [
+    "argument",
+    "arguments",
+    "argued",
+    "quarrel",
+    "row",
+    "dispute"
+   ]
+  },
+  {
+   "type": "meeting",
+   "words": [
+    "meeting",
+    "meetings",
+    "met up",
+    "appointment",
+    "appointments"
+   ]
+  },
+  {
+   "type": "date",
+   "words": [
+    "date night",
+    "first date",
+    "our date"
+   ]
+  },
+  {
+   "type": "wedding",
+   "words": [
+    "wedding",
+    "weddings",
+    "marriage ceremony"
+   ]
+  },
+  {
+   "type": "funeral",
+   "words": [
+    "funeral",
+    "funerals",
+    "burial",
+    "wake"
+   ]
+  },
+  {
+   "type": "birthday",
+   "words": [
+    "birthday",
+    "birthdays"
+   ]
+  },
+  {
+   "type": "concert",
+   "words": [
+    "concert",
+    "concerts",
+    "gig",
+    "gigs",
+    "show"
+   ]
+  },
+  {
+   "type": "performance",
+   "words": [
+    "performance",
+    "play",
+    "recital",
+    "rehearsal"
+   ]
+  },
+  {
+   "type": "trip",
+   "words": [
+    "trip",
+    "trips",
+    "journey",
+    "voyage",
+    "road trip"
+   ]
+  },
+  {
+   "type": "vacation",
+   "words": [
+    "vacation",
+    "holiday",
+    "holidays"
+   ]
+  },
+  {
+   "type": "visit",
+   "words": [
+    "visit",
+    "visits",
+    "visited"
+   ]
+  },
+  {
+   "type": "class",
+   "words": [
+    "class",
+    "classes",
+    "lesson",
+    "lessons",
+    "lecture"
+   ]
+  },
+  {
+   "type": "exam",
+   "words": [
+    "exam",
+    "exams",
+    "test",
+    "quiz"
+   ]
+  },
+  {
+   "type": "practice",
+   "words": [
+    "practice",
+    "training",
+    "drill",
+    "workout"
+   ]
+  },
+  {
+   "type": "interview",
+   "words": [
+    "interview",
+    "interviews"
+   ]
+  },
+  {
+   "type": "trial",
+   "words": [
+    "trial",
+    "hearing",
+    "court case"
+   ]
+  },
+  {
+   "type": "arrest",
+   "words": [
+    "arrest",
+    "arrested"
+   ]
+  },
+  {
+   "type": "accident",
+   "words": [
+    "accident",
+    "accidents",
+    "crash",
+    "collision"
+   ]
+  },
+  {
+   "type": "robbery",
+   "words": [
+    "robbery",
+    "heist",
+    "burglary",
+    "theft",
+    "break-in"
+   ]
+  },
+  {
+   "type": "attack",
+   "words": [
+    "attack",
+    "attacks",
+    "ambush",
+    "assault"
+   ]
+  },
+  {
+   "type": "storm",
+   "words": [
+    "storm",
+    "storms",
+    "blizzard",
+    "hurricane"
+   ]
+  },
+  {
+   "type": "fire",
+   "words": [
+    "fire",
+    "fires",
+    "blaze"
+   ]
+  },
+  {
+   "type": "festival",
+   "words": [
+    "festival",
+    "festivals",
+    "fair",
+    "carnival"
+   ]
+  },
+  {
+   "type": "ceremony",
+   "words": [
+    "ceremony",
+    "ceremonies",
+    "graduation"
+   ]
+  },
+  {
+   "type": "service",
+   "words": [
+    "service",
+    "mass",
+    "sermon"
+   ]
+  },
+  {
+   "type": "shopping",
+   "words": [
+    "shopping",
+    "errand",
+    "errands"
+   ]
+  },
+  {
+   "type": "hunt",
+   "words": [
+    "hunt",
+    "hunting",
+    "hunts"
+   ]
+  },
+  {
+   "type": "race",
+   "words": [
+    "race",
+    "races",
+    "marathon"
+   ]
+  },
+  {
+   "type": "dance",
+   "words": [
+    "dance",
+    "dances",
+    "ball",
+    "prom"
+   ]
+  },
+  {
+   "type": "drinks",
+   "words": [
+    "drinks",
+    "bar crawl",
+    "happy hour"
+   ]
+  },
+  {
+   "type": "conversation",
+   "words": [
+    "conversation",
+    "talk",
+    "chat",
+    "discussion"
+   ]
+  },
+  {
+   "type": "kiss",
+   "words": [
+    "kiss",
+    "kissed"
+   ]
+  },
+  {
+   "type": "breakup",
+   "words": [
+    "breakup",
+    "break-up",
+    "broke up"
+   ]
+  },
+  {
+   "type": "move",
+   "words": [
+    "move",
+    "moved house",
+    "moving day"
+   ]
+  }
+ ]
+}

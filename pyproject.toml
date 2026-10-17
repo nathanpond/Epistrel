@@ -95,6 +95,16 @@ source_modules = ["epistrel.core"]
 forbidden_modules = ["epistrel.orchestrator", "epistrel.api"]
 
 [[tool.importlinter.contracts]]
+# FR-PROP-6,9, FR-RET-2 (#139): resolution never calls a model. Nothing in `epistrel.core.resolution`
+# reaches the Model Access Layer (the Orchestrator), the Engine or the API, directly or through
+# another module; `tests/test_resolution.py` also runs the resolvers with a stub adapter that fails
+# on any call.
+name = "resolution-calls-no-model"
+type = "forbidden"
+source_modules = ["epistrel.core.resolution"]
+forbidden_modules = ["epistrel.orchestrator", "epistrel.engine", "epistrel.api"]
+
+[[tool.importlinter.contracts]]
 # #74: `epistrel.core` imports `epistrel.observability` (the telemetry scope and spans), so
 # observability must not reach the orchestrator, the API or the Engine, or core would through it.
 name = "observability-is-below-orchestrator-and-api"

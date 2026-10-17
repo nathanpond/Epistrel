@@ -2,8 +2,14 @@
 (FR-PROP-1..8; docs/02 §4.9; #131, migration 0048).
 
 - ``entities`` / ``entity_aliases``: a story's referents (a character, a place, an item, an
-  institution) with their canonical name and aliases (FR-PROP-6). #139's resolver fills them;
-  ``core.propositions.store`` is their writer.
+  institution) with their canonical name and aliases (FR-PROP-6); ``core.propositions.store`` is
+  their writer. #139 (migration 0054) adds what the mention resolver (``core.resolution``) reads:
+  ``gender`` (``masculine``/``feminine``; ``NULL`` is compatible with any pronoun),
+  ``descriptors`` (a JSON list of the words a description can match), ``created_by_operation_id``,
+  and each alias's ``source``. A story character's entity has the character's id (and
+  ``character_id``), written beside its ``characters`` row; the canonical name is an alias row
+  too (``source = canonical``). Alias uniqueness per entity is the writer's (by normalized
+  form), not an index: erasure's redaction may make two aliases' texts equal.
 - ``predicates``: the registry. A core row has ``story_id`` null (``layer = core``, seeded from
   ``core.propositions.vocabulary``); an author or auto row belongs to its story. Names are unique
   per scope (``uq_predicates_scope_name`` over ``COALESCE(story_id, 'core')``); a functional row
@@ -70,8 +76,24 @@ entities = Table(
     Column("canonical_name", Text, nullable=False),
     Column("character_id", ulid_type(), nullable=True),
     _created(),
+    # FR-PROP-6 (#139): what the mention resolver reads.
+    Column("gender", Text, nullable=True),
+    Column("descriptors", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("created_by_operation_id", ulid_type(), nullable=True),
+    CheckConstraint("gender IS NULL OR gender IN ('masculine', 'feminine')", name="gender"),
 )
 Index("ix_entities_story_id", entities.c.story_id)
+
+ALIAS_SOURCES = (
+    "canonical",
+    "catalog_alias",
+    "name_override",
+    "scenario_entity",
+    "persona",
+    "canonized",
+    "detected",
+)
+"""Where an alias comes from (``entity_aliases.source``, #139)."""
 
 entity_aliases = Table(
     "entity_aliases",
@@ -81,6 +103,10 @@ entity_aliases = Table(
     Column("entity_id", ulid_type(), nullable=False),
     Column("alias", Text, nullable=False),
     _created(),
+    Column("source", Text, nullable=False, server_default=text("'detected'")),
+    CheckConstraint(
+        "source IN (" + ", ".join(f"'{s}'" for s in ALIAS_SOURCES) + ")", name="source"
+    ),
 )
 Index("ix_entity_aliases_story_id", entity_aliases.c.story_id, entity_aliases.c.entity_id)
 
@@ -215,6 +241,7 @@ Index(
 )
 
 __all__ = [
+    "ALIAS_SOURCES",
     "CORE_SCOPE",
     "closed_sets",
     "entities",

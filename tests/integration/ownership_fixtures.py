@@ -505,6 +505,7 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/variants"): Call(200, prepare=_regenerated),
     ("GET", f"{S}/relations"): Call(200, prepare=_related),
     ("GET", f"{S}/effective-config"): Call(200, prepare=_played),
+    ("GET", f"{S}/guarantees"): Call(200, prepare=_played),
     # -- stories: message ratings (#112). Each requester rates a fresh story's reply, retracts
     # the owner's rating (none of its own: still 204), and reads its own rating of a reply all
     # three rated alike.
@@ -586,6 +587,7 @@ CALLS: dict[tuple[str, str], Call] = {
     # -- engine profiles: reads of an edited profile, at its latest version and at version 1
     ("GET", P): Call(200, queries=({}, {"version": "1"}), prepare=_edited),
     ("GET", f"{P}/versions"): Call(200, prepare=_edited),
+    ("GET", f"{P}/guarantees"): Call(200, queries=({}, {"version": "1"}), prepare=_edited),
     ("GET", f"{P}/relations"): Call(200, prepare=_related),
 }
 """Every route under an owned entity's path, ``/admin`` excluded."""

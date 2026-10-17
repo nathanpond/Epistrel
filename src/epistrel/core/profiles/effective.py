@@ -69,7 +69,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.errors import InvalidProfile, InvalidRequest, ProfileDeleted, StoryNotFound
-from epistrel.core.profiles import schema
+from epistrel.core.profiles import guarantees, schema
 from epistrel.core.profiles.fingerprint import QualityStatus, RuntimeFacts, Stamp, stamp
 from epistrel.core.profiles.schema import (
     PATCH_SCHEMA,
@@ -837,6 +837,15 @@ async def read(db: AsyncEngine, story_id: str, facts: RuntimeFacts) -> Effective
     return view(found, facts)
 
 
+async def read_guarantees(db: AsyncEngine, story_id: str) -> guarantees.GuaranteeTable:
+    """``GET /stories/{id}/guarantees`` (FR-VERIFY-15, FR-PROF-12; #132): the guarantee table of
+    the story's effective configuration, overrides included, with the profile and version it
+    runs on; 404 for an unknown story."""
+    async with db.connect() as conn:
+        found = await effective_configuration(conn, story_id)
+    return guarantees.table(found.profile_id, found.version, found.settings)
+
+
 __all__ = [
     "CACHE",
     "CACHE_MAX",
@@ -867,6 +876,7 @@ __all__ = [
     "profile_defaults",
     "pruned",
     "read",
+    "read_guarantees",
     "refusals",
     "resolve",
     "resolve_layers",

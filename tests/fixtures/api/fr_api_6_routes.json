@@ -1071,6 +1071,16 @@
       "method": "POST",
       "path": "/stories/{story_id}/predicates/{predicate_id}/reject",
       "requirement": "FR-PROP-4"
+    },
+    {
+      "method": "GET",
+      "path": "/engine-profiles/{profile_id}/guarantees",
+      "requirement": "FR-PROF-12"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/guarantees",
+      "requirement": "FR-PROF-12"
     }
   ]
 }

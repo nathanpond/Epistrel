@@ -7081,6 +7081,119 @@
         "title": "GenerationSettings",
         "type": "object"
       },
+      "GuaranteeStatus": {
+        "description": "One row of the guarantee table under a configuration: the step, whether the engine\nperforms it by rules or a model does (``kind``), the metric that measures a model-dependent\nstep (an NFR-QUAL id, or ``unmeasured``; ``null`` for a deterministic step), what it needs,\nand whether it is ``provided`` (``null`` for a step that runs outside stories).",
+        "properties": {
+          "delivered_in": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered In"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/Kind"
+          },
+          "metric": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric"
+          },
+          "provided": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provided"
+          },
+          "purposes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Purposes",
+            "type": "array"
+          },
+          "requires": {
+            "items": {
+              "$ref": "#/components/schemas/epistrel__core__profiles__guarantees__RequiredModule"
+            },
+            "title": "Requires",
+            "type": "array"
+          },
+          "setting": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequiredSetting"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "step": {
+            "title": "Step",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "step",
+          "kind",
+          "metric",
+          "requires",
+          "setting",
+          "purposes",
+          "provided",
+          "delivered_in"
+        ],
+        "title": "GuaranteeStatus",
+        "type": "object"
+      },
+      "GuaranteeTable": {
+        "description": "The guarantee table of one configuration: the profile and version it reads, and every row\nin ``GUARANTEES`` order (FR-VERIFY-15).",
+        "properties": {
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/GuaranteeStatus"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "profile_id",
+          "version",
+          "rows"
+        ],
+        "title": "GuaranteeTable",
+        "type": "object"
+      },
       "GuardrailBody": {
         "description": "The output gate's outcome: the released reply's violations (empty unless even the\nlast-resort fallback line broke a policy) and whether the reply is the safe fallback.",
         "properties": {
@@ -8343,7 +8456,7 @@
         "type": "object"
       },
       "ImpactReport": {
-        "description": "What a change would do before it is applied (FR-PROF-7): the affected stories (ordered by\nstory id, at most 1,000; ``affected_count`` counts them all), the scenario recommendations\nleft unmet, the FR-VERIFY-15 guarantees lost, the fingerprints, the capabilities enabled\nand the quality status after (FR-PROF-16: at the top of a report on one story, or on none,\nwhere an edit of a profile no story follows states the profile's own; inside each entry of a\nreport on a profile's following stories, with the top ones null), and the ``warnings`` that\nhold the change for confirmation (empty: it applies at once).",
+        "description": "What a change would do before it is applied (FR-PROF-7): the affected stories (ordered by\nstory id, at most 1,000; ``affected_count`` counts them all), the scenario recommendations\nleft unmet, the guarantees lost (the ids of the guarantee table's rows, FR-VERIFY-15, that\nheld before and do not after), the fingerprints, the capabilities enabled\nand the quality status after (FR-PROF-16: at the top of a report on one story, or on none,\nwhere an edit of a profile no story follows states the profile's own; inside each entry of a\nreport on a profile's following stories, with the top ones null), and the ``warnings`` that\nhold the change for confirmation (empty: it applies at once).",
         "properties": {
           "affected_count": {
             "title": "Affected Count",
@@ -8800,6 +8913,15 @@
         },
         "title": "InteractionStylePatch",
         "type": "object"
+      },
+      "Kind": {
+        "description": "Whether the engine performs a step by rules or a model performs it.",
+        "enum": [
+          "deterministic",
+          "model_dependent"
+        ],
+        "title": "Kind",
+        "type": "string"
       },
       "LedgerEntryBody": {
         "additionalProperties": false,
@@ -9589,7 +9711,7 @@
           },
           "requires": {
             "items": {
-              "$ref": "#/components/schemas/RequiredModule"
+              "$ref": "#/components/schemas/epistrel__core__profiles__validate__RequiredModule"
             },
             "title": "Requires",
             "type": "array"
@@ -18117,26 +18239,24 @@
         "title": "RelationsBody",
         "type": "object"
       },
-      "RequiredModule": {
-        "description": "A module a rule requires, at one of ``levels`` (any level that is on when empty).",
+      "RequiredSetting": {
+        "description": "A setting a step also needs, at one of ``values``.",
         "properties": {
-          "levels": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Levels",
-            "type": "array"
-          },
-          "module": {
-            "title": "Module",
+          "path": {
+            "title": "Path",
             "type": "string"
+          },
+          "values": {
+            "items": {},
+            "title": "Values",
+            "type": "array"
           }
         },
         "required": [
-          "module",
-          "levels"
+          "path",
+          "values"
         ],
-        "title": "RequiredModule",
+        "title": "RequiredSetting",
         "type": "object"
       },
       "RespondRequest": {
@@ -25393,6 +25513,58 @@
           }
         },
         "title": "WorkersCheck",
+        "type": "object"
+      },
+      "epistrel__core__profiles__guarantees__RequiredModule": {
+        "description": "A module a step needs: on at ``level`` or above (any level when ``null``; exactly\n``level`` when ``exact``).",
+        "properties": {
+          "exact": {
+            "default": false,
+            "title": "Exact",
+            "type": "boolean"
+          },
+          "level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module"
+        ],
+        "title": "RequiredModule",
+        "type": "object"
+      },
+      "epistrel__core__profiles__validate__RequiredModule": {
+        "description": "A module a rule requires, at one of ``levels`` (any level that is on when empty).",
+        "properties": {
+          "levels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Levels",
+            "type": "array"
+          },
+          "module": {
+            "title": "Module",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module",
+          "levels"
+        ],
+        "title": "RequiredModule",
         "type": "object"
       }
     },
@@ -35617,6 +35789,126 @@
         ]
       }
     },
+    "/engine-profiles/{profile_id}/guarantees": {
+      "get": {
+        "description": "The guarantee table of the profile's latest version (`version`: that one's) over the deployment's `profile_defaults`, as a story following it without overrides runs (FR-VERIFY-15, FR-PROF-12; `GET /stories/{id}/guarantees` includes a story's overrides). A deleted profile still answers; an unknown profile or version is 404. Each row is one step of the guarantee boundary (FR-VERIFY-15): the model proposes; the engine validates structured claims, effects, and permissions. `kind` is `deterministic` (performed by rules) or `model_dependent` (performed by a model); a model-dependent step names the NFR-QUAL `metric` that measures it, or `unmeasured`, and a deterministic one has none (`null`). `requires` lists the modules it needs, each on at `level` or above (any level when `null`, exactly that level when `exact`), and `setting` a setting value it also needs; `purposes` names the model purposes it calls. `provided` says whether the step applies under this configuration (`null` for a step that never runs inside a story), and `delivered_in` names the milestone that delivers a step this deployment cannot provide yet. The rows are those of `docs/guarantees.md`, in its order, and the impact report's `guarantees_lost` names the deterministic ones a change loses by `id`. Only the claims detected in an output are checked.",
+        "operationId": "get_profile_guarantees",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "00000000000000000000PRF001"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A version's number (default: the latest).",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A version's number (default: the latest).",
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuaranteeTable"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read an engine profile's guarantee table",
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
     "/engine-profiles/{profile_id}/owner": {
       "put": {
         "description": "Make `principal` the owner of an engine profile (FR-AUTH-5): it answers the owner now and the one before, with the deployment's `config_revision` (unchanged). The transfer is recorded with the acting principal and time. A transfer to the current owner changes nothing and records nothing. `system` is refused (422). Allowed whatever the entity's status. Ownership and relations are labels the consumer defines: they exist for listing, attribution and offboarding only, and Epistrel never grants or withholds an action because of them (FR-AUTH-8).",
@@ -43830,6 +44122,106 @@
         "summary": "Fork the story at a turn",
         "tags": [
           "timeline"
+        ]
+      }
+    },
+    "/stories/{story_id}/guarantees": {
+      "get": {
+        "description": "The guarantee table of the story's effective configuration, its overrides included, with the profile and version it runs on (FR-VERIFY-15, FR-PROF-12; `GET /engine-profiles/{id}/guarantees` answers a profile's). 404 for an unknown story. Each row is one step of the guarantee boundary (FR-VERIFY-15): the model proposes; the engine validates structured claims, effects, and permissions. `kind` is `deterministic` (performed by rules) or `model_dependent` (performed by a model); a model-dependent step names the NFR-QUAL `metric` that measures it, or `unmeasured`, and a deterministic one has none (`null`). `requires` lists the modules it needs, each on at `level` or above (any level when `null`, exactly that level when `exact`), and `setting` a setting value it also needs; `purposes` names the model purposes it calls. `provided` says whether the step applies under this configuration (`null` for a step that never runs inside a story), and `delivered_in` names the milestone that delivers a step this deployment cannot provide yet. The rows are those of `docs/guarantees.md`, in its order, and the impact report's `guarantees_lost` names the deterministic ones a change loses by `id`. Only the claims detected in an output are checked.",
+        "operationId": "get_story_guarantees",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuaranteeTable"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a story's guarantee table",
+        "tags": [
+          "profiles"
         ]
       }
     },

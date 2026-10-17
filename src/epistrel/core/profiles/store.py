@@ -85,7 +85,7 @@ from epistrel.core.context import SYSTEM_PRINCIPAL
 from epistrel.core.errors import ConfigConflict, InvalidRequest, ProfileDeleted, ProfileNotFound
 from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.ownership import Owner, RelationFilter
-from epistrel.core.profiles import effective, impact, schema
+from epistrel.core.profiles import effective, guarantees, impact, schema
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import Delta, ImpactReport, TwoStageRequest, TwoStageResult
@@ -832,6 +832,19 @@ async def get_profile(
         return await _read(conn, profile_id, version)
 
 
+async def profile_guarantees(
+    db: AsyncEngine, profile_id: str, *, version: int | None = None
+) -> guarantees.GuaranteeTable:
+    """The guarantee table (FR-VERIFY-15, FR-PROF-12; #132) of the profile at its latest version
+    (or ``version``) over the deployment's ``profile_defaults``, as a story following it with no
+    overrides runs; 404 for an unknown profile or version. A deleted profile still answers."""
+    async with db.connect() as conn:
+        found = await _read(conn, profile_id, version)
+        defaults = await effective.profile_defaults(conn)
+    settings = effective.merged_settings(defaults, found.settings)
+    return guarantees.table(found.id, found.version, settings)
+
+
 async def list_versions(db: AsyncEngine, profile_id: str) -> list[ProfileVersion]:
     """Every version of the profile, oldest first; 404 for an unknown profile."""
     async with db.connect() as conn:
@@ -984,6 +997,7 @@ __all__ = [
     "get_profile",
     "list_profiles",
     "list_versions",
+    "profile_guarantees",
     "profile_schema",
     "profile_setting",
     "purge_deleted",

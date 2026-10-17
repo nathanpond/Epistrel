@@ -20,20 +20,21 @@ configuration is refused before any report (422 ``invalid_profile``, FR-PROF-4),
 without the service credential never gets this far (#44): ``ignore_warnings`` overrides
 neither. Each report is logged at INFO with counts and warning codes only.
 
-**What a report holds.** For each affected story, ordered by story id and at most
-``AFFECTED_MAX`` of them (``affected_count`` counts them all): the capabilities it gains and
-loses (a module switched on or off, or raised or lowered a level; the pipeline by its level),
-whether a backfill is needed and its estimate (model calls, tokens, duration; ``estimates``),
-whether the upgrade is unavailable, and FR-PROF-16's stamp of the configuration it would run
-under: its fingerprint before and after, and the capabilities enabled and the quality status
-after (``capabilities_after``, ``quality_status_after``). Then the scenario recommendations the
-result does not meet (``recommended_by`` is the scenario's ``<catalog id>@<version>``), the
-FR-VERIFY-15 guarantees it loses, and the warning kinds that made it two-stage. A report on one
-story (a preview, an assignment, overrides) also states the fingerprints, the capabilities and
-the quality status at its top. So does a report that lists no story, since no entry can state
-them: a creation's states the new story's, and an edit's, when no story follows the profile,
-states the profile's own before and after the edit (what a story following it would run under).
-A report that lists a profile's following stories leaves them null at its top.
+**What a report holds.** For each affected story, ordered by story id and at most ``AFFECTED_MAX``
+of them (``affected_count`` counts them all): the capabilities it gains and loses (a module switched
+on or off, or raised or lowered a level; the pipeline by its level), whether a backfill is needed
+and its estimate (model calls, tokens, duration; ``estimates``), whether the upgrade is unavailable,
+and FR-PROF-16's stamp of the configuration it would run under: its fingerprint before and after,
+and the capabilities enabled and the quality status after (``capabilities_after``,
+``quality_status_after``). Then the scenario recommendations the result does not meet
+(``recommended_by`` is the scenario's ``<catalog id>@<version>``), the guarantee-table rows it loses
+(FR-VERIFY-15: ``guarantees.GUARANTEES`` ids, as ``docs/guarantees.md`` publishes them; #132), and
+the warning kinds that made it two-stage. A report on one story (a preview, an assignment,
+overrides) also states the fingerprints, the capabilities and the quality status at its top. So does
+a report that lists no story, since no entry can state them: a creation's states the new story's,
+and an edit's, when no story follows the profile, states the profile's own before and after the edit
+(what a story following it would run under). A report that lists a profile's following stories
+leaves them null at its top.
 
 **M3's interim rule (FR-PROF-8, until M7).** A change that adds data-producing capability
 (``schema.data_increases``) to a story with history, meaning at least one committed, active
@@ -72,13 +73,8 @@ from epistrel.core.ids import Ulid
 from epistrel.core.profiles import effective, estimates, schema
 from epistrel.core.profiles.capabilities import module_names
 from epistrel.core.profiles.effective import Configuration
-from epistrel.core.profiles.fingerprint import (
-    GUARANTEES,
-    QualityStatus,
-    RuntimeFacts,
-    Stamp,
-    guarantees,
-)
+from epistrel.core.profiles.fingerprint import QualityStatus, RuntimeFacts, Stamp
+from epistrel.core.profiles.guarantees import guarantees_lost, ordered
 from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsPatch
 from epistrel.core.tables import operations, stories, transcript_messages
 from epistrel.observability.logging import get_logger
@@ -157,7 +153,8 @@ class UnmetRecommendation(BaseModel):
 class ImpactReport(BaseModel):
     """What a change would do before it is applied (FR-PROF-7): the affected stories (ordered by
     story id, at most 1,000; ``affected_count`` counts them all), the scenario recommendations
-    left unmet, the FR-VERIFY-15 guarantees lost, the fingerprints, the capabilities enabled
+    left unmet, the guarantees lost (the ids of the guarantee table's rows, FR-VERIFY-15, that
+    held before and do not after), the fingerprints, the capabilities enabled
     and the quality status after (FR-PROF-16: at the top of a report on one story, or on none,
     where an edit of a profile no story follows states the profile's own; inside each entry of a
     report on a profile's following stories, with the top ones null), and the ``warnings`` that
@@ -207,12 +204,11 @@ def _moved(before: ProfileSettings, after: ProfileSettings, *, up: bool) -> set[
 def delta(before: Configuration, after: Configuration, facts: RuntimeFacts) -> Delta:
     """How ``after`` differs from ``before``."""
     had, has = set(module_names(before.settings)), set(module_names(after.settings))
-    held = set(guarantees(before.settings)) - set(guarantees(after.settings))
     return Delta(
         gained=tuple(sorted((has - had) | _moved(before.settings, after.settings, up=True))),
         lost=tuple(sorted((had - has) | _moved(before.settings, after.settings, up=False))),
         increases=tuple(schema.data_increases(before.settings, after.settings)),
-        guarantees_lost=tuple(g for g in guarantees(before.settings) if g in held),
+        guarantees_lost=guarantees_lost(before.settings, after.settings),
         before=before.stamp(facts),
         after=after.stamp(facts),
     )
@@ -439,9 +435,8 @@ async def following_report(
 
 
 def _lost(changes: Sequence[Delta]) -> list[str]:
-    """The guarantees any of ``changes`` loses, in ``GUARANTEES`` order."""
-    lost = {name for found in changes for name in found.guarantees_lost}
-    return [g.name for g in GUARANTEES if g.name in lost]
+    """The guarantees any of ``changes`` loses, by ``GUARANTEES`` id, in its order."""
+    return ordered({name for found in changes for name in found.guarantees_lost})
 
 
 def _following_warnings(changes: Sequence[Delta], *, unavailable: bool) -> list[str]:

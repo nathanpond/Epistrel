@@ -1,5 +1,5 @@
-"""A configuration's fingerprint, the capabilities it enables, its quality status, and the
-guarantees that hold under it (FR-PROF-12,16, FR-VERIFY-15; #109).
+"""A configuration's fingerprint, the capabilities it enables, and its quality status
+(FR-PROF-12,16; #109).
 
 **The fingerprint** identifies an effective configuration for quality purposes. It is
 ``sha256:`` and the SHA-256 hex digest of the canonical JSON (``canonical_json``: keys sorted,
@@ -33,9 +33,9 @@ is named by its level (``lite``, ``structured``; ``capabilities.capability_names
 certification records, so every configuration is ``uncertified``; M7's certification produces
 the other two.
 
-**Guarantees** are the FR-VERIFY-15 guarantees a configuration provides, each held where its
-capability-map entry holds (``GUARANTEES``, read from ``capabilities.CAPABILITY_MAP``): under
-Lite none of them holds.
+The guarantees a configuration provides are the guarantee table's (``guarantees.GUARANTEES``,
+FR-VERIFY-15; #132), which replaced #109's four guarantee strings here: they are its rows'
+display labels.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from epistrel.core.profiles import schema
-from epistrel.core.profiles.capabilities import CAPABILITY, CapabilityEntry, capability_names
+from epistrel.core.profiles.capabilities import capability_names
 from epistrel.core.profiles.schema import ProfileSettings, Quality
 from epistrel.core.settings_schema import flatten
 
@@ -209,44 +209,12 @@ def stamp(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class Guarantee:
-    """One FR-VERIFY-15 guarantee and the capability-map entry (#129) that provides it."""
-
-    name: str
-    entry: str
-    """The ``CAPABILITY_MAP`` slug whose modules provide it."""
-
-    @property
-    def held_by(self) -> CapabilityEntry:
-        return CAPABILITY[self.entry]
-
-
-GUARANTEES: tuple[Guarantee, ...] = (
-    Guarantee("structural knowledge separation", "partitions"),
-    Guarantee("audience filtering", "perception_co_location"),
-    Guarantee("verification", "verification"),
-    Guarantee("commitment", "commitment"),
-)
-"""The guarantees FR-VERIFY-15 names as not holding under Lite (the strings are its own), each
-held where its ``CAPABILITY_MAP`` entry holds: per-character partitions, perception at
-``co_location`` or ``full``, verification from declared claims up, and commitment."""
-
-
-def guarantees(settings: ProfileSettings) -> tuple[str, ...]:
-    """The guarantees ``settings`` provides, in ``GUARANTEES`` order: those whose capability-map
-    entry holds under it."""
-    return tuple(g.name for g in GUARANTEES if g.held_by.holds(settings))
-
-
 __all__ = [
     "FINGERPRINT_PATTERN",
     "FINGERPRINT_PREFIX",
-    "GUARANTEES",
     "RELEVANT_PATHS",
     "TEMPLATES_KEY",
     "UNCERTIFIED",
-    "Guarantee",
     "ModelIdentity",
     "QualityStatus",
     "QualityStatusValue",
@@ -255,7 +223,6 @@ __all__ = [
     "canonical_json",
     "capabilities",
     "fingerprint",
-    "guarantees",
     "quality_relevant_settings",
     "routed_models",
     "stamp",

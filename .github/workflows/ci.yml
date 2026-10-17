@@ -50,6 +50,11 @@ jobs:
       - name: capability-map
         run: uv run python -m epistrel.tools.capability_map --check
         if: always()
+      # Guarantee table (#132, FR-VERIFY-15): docs/guarantees.md is exactly what GUARANTEES renders,
+      # and every delivered model purpose has a model-dependent row.
+      - name: guarantees
+        run: uv run python -m epistrel.tools.guarantees --check
+        if: always()
       # Core vocabulary (#131, FR-PROP-5): docs/predicates.md is exactly what the vocabulary renders.
       - name: predicates
         run: uv run python -m epistrel.tools.predicates --check

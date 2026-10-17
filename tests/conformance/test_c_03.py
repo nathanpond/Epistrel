@@ -490,6 +490,7 @@ PROFILE_ANSWERS = [
     ("update_profile", 200),
     ("get_profile", 200),
     ("list_profile_versions", 200),
+    ("get_profile_guarantees", 200),
     ("copy_profile", 201),
     ("validate_profile", 200),
     ("validate_profile", 200),
@@ -500,17 +501,19 @@ PROFILE_ANSWERS = [
     ("transfer_owner", 200),
     ("impact_preview", 200),
     ("get_effective_config", 200),
+    ("get_story_guarantees", 200),
     ("assign_engine_profile", 200),
     ("set_profile_overrides", 200),
     ("get_effective_config", 200),
 ]
 """What the engine-profile steps (#106) answer on both surfaces: a profile created, read, listed,
-edited into version 2 (two-stage, #109: no story follows it, so it applies at once), read at
-version 1, its versions listed, copied, validated (and refused for an undelivered level), the
-schema read, the default refused deletion, the copy deleted, and the profile transferred; then
-(#109) the impact of assigning it to the story previewed, and the story's effective
-configuration read; then (#113) the profile assigned to the story (no capability changes, so it
-applies at once), one of its dials overridden, and its configuration read again."""
+edited into version 2 (two-stage, #109: no story follows it, so it applies at once), read at version
+1, its versions listed, its guarantee table read (#132), copied, validated (and refused for an
+undelivered level), the schema read, the default refused deletion, the copy deleted, and the profile
+transferred; then (#109) the impact of assigning it to the story previewed, and the story's
+effective configuration and guarantee table (#132) read; then (#113) the profile assigned to the
+story (no capability changes, so it applies at once), one of its dials overridden, and its
+configuration read again."""
 STORY_OVERRIDES = {"settings": {"memory": {"rolling_summary": {"window_messages": 12}}}}
 """A story's override of its profile's verbatim window (#113)."""
 DEPLOYMENT_PATCH = {"profile_defaults": {"memory": {"rolling_summary": {"window_messages": 40}}}}
@@ -1597,6 +1600,12 @@ def _steps() -> list[Step]:
             group=PROFILE_GROUP,
         ),
         Step(
+            "get_profile_guarantees",
+            lambda ids: Rest("GET", "/engine-profiles/{profile}/guarantees", params={"version": 1}),
+            lambda e, ids: _dumped(e.get_profile_guarantees(CTX, ids["profile"], version=1)),
+            group=PROFILE_GROUP,
+        ),
+        Step(
             "copy_profile",
             lambda ids: Rest("POST", "/engine-profiles/{profile}/copy", PROFILE_COPY),
             lambda e, ids: _profile_write(
@@ -1665,6 +1674,12 @@ def _steps() -> list[Step]:
             "get_effective_config",
             lambda ids: Rest("GET", f"{s}/effective-config"),
             lambda e, ids: _effective(e, ids["story"]),
+            group=PROFILE_GROUP,
+        ),
+        Step(
+            "get_story_guarantees",
+            lambda ids: Rest("GET", f"{s}/guarantees"),
+            lambda e, ids: _dumped(e.get_story_guarantees(CTX, ids["story"])),
             group=PROFILE_GROUP,
         ),
         # -- the story's profile and overrides (#113), then its configuration read again
@@ -2213,6 +2228,10 @@ async def _story_profile_write(call: Awaitable[Any]) -> dict[str, Any]:
 async def _impact(engine: Engine, story_id: str, body: dict[str, Any]) -> dict[str, Any]:
     request = ImpactPreviewRequest.model_validate(body)
     return dump(await engine.impact_preview(CTX, story_id, request))
+
+
+async def _dumped(call: Awaitable[BaseModel]) -> dict[str, Any]:
+    return dump(await call)
 
 
 async def _effective(engine: Engine, story_id: str) -> dict[str, Any]:

@@ -98,7 +98,7 @@ from epistrel.core.media.store import BlobStore
 from epistrel.core.media.stores import make_store
 from epistrel.core.policies.model import Policy, Scope
 from epistrel.core.ports import Ports
-from epistrel.core.profiles import effective, impact
+from epistrel.core.profiles import effective, guarantees, impact
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles import story as story_profile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
@@ -3580,6 +3580,16 @@ class Engine:
         return await profiles.get_profile(self.db, profile_id, version=version)
 
     @refuses_nul()
+    async def get_profile_guarantees(
+        self, ctx: RequestContext, profile_id: str, *, version: int | None = None
+    ) -> guarantees.GuaranteeTable:
+        """The guarantee table (FR-VERIFY-15, FR-PROF-12; #132) of the profile at its latest
+        version (``version``: that one) over the deployment's defaults, story overrides
+        excluded: each step, deterministic or model-dependent with its metric, and whether the
+        profile provides it. 404 for an unknown profile or version."""
+        return await profiles.profile_guarantees(self.db, profile_id, version=version)
+
+    @refuses_nul()
     async def list_profiles(
         self,
         ctx: RequestContext,
@@ -3732,6 +3742,15 @@ class Engine:
         effective value (defaults, then the profile's version, then the overrides), the
         fingerprint, the capabilities and the quality status. 404 for an unknown story."""
         return await effective.read(self.db, story_id, await self._runtime_facts())
+
+    @refuses_nul()
+    async def get_story_guarantees(
+        self, ctx: RequestContext, story_id: str
+    ) -> guarantees.GuaranteeTable:
+        """The guarantee table (FR-VERIFY-15, FR-PROF-12; #132) of the story's effective
+        configuration, its overrides included, with the profile and version it runs on. 404 for
+        an unknown story."""
+        return await effective.read_guarantees(self.db, story_id)
 
     async def assign_engine_profile(
         self, ctx: RequestContext, story_id: str, request: story_profile.ProfileAssignment

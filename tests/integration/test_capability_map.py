@@ -2,7 +2,7 @@
 capability map, and the interim rule for a data-producing increase (#129).
 
 C-16 (M4) has exactly this file (traceability allows one file per test ID and milestone): #129's
-parts here, and #132's ``test_c_16__guarantee_table`` when it lands.
+parts and #132's.
 
 - ``test_u_28__m4_dependencies``: each dependency rule now on the delivered path, violated by a
   fixture that is refused naming what it lacks, and accepted with it present.
@@ -12,6 +12,12 @@ parts here, and #132's ``test_c_16__guarantee_table`` when it lands.
 - ``test_c_16__capabilities``: the map as FR-PROF-13 writes it and as docs/capability-map.md
   renders it; the seeded ``Structured (M4)`` profile; the capabilities and guarantees reports
   read from the map.
+- ``test_c_16__guarantee_table`` (#132): the published guarantee table matches the capability
+  map. Lite's table lists structural knowledge separation, audience filtering, verification and
+  commitment as not provided; Structured (M4)'s provides verification and commitment and not
+  partitions (M5); the impact report and the eval reports name the table's ids.
+- ``test_c_16__guarantee_routes`` (#132): ``GET /engine-profiles/{id}/guarantees`` and
+  ``GET /stories/{id}/guarantees`` answer the published table as JSON.
 
 The C-16 parts change profiles and stories, so they run on a scratch database of their own.
 Module names come from the schema's registry and the map (``tests/profile_support.py``): a part
@@ -41,9 +47,18 @@ from epistrel.core.profiles.capabilities import (
     level_at_least,
     module_on,
 )
-from epistrel.core.profiles.effective import effective_configuration
+from epistrel.core.profiles.effective import effective_configuration, merged_settings
 from epistrel.core.profiles.estimates import CALL_LATENCY_MS
-from epistrel.core.profiles.fingerprint import GUARANTEES, guarantees
+from epistrel.core.profiles.guarantees import (
+    GUARANTEE,
+    GUARANTEES,
+    UNMEASURED,
+    Kind,
+    evaluate_guarantees,
+    guarantees,
+    guarantees_lost,
+    metric_ids,
+)
 from epistrel.core.profiles.validate import (
     RequiredModule,
     missing_dependencies,
@@ -58,6 +73,7 @@ from epistrel.core.seeds.profiles import (
     structured_m4_settings,
 )
 from epistrel.testing.profiles import structured_m4
+from epistrel.tools import guarantees as guarantee_tool
 from epistrel.tools.capability_map import MAP_PATH, render
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
@@ -367,11 +383,10 @@ async def test_c_16__capabilities(scratch: Space) -> None:
     response report the profile and version, the capabilities (each module by name, a ladder
     module by its level), the quality status and the degradation steps.
 
-    Guarantees follow the map: each FR-VERIFY-15 guarantee holds exactly where its map entry
-    does. Under Lite none holds, so its table lists every one as not provided, among them
-    structural knowledge separation, verification and commitment; the structured profile
-    provides verification and commitment only. Previewing Lite for the structured story reports
-    those two as ``guarantees_lost``, with the capabilities it loses by module name."""
+    Guarantees follow the map: each row of the guarantee table held under a map entry holds only
+    where that entry does. Previewing Lite for the structured story reports the rows it loses,
+    by the table's ids (verification and commitment among them), with the capabilities it loses
+    by module name."""
     assert map_units() == prof_13_units()
     assert render() == MAP_PATH.read_text(encoding="utf-8")
 
@@ -379,14 +394,11 @@ async def test_c_16__capabilities(scratch: Space) -> None:
     structured = parse_settings(structured_m4_settings())
     assert level_at_least(structured, "pipeline", "structured")
     assert all(module_on(structured, name) for name in ("consolidation", "commitment"))
-    for guarantee in GUARANTEES:
-        entry = CAPABILITY[guarantee.entry]
-        assert (guarantee.name in guarantees(lite)) is entry.holds(lite) is False
-        assert (guarantee.name in guarantees(structured)) is entry.holds(structured)
-    not_provided = [g.name for g in GUARANTEES if g.name not in guarantees(lite)]
-    assert not_provided == [g.name for g in GUARANTEES]
-    assert {"structural knowledge separation", "verification", "commitment"} <= set(not_provided)
-    assert guarantees(structured) == ("verification", "commitment")
+    for row in GUARANTEES:
+        if row.capability is not None:
+            entry = CAPABILITY[row.capability]
+            for settings in (lite, structured):
+                assert row.id not in guarantees(settings) or entry.holds(settings), row.id
     assert "floor" in holding(lite)
     assert len(CAPABILITY_MAP) == len(set(CAPABILITY))
 
@@ -438,7 +450,11 @@ async def test_c_16__capabilities(scratch: Space) -> None:
                 headers=headers(),
             )
         )
-        assert preview["guarantees_lost"] == ["verification", "commitment"]
+        lost = list(
+            guarantees_lost(effective_of(structured_m4_settings()), effective_of(lite_settings()))
+        )
+        assert preview["guarantees_lost"] == lost
+        assert {"verification", "commitment_mechanics"} <= set(lost)
         assert "guarantees_lost" in preview["warnings"]
         (entry,) = preview["affected_stories"]
         assert {"structured", "verification", "commitment"} <= set(entry["capabilities_lost"])
@@ -453,3 +469,137 @@ def test_capability_map_units_are_parsed() -> None:
     assert {"FR-TURN", "FR-MEM-8", "FR-CONC-12", "FR-COMMIT-14", "NFR-PRIV-4"} <= units
     assert "FR-AUTH" not in units  # the floor sentence
     assert re.fullmatch(r"(?:FR|NFR)-[A-Z]+(?:-\d+)?", min(units)) is not None
+
+
+def effective_of(settings: dict[str, Any]) -> schema.ProfileSettings:
+    """A seeded profile's settings over the deployment's seeded defaults."""
+    return merged_settings(profile_defaults(), settings)
+
+
+FOUR = (
+    "structural_knowledge_separation",
+    "verification",
+    "audience_filtering",
+    "commitment_mechanics",
+)
+"""The rows of the four guarantees FR-VERIFY-15 names as not holding under Lite."""
+FOUR_LABELS = [
+    "structural knowledge separation",
+    "verification",
+    "audience filtering",
+    "commitment",
+]
+SEPARATION = FOUR[0]
+LITE_MISSING = (
+    "**Not provided under Lite:** structural knowledge separation, verification, "
+    "audience filtering, commitment."
+)
+NONE_APPLIES = "**no audience filtering applies**"
+SEPARATION_LINE = (
+    "| structural knowledge separation (per-character partitions) "
+    "| `structural_knowledge_separation` | deterministic | not provided (M5) |"
+)
+
+
+@pytest.mark.part("M4", "FR-PROF-12,13")
+def test_c_16__guarantee_table() -> None:
+    """The published guarantee table matches the capability map: every row held under a map
+    entry needs what that entry needs, and holds only where the entry does, and
+    docs/guarantees.md renders from the same constants. Lite's table lists the four guarantees
+    the boundary names for it (``FOUR``: structural knowledge separation, verification and
+    commitment among them) as not provided, and says its viewpoints get every beat but private
+    content. Structured (M4)'s lists verification and commitment as provided, and structural
+    knowledge separation as not provided, with the milestone that delivers it. The impact report
+    names a lost guarantee by the table's id, and the eval reports' metrics are the table's
+    NFR-QUAL ids (``metric_ids``, which #134's report check reads)."""
+    rendered = guarantee_tool.render()
+    assert rendered == guarantee_tool.TABLE_PATH.read_text(encoding="utf-8")
+    lite, structured = guarantee_tool.SEEDED
+    assert (lite.profile_id, structured.profile_id) == (LITE_PRESET_ID, structured_m4())
+    for row in GUARANTEES:
+        if row.capability is None:
+            continue
+        entry = CAPABILITY[row.capability]
+        assert set(entry.requires) <= set(row.requires), row.id
+        for seeded in guarantee_tool.SEEDED:
+            if row.provided(seeded.effective()):
+                assert entry.holds(seeded.effective()), (row.id, seeded.name)
+
+    assert tuple(row.id for row in GUARANTEES if row.label is not None) == FOUR
+    assert [GUARANTEE[found].label for found in FOUR] == FOUR_LABELS
+    on_lite = {row.id: row for row in evaluate_guarantees(lite.effective())}
+    on_structured = {row.id: row for row in evaluate_guarantees(structured.effective())}
+    assert [on_lite[found].provided for found in FOUR] == [False] * 4
+    assert on_structured["verification"].provided is True
+    assert on_structured["commitment_mechanics"].provided is True
+    separation = on_structured[SEPARATION]
+    assert (separation.provided, separation.delivered_in) == (False, "M5")
+
+    lite_part = rendered.split("### Lite\n", 1)[1].split("\n### ", 1)[0]
+    structured_part = rendered.split(f"### {STRUCTURED_M4_NAME}\n", 1)[1]
+    assert LITE_MISSING in lite_part
+    assert NONE_APPLIES in lite_part
+    assert f"**Provided under {STRUCTURED_M4_NAME}:** verification, commitment." in structured_part
+    assert SEPARATION_LINE in structured_part
+
+    lost = guarantees_lost(structured.effective(), lite.effective())
+    assert set(lost) <= set(GUARANTEE)
+    assert {"verification", "commitment_mechanics"} <= set(lost)
+    assert set(metric_ids()) == {
+        row.metric
+        for row in GUARANTEES
+        if row.kind is Kind.model_dependent and row.metric not in (None, UNMEASURED)
+    }
+    assert all(found.startswith("NFR-QUAL-") for found in metric_ids())
+
+
+@pytest.mark.part("M4", "FR-PROF-12")
+async def test_c_16__guarantee_routes(scratch: Space) -> None:
+    """``GET /engine-profiles/{id}/guarantees`` answers each seeded profile's table as JSON,
+    the same data docs/guarantees.md renders, at its latest version and at ``?version=1``.
+    ``GET /stories/{id}/guarantees`` answers the story's effective configuration, overrides
+    included. A story on Structured (M4) answers its profile's table until an override turns
+    commitment off. Then its table no longer provides ``commitment_mechanics`` or
+    ``salience``, the write's impact report names the deterministic one lost (a model-dependent
+    step is measured, not a guarantee), and the profile's table keeps both. An unknown profile,
+    version or story is 404."""
+    async with respond_client(scratch.settings, scratch.db) as (client, _):
+        for seeded in guarantee_tool.SEEDED:
+            expected = [
+                row.model_dump(mode="json") for row in evaluate_guarantees(seeded.effective())
+            ]
+            path = f"/engine-profiles/{seeded.profile_id}/guarantees"
+            found = await ok(await client.get(path, headers=READ))
+            assert found == {"profile_id": seeded.profile_id, "version": 1, "rows": expected}
+            pinned = await ok(await client.get(path, params={"version": 1}, headers=READ))
+            assert pinned == found
+        profile_path = f"/engine-profiles/{structured_m4()}/guarantees"
+        profile_table = await ok(await client.get(profile_path, headers=READ))
+        story, _ = await _story(client, structured_m4())
+        assert await ok(await client.get(f"/stories/{story}/guarantees", headers=READ)) == {
+            **profile_table
+        }
+        overridden = await ok(
+            await client.patch(
+                f"/stories/{story}/profile-overrides",
+                json={"settings": {"commitment": {"enabled": False}}, "ignore_warnings": True},
+                headers=headers(),
+            )
+        )
+        assert overridden["applied"] is True
+        assert overridden["impact"]["guarantees_lost"] == ["commitment_mechanics"]
+        after = await ok(await client.get(f"/stories/{story}/guarantees", headers=READ))
+        provided = {row["id"]: row["provided"] for row in after["rows"]}
+        assert (provided["commitment_mechanics"], provided["salience"]) == (False, False)
+        assert provided["verification"] is True
+        assert await ok(await client.get(profile_path, headers=READ)) == profile_table
+        for missing in (
+            await client.get(f"/engine-profiles/{'0' * 26}/guarantees", headers=READ),
+            await client.get(f"/stories/{'0' * 26}/guarantees", headers=READ),
+            await client.get(
+                f"/engine-profiles/{LITE_PRESET_ID}/guarantees",
+                params={"version": 9},
+                headers=READ,
+            ),
+        ):
+            assert missing.status_code == 404, missing.text

@@ -223,6 +223,9 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         "deterministic claim detectors",
         D,
         on="verification",
+        note="Every detected claim is matched to a declared one or checked as a new claim: zero "
+        "unchecked detected claims is a guarantee (FR-VERIFY-13). Complete detection is not: it "
+        "is a measured rate (NFR-QUAL-10).",
     ),
     # -- model-dependent and measured (FR-VERIFY-15's list, in its order)
     _row(
@@ -240,6 +243,9 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         "NFR-QUAL-10",
         on="verification_extraction",
         purposes=("extraction_backstop",),
+        note="Complete detection is a measured rate, reported per layer and per "
+        "`extraction_mode` (E-10). Under `gated`, the default, it runs only on the beats a "
+        "detector flagged, and a shadow sample records what gating missed (FR-OBS-4).",
     ),
     _row(
         "salience",

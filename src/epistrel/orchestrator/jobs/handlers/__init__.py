@@ -8,7 +8,8 @@ recurring ``media_sweep`` (#105), ``offboarding`` (#117), ``rating_check`` (#118
 recurring ``erasure_reconcile_retry`` (#125). M4 adds ``importance_scoring`` (#135, with its daily
 recurring safety net), the embedding port's ``embed`` and ``reembed`` (#138) and
 ``consolidation`` (#143), and the hot set's ``hot_set_retirement`` and its daily
-``hot_counts_reconcile`` (#147). A kind
+``hot_counts_reconcile`` (#147), and claim detection's post-commit ``extraction_shadow``
+(#148, ``orchestrator.verify.extraction``). A kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -48,6 +49,7 @@ from epistrel.orchestrator.jobs.handlers.retirement import (
 from epistrel.orchestrator.jobs.handlers.turn_queue import TURN_QUEUE_HANDLER, TURN_QUEUE_TASK
 from epistrel.orchestrator.jobs.recurring import register_recurring
 from epistrel.orchestrator.jobs.types import JobHandler
+from epistrel.orchestrator.verify.extraction import SHADOW_HANDLER
 
 _REGISTRY: dict[str, JobHandler] = {}
 
@@ -86,6 +88,7 @@ for _handler in (
     CONSOLIDATION_HANDLER,
     RETIREMENT_HANDLER,
     RECONCILE_HANDLER,
+    SHADOW_HANDLER,
 ):
     register(_handler)
 for _task in (

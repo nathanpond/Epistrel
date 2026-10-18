@@ -148,6 +148,7 @@ from epistrel.core.tables import (
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.tables.detection import extraction_shadow
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.feedback import feedback_history, message_feedback
 from epistrel.core.tables.hot_set import overflow_episodes
@@ -208,6 +209,8 @@ STORY_TABLES: tuple[Table, ...] = (
     memories,
     # The hot set's overflow episodes (#147): maintenance state, no foreign key.
     overflow_episodes,
+    # Claim detection's shadow samples (#148): a derived table, before the operations it names.
+    extraction_shadow,
     # The structured read set's change index (#136), before the operations it references.
     proposition_changes,
     # The structured stores (#131): story rows only (core predicates have no story).
@@ -241,6 +244,7 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         guardrail_check_results.name,
         proposition_changes.name,
         overflow_episodes.name,
+        extraction_shadow.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
@@ -253,7 +257,8 @@ change's check and verdict cache (#118: a check is the source's work, and the ca
 keys name the source's events), the read set's change index (#136: it records what changed
 under the source's turns; the fork's turns begin from its own revision), and the hot set's
 overflow episodes (#147: maintenance state; the fork recounts its counters and its next commit
-opens the episodes it needs). Every other table
+opens the episodes it needs), and claim detection's shadow samples (#148: an eval of the
+source's renders, which ``GET /admin/evals/extraction-shadow`` counts once). Every other table
 in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
 is named here."""
 

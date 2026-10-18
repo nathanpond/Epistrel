@@ -6416,6 +6416,116 @@
         "title": "EvaluatedRating",
         "type": "object"
       },
+      "ExtractionShadowBody": {
+        "additionalProperties": false,
+        "description": "What gating missed, and detection and checking counted apart.",
+        "properties": {
+          "checked_total": {
+            "description": "Detected claims checked in those turn reports.",
+            "title": "Checked Total",
+            "type": "integer"
+          },
+          "detected_total": {
+            "description": "Claims detected in the window's turn reports.",
+            "title": "Detected Total",
+            "type": "integer"
+          },
+          "extraction_claims": {
+            "title": "Extraction Claims",
+            "type": "integer"
+          },
+          "failed": {
+            "description": "Samples whose extraction call failed.",
+            "title": "Failed",
+            "type": "integer"
+          },
+          "from": {
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ShadowSampleBody"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "miss_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Missed claims over every claim the sampled extractions made; `null` when they made none.",
+            "title": "Miss Rate"
+          },
+          "missed": {
+            "title": "Missed",
+            "type": "integer"
+          },
+          "missed_by_category": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Missed By Category",
+            "type": "object"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pass as `after` for the next page; `null` at the end.",
+            "title": "Next"
+          },
+          "samples": {
+            "description": "Sampled renders and composed messages.",
+            "title": "Samples",
+            "type": "integer"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
+          },
+          "to": {
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "story_id",
+          "samples",
+          "failed",
+          "extraction_claims",
+          "missed",
+          "missed_by_category",
+          "miss_rate",
+          "detected_total",
+          "checked_total",
+          "items",
+          "next"
+        ],
+        "title": "ExtractionShadowBody",
+        "type": "object"
+      },
       "FactBody": {
         "description": "One fact version: its proposition, valid-time (story-minutes; outer and inner bounds),\ntransaction-time, provenance, authority, lock, visibility, lineage and what it closed.",
         "properties": {
@@ -24802,6 +24912,13 @@
             "title": "Erasure Shared Media",
             "type": "string"
           },
+          "extraction_shadow_sample_rate": {
+            "default": 0.1,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Extraction Shadow Sample Rate",
+            "type": "number"
+          },
           "feedback_export": {
             "default": false,
             "title": "Feedback Export",
@@ -25574,6 +25691,13 @@
             "title": "ProfileSettings",
             "type": "object"
           },
+          "protected_index_max": {
+            "default": 5000,
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Protected Index Max",
+            "type": "integer"
+          },
           "public_base_url": {
             "anyOf": [
               {
@@ -25833,6 +25957,17 @@
               }
             ],
             "title": "Erasure Shared Media"
+          },
+          "extraction_shadow_sample_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction Shadow Sample Rate"
           },
           "feedback_export": {
             "anyOf": [
@@ -26701,6 +26836,17 @@
             ],
             "title": "Profile Defaults"
           },
+          "protected_index_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protected Index Max"
+          },
           "public_base_url": {
             "anyOf": [
               {
@@ -26890,6 +27036,76 @@
           }
         },
         "title": "SettingsPatch",
+        "type": "object"
+      },
+      "ShadowSampleBody": {
+        "additionalProperties": false,
+        "description": "One shadow sample: a sampled turn's render or composed message.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "extraction_claims": {
+            "description": "Every claim the shadow extraction made.",
+            "title": "Extraction Claims",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "missed_by_category": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Missed By Category",
+            "type": "object"
+          },
+          "missed_count": {
+            "description": "The claims no declared or detector claim covered.",
+            "title": "Missed Count",
+            "type": "integer"
+          },
+          "narrative_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narrative Turn"
+          },
+          "operation_id": {
+            "description": "The sampled turn's operation.",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "status": {
+            "description": "`sampled`, or `failed` when its extraction call failed.",
+            "title": "Status",
+            "type": "string"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "story_id",
+          "operation_id",
+          "narrative_turn",
+          "status",
+          "extraction_claims",
+          "missed_count",
+          "missed_by_category",
+          "created_at"
+        ],
+        "title": "ShadowSampleBody",
         "type": "object"
       },
       "SlotChoice": {
@@ -30400,6 +30616,7 @@
                           "embedding_hnsw_m",
                           "entailment_max_records",
                           "erasure_shared_media",
+                          "extraction_shadow_sample_rate",
                           "feedback_export",
                           "feedback_regen_window_s",
                           "feedback_retention",
@@ -30508,6 +30725,7 @@
                           "profile_defaults.verification.implication_max_depth",
                           "profile_defaults.verification.level",
                           "profile_defaults.verification.safe_disposition",
+                          "protected_index_max",
                           "public_base_url",
                           "rating_check_model_calls_per_record",
                           "rating_check_retention_days",
@@ -31818,6 +32036,166 @@
           }
         ],
         "summary": "Read the erasure ledger's reconciliation",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/evals/extraction-shadow": {
+      "get": {
+        "operationId": "extraction_shadow_report",
+        "parameters": [
+          {
+            "description": "An ISO 8601 date-time with its offset (`2026-10-17T12:00:00Z`).",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d{1,6})?)?(?:Z|[+-]\\d{2}:\\d{2})$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An ISO 8601 date-time with its offset (`2026-10-17T12:00:00Z`).",
+              "title": "From"
+            }
+          },
+          {
+            "description": "An ISO 8601 date-time with its offset (`2026-10-17T12:00:00Z`).",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d{1,6})?)?(?:Z|[+-]\\d{2}:\\d{2})$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An ISO 8601 date-time with its offset (`2026-10-17T12:00:00Z`).",
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "story_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Story Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractionShadowBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read claim detection's shadow report",
         "tags": [
           "admin"
         ]

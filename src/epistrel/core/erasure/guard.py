@@ -388,6 +388,12 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.memory.records", DIRECT),
     WritePath("epistrel.core.mutation", DIRECT),
     WritePath("epistrel.core.commit.lifecycle", DIRECT),
+    WritePath(
+        "epistrel.core.verify.shadow",
+        EXEMPT,
+        "a shadow sample adds counts, spans, ids and hashes to the sampled turn's report, "
+        "never text",
+    ),
 )
 """Every content write path (``SUBJECT_WRITERS``' writer modules, plus ingest, the job commit
 and the Lite pipeline); ``tests/integration/test_erasure_resurrection.py`` checks the set and

@@ -25,6 +25,7 @@ from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
 from epistrel.core.tables.ownership import EntityType
+from epistrel.core.verify import shadow
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import timers
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
@@ -224,7 +225,18 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
     async def owe(conn: AsyncConnection, op: Operation) -> None:
         await lifecycle.introduce(conn, op, sketch, valid_time=0, salient=True, on=True)
 
-    await canon_support.run(engine, story_id, owe)
+    sampled, _ = await canon_support.run(engine, story_id, owe)
+    # Claim detection (#148): a shadow sample of that turn.
+    async with engine.begin() as conn:
+        written = await shadow.write_sample(
+            conn,
+            story_id,
+            sampled.operation_id,
+            status=shadow.SAMPLED,
+            extraction_claims=1,
+            missed=[shadow.Missed(beat=2, start=0, end=4, category="possession")],
+        )
+    assert written is not None
 
 
 def _due() -> datetime:

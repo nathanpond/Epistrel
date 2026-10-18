@@ -22,6 +22,7 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx2 as httpx
@@ -1746,6 +1747,16 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", "/admin/erasure/boundary"),
             lambda e, ids: _erasure_boundary(e),
         ),
+        # -- claim detection's shadow report (#148): a fixed window, so both forms agree
+        Step(
+            "extraction_shadow_report",
+            lambda ids: Rest(
+                "GET",
+                "/admin/evals/extraction-shadow",
+                params={"from": SHADOW_FROM.isoformat(), "to": SHADOW_TO.isoformat()},
+            ),
+            lambda e, ids: _extraction_shadow_report(e),
+        ),
         # -- the re-embed run (#138): no model change yet, so nothing to report or retry
         Step(
             "reembed_status",
@@ -2514,6 +2525,17 @@ async def _erasure_status(engine: Engine) -> dict[str, Any]:
     from epistrel.api.routes.admin.erasure import ErasureStatusBody
 
     return dump(ErasureStatusBody.of(await engine.erasure_status(CTX)))
+
+
+SHADOW_FROM = datetime(2026, 1, 1, tzinfo=UTC)
+SHADOW_TO = datetime(2026, 2, 1, tzinfo=UTC)
+
+
+async def _extraction_shadow_report(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.verify import ExtractionShadowBody
+
+    found = await engine.extraction_shadow_report(CTX, window_from=SHADOW_FROM, window_to=SHADOW_TO)
+    return dump(ExtractionShadowBody.of(found))
 
 
 async def _reembed_status(engine: Engine) -> dict[str, Any]:

@@ -22,6 +22,7 @@ from epistrel.api.routes.admin import (
     reembed,
     settings,
     stories,
+    verify,
 )
 
 ADMIN_PREFIX = "/admin"
@@ -37,6 +38,7 @@ router.include_router(reembed.router)
 router.include_router(offboarding.router)
 router.include_router(erasure.router)
 router.include_router(feedback_export.router)
+router.include_router(verify.router)
 
 _SEGMENT = r"(?:^|/){}(?:/|$)"
 

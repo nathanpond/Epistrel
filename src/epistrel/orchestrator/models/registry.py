@@ -66,9 +66,11 @@ class ContentCategory(StrEnum):
     and its valid-time. Only the records the deterministic check fetched for the claim and their
     neighborhood, never unrelated story content."""
     RENDER_TEXT = "render_text"
-    """The observable beats of one render (#146): each beat's index, kind, speaker's name and
-    text, as ``salience_detection`` reads them. Never a ``think``/``latent`` beat or the
-    player's input."""
+    """The beats of one render (#146): each beat's index, kind, speaker's name and text.
+    ``salience_detection`` reads the observable beats only (never a ``think``/``latent`` beat or
+    the player's input); ``extraction_backstop`` (#148) reads the beats being detected, its own
+    render's ``think``/``latent`` beats included, or the composed message. Never another
+    render's text."""
     SCENE = "scene"
     """What a render's scene holds (#146): the names of the entities present and the text of the
     last few observable beats before it (``scene_context``)."""
@@ -521,6 +523,62 @@ class SalienceResult(BaseModel):
     texture: list[SalienceSpan] = Field(default_factory=list, max_length=SALIENCE_MAX_SPANS)
 
 
+EXTRACTION_MAX_BEATS = 50
+"""The most beats one ``extraction_backstop`` request carries (one render's, or the composed
+message as one)."""
+EXTRACTION_MAX_CLAIMS = 50
+"""The most claims one answer may hold."""
+EXTRACTION_MIN_CONFIDENCE = 0.3
+"""An extracted claim below this confidence is dropped (#148)."""
+
+
+class ExtractionBeat(InputSchema):
+    """One beat of the text being read for claims (#148): its index, kind, speaker's name and
+    text. The composed message is one beat of kind ``message``."""
+
+    index: Annotated[int, Field(ge=0), C.RENDER_TEXT]
+    kind: Annotated[
+        Literal["say", "do", "think", "latent", "narration", "message"], C.RENDER_TEXT
+    ] = "narration"
+    speaker: Annotated[str | None, Field(max_length=200), C.RENDER_TEXT] = None
+    text: Annotated[str, Field(max_length=8_000), C.RENDER_TEXT]
+
+
+class ExtractionInputs(InputSchema):
+    """One render's beats (or the composed message) and its scene (FR-VERIFY-13 (c); #148)."""
+
+    beats: Annotated[list[ExtractionBeat], Field(max_length=EXTRACTION_MAX_BEATS)] = Field(
+        default_factory=list
+    )
+    scene_context: SceneContext = Field(default_factory=SceneContext)
+
+
+class ExtractedClaim(BaseModel):
+    """One factual claim the text makes: its beat, the exact substring that says it
+    (``span``, located by search), and the claim as subject, predicate and object (#140
+    normalizes it), its time expression, polarity and the model's confidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    beat: int = Field(default=0, ge=0)
+    span: str = Field(min_length=1, max_length=2_000)
+    subject: str = Field(default="", max_length=500)
+    predicate: str = Field(default="", max_length=500)
+    object: str | None = Field(default=None, max_length=500)
+    time: str | None = Field(default=None, max_length=200)
+    polarity: Literal["affirmed", "negated"] = "affirmed"
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class ExtractionResult(BaseModel):
+    """The structured result of one ``extraction_backstop`` call. The default (no claims) is
+    what the stub answers: the deterministic layers stand alone."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    claims: list[ExtractedClaim] = Field(default_factory=list, max_length=EXTRACTION_MAX_CLAIMS)
+
+
 class EmbeddingInputs(InputSchema):
     """One text to embed (FR-EMBED-1; #138): a memory's text, or a retrieval query's."""
 
@@ -741,9 +799,26 @@ SALIENCE_DETECTION = Purpose(
     response_schema=SalienceResult,
 )
 
+EXTRACTION_BACKSTOP = Purpose(
+    name="extraction_backstop",
+    description=(
+        "The model layer of claim detection: lists every factual claim one render's beats, or "
+        "the composed message, make, so a claim the declared structure and the deterministic "
+        "detectors missed is still checked (FR-VERIFY-13,14)."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=ExtractionInputs,
+    template="extraction.j2",
+    hot_path=True,
+    # The render's own beats (or the composed message) and its scene only: never another
+    # story's text, a belief, a definition, a memory, a policy, an age or eval text.
+    never_receives=_EVERYTHING - {C.RENDER_TEXT, C.SCENE},
+    response_schema=ExtractionResult,
+)
+
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("regeneration", "Regenerates a span under corrected constraints.", "M4"),
-    ReservedPurpose("extraction_backstop", "Model layer of claim detection.", "M4"),
     ReservedPurpose(
         "belief_adjudication", "Adjudicated belief transitions.", "M5", defaults_to="entailment"
     ),
@@ -913,6 +988,7 @@ DELIVERED: Mapping[str, Purpose] = _build(
         IMPORTANCE_SCORING,
         ENTAILMENT,
         SALIENCE_DETECTION,
+        EXTRACTION_BACKSTOP,
     )
 )
 """Purposes a model call may use now, by name."""
@@ -944,6 +1020,10 @@ __all__ = [
     "EMBEDDING",
     "ENTAILMENT",
     "ENTAILMENT_MAX_RECORDS",
+    "EXTRACTION_BACKSTOP",
+    "EXTRACTION_MAX_BEATS",
+    "EXTRACTION_MAX_CLAIMS",
+    "EXTRACTION_MIN_CONFIDENCE",
     "IMPORTANCE_SCORING",
     "PORTS",
     "QUALITY_JUDGE",
@@ -968,6 +1048,10 @@ __all__ = [
     "EntailmentInputs",
     "EntailmentRecord",
     "EntailmentVerdict",
+    "ExtractedClaim",
+    "ExtractionBeat",
+    "ExtractionInputs",
+    "ExtractionResult",
     "GenerationInputs",
     "GuardrailCheckInputs",
     "GuardrailVerdict",

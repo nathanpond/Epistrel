@@ -93,13 +93,16 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "facts (#142)."
     ),
     ContentCategory.RENDER_TEXT: (
-        "The observable beats of one render (`say`, `do`, narration: index, kind, speaker's "
-        "name, text), read by salience detection (#146). Never a `think` or `latent` beat or "
-        "the player's input."
+        "The beats of one render (index, kind, speaker's name, text). Salience detection "
+        "(#146) reads the observable ones only (`say`, `do`, narration; never a `think` or "
+        "`latent` beat or the player's input); the extraction backstop (#148) reads every beat "
+        "it detects claims in, its own render's `think` and `latent` beats included, or the "
+        "composed message. Never another render's text."
     ),
     ContentCategory.SCENE: (
         "The names of the entities present in the render's scene and the last six observable "
-        "beats before it, read by salience detection (#146)."
+        "beats before it, read by salience detection (#146) and the extraction backstop "
+        "(#148)."
     ),
 }
 

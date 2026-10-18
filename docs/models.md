@@ -26,6 +26,7 @@ per model tier are in [model-matrix.md](model-matrix.md).
 | `importance_scoring` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 | `entailment` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
 | `salience_detection` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
+| `extraction_backstop` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
 
 ### `generation`
 
@@ -253,6 +254,29 @@ Tells content placed to be noticed from background texture in one render's beats
 
 **Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`
 
+### `extraction_backstop`
+
+The model layer of claim detection: lists every factual claim one render's beats, or the composed message, make, so a claim the declared structure and the deterministic detectors missed is still checked (FR-VERIFY-13,14).
+
+- **Hot path:** yes
+- **Default model:** the `default` row of `model_config`, unless the purpose has its own
+- **Template:** `extraction.j2`
+- **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
+- **Returns:** `ExtractionResult` (`claims`), validated strictly; its free text is author-facing
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `beats.index` | `render_text` |
+| `beats.kind` | `render_text` |
+| `beats.speaker` | `render_text` |
+| `beats.text` | `render_text` |
+| `scene_context.present_entities` | `scene` |
+| `scene_context.last_beats` | `scene` |
+
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`
+
 ## Ports delivered
 
 A port is configured like a purpose but called through its own adapter, never as a chat
@@ -285,7 +309,6 @@ its floor and data-flow row, in the milestone that delivers it.
 | Purpose | Kind | Milestone | Defaults to | Description |
 |---|---|---|---|---|
 | `regeneration` | purpose | M4 | — | Regenerates a span under corrected constraints. |
-| `extraction_backstop` | purpose | M4 | — | Model layer of claim detection. |
 | `belief_adjudication` | purpose | M5 | `entailment` | Adjudicated belief transitions. |
 | `time_estimation` | purpose | M6 | `extraction_backstop` | Best-guess duration of a narrated skip. |
 | `image_prompt` | purpose | M8 | `generation` | Writes image prompts. |
@@ -316,8 +339,8 @@ its floor and data-flow row, in the milestone that delivers it.
 | `scope_meta` | The viewpoint scope, level and turns one consolidation call covers (#143). |
 | `claim_text` | One claim the deterministic check left uncertain, normalized and rendered with entity names and its valid-time in story-minutes, judged by entailment (#142). |
 | `canon_record` | One of the claim holder's records, rendered the same way with its holder and valid-time: only those the check fetched for the claim and the claim subject's own facts (#142). |
-| `render_text` | The observable beats of one render (`say`, `do`, narration: index, kind, speaker's name, text), read by salience detection (#146). Never a `think` or `latent` beat or the player's input. |
-| `scene` | The names of the entities present in the render's scene and the last six observable beats before it, read by salience detection (#146). |
+| `render_text` | The beats of one render (index, kind, speaker's name, text). Salience detection (#146) reads the observable ones only (`say`, `do`, narration; never a `think` or `latent` beat or the player's input); the extraction backstop (#148) reads every beat it detects claims in, its own render's `think` and `latent` beats included, or the composed message. Never another render's text. |
+| `scene` | The names of the entities present in the render's scene and the last six observable beats before it, read by salience detection (#146) and the extraction backstop (#148). |
 
 ## Hosted providers and retention
 

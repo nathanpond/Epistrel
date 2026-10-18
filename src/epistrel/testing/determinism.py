@@ -190,6 +190,11 @@ ORDER: dict[str, str] = {
     ),
     # The hot set's overflow episodes (#147): by the turn each opened, then the set.
     "overflow_episodes": f"{_STORY_RANK}, t.opened_turn, t.scope, t.closed_turn NULLS LAST",
+    # Claim detection's shadow samples (#148): by the sampled turn, then what they found.
+    "extraction_shadow": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, t.status, "
+        "t.extraction_claims, t.missed_count, t.missed::text"
+    ),
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

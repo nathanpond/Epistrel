@@ -22,7 +22,9 @@ and the embedding port's batches and HNSW index (``embedding_batch_max``,
 ``embedding_hnsw_ef_search``, #141), and the retrieval's arms (``retrieval_vector_k``,
 ``retrieval_lexical_k``, ``retrieval_rrf_k``, ``retrieval_rehydrate_max_rows``; #141), and how
 much the verifier reads around a claim (``neighborhood_max_facts``, ``entailment_max_records``;
-#142), and how many open thunks a story keeps (``thunks_max_open``, #146).
+#142), claim detection's shadow sample and protected-index cap
+(``extraction_shadow_sample_rate``, ``protected_index_max``; #148), and how many open thunks a
+story keeps (``thunks_max_open``, #146).
 ``media_sweep_interval`` also moves its recurring task's ``recurring_tasks`` row
 (``RECURRING_INTERVAL_SETTINGS``).
 
@@ -205,6 +207,8 @@ class SettingsPatch(BaseModel):
     retrieval_rehydrate_max_rows: StrictInt | None = None
     neighborhood_max_facts: StrictInt | None = None
     entailment_max_records: StrictInt | None = None
+    extraction_shadow_sample_rate: StrictFloat | None = None
+    protected_index_max: StrictInt | None = None
     thunks_max_open: StrictInt | None = None
     profile_defaults: SettingsDocument | None = None
 

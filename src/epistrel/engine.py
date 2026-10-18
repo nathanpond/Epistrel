@@ -123,6 +123,7 @@ from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turn_gate import Concurrency, QueueItem
+from epistrel.core.verify import shadow as verify_shadow
 from epistrel.core.viewpoint import (
     is_omniscient,
     require_omniscient,
@@ -188,6 +189,7 @@ from epistrel.orchestrator.policies.schemas import (
     StoryPolicyItem,
 )
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
+from epistrel.orchestrator.verify import extraction as extraction_job
 from epistrel.testing import crash
 
 logger = logging.getLogger(__name__)
@@ -637,6 +639,7 @@ class Engine:
         lite_summary_job.bind(self.models)
         importance_job.bind(self.models)
         consolidation_job.bind(self.models)
+        extraction_job.bind(self.models)
         reembed_job.bind(self.models.embeddings)
         rating_check_job.bind(self.models)
         media_sweep_job.bind(self.media)
@@ -2736,6 +2739,33 @@ class Engine:
             return await self.models.embeddings.probe(candidate)
         except ModelError as exc:
             raise EmbeddingUnreachable(str(exc.details.get("reason", "unknown"))) from None
+
+    # -- claim detection's shadow sample (FR-OBS-4, FR-VERIFY-13; #148) -----------------------
+
+    @refuses_nul()
+    async def extraction_shadow_report(
+        self,
+        ctx: RequestContext,
+        *,
+        window_from: datetime | None = None,
+        window_to: datetime | None = None,
+        story_id: str | None = None,
+        limit: int = 50,
+        after: str | None = None,
+    ) -> verify_shadow.ShadowReport:
+        """What ``gated`` claim extraction missed over a window (30 days by default; one story
+        or every one), with detection and checking counted separately, and one page of the
+        samples (by id, after ``after``)."""
+        del ctx
+        async with self.db.connect() as conn:
+            return await verify_shadow.report(
+                conn,
+                window_from=window_from,
+                window_to=window_to,
+                story_id=story_id,
+                limit=limit,
+                after=after,
+            )
 
     # -- the re-embed run (FR-EMBED-3,4; #138) ------------------------------------------------
 

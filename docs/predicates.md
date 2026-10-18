@@ -40,9 +40,10 @@ does not name its only institution. An author declares such rules where they hol
 
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
-| `holds`<br>`01JPRED0000000000000000005` | any → item | multi per (subject) | fluent | — | — | — | placement | The subject physically has the item; a person may hold several. Its inverse `held_by` is functional: an item is in one pair of hands at a time. |
+| `holds`<br>`01JPRED0000000000000000005` | any → item | multi per (subject) | fluent | — | — | `quantity` (str) | placement | The subject physically has the item; a person may hold several. Its inverse `held_by` is functional: an item is in one pair of hands at a time. An optional `quantity` (`<number> <unit>`, "40 silver") says how much of it (#148's detectors). |
 | `held_by`<br>`01JPRED0000000000000000006` | item → any | functional per (subject) | fluent | inverse of `holds` | — | — | — | The inverse of `holds`, stored as `holds`: an item has one holder at a time. |
 | `owns`<br>`01JPRED0000000000000000007` | any → any | multi per (subject) | fluent | — | — | — | — | Ownership, independent of who holds the thing now. |
+| `consumed`<br>`01JPRED0000000000000000027` | any → item | multi per (subject) | event | — | — | `quantity` (str) | — | The subject used up the item (ate, drank, burned, spent it) at the instant: an event, with an optional `quantity`. Claim detection (#148) writes it for consumption language. |
 
 ## Life and death
 
@@ -51,6 +52,7 @@ does not name its only institution. An author declares such rules where they hol
 | `alive`<br>`01JPRED0000000000000000008` | person → none | functional per (subject) | fluent | — | excludes `dead` | — | — | The subject is alive (no object); negated, not alive. Excludes `dead` over overlapping time. |
 | `dead`<br>`01JPRED0000000000000000009` | person → none | functional per (subject) | permanent | — | excludes `alive` | — | — | The subject has died (no object): from then on, permanently. Excludes `alive` over overlapping time and so closes its interval. |
 | `born`<br>`01JPRED0000000000000000010` | person → none | functional per (subject) | event | — | — | — | — | The subject's birth (no object): a unique event per person, so two different birth times contradict, while a coarser time compatible with canon does not. |
+| `injured`<br>`01JPRED0000000000000000028` | any → none | multi per (subject) | event | — | — | `cause` (id) | — | The subject was hurt at the instant (no object): an event, with the entity that caused it as the optional `cause`. Claim detection (#148) writes it for injury language. |
 
 ## Kinship
 
@@ -102,3 +104,9 @@ does not name its only institution. An author declares such rules where they hol
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
 | `scheduled`<br>`01JPRED0000000000000000026` | any → event | multi per (subject) | event | — | — | `participants` (ids), `place` (id) | — | A planned event owned by the subject (an appointment, a deadline, a departure): its planned time is the valid-time instant, its `participants` and `place` qualifiers (FR-CLOCK-9). |
+
+## Scene time
+
+| Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
+|---|---|---|---|---|---|---|---|---|
+| `time_is`<br>`01JPRED0000000000000000029` | any → str | functional per (subject) | fluent | — | — | — | — | What time a scene says it is (a `str` literal as said: "nearly midnight"), about the scene's place: one value at a time, so a later time supersedes it. Claim detection (#148) writes it for a time expression no other claim takes. |

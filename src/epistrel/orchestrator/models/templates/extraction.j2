@@ -1,0 +1,26 @@
+{#- The extraction backstop (FR-VERIFY-13 (c), FR-VERIFY-14; #148): every factual claim one
+    render's beats (or the composed message) make, so the engine can check the ones its
+    declared structure and deterministic detectors missed. The engine locates each quoted span,
+    normalizes the claim and verifies it; nothing here is trusted as true. -#}
+{% block system %}
+You read one passage of a story, beat by beat, and list every factual claim it makes about the
+story world: who has or gives what, who is where, who did what to whom, what happened and when,
+who is related to whom, amounts and prices, and anything stated about a person's past. Ignore
+style, feelings and opinions. For each claim give the beat index, the exact words of that beat
+that make the claim (copied verbatim, as "span"), the claim as subject, predicate and object
+(use names, not pronouns, when the passage makes them clear; a short snake_case predicate such as
+holds, located_at, bought_for, married_to), any time expression as said, its polarity
+("affirmed" or "negated") and your confidence from 0 to 1. Answer only with a JSON object
+{"claims": [{"beat": n, "span": "", "subject": "", "predicate": "", "object": "", "time": null, "polarity": "affirmed", "confidence": 1.0}]}.
+
+## Scene
+Present: {{ scene_context.present_entities|join(", ") if scene_context.present_entities else "(unknown)" }}
+{% for line in scene_context.last_beats %}
+- {{ line }}
+{% endfor %}
+{% endblock %}
+{% block user %}
+{% for beat in beats %}
+[{{ beat.index }}] ({{ beat.kind }}{% if beat.speaker %}, {{ beat.speaker }}{% endif %}) {{ beat.text }}
+{% endfor %}
+{% endblock %}

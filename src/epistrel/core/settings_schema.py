@@ -857,11 +857,17 @@ ENTAILMENT_MAX_RECORDS_LIMIT = 200
 """The most records an ``entailment`` request may carry (``EntailmentInputs.records``)."""
 
 
+DEFAULT_EXTRACTION_SHADOW_SAMPLE_RATE = 0.1
+DEFAULT_PROTECTED_INDEX_MAX = 5_000
+PROTECTED_INDEX_MAX_LIMIT = 100_000
+
+
 class VerifySettings(BaseModel):
     """How much the verifier reads around a claim (FR-VERIFY-3,6; #142), stored under
     ``deployment_state.settings``: the most rows one ``fact_neighborhood`` returns
     (``neighborhood_max_facts``) and the most holder records one entailment request carries
-    (``entailment_max_records``). The gate, the confidence floor and the safe disposition are
+    (``entailment_max_records``), and claim detection's shadow sample rate and protected-index
+    cap (#148). The gate, the confidence floor, the safe disposition and ``extraction_mode`` are
     engine-profile dials (``verification``). Prospective: a verify reads them when it runs."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -872,6 +878,16 @@ class VerifySettings(BaseModel):
     entailment_max_records: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_ENTAILMENT_MAX_RECORDS, ge=1, le=ENTAILMENT_MAX_RECORDS_LIMIT
     )
+    extraction_shadow_sample_rate: Annotated[StrictFloat, PROSPECTIVE] = Field(
+        default=DEFAULT_EXTRACTION_SHADOW_SAMPLE_RATE, ge=0.0, le=1.0
+    )
+    """The share of ``gated`` renders whose extraction still runs after the turn commits, to
+    record what gating missed (FR-OBS-4; #148). Not quality-relevant: it changes no render."""
+    protected_index_max: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_PROTECTED_INDEX_MAX, ge=1, le=PROTECTED_INDEX_MAX_LIMIT
+    )
+    """The most protected-content terms one turn's index holds (#148); past it the index is cut
+    (thunk candidates kept first) and the turn report says so."""
 
 
 DEFAULT_THUNKS_MAX_OPEN = 500

@@ -7340,3 +7340,55 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (scope):** P-10 (`epistrel.tools.capacity`) and `docs/capacity.md` are left to #153, whose AC names them.
   **Why:** The story's own replan note says so, and #153's checklist lists the tool.
   **Issue:** #147
+- **Decision (scope):** #148 delivers detection as callable steps: `core.verify.detect` (`detect_render`, `detect_message`, `detect`, `detect_seed`), `core.verify.protected`, `core.verify.shadow`, and `orchestrator.verify.extraction` (`ClaimDetector`, `verify_detected`, `dependences`/`apply_dependences`, `mentions_of`, `detection_report`, `record_metrics`, `enqueue_shadow`, the `extraction_shadow` job). The pipeline that calls them per render and per composed message is #150 (and #152), the reserved calls are #156, and the repair of a detected claim is #151. #149's `seed_normalization` check and `copy_companion` call `detect_seed`; that check, and `test_i_20__alias_seed`, are #149's, as both stories' bodies say.
+  **Why:** Those stories own those parts, and the brief says not to stub them. S-EXTRACT-ADVERSARIAL's "repaired" is asserted as `needs_repair` on the verdict.
+  **Issue:** #148
+- **Decision (Discretion):** A detector claim with the normalized shape of a declared claim on its beat is merged into the declared claim (`merged = ("detector",)`) instead of being listed separately. `matched` counts these merges. `detector_hits` and `extraction_claims` count each layer's findings, merges included. The same applies to extraction claims: a merge needs the same shape, or an overlap of half the longer span or more, and a declared claim merges by shape only.
+  **Why:** The test plan's complement says "a render whose claims are all declared yields zero detector claims", and the planner's dedup priority is declared > detector > extraction. Measuring overlap against the shorter span merged a whole extraction claim into a one-word mention inside it.
+  **Issue:** #148
+- **Decision (Discretion):** Gating flags a beat for an unmatched detector claim in a risk category (possession, transfer, quantity, time, protected content), for a risk-category hit that could not become a claim (an unresolved argument, or a time expression no claim takes), and for a `say`/`do` beat with no declared proposition. A suppressed hit (question, conditional, modal) never flags.
+  **Why:** If a hit already matched a declared proposition also flagged its beat, the all-declared complement would make an extraction call. A hit the detectors could not resolve is exactly what extraction is for.
+  **Issue:** #148
+- **Decision (Discretion):** Detector rules, beyond the planner's:
+  - A table form right after a determiner or possessive is a noun ("her pocket", "a cut").
+  - Placeless movement claims only for a departure verb or cue ("leave", "on her way out"), as a negated `located_at` of the current placement.
+  - A lone clock time is `time_is(scene place, "<as said>")`. A lone #139 relative expression flags the beat but makes no claim of its own.
+  - An uncovered mention is `present_at(entity, scene place)` on `do`/narration/`latent`/message beats only. In `say`/`think` it counts as a hit with no claim.
+  - In a render an unresolved capitalized name is noise; in a seed it is an `unresolved_entity` claim.
+  - A lone quantity has no predicate, so it is an `uncertain` claim (FR-PROP-12).
+  - In a `do` beat, a sentence-initial pronoun subject, or no subject at all, is the actor.
+  **Why:** These keep false positives (which would send beats to repair) away from speech and nouns, and never guess (FR-PROP-12).
+  **Issue:** #148
+- **Decision (Discretion):** New core predicates: `consumed` (event, `quantity` qualifier), `injured` (event with **no object** and a `cause` id qualifier) and `time_is` (functional fluent, `str` literal, new family "Scene time"). `holds` gains an optional `quantity` str qualifier (`<number> <unit>`). They are synced at start; no migration is needed.
+  **Why:** The planner's `injured(subject, object = cause|null)` cannot be one object type, so the cause is a qualifier. A quantity has no typed qualifier kind.
+  **Issue:** #148
+- **Decision (Discretion):** The `extraction_backstop` input is `{beats: [{index, kind, speaker, text}], scene_context}`, kinds `say|do|think|latent|narration|message`, with the composed message as beat 0 of kind `message`. The output is `{claims: [{beat, span (a quoted substring), subject, predicate, object, time, polarity, confidence}]}`. Category `render_text` now also covers the extraction's own `think`/`latent` beats (`docs/models.md`).
+  **Why:** This is the planner's pass 2 (beats with markers, spans found by search), and it replaces AC1's `{text, scene_context}`. Detection must read every channel, so extraction sees the render's own private beats, and never another render's.
+  **Issue:** #148
+- **Decision (Discretion):** Narration and the composed message (speaker `narrator`) are verified at viewpoint `omniscient`. A character's claim is verified at `character:<id>`. Protected content for the narrator is still matched against the narrator's (shared-scope) index.
+  **Why:** `narrator` is no projection viewpoint (`profile_view` refuses it), and the director knows canon.
+  **Issue:** #148
+- **Decision (Rule 3):** `core.verify.neighborhood` reads the projections at the story's head when the claim's position is past it (the turn being produced). Before this, every permitted novel claim at the pending turn failed in `anchor` with 422 `as_of must be a turn of the story`. It is covered by S-EXTRACT-ADVERSARIAL and `test_detection`.
+  **Why:** It blocked verifying any detected claim at turn head+1, the position #150 will always use.
+  **Issue:** #148
+- **Decision (Discretion, deviation from the planner):** `extraction_shadow.missed` holds `{beat, start, end, category, predicate_id, shape}`: spans into the turn's beats, a predicate id and a shape hash, never sketch text. The table is exempt from the subject index (`EXEMPT_TABLES`) instead of a `SubjectWriter`, and forks do not copy it (`STORY_TABLES_NOT_COPIED`). It is a derived table that follows the sampled turn's membership. The job adds `shadow`/`shadow_missed` to that turn's `turn_report.detection`, through `core.verify.shadow`, which is registered as an `operations` writer and an `EXEMPT` write path.
+  **Why:** With no text at rest, erasure needs no redaction rule (invariant 3, FR-OBS-4: only counts and references), and the beats the spans point into are already erased.
+  **Issue:** #148
+- **Decision (Discretion):** The shadow sample draws per operation and render from a SHA-256 of `<operation_id>:render|message`, so a retry draws the same. The job (`extraction_shadow`, `max_attempts` 1, budget 2 calls) reads the turn's `turn_report.detection` and the skipped beats' text (by `event_id`, else by beat number through `beats_of_operation`), normalizes purely (no auto-registration in a read snapshot), and writes `sampled` or `failed`. It does not add a `shadow = true` label to #54's model counters, and there is no 90-day prune.
+  **Why:** A new label on #54's counters would change every series, and the prune belongs with #155's escalations, whose table does not exist yet. Both are left as follow-ups.
+  **Issue:** #148
+- **Decision (Discretion):** The protected index is rebuilt by a `REBASE_CHECKS` entry (`core.verify.protected.recheck`) that compares its digest. It is not recorded as a `QueryKey`.
+  **Why:** A query key needs one predicate, and the index spans every hidden fact and open thunk. Comparing the digest at the rebase regenerates on any change.
+  **Issue:** #148
+- **Decision (Discretion):** A hidden fact's terms are its literal renderings, plus the names of the entities it names that the speaker cannot otherwise know. Those are entities in no fact the speaker may read, not in the cast, and not the speaker. A thunk's terms are each candidate's text, plus the names of entity candidates unknown to the speaker. A text-only candidate's hit is an `uncertain` claim.
+  **Why:** Matching every hidden fact's character names would flag every mention of a known character. A denied or uncertain claim is never silently allowed.
+  **Issue:** #148
+- **Decision (Rule 2):** `GET /admin/evals/extraction-shadow` takes `from`/`to` as ISO 8601 strings (with a pattern, parsed in the route; 422 `query.from`), not as `datetime` query parameters.
+  **Why:** Pydantic parses `to=0.5` as a Unix time, which C-01's negative-data check rejects.
+  **Issue:** #148
+- **Decision:** ADR-158 records the owner's replan decision. The default `extraction_mode` is `gated`, and a profile chooses `always`. ADR-065's and ADR-017's default clauses carry *[default superseded by ADR-158]* markers, and both are now "Partly superseded" in the index. docs/03 FR-VERIFY-13, docs/02 §4.9 (with the guarantee sentence) and the purpose table are amended. The guarantee table's two detection rows carry the guarantee/measured-rate notes.
+  **Why:** The comments on #148. The ADR log is append-only, with markers for clauses that are now wrong.
+  **Issue:** #148
+- **Decision (scope):** S-EXTRACT-ADVERSARIAL (a) puts "Linda does not have the key" in canon, an explicit negation, instead of "Marcus holds the key". Filed #439: `core.verify.rules` ignores an inverse predicate's cardinality (`held_by` is functional).
+  **Why:** With #140 as built, the planner's variant is `novel`, not `contradicted`. Fixing #140's rules is outside this story.
+  **Issue:** #148, #439

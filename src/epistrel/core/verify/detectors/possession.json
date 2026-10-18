@@ -1,0 +1,256 @@
+{
+  "category": "possession",
+  "language": "en",
+  "description": "Possession language (FR-VERIFY-13 (b)): the subject comes to hold the item. holds(subject = the nearest mention before the verb, else the beat's actor; object = the nearest mention after it).",
+  "predicate": "holds",
+  "roles": {
+    "subject": "before",
+    "object": "after"
+  },
+  "lemmas": [
+    {
+      "lemma": "pocket",
+      "forms": [
+        "pocket",
+        "pockets",
+        "pocketed",
+        "pocketing"
+      ]
+    },
+    {
+      "lemma": "take",
+      "forms": [
+        "take",
+        "takes",
+        "took",
+        "taken",
+        "taking"
+      ]
+    },
+    {
+      "lemma": "grab",
+      "forms": [
+        "grab",
+        "grabs",
+        "grabbed",
+        "grabbing"
+      ]
+    },
+    {
+      "lemma": "snatch",
+      "forms": [
+        "snatch",
+        "snatches",
+        "snatched",
+        "snatching"
+      ]
+    },
+    {
+      "lemma": "seize",
+      "forms": [
+        "seize",
+        "seizes",
+        "seized",
+        "seizing"
+      ]
+    },
+    {
+      "lemma": "pick up",
+      "forms": [
+        "pick up",
+        "picks up",
+        "picked up",
+        "picking up"
+      ]
+    },
+    {
+      "lemma": "hold",
+      "forms": [
+        "hold",
+        "holds",
+        "held",
+        "holding"
+      ]
+    },
+    {
+      "lemma": "keep",
+      "forms": [
+        "keep",
+        "keeps",
+        "kept",
+        "keeping"
+      ]
+    },
+    {
+      "lemma": "carry",
+      "forms": [
+        "carry",
+        "carries",
+        "carried",
+        "carrying"
+      ]
+    },
+    {
+      "lemma": "clutch",
+      "forms": [
+        "clutch",
+        "clutches",
+        "clutched",
+        "clutching"
+      ]
+    },
+    {
+      "lemma": "grip",
+      "forms": [
+        "grip",
+        "grips",
+        "gripped",
+        "gripping"
+      ]
+    },
+    {
+      "lemma": "stash",
+      "forms": [
+        "stash",
+        "stashes",
+        "stashed",
+        "stashing"
+      ]
+    },
+    {
+      "lemma": "tuck",
+      "forms": [
+        "tuck",
+        "tucks",
+        "tucked",
+        "tucking"
+      ]
+    },
+    {
+      "lemma": "collect",
+      "forms": [
+        "collect",
+        "collects",
+        "collected",
+        "collecting"
+      ]
+    },
+    {
+      "lemma": "gather",
+      "forms": [
+        "gather",
+        "gathers",
+        "gathered",
+        "gathering"
+      ]
+    },
+    {
+      "lemma": "retrieve",
+      "forms": [
+        "retrieve",
+        "retrieves",
+        "retrieved",
+        "retrieving"
+      ]
+    },
+    {
+      "lemma": "fetch",
+      "forms": [
+        "fetch",
+        "fetches",
+        "fetched",
+        "fetching"
+      ]
+    },
+    {
+      "lemma": "catch",
+      "forms": [
+        "catch",
+        "catches",
+        "caught",
+        "catching"
+      ]
+    },
+    {
+      "lemma": "wield",
+      "forms": [
+        "wield",
+        "wields",
+        "wielded",
+        "wielding"
+      ]
+    },
+    {
+      "lemma": "palm",
+      "forms": [
+        "palm",
+        "palms",
+        "palmed",
+        "palming"
+      ]
+    },
+    {
+      "lemma": "hoard",
+      "forms": [
+        "hoard",
+        "hoards",
+        "hoarded",
+        "hoarding"
+      ]
+    },
+    {
+      "lemma": "bring",
+      "forms": [
+        "bring",
+        "brings",
+        "brought",
+        "bringing"
+      ]
+    },
+    {
+      "lemma": "pack",
+      "forms": [
+        "pack",
+        "packs",
+        "packed",
+        "packing"
+      ]
+    },
+    {
+      "lemma": "acquire",
+      "forms": [
+        "acquire",
+        "acquires",
+        "acquired",
+        "acquiring"
+      ]
+    },
+    {
+      "lemma": "obtain",
+      "forms": [
+        "obtain",
+        "obtains",
+        "obtained",
+        "obtaining"
+      ]
+    },
+    {
+      "lemma": "scoop",
+      "forms": [
+        "scoop",
+        "scoops",
+        "scooped",
+        "scooping"
+      ]
+    },
+    {
+      "lemma": "lift",
+      "forms": [
+        "lift",
+        "lifts",
+        "lifted",
+        "lifting"
+      ]
+    }
+  ]
+}

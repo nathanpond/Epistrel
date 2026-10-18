@@ -59,6 +59,9 @@ EMPLOYED_BY = "01JPRED0000000000000000023"
 AGE = "01JPRED0000000000000000024"
 NAME = "01JPRED0000000000000000025"
 SCHEDULED = "01JPRED0000000000000000026"
+CONSUMED = "01JPRED0000000000000000027"
+INJURED = "01JPRED0000000000000000028"
+TIME_IS = "01JPRED0000000000000000029"
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +83,7 @@ EDUCATION = Family("education", "Education")
 EMPLOYMENT = Family("employment", "Employment")
 ATTRIBUTES = Family("attributes", "Basic attributes")
 SCHEDULES = Family("schedules", "Schedules")
+SCENE_TIME = Family("scene_time", "Scene time")
 
 FAMILIES: tuple[Family, ...] = (
     IDENTITY,
@@ -93,6 +97,7 @@ FAMILIES: tuple[Family, ...] = (
     EMPLOYMENT,
     ATTRIBUTES,
     SCHEDULES,
+    SCENE_TIME,
 )
 
 _FAMILY_OF: dict[str, Family] = {}
@@ -157,9 +162,11 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         object_type="item",
         cardinality=_M,
         temporal_kind=_FLUENT,
+        qualifiers={"quantity": _STR},
         projection="placement",
         docs="The subject physically has the item; a person may hold several. Its inverse "
-        "`held_by` is functional: an item is in one pair of hands at a time.",
+        "`held_by` is functional: an item is in one pair of hands at a time. An optional "
+        '`quantity` (`<number> <unit>`, "40 silver") says how much of it (#148\'s detectors).',
     ),
     _core(
         POSSESSION,
@@ -178,6 +185,18 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         cardinality=_M,
         temporal_kind=_FLUENT,
         docs="Ownership, independent of who holds the thing now.",
+    ),
+    _core(
+        POSSESSION,
+        id=CONSUMED,
+        name="consumed",
+        object_type="item",
+        cardinality=_M,
+        temporal_kind=_EVENT,
+        qualifiers={"quantity": _STR},
+        docs="The subject used up the item (ate, drank, burned, spent it) at the instant: an "
+        "event, with an optional `quantity`. Claim detection (#148) writes it for consumption "
+        "language.",
     ),
     _core(
         LIFE,
@@ -386,6 +405,18 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         "entity's, not propositions.",
     ),
     _core(
+        LIFE,
+        id=INJURED,
+        name="injured",
+        object_type=NONE,
+        cardinality=_M,
+        temporal_kind=_EVENT,
+        qualifiers={"cause": QualifierKind.ID},
+        docs="The subject was hurt at the instant (no object): an event, with the entity that "
+        "caused it as the optional `cause`. Claim detection (#148) writes it for injury "
+        "language.",
+    ),
+    _core(
         SCHEDULES,
         id=SCHEDULED,
         name="scheduled",
@@ -396,6 +427,17 @@ CORE_PREDICATES: tuple[Predicate, ...] = (
         docs="A planned event owned by the subject (an appointment, a deadline, a departure): "
         "its planned time is the valid-time instant, its `participants` and `place` "
         "qualifiers (FR-CLOCK-9).",
+    ),
+    _core(
+        SCENE_TIME,
+        id=TIME_IS,
+        name="time_is",
+        object_type="str",
+        cardinality=_F,
+        temporal_kind=_FLUENT,
+        docs='What time a scene says it is (a `str` literal as said: "nearly midnight"), '
+        "about the scene's place: one value at a time, so a later time supersedes it. Claim "
+        "detection (#148) writes it for a time expression no other claim takes.",
     ),
 )
 """Every core predicate, in documentation order."""

@@ -978,3 +978,44 @@ def test_the_hot_set_columns_table_and_dials(scratch_database: str) -> None:
         assert set(hot_set_defaults()) == {"memories_per_character", "vectors_per_story"}
     finally:
         engine.dispose()
+
+
+def test_the_extraction_shadow_table(scratch_database: str) -> None:
+    """0062 (#148): ``extraction_shadow`` is created with its status CHECK and its indexes; the
+    downgrade drops it."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0061")
+    engine = make_sync_engine(scratch_database)
+
+    def indexes() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text("SELECT indexname FROM pg_indexes WHERE tablename = 'extraction_shadow'")
+                )
+            )
+
+    try:
+        assert indexes() == set()
+        command.upgrade(cfg, "0062")
+        assert indexes() == {
+            "pk_extraction_shadow",
+            "ix_extraction_shadow_story_operation",
+            "ix_extraction_shadow_story_membership",
+            "ix_extraction_shadow_story_created",
+            "ix_extraction_shadow_created",
+        }
+        with engine.connect() as conn:
+            checks = set(
+                conn.scalars(
+                    text(
+                        "SELECT conname FROM pg_constraint WHERE conrelid = "
+                        "'extraction_shadow'::regclass AND contype = 'c'"
+                    )
+                )
+            )
+        assert checks == {"ck_extraction_shadow_status"}
+        command.downgrade(cfg, "0061")
+        assert indexes() == set()
+    finally:
+        engine.dispose()

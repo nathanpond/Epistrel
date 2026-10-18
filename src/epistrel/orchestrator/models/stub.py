@@ -36,6 +36,8 @@ its own score, the same in every process. ``entailment`` (#142) answers its sche
 resolves to the safe disposition, so an unscripted escalation never supports a claim.
 ``salience_detection`` (#146) answers its schema's defaults too, ``{"salient": [], "texture":
 []}``: every beat is texture, so an unscripted turn owes nothing.
+``extraction_backstop`` (#148) answers ``{"claims": []}``: the deterministic layers stand
+alone.
 """
 
 from __future__ import annotations

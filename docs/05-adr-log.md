@@ -25,7 +25,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-TURN | §6 | 043 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129 |
 | FR-RET | §8 | 129 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158 |
 | FR-GUARD | §11 | 087, 095, 096, 114 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150 |
@@ -38,17 +38,17 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
-| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144 |
+| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158 |
 | FR-LITE | §18.4 | 085, 086, 087 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145 |
 | FR-FB | §18.8 | 111 |
-| FR-OBS | §19 | 129 |
+| FR-OBS | §19 | 129, 158 |
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 070, 072, 075, 137 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158 |
 | NFR-REL | §20 | 045, 127 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 077, 101, 154, 157 |
@@ -78,7 +78,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 014 | Multi-character single-response composition | Amended | 031, 047, 059 |
 | 015 | Model-agnostic via OpenAI-compatible interface; Apache-2.0 license | Current | — |
 | 016 | API surfaces: REST + MCP + library; Story as the top-level container | Partly superseded | 092 |
-| 017 | Deterministic-first job disposition; the model is reached only through measured, tunable gates | Amended | 065, 080, 084 |
+| 017 | Deterministic-first job disposition; the model is reached only through measured, tunable gates | Partly superseded | 065, 080, 084, 158 |
 | 018 | In-story time travel via sequence invalidation (truncate / regenerate) | Partly superseded | 027, 072, 122, 028 |
 | 019 | Stories are self-contained; fork is a full copy; deletion is a scoped delete | Amended | 027, 072, 128 |
 | 020 | Every external read is an event; single source of truth for external values | Amended | 030, 056 |
@@ -126,7 +126,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 062 | Configuration rebasing stops at committed stages | Partly superseded | 072 |
 | 063 | Time claims use the three speech dimensions; characters get only the time they can know | Current | — |
 | 064 | Scheduled events have a lifecycle; an interrupted skip is regenerated at the cutoff; beliefs don't stop the clock | Partly superseded | 073 |
-| 065 | Claim detection is layered, always on by default, and measured separately from verification | Amended | 077, 080 |
+| 065 | Claim detection is layered, always on by default, and measured separately from verification | Partly superseded | 077, 080, 158 |
 | 066 | One settled terminal outcome per effect; expired reservations never convert automatically | Current | — |
 | 067 | Beats and steps have start and end times | Amended | 074, 076 |
 | 068 | Partial anchors: an exact offset plus a ranged absolute anchor; never invent precision | Partly superseded | 073, 079 |
@@ -219,6 +219,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 155 | Erasure matches a name in any case by full case-folding, and at any dash | Partly superseded | 156 |
 | 156 | The erasure fold is canonical caseless matching, `ı` is `i`, and a soft hyphen is no character | Current | — |
 | 157 | A pending catalog-scope erasure holds back what it reaches until it is reapplied | Current | — |
+| 158 | The extraction backstop is gated by default; a profile chooses `always` | Current | — |
 
 ---
 
@@ -364,12 +365,12 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 ### ADR-017 — Deterministic-first job disposition; the model is reached only through measured, tunable gates
 **Status:** Accepted. Resolves the split left open by ADR-006.
-**Amended by:** ADR-065 — the extraction bullet is superseded: claim detection runs on every render by default; ADR-080 — per-turn call budget and deadline with ordered degradation; ADR-084 — gates and modules are set per story by its engine profile.
+**Amended by:** ADR-065 — the extraction bullet is superseded: claim detection runs on every render by default; ADR-080 — per-turn call budget and deadline with ordered degradation; ADR-084 — gates and modules are set per story by its engine profile; ADR-158 — the extraction backstop's default mode is `gated`.
 **Context:** For each internal job: does it need a model, is it on the hot path, and — for hot-path model use — what gate triggers escalation from the cheap deterministic attempt to the expensive model call? The entailment-fallback gate is the knob that most affects cost, latency, and the risk of false `supported` verdicts (silent canon corruption). The risks are asymmetric: a wrong deterministic `supported` corrupts the story; a needless escalation merely costs a call. So gates bias toward escalation.
 **Decision:** Deterministic is the default and the hot path; a model is reached only through explicit gates that fail toward safety. Per-job disposition:
 - **Verification / entailment (hot path, gated).** Engine Core normalizes claims and returns supported/contradicted/novel deterministically; it returns `uncertain` — and only then does the Orchestrator call the entailment model — on (a) an unresolved predicate, (b) a world-knowledge-dependent conflict, (c) a partial/ambiguous match. The gate is a **tunable predicate-resolution-confidence threshold**, shipped as config and launched conservatively.
 - **Salience (hot-ish; model behind a deterministic pre-filter).** Rules skip obvious non-salient turns; the model resolves the rest. Biased toward recall — a missed signal (under-commitment) is the worse error.
-- **Extraction backstop (hot path).** *Refined by ADR-065:* a structurally valid render does not prove every claim in its prose was declared, so claim detection now runs deterministic detectors on every render and the model extraction on every render by default (`extraction_mode = always`), with gating available only as an evidence-driven reduction.
+- **Extraction backstop (hot path).** *Refined by ADR-065:* a structurally valid render does not prove every claim in its prose was declared, so claim detection now runs deterministic detectors on every render and the model extraction on every render by default (`extraction_mode = always`) *[default superseded by ADR-158: `gated` is the default; `always` is a profile's choice]*, with gating available only as an evidence-driven reduction.
 - **Consolidation / reflection, importance scoring (off hot path, no gate).** Model-first, latency-tolerant; model tier chosen freely.
 - **Everything else (deterministic, no model, ever).** Commitment lifecycle, visibility scoping, bitemporal reads, projections, repair-ladder selection, mutation primitives, directive-classification mechanics.
 Launch conservative (high continuity, more escalation), then **tighten data-drivenly:** gates are tunable config, never hardcoded; every tightening is validated in **shadow/canary** before promotion; a predicate-shape graduates to deterministic only when its escalation **yield** (the fraction of escalations where the model flips the deterministic tentative verdict) is low **and** the residual flips are low-consequence. A model fallback's verdict is validated, never trusted: `uncertain`/low-confidence resolves to the safe disposition (needs-repair or surface to author), never a silent `supported` (cf. FR-MODEL-6). Testability is unaffected — the cognition-port stub keeps the engine deterministic in tests regardless of which jobs use a model.
@@ -743,10 +744,10 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-065 — Claim detection is layered, always on by default, and measured separately from verification
 **Status:** Accepted. Refines ADR-017 (extraction backstop) and ADR-032.
-**Amended by:** ADR-077 — the guarantee boundary is published; privacy is structural first, output scanning secondary; ADR-080 — a clean leak eval is evidence with an upper bound, not a guarantee
+**Amended by:** ADR-077 — the guarantee boundary is published; privacy is structural first, output scanning secondary; ADR-080 — a clean leak eval is evidence with an upper bound, not a guarantee; ADR-158 — the default extraction mode is `gated`
 **Context:** The extraction backstop ran only when the structural parse looked incomplete, but valid channels don't prove every claim in their prose was declared: an undeclared possession change or a leaked secret can sit inside well-formed output. Verification accuracy on extracted propositions does not measure this failure.
-**Decision:** Claim detection has three layers — declared structure, always-on deterministic detectors (including protected-content matching against facts hidden from the speaker), and model extraction on every render by default (`extraction_mode = always`; `gated` allowed with shadow sampling of what gating misses). It runs on renders, reactive narration, and the final composed message. The guarantee is stated precisely: every detected claim is checked; complete detection is a measured rate, NFR-QUAL-10 (≥ 95% recall on an adversarial set), reported per layer and mode (FR-VERIFY-13,14).
-**Consequences:** One model call per render is added by default, consistent with the launch-conservative, reduce-by-evidence policy of ADR-017; the shadow data is what justifies switching a story to `gated`. Tests U-22, S-EXTRACT-ADVERSARIAL, E-10.
+**Decision:** Claim detection has three layers — declared structure, always-on deterministic detectors (including protected-content matching against facts hidden from the speaker), and model extraction on every render by default (`extraction_mode = always`; `gated` allowed with shadow sampling of what gating misses) *[default superseded by ADR-158: `gated`, with its shadow sample, is the default; `always` is a profile's choice, as the Structured (M4) profile makes it]*. It runs on renders, reactive narration, and the final composed message. The guarantee is stated precisely: every detected claim is checked; complete detection is a measured rate, NFR-QUAL-10 (≥ 95% recall on an adversarial set), reported per layer and mode (FR-VERIFY-13,14).
+**Consequences:** One model call per render is added where a profile sets `always` (the Structured (M4) profile does), and under the default `gated` only for flagged beats, plus the shadow sample after the turn; the shadow data is what justifies narrowing or widening a story's mode *[revised per ADR-158]*. Tests U-22, S-EXTRACT-ADVERSARIAL, E-10.
 
 ---
 
@@ -1542,6 +1543,17 @@ Nothing is persisted: the reach is computed afresh on each call while an entry i
 - A catalog call during a restore window costs a scan of the catalog's records per pending catalog erasure. The window lasts until the reapply ends (minutes at hobby scale), and a deployment with no pending catalog erasure pays one query.
 - Deployment-scoped reads outside the catalog (policies, configuration history) are not held; #429 tracks them.
 - Tests: `tests/integration/test_erasure_ledger.py` (the restore window for a catalog character and for a persona, held with the reapply's pause; every Engine method naming a catalog entry is gated; the OpenAPI document states the 503).
+
+---
+
+### ADR-158 — The extraction backstop is gated by default; a profile chooses `always`
+**Status:** Accepted. Amends ADR-065 and ADR-017 (the extraction backstop's default mode).
+**Context:** ADR-065 made model extraction run on every render by default (`extraction_mode = always`), and docs/03 FR-VERIFY-13 named `always` as the default. M3 shipped the engine-profile schema (#106) with `verification.extraction_mode` defaulting to `gated`, and the deployment's profile defaults followed it, while the `Structured (M4)` profile (#129) sets `always` explicitly. At the M4 replan (2026-10-16) the owner decided the schema default stays `gated` and docs/03 is amended to match (#148).
+**Decision:** `verification.extraction_mode` defaults to `gated`: the extraction backstop runs only on the beats a deterministic detector flagged (a risk category hit: possession, transfer, quantity, time, protected content) or whose structural parse is incomplete (a `say` or `do` beat that declared nothing), and a deployment-set share of renders (`extraction_shadow_sample_rate`, 0.1) is a shadow sample: after the turn commits, the extraction runs over the beats gating skipped, under its own budget, and the claims it would have missed are recorded (`extraction_shadow`, reported by `GET /admin/evals/extraction-shadow`; FR-OBS-4). `always` remains a profile dial; the `Structured (M4)` profile sets it. Layers (a) and (b) always run, and every detected claim is checked; the guarantee and the measured rate are as ADR-065 states them (FR-VERIFY-13,14, NFR-QUAL-10).
+**Consequences:**
+- A default structured story makes fewer model calls than ADR-065 assumed; the shadow sample measures what that costs in detection, per category, before an operator widens or narrows a story's mode.
+- docs/03 FR-VERIFY-13 and docs/02 §4.9 and the purpose table name `gated` as the default.
+- Tests: U-22 (the all-declared complement makes no extraction call under `gated`), S-EXTRACT-ADVERSARIAL M4 (both modes; the shadow sample records what gating missed).
 
 ---
 

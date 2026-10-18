@@ -58,7 +58,9 @@ report's `guarantees_lost` names the deterministic rows a change would lose, by 
 - `structural_knowledge_separation`: Without partitions, characters' knowledge is separated only by instructions in a shared prompt, so secrets seeded from the catalog or scenario are present in the shared context (FR-LITE-5).
 - `verification`: Only the claims detected in an output are checked; nothing else in its prose is.
 - `clock_pacing`: Under `lite`, the clock may run only in its prompt-only form (FR-LITE-5): pacing is shown in the prompt and nothing is checked.
+- `claim_detectors`: Every detected claim is matched to a declared one or checked as a new claim: zero unchecked detected claims is a guarantee (FR-VERIFY-13). Complete detection is not: it is a measured rate (NFR-QUAL-10).
 - `generation`: Includes a regeneration after an output policy's violation (FR-GUARD).
+- `claim_extraction`: Complete detection is a measured rate, reported per layer and per `extraction_mode` (E-10). Under `gated`, the default, it runs only on the beats a detector flagged, and a shadow sample records what gating missed (FR-OBS-4).
 - `salience`: At `commitment.salience = rules`, salience is detected by rules only.
 - `paraphrase_detection`: No purpose of its own is defined yet.
 - `rolling_summary`: NFR-QUAL-3 measures consolidation's reflections, not the rolling summary.

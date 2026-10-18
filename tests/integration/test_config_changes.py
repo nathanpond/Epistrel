@@ -129,6 +129,7 @@ STORED: dict[str, Any] = {
     "reembed_batch_size": 400,
     "retrieval_rrf_k": 61,
     "neighborhood_max_facts": 40,
+    "protected_index_max": 4_999,
     "thunks_max_open": 499,
 }
 """A non-default value of one setting or more in every section of the settings document

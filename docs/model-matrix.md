@@ -44,10 +44,10 @@ nothing is derived from it. The next live run of the tier fills them.
 
 ## Results
 
-| Tier | Policies | Protocol | `generation` | `guardrail_check` | `consolidation` | `lite_summary` | `importance_scoring` | `entailment` | `salience_detection` | E-06 | Turns | p50 | p95 | Calls per turn |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | not run | ✓ (context ✓) | not run | not run | not run | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 18.31 s | 45.06 s | 3.15 (generation 1.1, guardrail_check 2.05) |
-| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | not run | ✓ (context ✓) | not run | not run | not run | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 13.40 s | 16.87 s | 1 (generation 1) |
+| Tier | Policies | Protocol | `generation` | `guardrail_check` | `consolidation` | `lite_summary` | `importance_scoring` | `entailment` | `salience_detection` | `extraction_backstop` | E-06 | Turns | p50 | p95 | Calls per turn |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| local: cydonia-24b-v4.3 | minors policy on | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | not run | ✓ (context ✓) | not run | not run | not run | not run | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 18.31 s | 45.06 s | 3.15 (generation 1.1, guardrail_check 2.05) |
+| local: cydonia-24b-v4.3 | policies off | ✓ | ✓ (context ✓) | ✓ (context ✓; structured_output ✓) | not run | ✓ (context ✓) | not run | not run | not run | not run | ✓ (tokens 32/32, 128/128; temp 0: 10/10 identical) | 20 | 13.40 s | 16.87 s | 1 (generation 1) |
 
 ## Calls
 

@@ -19,6 +19,7 @@ from epistrel.core.tables.characters import character_snapshots, characters
 from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import config_changes, deployment_state
+from epistrel.core.tables.detection import extraction_shadow
 from epistrel.core.tables.erasure import erasure_ledger
 from epistrel.core.tables.events import events
 from epistrel.core.tables.facts import facts
@@ -83,6 +84,7 @@ __all__ = [
     "entity_relations",
     "erasure_ledger",
     "events",
+    "extraction_shadow",
     "facts",
     "genesis_deferred",
     "guardrail_check_results",

@@ -2,7 +2,9 @@
 
 One deterministic matcher, shared by the subject-reference index (``core.erasure.index``),
 erasure's redaction and its residue scan (``core.erasure.redact``, ``core.erasure.verify``) and
-the write-path guard (``core.erasure.guard``). Nothing else matches names.
+the write-path guard (``core.erasure.guard``). Nothing else matches names for erasure. #148's
+protected-content index (``core.verify.protected``) reuses its fold, ``fold_offsets`` and
+``WORD_CHAR`` boundaries, without the common-word and candidate rules.
 
 A subject is looked for by its **names** (its names and declared aliases) and its **parts** (the
 words of a multi-word name, less titles, particles and the words another subject of the same
@@ -215,6 +217,13 @@ def _folded(text: str) -> tuple[str, list[int] | None, list[int] | None]:
             starts.append(k)
             ends.append(k + 1)
     return _composed(out, starts, ends)
+
+
+def fold_offsets(text: str) -> tuple[str, list[int] | None, list[int] | None]:
+    """``text`` (already NFC) folded as ``fold`` folds it, with each folded character's source
+    start and end in ``text`` (``None``, ``None`` when every character folds to exactly one):
+    what #148's protected-content matcher maps a folded match back through."""
+    return _folded(text)
 
 
 def fold(value: str) -> str:
@@ -437,6 +446,7 @@ __all__ = [
     "Rule",
     "common_words",
     "fold",
+    "fold_offsets",
     "guard_spans",
     "is_common",
     "matcher",

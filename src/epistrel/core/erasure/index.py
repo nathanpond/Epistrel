@@ -681,7 +681,11 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     ),
     SubjectWriter(
         "operations",
-        ("epistrel.core.genesis.create", "epistrel.orchestrator.lite.pipeline"),
+        (
+            "epistrel.core.genesis.create",
+            "epistrel.orchestrator.lite.pipeline",
+            "epistrel.core.verify.shadow",
+        ),
         f"{_RECORDS}:read_operations",
     ),
     SubjectWriter(
@@ -758,6 +762,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "modes; the thunk it names is indexed",
     "proposition_changes": "the read set's change index: ids, hashes, windows and visibility "
     "scopes of committed proposition changes (#136)",
+    "extraction_shadow": "claim detection's shadow samples (#148): statuses, counts, spans, "
+    "predicate ids and shape hashes; the beats the spans point into are indexed",
     "overflow_episodes": "the hot set's overflow episodes (#147): scope kinds, ids and turn "
     "numbers",
     "relationships": "a projection of facts, which are erased; refolded by erasure's rebuilt "

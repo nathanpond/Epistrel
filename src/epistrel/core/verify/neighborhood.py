@@ -48,12 +48,15 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 
+from sqlalchemy import select
+
 from epistrel.core.canon.facts import Fact, visible_to
 from epistrel.core.errors import StoryEntityNotFound
 from epistrel.core.memory.records import Memory, memories_linked
 from epistrel.core.propositions.registry import Registry, load
 from epistrel.core.readset import KeyedLookup
 from epistrel.core.settings_schema import DEFAULT_NEIGHBORHOOD_MAX_FACTS, OMNISCIENT
+from epistrel.core.tables import stories
 from epistrel.core.verify.rules import ClosedSetRecord, closed_sets_for
 
 if TYPE_CHECKING:
@@ -349,12 +352,20 @@ async def fact_neighborhood(
                     NeighborhoodItem("closed_set", closed.id, Edge.CLOSED_SET, 1, closed_set=closed)
                 )
 
+    as_of = None if through_position is None else through_position[0]
+    if as_of is not None:
+        head = await lookup.conn.scalar(
+            select(stories.c.next_turn_index).where(stories.c.id == story_id)
+        )
+        if head is not None and as_of > int(head) - 1 >= 0:
+            # The turn being produced is past the head: its projections are the head's (#148).
+            as_of = None
     for entity in dict.fromkeys(start):
         try:
             view = await lookup.profile(
                 story_id,
                 entity,
-                as_of=None if through_position is None else through_position[0],
+                as_of=as_of,
                 viewpoint=viewpoint,
             )
         except StoryEntityNotFound:

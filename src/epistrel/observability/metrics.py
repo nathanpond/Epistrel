@@ -28,7 +28,10 @@ The registry holds:
   summed excess of the open overflow episodes, ``character`` or ``story``; 0 when none is open)
   and ``epistrel_hot_overflow_episodes_open{scope}``, and the counters
   ``epistrel_hot_retirements_total{reason}`` (``covered``, ``floor``, ``uncovered``) and
-  ``epistrel_hot_counts_corrected_total`` (the daily reconcile).
+  ``epistrel_hot_counts_corrected_total`` (the daily reconcile);
+- ``epistrel_claims_detected_total{layer,category}`` and
+  ``epistrel_claims_checked_total{verdict,category}``: #148's claim detection, two separate
+  series (FR-VERIFY-13: detection and checking are reported apart), counted at a turn's commit.
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -110,6 +113,18 @@ RETIREMENTS = Counter(
 HOT_COUNTS_CORRECTED = Counter(
     "epistrel_hot_counts_corrected",
     "Stories whose stored hot-set counters the daily reconcile found wrong and corrected.",
+)
+CLAIMS_DETECTED = Counter(
+    "epistrel_claims_detected",
+    "Claims claim detection found, by layer (declared, detector, extraction) and category "
+    "(FR-VERIFY-13): what was detected, apart from what was checked.",
+    ("layer", "category"),
+)
+CLAIMS_CHECKED = Counter(
+    "epistrel_claims_checked",
+    "Detected claims verification checked, by verdict (supported, contradicted, novel, "
+    "uncertain, denied) and category: what was checked, apart from what was detected.",
+    ("verdict", "category"),
 )
 HOT_SCOPES = ("character", "story")
 

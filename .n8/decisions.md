@@ -7589,3 +7589,18 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Owner (2026-10-18):** "finish what you're working on, but don't start the next story." M4 execution pauses after #153's shard fix. #154–#158 are not started.
 - **Decision (Rule 3, merge-gate blocker):** `rest` is split into three shards, with the 25-minute timeout unchanged. `property-chaos` takes tests/property and tests/chaos. `perf-scale` takes tests/perf/test_p_01.py, test_p_02.py and test_p_06.py, the scale smoke, which needs no census. `rest` keeps everything else, with scenario and P-05 still together. The sizing comes from the last green `rest` log (83f7c71, 1,372 s of tests). Per-file times are the deltas between the timestamped progress lines: property 365 s, perf 327 s (P-01 155, P-06 122), chaos 258 s, scenario 215 s, top-level 112 s, the rest about 95 s. The expected test time is about 10.4 min for property-chaos, about 4.8 min for perf-scale and about 7.6 min for rest, each plus about 2 min of setup. #331's partition guards still hold. Checked by mutation: dropping one `--ignore` reports the file run twice, and dropping a path reports it run by no shard.
   **Issue:** #153, #331
+
+## Owner decisions — 2026-10-18
+
+- **Decision (owner):** #151's S-TENNIS blocker resolves as **option (a)**, extending the rules. #441 becomes the M4 story that delivers it (feature, epic #18): FR-PROP-10 amended with an ADR; forward implication of affirmed claims; closed sets over key-set values (a schema change to #131's closed-set model, approved by the owner); a rule-free cross-predicate conflict → `uncertain`. Edge: #151 is blocked by #441. #151's `blocked`/`needs-owner-action` labels are removed.
+  **Issue:** #151, #441
+- **Decision (owner):** All 18 issues filed during this run (#427–#444) are added to M4. The agent assigned type and severity labels (adjustable), with one triage comment on each. #443 stays `needs-owner-action` (a repo setting). Edge: #153 is blocked by #442.
+  **Issue:** #427–#444
+- **Decision (orchestrator):** #442 needs no spike. The cause is `core/resolution/context.load_context`'s per-person `lookup.profile()` loop, which uses only the relationships. The fix is one keyed read of the relationships projection rows as of the position, with the registry loaded once, plus a cost test over a 5-person vs a 200-person cast (the complement #141's cost test lacked).
+  **Issue:** #442
+
+## Ad-hoc — 2026-10-18
+
+- **Change:** M4's scope grows by 18 issues (#427–#444), including #441's rules extension. FR-PROP-10 (docs/03) is to be amended with an ADR, and #131's closed-set model gains key-set closed sets (a schema change).
+  **Why:** Owner decisions above (#151 option (a); "Triage — add all to M4").
+  **Affects:** M4 (the remaining work and the order of #154–#158); later milestones that build on closed sets or contradiction semantics, including M5 (character knowledge: closed sets and verification per holder), M6 (the world: states and rules), and M7 (portability: export and import of closed sets). Their plans may assume the old closed-set shape, so a `/n8-replan M5,M6,M7` after #441 lands is advised.

@@ -224,16 +224,66 @@ def test_perf_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
     the benchmark timings uploaded; a red run files or comments on an issue."""
     wf = _workflow("perf.yml")
     triggers = _on(wf)
-    assert triggers["schedule"] == [{"cron": "0 3 * * *"}]
+    assert {"cron": "0 3 * * *"} in triggers["schedule"]
     assert "workflow_dispatch" in triggers
     assert wf["permissions"] == {"contents": "read"}
     job = wf["jobs"]["perf"]
+    assert "'0 3 * * *'" in job["if"]
+    assert "inputs.suite == 'nightly'" in job["if"]
     assert job["permissions"] == {"contents": "read", "issues": "write"}
     run = next(s for s in _steps(wf, "perf") if s.get("id") == "perf")
     assert '-m "perf_quick or perf_long"' in run["run"]
     assert "--benchmark-json=" in run["run"]
     report = next(s for s in _steps(wf, "perf") if s.get("name") == "Report a red run")
     assert "Nightly perf run failed" in report["run"]
+
+
+def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
+    """#153: the scale suite every Sunday (03:00 UTC) and on dispatch (``suite: weekly``) on the
+    GitHub-hosted runner, labelled ``github-runner``, with the fixture cached by its key; only
+    the ``perf_weekly`` tests run there; a red run files or comments on an issue; the docs job
+    renders docs/perf.md and docs/capacity.md red or green and opens the rolling PR, and is the
+    only job that may write contents or pull requests.
+
+    Complement asserted: the nightly job does not run on the weekly schedule, the weekly job not
+    on the nightly one, and PR CI names no ``perf_weekly``."""
+    wf = _workflow("perf.yml")
+    triggers = _on(wf)
+    assert {"cron": "0 3 * * 0"} in triggers["schedule"]
+    assert triggers["workflow_dispatch"]["inputs"]["suite"]["options"] == ["nightly", "weekly"]
+    weekly, docs = wf["jobs"]["weekly"], wf["jobs"]["weekly-docs"]
+    assert "'0 3 * * 0'" in weekly["if"]
+    assert "'0 3 * * *'" not in weekly["if"]
+    assert "'0 3 * * 0'" not in wf["jobs"]["perf"]["if"]
+    assert weekly["permissions"] == {"contents": "read", "issues": "write"}
+    assert weekly["timeout-minutes"] == 180
+    assert weekly["env"]["EPISTREL_TEST_PERF_HOST"] == "github-runner"
+    assert "EPISTREL_TEST_PERF_CACHE_DIR" in weekly["env"]
+    steps = _steps(wf, "weekly")
+    (cache,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache@")]
+    assert "steps.fixture.outputs.key" in cache["with"]["key"]
+    run = next(s for s in steps if s.get("id") == "weekly")
+    assert "-m perf_weekly" in run["run"]
+    for name in ("test_p_01.py", "test_p_02.py", "test_p_06.py"):
+        assert f"tests/perf/{name}" in run["run"]
+    report = next(s for s in steps if s.get("name") == "Report a red run")
+    assert "Weekly perf run failed" in report["run"]
+    assert docs["needs"] == "weekly"
+    assert "failure" in docs["if"]
+    assert docs["permissions"] == {"contents": "write", "pull-requests": "write"}
+    others = {n: j.get("permissions", {}) for n, j in wf["jobs"].items() if n != "weekly-docs"}
+    assert all(p.get("contents") == "read" for p in others.values()), others
+    assert all("pull-requests" not in p for p in others.values()), others
+    docs_steps = _steps(wf, "weekly-docs")
+    assert any("python -m epistrel.tools.perf_docs" in s.get("run", "") for s in docs_steps)
+    (pr,) = [s for s in docs_steps if str(s.get("uses", "")).startswith("peter-evans/")]
+    assert pr["with"]["branch"] == "perf/weekly"
+    assert pr["with"]["labels"] == "performance"
+    assert set(pr["with"]["add-paths"].split()) == {"docs/perf.md", "docs/capacity.md"}
+    (pytest_step,) = [
+        s for s in _steps(_workflow("ci.yml"), "test") if "pytest" in s.get("run", "")
+    ]
+    assert "perf_weekly" not in pytest_step["run"]
 
 
 def test_redteam_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:

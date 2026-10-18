@@ -1,4 +1,5 @@
-"""Helpers for the retrieval tests (#141), and the long-story fixture builder #153 reuses.
+"""Helpers for the retrieval tests (#141), over the bulk memory writer #153's scale fixture
+extends (``epistrel.testing.fixtures.scale``: ``memory_row``, ``insert_memories``).
 
 The tests run on a database of their own (``embedding_support.embedding_db``): the vector arm
 needs a pinned dimension, and pinning retypes ``memories.embedding`` (a schema change the shared
@@ -32,14 +33,14 @@ from sqlalchemy import event, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core import embeddings
-from epistrel.core.enums import MemoryKind, MemoryTrustTier, RecordProvenance, RetrievalTier
-from epistrel.core.ids import new_ulid
+from epistrel.core.enums import MemoryKind, RetrievalTier
 from epistrel.core.membership import insert_derived
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.tables import operations, stories
 from epistrel.core.tables.memories import memories
+from epistrel.testing.fixtures import scale
 from tests import canon_support as c
 from tests.memory_support import use_structured
 
@@ -122,9 +123,7 @@ async def build_story(
                     importance=round(rnd.random(), 3),
                 )
             )
-        for start in range(0, len(rows), 1_000):
-            async with db.begin() as conn:
-                await insert_derived(conn, memories, rows[start : start + 1_000])
+        await scale.insert_memories(db, rows)
     async with db.begin() as conn:
         await conn.execute(
             update(stories).where(stories.c.id == story).values(next_turn_index=turns + 1)
@@ -148,22 +147,18 @@ def _row(
     importance: float | None = None,
     character: str | None = None,
 ) -> dict[str, Any]:
-    return {
-        "id": new_ulid(),
-        "story_id": story.story_id,
-        "kind": kind.value,
-        "text": line,
-        "character_id": character,
-        "provenance": RecordProvenance.RENDER.value,
-        "trust_tier": MemoryTrustTier.IN_WORLD.value,
-        "importance": importance,
-        "importance_at": turn if importance is not None else None,
-        "operation_id": story.operation_id,
-        "narrative_turn": turn,
-        "beat": beat,
-        "event_type": event_type,
-        "participants": list(participants),
-    }
+    return scale.memory_row(
+        story_id=story.story_id,
+        operation_id=story.operation_id,
+        line=line,
+        turn=turn,
+        beat=beat,
+        kind=kind,
+        event_type=event_type,
+        participants=participants,
+        importance=importance,
+        character=character,
+    )
 
 
 async def memory(

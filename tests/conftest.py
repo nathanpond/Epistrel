@@ -60,16 +60,19 @@ PERF_LONG_MARKER = "perf_long"
 SMOKE_MARKER = "smoke"
 REDTEAM_LONG_MARKER = "redteam_long"
 SOAK_MARKER = "soak"
+PERF_WEEKLY_MARKER = "perf_weekly"
 OPT_IN_MARKERS = (
     LIVE_MODEL_MARKER,
     PERF_LONG_MARKER,
+    PERF_WEEKLY_MARKER,
     SMOKE_MARKER,
     REDTEAM_LONG_MARKER,
     SOAK_MARKER,
 )
 """Markers whose tests run only when ``-m`` names them: a real endpoint (#54), minutes of
 seeding and measuring (#76), a live compose stack (C-10, #77), a full red-team corpus (R-01's,
-#145; nightly), or a long-horizon soak (X-01's 20,000 turns, #147; weekly)."""
+#145; nightly), a long-horizon soak (X-01's 20,000 turns, #147; weekly), or the weekly
+performance suite on the scale fixture (#153)."""
 DUMMY_DSN = "postgresql+psycopg://u:p@localhost:5432/epistrel_test"
 
 NO_DOCKER_MESSAGE = (
@@ -82,10 +85,10 @@ NO_DOCKER_MESSAGE = (
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Everything under tests/integration/, tests/chaos/ and tests/determinism/ is an
     integration test, everything under tests/chaos/ a ``chaos`` test (#75), and everything
-    under tests/smoke/ a ``smoke`` test (#77). ``live_model``, ``perf_long``, ``smoke``,
-    ``redteam_long`` and ``soak`` tests run only when ``-m`` names their marker: they need a
-    real endpoint (#54), minutes (#76), a running compose stack (#77), a nightly corpus run
-    (#145) or a weekly soak (#147). P-05
+    under tests/smoke/ a ``smoke`` test (#77). ``live_model``, ``perf_long``, ``perf_weekly``,
+    ``smoke``, ``redteam_long`` and ``soak`` tests run only when ``-m`` names their marker: they
+    need a real endpoint (#54), minutes (#76), the 50k scale fixture (#153), a running compose
+    stack (#77), a nightly corpus run (#145) or a weekly soak (#147). P-05
     runs last, over the turn census of everything before it (#69)."""
     for item in items:
         parents = Path(str(item.fspath)).parents

@@ -5,4 +5,6 @@ report; ``create`` the checks, the refusals and the one-transaction genesis oper
 materialisation under Lite (FR-SCN-7,11): ``materialize`` dispatches every field by its class
 (render, defer, inactive, consume), ``settings_map`` names each setting's capability, ``merge``
 holds the merge rule, and ``render`` the Lite prompt's scenario text and director notes.
+``structured`` (#149) materializes a structured story's deferred items: canon, memories,
+entities and the author layer.
 """

@@ -102,9 +102,10 @@ LOCKED_VERSIONS = 3
 OPENING = "Rain on the windows; the roast is late."
 """The opening narration of ``scenario()``'s body (a published scenario needs one, #111)."""
 M3_UNAVAILABLE = ("fact_consistency", "seed_normalization", "state_schema")
-"""The checks a full validation lists ``unavailable`` on every deployment from M3 on (#111): the
-capability-gated checks, each either needing a capability the deployment has not delivered or
-listing itself until it is implemented (M4 delivers the structured pipeline, #129)."""
+"""The checks a Lite story's creation report lists ``unavailable`` (#111, #122): every
+capability-gated check, since a Lite creation runs them with the Lite capabilities. A catalog
+validation lists only those the deployment has not delivered (``undeliverable_checks``): from
+M4 the structured pipeline is delivered and the seed checks run at publish (#149)."""
 
 
 def undeliverable_checks() -> list[str]:
@@ -296,9 +297,9 @@ COMPLETE: dict[str, Any] = {
         "states": [{"name": "harvest_mood", "initial": "tense"}],
         "clock": {"start": "1987-10-24T18:00:00", "time_awareness": "loose"},
         "scheduled_events": [{"at": "1987-10-24T21:00:00", "what": "the reading of the will"}],
-        "predicates": [{"name": "owns", "cardinality": "multi"}],
+        "predicates": [{"name": "inherits", "subject_type": "person", "cardinality": "multi"}],
         "closed_sets": [],
-        "rules": [{"text": "Nobody leaves before the will is read."}],
+        "rules": [{"when": "inherits", "then": "owns"}],
         "opening": {
             "narration": "Rain on the windows; the roast is late.",
             "starting_location": "kitchen",

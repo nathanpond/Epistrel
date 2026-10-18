@@ -750,9 +750,11 @@ def _stored_as_given(name: str, *, objects: bool = True, policies: bool = True) 
             "states": [{"name": f"{at}'s trust", "initial": "wary"}],
             "clock": {"start": "1987-10-24T18:00:00", "note": f"{at} winds the clocks."},
             "scheduled_events": [{"at": "1987-10-24T21:00:00", "what": f"{at} meets Bobby."}],
-            "predicates": [{"name": "trusts", "example": f"{at} trusts Bobby."}],
-            "closed_sets": [{"name": "suspects", "members": [at, "Bobby"]}],
-            "rules": [{"text": f"{at} never lies to Bobby."}],
+            "predicates": [{"name": "trusts", "docs": f"{at} trusts Bobby."}],
+            "closed_sets": [{"predicate": "trusts", "subject": "mother", "members": [at, "Bobby"]}],
+            # Typed since #149's publish check (#131's declarations): a rule names predicates
+            # only, so it holds no name; the predicate's docs and the closed set's members do.
+            "rules": [{"when": "trusts", "then": "knows"}],
         }
     )
     at = name if policies else BYSTANDER
@@ -774,9 +776,8 @@ OBJECT_PATHS = frozenset(
         "starting_state.states[0].name",
         "starting_state.clock.note",
         "starting_state.scheduled_events[0].what",
-        "starting_state.predicates[0].example",
+        "starting_state.predicates[0].docs",
         "starting_state.closed_sets[0].members[0]",
-        "starting_state.rules[0].text",
     }
 )
 """Where ``_stored_as_given`` names her in the objects stored as given: one path each (#323)."""
@@ -863,9 +864,9 @@ async def _erased_from_the_scenario(
         assert start["states"][0]["name"] == f"{at}'s trust"
         assert start["clock"]["note"] == f"{at} winds the clocks."
         assert start["scheduled_events"][0]["what"] == f"{at} meets Bobby."
-        assert start["predicates"][0]["example"] == f"{at} trusts Bobby."
+        assert start["predicates"][0]["docs"] == f"{at} trusts Bobby."
         assert start["closed_sets"][0]["members"] == [at, "Bobby"]
-        assert start["rules"][0]["text"] == f"{at} never lies to Bobby."
+        assert start["rules"][0] == {"when": "trusts", "then": "knows"}
         assert policy["name"] == f"{named} stays offstage"
         assert policy["rule"]["words"] == [named, "Bobby"]
         assert policy["message"] == f"Never say where {named} lives."

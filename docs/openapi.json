@@ -3028,7 +3028,7 @@
       },
       "CreationCounts": {
         "additionalProperties": false,
-        "description": "How many errors, merge ``conflicts`` (always 0 under Lite, which detects none: FR-SCN-7)\nand warnings the creation found, and what it deferred and left inactive, by field class and\ncapability (#122).",
+        "description": "How many errors, merge ``conflicts`` (always 0 under Lite, which detects none: FR-SCN-7;\na structured creation's ``merge_conflict`` entries, #149) and warnings the creation found,\nand what it deferred and left inactive, by field class and capability (#122). A structured\ncreation adds ``materialized``: its entries by outcome (absent under Lite).",
         "properties": {
           "conflicts": {
             "default": 0,
@@ -3046,6 +3046,16 @@
           "inactive": {
             "$ref": "#/components/schemas/ClassCapabilityCounts"
           },
+          "materialized": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutcomeCounts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "warnings": {
             "default": 0,
             "title": "Warnings",
@@ -3057,7 +3067,7 @@
       },
       "CreationReport": {
         "additionalProperties": false,
-        "description": "What a creation from a scenario found (FR-SCN-5,6,10,11): the new story's id (``null``\nwhen nothing was created) and its ``cast`` as cards, the ``counts``, ``unavailable`` (the\nchecks the deployment could not run) and, under the ``full`` projection only (``null``\nunder ``card``), every entry: #111's ``errors`` and ``warnings`` with their location and\nexact text, every ``deferred`` item with its location and the capability it needs, and\nevery ``inactive`` setting.",
+        "description": "What a creation from a scenario found (FR-SCN-5,6,10,11): the new story's id (``null``\nwhen nothing was created) and its ``cast`` as cards, the ``counts``, ``unavailable`` (the\nchecks the deployment could not run) and, under the ``full`` projection only (``null``\nunder ``card``), every entry: #111's ``errors`` and ``warnings`` with their location and\nexact text, every ``deferred`` item with its location and the capability it needs, and\nevery ``inactive`` setting; a structured creation also lists every item it\n``materialized`` (#149: absent from a Lite report, and under ``card``).",
         "properties": {
           "cast": {
             "items": {
@@ -3125,6 +3135,20 @@
               }
             ],
             "title": "Inactive"
+          },
+          "materialized": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MaterializedEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Materialized"
           },
           "story_id": {
             "anyOf": [
@@ -10913,6 +10937,74 @@
         "title": "LiteralKind",
         "type": "string"
       },
+      "MaterializedEntry": {
+        "additionalProperties": false,
+        "description": "One item structured genesis materialized (#149): its dotted ``field_ref``, its location\n(#111's shape), what happened to it (``outcomes``, in that order) and, for an item that\nlost the fact merge, the ``winner`` and ``loser`` (seed ids, or ``<role>:<field>`` for a\ncharacter's definition prose) and the ``rule`` that decided it (#140's).",
+        "properties": {
+          "field_ref": {
+            "title": "Field Ref",
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/EntryLocation"
+          },
+          "loser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Loser"
+          },
+          "outcomes": {
+            "items": {
+              "enum": [
+                "canon",
+                "memory",
+                "deferred",
+                "merge_conflict",
+                "entity",
+                "rule"
+              ],
+              "type": "string"
+            },
+            "title": "Outcomes",
+            "type": "array"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule"
+          },
+          "winner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Winner"
+          }
+        },
+        "required": [
+          "field_ref",
+          "location",
+          "outcomes"
+        ],
+        "title": "MaterializedEntry",
+        "type": "object"
+      },
       "MediaAsset": {
         "description": "A media asset's metadata (FR-MEDIA-1): its owner, kind, MIME type (sniffed from the\nbytes), size, dimensions or duration (``null`` when no probe could read them), SHA-256\nchecksum, content rating and the rating's version it was uploaded under, alt text, caption,\ngeneration metadata (as sent), source, state (``live``, or ``retired`` once deleted), the\nsubjects it depicts, who created it when, and, for a video, its poster's id (FR-MEDIA-3;\n``null`` for an image).",
         "properties": {
@@ -13220,6 +13312,21 @@
         ],
         "title": "Outcome",
         "type": "string"
+      },
+      "OutcomeCounts": {
+        "additionalProperties": false,
+        "description": "How many ``materialized`` entries name each outcome (non-zero keys only; #149).",
+        "properties": {
+          "by_outcome": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Outcome",
+            "type": "object"
+          }
+        },
+        "title": "OutcomeCounts",
+        "type": "object"
       },
       "OverridesRef": {
         "description": "A story's overrides of its profile's dials (FR-PROF-5): the settings it names, as a\nprofile names them, and their ``revision`` (0 while it has none; one more at each change).",
@@ -48974,7 +49081,7 @@
         ]
       },
       "post": {
-        "description": "Create a story, blank or from a scenario, in one operation; answers 201 with `Location`.\n\n**Blank** (`StorySpec`): its cast (each character with a required `true_age`), its content rating (default: the deployment's) and its settings. Every character `definition` (and `deflection_style`, how it refuses or changes the subject: FR-GUARD-7) passes the input gate first: a violation is 422 `guardrail_violation` and no story exists.\n\n**From a scenario** (`StoryFromScenario`, the body naming `scenario`; FR-SCN-6,9): the scenario (and a published version; default the latest), who fills each NPC role (`slots`: a catalog `character@version` or an `ad_hoc` definition; locked roles and default roles kept as pre-filled need none), each player's principal and persona (`players`, saved or ad hoc, in the scenario's player role), permitted `overrides`, an optional rating, engine profile and `max_characters_at_start`, and `strict`. The story is created in one transaction: one genesis operation, full snapshots of the scenario and of each catalog character (`catalog_id@version`), story settings and policies, a `player` relation per player principal, and the opening narration as turn 1. A refusal writes nothing: one 422 whose code is the first present of `creation_conflicts` (under `strict`), `slot_required`, `locked_slot_reassigned`, `player_role_fixed`, `persona_required`, `entry_archived`, `not_published`, `override_not_allowed`, `eligibility_failed`, `cast_limit_exceeded`, `rating_check_failed`, then the input gate's `guardrail_violation`, with the full creation report in `details.report`. A scenario rating mismatch is a warning (FR-RATE-5). Owners and listing statuses are never checked (FR-AUTH-8). When the engine profile leaves a capability the scenario recommends unmet, the answer is 200 with `applied: false` and the reports, unless the request sets `ignore_warnings` (FR-PROF-7).",
+        "description": "Create a story, blank or from a scenario, in one operation; answers 201 with `Location`.\n\n**Blank** (`StorySpec`): its cast (each character with a required `true_age`), its content rating (default: the deployment's) and its settings. Every character `definition` (and `deflection_style`, how it refuses or changes the subject: FR-GUARD-7) passes the input gate first: a violation is 422 `guardrail_violation` and no story exists.\n\n**From a scenario** (`StoryFromScenario`, the body naming `scenario`; FR-SCN-6,9): the scenario (and a published version; default the latest), who fills each NPC role (`slots`: a catalog `character@version` or an `ad_hoc` definition; locked roles and default roles kept as pre-filled need none), each player's principal and persona (`players`, saved or ad hoc, in the scenario's player role), permitted `overrides`, an optional rating, engine profile and `max_characters_at_start`, and `strict`. The story is created in one transaction: one genesis operation, full snapshots of the scenario and of each catalog character (`catalog_id@version`), story settings and policies, a `player` relation per player principal, and the opening narration as turn 1. A refusal writes nothing: one 422 whose code is the first present of `creation_conflicts` (under `strict`), `slot_required`, `locked_slot_reassigned`, `player_role_fixed`, `persona_required`, `entry_archived`, `not_published`, `override_not_allowed`, `eligibility_failed`, `cast_limit_exceeded`, `rating_check_failed`, then the input gate's `guardrail_violation`, then, for a story whose profile runs the `structured` pipeline, `seed_unnormalizable` (a canon seed naming an entity the cast and world lack), with the full creation report in `details.report`. A structured story's knowledge seeds, story rules, places and entities are materialized in the same transaction (#149): the report lists each item's outcome under `materialized` and the merge conflicts it dropped. A scenario rating mismatch is a warning (FR-RATE-5). Owners and listing statuses are never checked (FR-AUTH-8). When the engine profile leaves a capability the scenario recommends unmet, the answer is 200 with `applied: false` and the reports, unless the request sets `ignore_warnings` (FR-PROF-7).",
         "operationId": "create_story",
         "parameters": [
           {
@@ -49113,7 +49220,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `cast_limit_exceeded`, `creation_conflicts`, `eligibility_failed`, `entry_archived`, `guardrail_violation`, `locked_slot_reassigned`, `not_published`, `override_not_allowed`, `persona_required`, `player_role_fixed`, `profile_deleted`, `rating_check_failed`, `rating_retired`, `slot_required`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `cast_limit_exceeded`, `creation_conflicts`, `eligibility_failed`, `entry_archived`, `guardrail_violation`, `locked_slot_reassigned`, `not_published`, `override_not_allowed`, `persona_required`, `player_role_fixed`, `profile_deleted`, `rating_check_failed`, `rating_retired`, `seed_unnormalizable`, `slot_required`, `validation_error`, `viewpoint_unresolved`."
           },
           "503": {
             "content": {

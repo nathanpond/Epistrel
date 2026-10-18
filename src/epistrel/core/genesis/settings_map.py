@@ -3,11 +3,14 @@
 A scenario's ``story_settings_defaults`` (and each role's participation) are stored with the
 story whatever its pipeline: a setting whose capability a story materialized at genesis can use
 is applied; any other is kept ``inactive`` under ``stories.settings.inactive`` as ``{name:
-{value, capability}}``, waiting for the capability, and listed in the creation report. Genesis
-materializes every story as a Lite story until the structured genesis (#149), so the usable
-capabilities (``genesis_capabilities``) are those the deployment has delivered (#106's
+{value, capability}}``, waiting for the capability, and listed in the creation report. The
+usable capabilities (``genesis_capabilities``) are those the deployment has delivered (#106's
 ``DELIVERED``, as ``catalog.checks.base.delivered_capabilities`` names them) that need no
-``structured`` pipeline (FR-PROF-4): M4's delivery of that pipeline changes nothing here.
+``structured`` pipeline (FR-PROF-4): the settings and the creation's checks are decided before
+the profile is, so they are the Lite view for every story. A structured story's own
+materialization (#149, ``core.genesis.structured``) runs the seed checks against its cast; the
+one setting that needs ``structured`` (``player_authority``) has no story setting yet and stays
+``inactive``.
 
 ``SETTING_CAPABILITIES`` maps every ``story_settings_defaults`` field to the capability it
 needs, ``None`` for the settings every story is created with (the turn concurrency, the default

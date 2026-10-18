@@ -967,7 +967,7 @@ async def test_c_15__validate(settings: Settings, engine: AsyncEngine) -> None:
             "personality: character over scenario",
             None,
         )
-        assert set(report["unavailable"]) >= set(scenarios.M3_UNAVAILABLE)
+        assert set(report["unavailable"]) >= set(scenarios.undeliverable_checks())
         assert await counts(engine) == before
 
         refused = await scenarios.publish(client, sid, created["draft_revision"])

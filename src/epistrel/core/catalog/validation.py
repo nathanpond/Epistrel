@@ -9,10 +9,10 @@ answers one ``ValidationReport`` (``core.catalog.report``, re-exported here with
 **The checks** are ``CHECKS``, an explicit ordered list of modules under
 ``core.catalog.checks``, one per check. Each names the entry types it applies to and the
 capability it needs. The runner lists a check whose capability the deployment has not delivered
-as ``unavailable`` (never passed silently; in M3 ``seed_normalization`` and ``fact_consistency``,
-which need the ``structured`` pipeline, and ``state_schema``, which needs States), and runs the
-others in order. A check that gates (the document check) stops the checks after it when it finds
-an error.
+as ``unavailable`` (never passed silently: ``state_schema`` needs States; ``seed_normalization``
+and ``fact_consistency`` need the ``structured`` pipeline, delivered in M4 and implemented by
+#149), and runs the others in order. A check that gates (the document check) stops the checks
+after it when it finds an error.
 
 **Two phases.** ``prepare`` runs each check's work that may call a model (the input policies)
 outside any transaction; ``run`` runs every check inside the caller's transaction, with what was

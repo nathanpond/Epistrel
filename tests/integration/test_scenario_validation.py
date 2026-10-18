@@ -328,13 +328,13 @@ async def test_the_document_check_gates_the_others(settings: Any, engine: Any) -
     capability-gated check the deployment can run lists itself, which each does when it runs);
     the checks this deployment cannot run are still listed, exactly those (FR-SCN-5).
 
-    Complement asserted: the draft as it was saved validates, every capability-gated check
-    listed."""
+    Complement asserted: the draft as it was saved validates, listing the same checks (the
+    gated ones it can run, run: #149)."""
     async with rest(settings, engine) as client:
         created = await scenarios.create(client, scenarios.scenario("Planted"))
         whole = (await validate(client, created["id"])).json()
         assert whole["valid"] is True
-        assert set(whole["report"]["unavailable"]) >= set(scenarios.M3_UNAVAILABLE)
+        assert set(whole["report"]["unavailable"]) >= set(scenarios.undeliverable_checks())
         async with engine.begin() as conn:
             await conn.execute(
                 text(
@@ -843,4 +843,4 @@ async def test_the_version_keeps_its_report(settings: Any, engine: Any) -> None:
             engine, "SELECT report FROM catalog.scenario_versions WHERE catalog_id = :c", c=sid
         )
         assert row.report["errors"] == []
-        assert set(row.report["unavailable"]) >= set(scenarios.M3_UNAVAILABLE)
+        assert set(row.report["unavailable"]) >= set(scenarios.undeliverable_checks())

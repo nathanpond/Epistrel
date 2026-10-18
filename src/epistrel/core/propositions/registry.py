@@ -562,21 +562,38 @@ Resolver = Callable[[str], str]
 """Maps a scenario reference (a role or entity id) to the story's entity id."""
 
 
-async def register_author(
-    conn: AsyncConnection,
-    story_id: str,
-    rules: ScenarioRules,
-    *,
-    resolve: Resolver | None = None,
-) -> Registry:
-    """Register a scenario's story rules in the story's registry with full semantics (#149
-    calls this at structured genesis, in its transaction): the predicates (layer ``author``),
-    the implication rules (``stories.predicate_rules``) and the closed sets
-    (``asserted_by = author``; ``resolve`` maps their references to entity ids). Part of the
-    story's creation, so no configuration change is recorded."""
-    from epistrel.core.propositions import store  # the store imports this module
+@dataclass(frozen=True, slots=True)
+class AuthorLayer:
+    """A scenario's story rules as the registry would hold them, before anything is written:
+    the author predicates (with their ids), the implication rules over predicate ids, and
+    every declared or known name's id."""
 
-    existing = await load(conn, story_id)
+    predicates: tuple[Predicate, ...]
+    implications: tuple[Implication, ...]
+    names: Mapping[str, str]
+
+    def registry(self, existing: Registry) -> Registry:
+        """``existing`` with this layer added (in memory: #149's genesis plan and publish
+        check normalize against it)."""
+        return Registry(
+            existing.story_id,
+            existing.config_revision,
+            {**existing.predicates, **{p.id: p for p in self.predicates}},
+            (*existing.story_rules, *self.implications),
+        )
+
+
+def author_layer(
+    story_id: str | None,
+    rules: ScenarioRules,
+    existing: Registry,
+    *,
+    ids: Mapping[str, str] | None = None,
+) -> AuthorLayer:
+    """The author layer ``rules`` declare over ``existing`` (pure; see ``register_author``):
+    422 ``validation_error`` for a name the story already has, a reference to a predicate that
+    is neither declared nor core (in a predicate, a rule or a closed set) and a rule cycle.
+    ``ids`` fixes the new predicates' ids by name (default: new ids)."""
     known = {p.name: p.id for p in existing.predicates.values() if p.story_id is not None}
     for index, decl in enumerate(rules.predicates):
         if decl.name in known:
@@ -587,7 +604,11 @@ async def register_author(
                     "reason": "predicate_declared_twice",
                 },
             )
-    names = {**known, **{decl.name: new_ulid() for decl in rules.predicates}}
+    fixed = dict(ids or {})
+    names = {
+        **known,
+        **{decl.name: fixed.get(decl.name) or new_ulid() for decl in rules.predicates},
+    }
     chosen: list[Predicate] = []
     for index, decl in enumerate(rules.predicates):
         where = f"starting_state.predicates[{index}]"
@@ -635,7 +656,33 @@ async def register_author(
         )
         for i, rule in enumerate(rules.rules)
     ]
+    for index, closed in enumerate(rules.closed_sets):
+        _ref(names, closed.predicate, f"starting_state.closed_sets[{index}].predicate")
     check_rules([*existing.rules(), *implications])
+    return AuthorLayer(tuple(chosen), tuple(implications), names)
+
+
+async def register_author(
+    conn: AsyncConnection,
+    story_id: str,
+    rules: ScenarioRules,
+    *,
+    resolve: Resolver | None = None,
+    ids: Mapping[str, str] | None = None,
+) -> Registry:
+    """Register a scenario's story rules in the story's registry with full semantics (#149
+    calls this at structured genesis, in its transaction): the predicates (layer ``author``),
+    the implication rules (``stories.predicate_rules``) and the closed sets
+    (``asserted_by = author``; ``resolve`` maps their references to entity ids). ``ids`` fixes
+    the new predicates' ids by name (#149's genesis plan normalized its seeds against them).
+    Part of the story's creation, so no configuration change is recorded."""
+    from epistrel.core.propositions import store  # the store imports this module
+
+    existing = await load(conn, story_id)
+    layer = author_layer(story_id, rules, existing, ids=ids)
+    chosen = list(layer.predicates)
+    implications = list(layer.implications)
+    names = dict(layer.names)
     await _insert_predicates(conn, chosen)
     if implications:
         await conn.execute(
@@ -1188,6 +1235,7 @@ __all__ = [
     "PROPOSABLE",
     "PROPOSAL_OBSERVATIONS",
     "ApproveRequest",
+    "AuthorLayer",
     "ClosedSetDecl",
     "Closure",
     "Decision",
@@ -1201,6 +1249,7 @@ __all__ = [
     "ScenarioRules",
     "Violation",
     "approve",
+    "author_layer",
     "auto_name",
     "auto_register",
     "canonical",

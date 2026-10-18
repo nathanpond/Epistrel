@@ -45,7 +45,6 @@ from tests.scenario_support import (
     CARD_ROLES,
     FULL_KEYS,
     GROUPS,
-    M3_UNAVAILABLE,
     PRINCIPAL,
     PRIVATE_PHRASES,
     READ,
@@ -68,6 +67,7 @@ from tests.scenario_support import (
     seed,
     set_cast_limits,
     stored_form,
+    undeliverable_checks,
     version_rows,
 )
 from tests.story_support import rest
@@ -261,7 +261,7 @@ async def test_draft_save_publish_and_versions(
     }
     report = first.json()["report"]
     assert (report["errors"], report["warnings"]) == ([], [])
-    assert set(report["unavailable"]) >= set(M3_UNAVAILABLE)
+    assert set(report["unavailable"]) >= set(undeliverable_checks())
     stored = await entry_row(engine, sid)
     assert (stored.status, stored.current_version, stored.draft_revision) == ("published", 1, 3)
     (pair,) = await rows(

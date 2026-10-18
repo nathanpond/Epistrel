@@ -8,6 +8,8 @@
   resolvers and #131's registry, or it is ``Unnormalizable`` with an ``uncertain`` reason (#140).
 - ``merge``: the fact merge by seed layer at structured genesis, decided by ``check`` (#140,
   called by #149).
+- ``seeds``: a scenario's seed text read as propositions against a registry and an entity
+  index (#149: structured genesis and the publish-time seed checks share it).
 
 Nothing here calls a model: escalation of the ``uncertain`` residual is the Orchestrator's
 (#142).

@@ -53,6 +53,13 @@ retrieval finds author canon. ``after_rewrite`` runs ``MEMORY_HOOKS`` for a memo
 sanitize rewrote (its vector was cleared). A memory's quarantine (``quarantined_at`` and
 the rest, #145) is read into ``Memory`` but written by ``core.mutation`` only.
 
+**Seed memories** (#149). ``write_seed(conn, operation, seeds)`` writes a structured story's
+knowledge seeds at genesis, in the genesis operation's commit: provenance ``seed`` (trust tier
+``author``), importance ``SEED_IMPORTANCE``, ``semantic`` for a seed that normalized (its
+propositions) and ``episodic`` for free text, each with the seed's holder and visibility. The
+second writer of ``semantic`` rows beside consolidation; it runs the guard, the erasure index and
+``MEMORY_HOOKS`` like every writer.
+
 **Working memory** (FR-MEM-5) is a function over events, never a table:
 ``working_memory(conn, story_id, character_id, through_position, n)`` answers the last ``n``
 beats of the active timeline at or before the position, as the character perceives them. M4
@@ -645,6 +652,83 @@ async def write_author(
     return (await memories_by_id(conn, story_id, ids))[0]
 
 
+SEED_IMPORTANCE = 0.8
+"""The importance a seed memory starts with: the author's knowledge (#149)."""
+
+
+@dataclass(frozen=True, slots=True)
+class SeedMemory:
+    """One memory structured genesis writes for a knowledge seed (#149): ``semantic`` when the
+    seed normalized to canon (its ``proposition_ids``), ``episodic`` for free text; the seed's
+    holder (``None`` for the world's), its visibility, its participants and the events that
+    caused it."""
+
+    kind: MemoryKind
+    text: str
+    visibility: Visibility
+    source_event_ids: tuple[str, ...]
+    holder_character_id: str | None = None
+    proposition_ids: tuple[str, ...] = ()
+    participants: tuple[str, ...] = ()
+
+
+async def write_seed(
+    conn: AsyncConnection, operation: MemoryOperation, seeds: Sequence[SeedMemory]
+) -> list[Memory]:
+    """The seed memories of a structured story's genesis (#149), in the genesis operation's
+    commit: provenance ``seed`` (trust tier ``author``), importance ``SEED_IMPORTANCE`` from the
+    genesis position, the operation's narrative position. The caller has checked that the story
+    keeps episodic memory. Runs the resurrection guard, the erasure index and ``MEMORY_HOOKS``
+    (embedding, importance) like every writer."""
+    story_id = operation.story_id
+    if story_id is None:
+        raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
+    provenance = RecordProvenance.SEED
+    rows: list[dict[str, Any]] = []
+    contents: list[guard.Content] = []
+    for seed in seeds:
+        line = seed.text.strip()[:TEXT_MAX]
+        if not line:
+            continue
+        if seed.kind not in (MemoryKind.EPISODIC, MemoryKind.SEMANTIC):
+            raise ValueError("a seed memory is episodic or semantic")
+        holder = seed.holder_character_id
+        contents.append(guard.Content((line,), frozenset({holder}) if holder else frozenset()))
+        rows.append(
+            {
+                "id": new_ulid(),
+                "story_id": story_id,
+                "kind": seed.kind.value,
+                "text": line,
+                "holder_character_id": holder,
+                "character_id": None,
+                "visibility": seed.visibility.document(),
+                "provenance": provenance.value,
+                "trust_tier": trust_tier_of(provenance).value,
+                "importance": SEED_IMPORTANCE,
+                "importance_at": operation.narrative_turn,
+                "operation_id": operation.operation_id,
+                "source_event_ids": list(seed.source_event_ids),
+                "narrative_turn": operation.narrative_turn,
+                "turn_variant": operation.turn_variant,
+                "beat": None,
+                "proposition_ids": list(seed.proposition_ids),
+                "participants": list(dict.fromkeys(seed.participants)),
+            }
+        )
+    if not rows:
+        return []
+    await guard.check_content(
+        conn, story_id, contents, base_revision=operation.base_revision, path=__name__
+    )
+    await insert_derived(conn, memories, rows)
+    await index_records(conn, [memory_record(SimpleNamespace(**r)) for r in rows])
+    ids = tuple(str(r["id"]) for r in rows)
+    for hook in list(MEMORY_HOOKS):
+        await hook(conn, story_id, ids)
+    return await memories_by_id(conn, story_id, ids)
+
+
 async def after_rewrite(conn: AsyncConnection, story_id: str, ids: tuple[str, ...]) -> None:
     """Run ``MEMORY_HOOKS`` for memories whose text was rewritten (#145's sanitize): their
     vectors were cleared, so the embed job re-embeds them."""
@@ -1004,12 +1088,14 @@ __all__ = [
     "EPISODIC_MODULE",
     "MEMORY_HOOKS",
     "OBSERVABLE",
+    "SEED_IMPORTANCE",
     "Beat",
     "BeatKind",
     "Memory",
     "MemoryHook",
     "MemoryOperation",
     "Position",
+    "SeedMemory",
     "WorkingBeat",
     "after_rewrite",
     "beats_of_operation",
@@ -1032,6 +1118,7 @@ __all__ = [
     "working_memory",
     "write_author",
     "write_consolidated",
+    "write_seed",
 ]
 
 # #147's hot-set counters register their hooks (after everything above is defined, so the

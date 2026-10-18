@@ -269,13 +269,16 @@ def test_the_checks_and_the_capabilities() -> None:
 
 
 async def test_capability_checks_never_pass_silently() -> None:
-    """Even given their capability, M3's capability-gated checks list themselves: none is
-    implemented before M4 and M6, so none can pass a scenario silently."""
+    """Even given its capability, a capability-gated check not implemented yet lists itself
+    (the State-schema check, M6), so none can pass a scenario silently; the seed checks #149
+    implements run and find nothing to report in an empty scenario."""
     gated = [check for check in validation.CHECKS if check.capability is not None]
     context = _context(DEPLOYMENT_CAPABILITIES | {"structured", "states"})
+    implemented = {"seed_normalization", "fact_consistency"}
     for check in gated:
         found = await check.run(_subject({}, EntityType.SCENARIO), context)
-        assert (found.entries, found.unavailable) == ([], [check.name])
+        listed = [] if check.name in implemented else [check.name]
+        assert (found.entries, found.unavailable) == ([], listed)
 
 
 async def test_a_character_runs_its_rules() -> None:
@@ -392,7 +395,7 @@ def test_policy_texts_cover_the_private_prose() -> None:
         "drivers.planned_reveals[0].truth.text",
         "drivers.planned_reveals[0].conditions",
         "drivers.endings[1]",
-        "starting_state.rules[0].text",
+        "starting_state.rules[0].when",
     }
     assert expected <= set(texts)
     assert texts["cast.roles[0].seeded_memories[0].text"].role == "mother"

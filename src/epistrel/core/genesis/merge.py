@@ -15,11 +15,21 @@ role has one).
 the characters' author notes, and the scenario text closes with the instruction that they
 prevail (``render.PREVAIL``). Nothing is dropped, so ``counts.conflicts`` is always 0 under Lite
 and the fact-merge check (``fact_consistency``) is listed ``unavailable``.
+
+**Facts under ``structured``** (#149, U-27). A structured story's seeds are propositions, so the
+merge is decided by the contradiction rules: ``merge_structured`` runs #140's ``merge_layers``
+over every normalized proposition of the creation (the author's closed sets first, then the
+world's seeds, relationships and opening placement, the roles' seeds, and each character's
+definition prose) and answers what it kept and, for each dropped one, its ``Conflict``: the
+winning and losing seeds (a ``SeedFact`` id names its seed, ``core.verify.seeds.seed_of``) and
+the rule that decided it. ``core.genesis.structured`` writes only what was kept and reports
+each loser ``merge_conflict``; ``counts.conflicts`` counts them.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Final
 
 from epistrel.core.catalog.checks.personality import (
@@ -28,8 +38,19 @@ from epistrel.core.catalog.checks.personality import (
     personality_sentences,
 )
 from epistrel.core.catalog.report import Entry
+from epistrel.core.propositions.registry import Registry
+from epistrel.core.verify.merge import (
+    SAME_LAYER_ORDER,
+    MergeConflict,
+    MergeResult,
+    SeedFact,
+    SeedLayer,
+    merge_layers,
+)
+from epistrel.core.verify.seeds import seed_of
 
 PERSONALITY_IN_ROLE: Final = "personality_in_role"
+CLOSED_SET: Final = "closed_set"
 LITE_CONFLICTS: Final = 0
 """Merge conflicts a Lite creation reports: none (no fact-conflict detection, FR-SCN-7)."""
 
@@ -54,11 +75,50 @@ def name_warnings(entries: Iterable[Entry], names: Mapping[str, str]) -> list[En
     return found
 
 
+@dataclass(frozen=True, slots=True)
+class Conflict:
+    """A proposition the structured merge dropped: its ``SeedFact`` id (``key``), the seeds that
+    won and lost, and the deciding rule."""
+
+    key: str
+    winner: str
+    loser: str
+    rule: str
+
+
+def merge_structured(
+    layers: Mapping[SeedLayer, Sequence[SeedFact]], *, registry: Registry
+) -> tuple[MergeResult, list[Conflict]]:
+    """The structured merge (see the module docstring): #140's result and its conflicts."""
+    result = merge_layers(layers, registry=registry)
+    conflicts = [
+        Conflict(
+            key=c.loser.seed_id,
+            winner=seed_of(c.winner.seed_id),
+            loser=seed_of(c.loser.seed_id),
+            rule=_rule(c),
+        )
+        for c in result.dropped
+    ]
+    return result, conflicts
+
+
+def _rule(conflict: MergeConflict) -> str:
+    """The deciding rule. A closed set is a story rule above every seed, merged first in the
+    world layer, so a seed it beats lost to the rule, not to document order."""
+    if conflict.winner.closed_set is None or conflict.rule != SAME_LAYER_ORDER:
+        return conflict.rule
+    rules = [] if conflict.verdict is None else sorted(r.value for r in conflict.verdict.rules)
+    return rules[0] if rules else CLOSED_SET
+
+
 __all__ = [
     "LITE_CONFLICTS",
     "PERSONALITY_IN_ROLE",
     "RULE",
+    "Conflict",
     "asserts_personality",
+    "merge_structured",
     "name_warnings",
     "personality_sentences",
     "yielding",

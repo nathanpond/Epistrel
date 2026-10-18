@@ -538,6 +538,14 @@ class CreationConflicts(CreationRefused):
     code = "creation_conflicts"
 
 
+class SeedUnnormalizable(CreationRefused):
+    """A structured creation's ``canon`` seed names an entity its cast and world do not have, or
+    its story rules declare what the registry cannot hold (FR-PROP-12; #149): the author asked
+    for canon, so there is no fallback."""
+
+    code = "seed_unnormalizable"
+
+
 class CreationArchived(CreationRefused):
     """The scenario or a chosen catalog character is archived."""
 

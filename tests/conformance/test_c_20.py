@@ -37,7 +37,7 @@ from tests.scenario_support import scenario as catalog_scenario
 from tests.scenario_support import seed
 from tests.story_support import WRITE, count, create, rest, story_body
 from tests.structured_support import story_state
-from tests.validation_support import link_rating_policy, validate
+from tests.validation_support import entries, link_rating_policy, validate
 
 CREATE_ROWS = "SELECT count(*) FROM audit_log WHERE details->>'entry_point' = 'story_create'"
 OPERATOR = {**WRITE, "X-Epistrel-Principal": "p-operator"}
@@ -305,7 +305,9 @@ async def test_c_20__catalog_input_policy(settings: Settings, engine: AsyncEngin
             audit_before = await count(engine, "SELECT count(*) FROM audit_log")
             published = await publish_scenario(client, created["id"], created["draft_revision"])
             assert published.status_code == 201, published.text
-            (warning,) = published.json()["report"]["warnings"]
+            # The seed's capitalized word is also a name no entity has (#149's
+            # ``seed_unresolved_cast`` warning, M4); this part asserts the policy's warning.
+            (warning,) = entries(published.json()["report"], "input_policy")
             assert (warning["code"], warning["outcome"], warning["rule"]) == (
                 "input_policy",
                 "kept",

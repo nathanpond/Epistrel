@@ -276,6 +276,7 @@ ERROR_STATUS: dict[str, int] = {
     "rating_check_failed": 422,
     "rating_retired": 422,
     "scope_mismatch": 422,
+    "seed_unnormalizable": 422,
     "span_not_found": 422,
     "pin_limit_exceeded": 422,
     "key_mismatch": 422,
@@ -378,6 +379,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "eligibility_failed",
         "cast_limit_exceeded",
         "rating_check_failed",
+        # a structured creation's canon seed that does not normalize (#149)
+        "seed_unnormalizable",
         "profile_deleted",
         # A replay of a blocked story's creation (#369); a scenario, catalog character or
         # persona a pending catalog-scope erasure reaches (#346).

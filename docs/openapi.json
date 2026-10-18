@@ -4381,7 +4381,7 @@
                   },
                   "polish": {
                     "additionalProperties": false,
-                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                     "properties": {
                       "enabled": {
                         "default": true,
@@ -4958,7 +4958,7 @@
                   },
                   "polish": {
                     "additionalProperties": false,
-                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                     "properties": {
                       "enabled": {
                         "default": true,
@@ -5776,7 +5776,7 @@
                   },
                   "polish": {
                     "additionalProperties": false,
-                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                     "properties": {
                       "enabled": {
                         "default": true,
@@ -10204,7 +10204,7 @@
                             "anyOf": [
                               {
                                 "additionalProperties": false,
-                                "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                                "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                                 "properties": {
                                   "enabled": {
                                     "anyOf": [
@@ -12165,11 +12165,26 @@
         "type": "object"
       },
       "MessageBody": {
-        "description": "The finished reply: the id of its transcript row and its text.",
+        "description": "The finished reply: the id of its transcript row and its text. A structured turn's says\nhow it was composed (`mode`): `polished` (the polish passed the composition check) or\n`deterministic` (the checked beats assembled as they are); absent for a Lite reply.",
         "properties": {
           "message_id": {
             "title": "Message Id",
             "type": "string"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "polished",
+                  "deterministic"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
           },
           "text": {
             "title": "Text",
@@ -14204,7 +14219,7 @@
                   },
                   "polish": {
                     "additionalProperties": false,
-                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                     "properties": {
                       "enabled": {
                         "default": true,
@@ -16746,7 +16761,7 @@
                   },
                   "polish": {
                     "additionalProperties": false,
-                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                     "properties": {
                       "enabled": {
                         "default": true,
@@ -17425,7 +17440,7 @@
                   },
                   "polish": {
                     "additionalProperties": false,
-                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                     "properties": {
                       "enabled": {
                         "default": true,
@@ -18543,7 +18558,7 @@
                         "anyOf": [
                           {
                             "additionalProperties": false,
-                            "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                            "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                             "properties": {
                               "enabled": {
                                 "anyOf": [
@@ -19320,7 +19335,7 @@
                   },
                   "polish": {
                     "additionalProperties": false,
-                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                     "properties": {
                       "enabled": {
                         "default": true,
@@ -19930,7 +19945,7 @@
                       },
                       "polish": {
                         "additionalProperties": false,
-                        "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                        "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                         "properties": {
                           "enabled": {
                             "default": true,
@@ -26349,7 +26364,7 @@
                   },
                   "polish": {
                     "additionalProperties": false,
-                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                     "properties": {
                       "enabled": {
                         "default": true,
@@ -27531,7 +27546,7 @@
                       },
                       "polish": {
                         "additionalProperties": false,
-                        "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once.",
+                        "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
                         "properties": {
                           "enabled": {
                             "default": true,

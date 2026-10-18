@@ -124,6 +124,12 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "A repair's constraint on the beat it regenerates (#151): its kind (`do_not_assert`, "
         "`avoid_binding`, `policy`), its text and the ids of the records it cites."
     ),
+    ContentCategory.VERIFIED_BEAT: (
+        "A structured turn's composition (#152): its verified beats as the output viewpoint "
+        "receives them (index, kind, actor's name, text; never a `think` or `latent` beat for "
+        "a character viewpoint) and their deterministic assembly, which the polish may only "
+        "order and join."
+    ),
 }
 
 STRUCTURED_LABELS: Mapping[StructuredOutput, str] = {

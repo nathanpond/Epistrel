@@ -89,6 +89,11 @@ class ContentCategory(StrEnum):
     """A repair's constraint on the span it regenerates (#151): its kind (``do_not_assert``,
     ``avoid_binding``, ``policy``), its text ("do not assert that Bobby enrolled at Florida")
     and the ids of the records it cites."""
+    VERIFIED_BEAT = "verified_beat"
+    """What a structured turn's composition (#152, FR-RESP-8) is given: the turn's verified
+    beats as the output viewpoint receives them (each beat's index, kind, actor's name and
+    text; never a ``think`` or ``latent`` beat for a character viewpoint) and their
+    deterministic assembly, which the polish may only order and join."""
 
 
 class StructuredOutput(StrEnum):
@@ -164,6 +169,16 @@ class AgeClue(InputSchema):
     clue: Annotated[str, C.SCENE] = ""
 
 
+class ComposeBeat(InputSchema):
+    """One verified beat a composition (#152) is given: its position, kind, actor's name
+    (empty for narration) and text."""
+
+    index: Annotated[int, C.VERIFIED_BEAT]
+    kind: Annotated[Literal["say", "think", "do", "latent", "narration"], C.VERIFIED_BEAT]
+    name: Annotated[str, C.VERIFIED_BEAT] = ""
+    text: Annotated[str, C.VERIFIED_BEAT] = Field(max_length=8_000)
+
+
 class GenerationInputs(InputSchema):
     """The Lite prompt's sections (FR-LITE-1), in prompt order; M3-only sections join in M3.
 
@@ -205,6 +220,14 @@ class GenerationInputs(InputSchema):
     introductions: list[AgeClue] = Field(default_factory=list)
     """The age repair (#150): each character a render introduced without an age, with the
     render's clue."""
+    composition_beats: list[ComposeBeat] = Field(default_factory=list, max_length=100)
+    """The composition (#152): the verified beats the output viewpoint receives, in turn
+    order."""
+    composition_draft: Annotated[str, C.VERIFIED_BEAT] = Field(default="", max_length=40_000)
+    """The composition (#152): those beats' deterministic assembly, the draft it polishes."""
+    composition_omniscient: Annotated[bool, C.VERIFIED_BEAT] = False
+    """The composition (#152): the message is for an ``omniscient`` read, so labelled thoughts
+    may appear."""
 
 
 ConstraintKind = Literal["do_not_assert", "avoid_binding", "policy"]
@@ -751,7 +774,8 @@ GENERATION = Purpose(
     description=(
         "Writes the reply of a Lite turn from the story's prompt sections; in a structured "
         "story (#150) the typed beats of one character's or the narrator's render (a "
-        "`response_schema`: constrained decoding or parse-validate-retry) and the age repair."
+        "`response_schema`: constrained decoding or parse-validate-retry), the age repair and "
+        "the composition of the turn's verified beats into its message (#152)."
     ),
     default_model_key=DEFAULT_MODEL_KEY,
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.NONE),
@@ -767,12 +791,14 @@ GENERATION = Purpose(
             "structured": "structured_generation.j2",
             "narrator": "narrator_generation.j2",
             "age_repair": "age_repair.j2",
+            "composition": "composition.j2",
         }
     ),
 )
 """``generation``: the Lite reply (``lite_generation.j2``) and, under ``structured`` (#150), the
 character render (``structured_generation.j2``), the narrator render
-(``narrator_generation.j2``) and the age repair (``age_repair.j2``). The structured path needs
+(``narrator_generation.j2``), the age repair (``age_repair.j2``) and the composition of the
+turn's verified beats into its message (``composition.j2``, #152). The structured path needs
 ``json_schema`` or ``parse_validate_retry`` (its beats are a ``response_schema``)."""
 
 GUARDRAIL_CHECK = Purpose(

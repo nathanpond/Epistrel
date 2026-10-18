@@ -389,7 +389,9 @@ class Polish(ProfileModel):
     """The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an
     output policy, before the safe fallback is used (FR-GUARD-6; M2's story setting
     ``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is
-    replaced by the fallback at once."""
+    replaced by the fallback at once. Under ``structured`` it also gates the composition's
+    polish call (#152): off, a structured turn's message is the deterministic assembly of its
+    checked beats."""
 
     enabled: Annotated[bool, BEHAVIORAL, PROSPECTIVE, RELEVANT] = True
     max_regenerations: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(

@@ -25,7 +25,11 @@ what its context says would; a request with no match falls through to the defaul
 ``fault_hook`` (a callable of the purpose) is consulted on every call with no queued fault,
 so a chaos test can draw faults at random. ``hold(purpose)`` latches calls until released, and
 ``calls`` records every request (purpose, messages, params, declared field paths, model).
-``nondeterministic = True`` salts the hash per call.
+``nondeterministic = True`` salts the hash per call. A response schema naming a template in
+``stub_script`` (#152's ``ComposedMessage``: ``composition.j2``) is scripted by that name
+instead of its purpose: ``script("composition.j2", …)``, ``fault("composition.j2", …)`` and
+``when(…, purpose="composition.j2")`` answer its calls, and nothing scripted, matched, parroted
+or faulted for ``generation`` does; unscripted, it answers the draft its prompt carries.
 
 A purpose that declares a response schema (``guardrail_check``) answers schema-conformant JSON
 by default whether or not the request carried ``response_format``, as a model following the
@@ -82,6 +86,10 @@ DEFAULT_PREVIEW_CHARS = 40
 STUB_EXAMPLE = "stub_example"
 """A response schema's classmethod ``stub_example(digest, messages)``: its default answer
 (#150), instead of ``conformant_example``."""
+STUB_SCRIPT = "stub_script"
+"""A response schema's class attribute naming the template its calls are scripted by (#152:
+``composition.j2``): ``script(<template>, …)``, ``fault(<template>, …)`` and
+``when(…, purpose=<template>)`` answer them, and nothing scripted for the purpose does."""
 
 type FaultKind = Literal[
     "timeout",
@@ -330,6 +338,24 @@ class StubAdapter:
         last_user = next((m.content for m in reversed(messages) if m.role == "user"), "")
         return f"[stub {purpose} {digest[:12]}] {last_user[:DEFAULT_PREVIEW_CHARS]}"
 
+    def _keyed_answer(
+        self,
+        key: str,
+        messages: Sequence[Message],
+        digest: str,
+        response_schema: type[BaseModel],
+    ) -> str:
+        """A call scripted by its template (``STUB_SCRIPT``, #152): only ``key``'s scripts and
+        matches answer it, else its schema's default."""
+        if self._scripts[key]:
+            return self._scripts[key].popleft()
+        for needles, response, only in self._when:
+            if only == key and all(any(n in m.content for m in messages) for n in needles):
+                return response
+        hook = getattr(response_schema, STUB_EXAMPLE, None)
+        example = hook(digest, messages) if callable(hook) else conformant_example(response_schema)
+        return json.dumps(example, sort_keys=True, separators=(",", ":"))
+
     def _answer(
         self,
         purpose: str,
@@ -337,6 +363,9 @@ class StubAdapter:
         digest: str,
         response_schema: type[BaseModel] | None,
     ) -> str:
+        key = getattr(response_schema, STUB_SCRIPT, None)
+        if response_schema is not None and isinstance(key, str):
+            return self._keyed_answer(key, messages, digest, response_schema)
         if self._scripts[purpose]:
             return self._scripts[purpose].popleft()
         for needles, response, only in self._when:
@@ -392,7 +421,9 @@ class StubAdapter:
             digest = hashlib.sha256(digest.encode() + os.urandom(16)).hexdigest()
         text: str | None = None
         finish_reason, refused = "stop", False
-        kind = self._faults[purpose].popleft() if self._faults[purpose] else None
+        key = getattr(response_schema, STUB_SCRIPT, None)
+        queue = key if isinstance(key, str) else purpose
+        kind = self._faults[queue].popleft() if self._faults[queue] else None
         if kind is None and self.fault_hook is not None:
             kind = self.fault_hook(purpose)
         if kind is not None:
@@ -405,7 +436,7 @@ class StubAdapter:
             refused = kind == "refusal"
             if kind == "length":
                 finish_reason = "length"
-        if text is None:
+        if text is None and queue == purpose:
             text = self._case_answer(purpose, messages, params)
         if text is None:
             text = self._answer(purpose, messages, digest, response_schema)

@@ -7506,3 +7506,36 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (Rule 1):** `models.facts.identities` (the fingerprint's runtime facts) now follows a purpose's parent row (`config.parent_of`) before `default`, as the Model Access Layer and `/admin/model-config` already resolve it; it read only the purpose's own row and `default`, so `regeneration` (which shares generation's row) and `lite_summary` (consolidation's) were fingerprinted as the default model. Regression: `test_model_ids_and_template_hashes`, `test_c_18__fingerprint`. `docs/model-matrix.md` re-rendered from its committed JSON (the new purpose column); `test_u_05` and S-AGE-ASSIGNMENT set `repair.max_attempts` 0 to keep asserting a labelled false say, like `test_structured_turn`.
   **Why:** Delivering `regeneration` exposed the mismatch.
   **Issue:** #151
+
+## /n8-exec M4 (cont.) — 2026-10-18
+
+- **Decision (Rule 3, at the orchestrator's request):** `epistrel_repairs_total{rung,class}` now labels the rung by name (`narrowing`, `substitution`, `regeneration`, `safe_fallback`) through `observability.metrics.count_repair`, which also bounds the class to cosmetic, substitution or cascade. A numeric rung broke #44's label grammar, so C-08 `test_metrics_labels` failed at `9dc7849`. Separate commit `0c08666`.
+  **Why:** HEAD's full suite was red. Exempting the counter would have weakened the gate.
+  **Issue:** #151
+- **Decision (deviation from the planner's Discretion):** composition runs after the repair ladder and **before** the turn's single commit transaction, not in a post-commit response-storage step. The polished or assembled text is the turn's `message_rendered {composed}`.
+  **Why:** docs/02 §7 and FR-EXT-16 say an ordinary turn commits its intent and response stages together; only staged turns (M6) use stages. A composition failure falls back inside the same commit, so the beat events are identical either way, which the row-diff test asserts.
+  **Issue:** #152
+- **Decision (Discretion, deviation from the planner's format):** the deterministic assembly keeps #150's stored shape: `say` → `Name: "…"`, `do` → `*…*`, narration verbatim, paragraphs joined by a blank line. It adds `[Name thinks] …` and `[latent] …` for omniscient. The planner's `*<Name> <text>*`, newline-separated, was not used. The assembly lives in `core/turns/assembly.py` so `core.history` can recompose without importing the orchestrator.
+  **Why:** M4 turns already store #150's format, and recomposing an older turn should read the same. A `do` beat's text is usually third-person ("She sits…"), so prefixing the name reads badly.
+  **Issue:** #152
+- **Decision (Discretion):** traceability adds a third route to the planner's two (equal shape, or #140 coverage via `rules.check` with the claim's valid-time set to the record's). A claim also traces when its words lie verbatim inside the beat its unit aligns to. A beat's propositions are every claim it carries.
+  **Why:** detecting the message runs as the viewpoint's character on the `message` channel. That re-resolves pronouns and turns uncovered mentions into `present_at` claims, so a beat's own words would otherwise fail. Attribution is checked separately, so verbatim words under the wrong speaker still fail.
+  **Issue:** #152
+- **Decision (Discretion):** alignment runs on units: each quotation, and each sentence outside quotes. Content words exclude cast names, the speech-verb lexicon and the label words. A quotation's speaker cue comes from the text around it (`Name:`, `Name says`, `said Name`). Failure kinds gain `order` (beats out of turn order) and `length` (the guard, at most 1.5× the **draft's** length, not the raw beat text).
+  **Why:** whole-sentence alignment fails ordinary polishes such as `"…," Ada says.` The draft includes the labels, so it is a fairer baseline.
+  **Issue:** #152
+- **Decision (Discretion):** the composed message's detection uses a fresh `StructuredReadSet`, because tracing reads beats, not canon. It runs as the viewpoint's character (`player` for the player's own, `narrator` when omniscient). Under `gated` it uses `extraction_mode = always`, the reserved call. The assembly's report-only check runs at `declared` level, with no call. The final message's outcome goes into `turn_report.detection.message` and the metrics.
+  **Issue:** #152
+- **Decision (Discretion, budget):** C (one call when polish is on and the model layer runs) is held right after the renders' mandatory detection, before the follow-up and the repairs. Polish then needs `can_afford_unreserved(1 + model-assisted output policies + C not still held)`, or the turn reports `polish_skipped_budget` (cause `budget`). Whatever composition still holds is released at the end. `turn_report.composition.detection_released` reports it.
+  **Why:** the current `TurnBudget` holds a count, not named slots, so a later first attempt can consume the held count. #156 formalises named reservations. This never overspends: the polish is skipped instead.
+  **Issue:** #152, #156
+- **Decision (Discretion):** the deterministic fallback makes zero model calls. It is re-checked by the deterministic output policies only (`policies.evaluate`). If it ever breaks one, the first safe-fallback line that passes is released (`turn_report.composition.safe_fallback`). A polished text is checked by the full #68 gate first (`output_passes`), and a violating one falls back.
+  **Issue:** #152
+- **Decision (Discretion):** the polish is `generation` with a new `composition` variant (`composition.j2`). `GenerationInputs` gains `composition_beats`, `composition_draft` and `composition_omniscient` under a new content category `verified_beat`, so docs/models.md was regenerated. The prompt gives the beats plus the draft between `<draft>` markers. The stub's default answer is that draft, a no-op polish.
+  **Why:** a default that passes keeps every existing structured test's message byte-identical.
+  **Issue:** #152
+- **Decision (Discretion):** the stub scripts a response schema by its `stub_script` template name (`ComposedMessage` → `composition.j2`): `script`, `fault` and `when(purpose=…)`. Nothing queued or faulted for `generation`, and no parrot or eval case, ever answers it.
+  **Why:** the planner's "script the stub by template name". This keeps every existing `generation` script queue intact.
+  **Issue:** #152
+- **Decision (Discretion):** the API contract changes in three places. `message.mode` (`polished|deterministic`) is on the respond response and omitted for Lite (`exclude_if None`), so Lite's response is byte-identical. A new `audit` event, `composition_rejected {text, failures, cause}`. A history read recomposes deterministically whenever the operation's `viewpoint` differs from the read's.
+  **Issue:** #152

@@ -173,10 +173,12 @@ class RegenerateRequest(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class FinishedMessage:
-    """The finished reply: the ``message_rendered`` event's id and its text."""
+    """The finished reply: the ``message_rendered`` event's id and its text; for a structured
+    turn (#152), how it was composed (``polished`` or ``deterministic``)."""
 
     message_id: str
     text: str
+    mode: Literal["polished", "deterministic"] | None = None
 
 
 AudienceFilter = Literal["none", "co_location", "full"]

@@ -3,8 +3,8 @@
 ``tests/integration/test_rating_change.py``.
 
 A stub adapter captures every prompt: the story rating's guidance appears, first, in every
-structured render's prompt (the narrator's and the character's), and in the age repair's.
-Composition is deterministic in M4 (#152 adds its model call), so it has no prompt to carry it.
+structured render's prompt (the narrator's and the character's), in the age repair's, and in
+the composition's polish (#152, ``composition.j2``).
 """
 
 from __future__ import annotations
@@ -33,7 +33,8 @@ async def test_i_22__structured_guidance(
     """A turn that brings the narrator in, introduces a character without an age and renders
     the character: each of its three ``generation`` prompts (narration, age repair, character
     render) opens with the story rating's guidance. Complement: a turn the narrator does not
-    join makes one render, and its prompt carries the guidance too."""
+    join makes one render, and its prompt carries the guidance too; a turn of two beats is
+    composed by a polish call whose prompt opens with it (#152)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         story, ids = await structured_story(client, "Wren", "Ada")
         async with engine.connect() as conn:
@@ -70,3 +71,18 @@ async def test_i_22__structured_guidance(
         assert response.status_code == 200, response.text
         (call,) = [c for c in stub.calls if c.purpose == GENERATION]
         assert guidance in call.messages[0].content
+
+        # The composition's polish (#152): a turn of two beats is composed by one more
+        # ``generation`` call, its prompt opening with the guidance too.
+        stub.reset()
+        stub.script(
+            GENERATION,
+            [render(beat("say", "Hello.", intent="sincere"), beat("do", "Ada smiles."))],
+        )
+        response = await respond(client, story, body(ids["Wren"], "Hello again."))
+        assert response.status_code == 200, response.text
+        assert response.json()["message"]["mode"] == "polished"
+        (polish,) = [c for c in stub.calls if c.response_schema == "ComposedMessage"]
+        assert polish.purpose == GENERATION
+        assert polish.messages[0].content.startswith("## Content rating guidance")
+        assert guidance in polish.messages[0].content

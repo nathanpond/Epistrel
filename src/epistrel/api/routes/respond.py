@@ -77,10 +77,15 @@ RESPOND_DESCRIPTION = (
 
 
 class MessageBody(BaseModel):
-    """The finished reply: the id of its transcript row and its text."""
+    """The finished reply: the id of its transcript row and its text. A structured turn's says
+    how it was composed (`mode`): `polished` (the polish passed the composition check) or
+    `deterministic` (the checked beats assembled as they are); absent for a Lite reply."""
 
     message_id: str
     text: str
+    mode: Literal["polished", "deterministic"] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
 
 
 class GuardrailViolationBody(BaseModel):
@@ -159,7 +164,11 @@ class RespondResponse(MutationResponse):
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
         return cls(
-            message=MessageBody(message_id=result.message.message_id, text=result.message.text),
+            message=MessageBody(
+                message_id=result.message.message_id,
+                text=result.message.text,
+                mode=result.message.mode,
+            ),
             beats=[item_model(b) for b in result.beats],
             turn=result.turn,
             variant=result.variant,

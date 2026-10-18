@@ -50,16 +50,28 @@ earlier one established (the same-turn overlay). A ``say``'s labels follow
 **Stage and commit** (one transaction): the player's input at beat 1 (with its labels,
 propositions and mentions), the rejected drafts as ``guardrail_output_rejected`` (#145's payload
 v2), each beat as its ``beat_<kind>`` event (#150's registered types; narrator beats first, then
-the character's), a ``character_defined`` per introduction and the composed message (#152 owns
-composition: in M4 the observable beats joined, a ``message_rendered`` event with ``composed``
-after the beats). The commit steps write, in order: the introduced characters and their canon
-``age`` facts; the permitted canon (``core.canon.canonize.canonize_all``) and every ``latent``
-beat's propositions with its declared visibility (FR-TURN-4); the utterances; the episodic
+the character's), a ``character_defined`` per introduction, the composed message (a
+``message_rendered`` event with ``composed`` after the beats) and, when the polish was rejected,
+its ``composition_rejected`` audit record. The commit steps write, in order: the introduced
+characters and their canon ``age`` facts; the permitted canon
+(``core.canon.canonize.canonize_all``) and every ``latent`` beat's propositions with its
+declared visibility (FR-TURN-4); the utterances; the episodic
 memories of the observable beats (``write_episodic``, with each beat's occasion from
 ``beat_occasion``); the salient references (``record_salience``), the dependences
 (``apply_dependences`` → ``lifecycle.depend``) and the turn's close (``close_turn``, its
 ``follow_up`` seam); and ``operations.turn_report`` (#69's report plus ``render``,
-``detection``, ``verify``, ``uncertain_claims`` and ``commit``).
+``detection``, ``verify``, ``uncertain_claims``, ``commit`` and ``composition``).
+
+**Compose** (#152, ``orchestrator.compose``, after the repair ladder and before the commit
+transaction: an ordinary turn commits its beats and its response together, docs/02 §7): the
+post-repair beats as the resolved viewpoint receives them are polished by one ``generation``
+call (``composition.j2``) and the polished text passes #68's output gate and the final check
+(#148's detection on the composed text, every claim traced to a beat, attribution, no private
+thought for a character viewpoint); otherwise, or when the polish is off, skipped under budget
+pressure or the turn has one beat, the message is the deterministic assembly of the beats. The
+composed message's detection call is held once the renders are checked (``reserve_detection``)
+and released when the assembly is used. A composition failure changes no beat: the events are
+the same either way.
 
 **The result** is M3's ``RespondResult``: the composed message, the turn's beats for the
 resolved viewpoint (a character viewpoint never gets ``think`` or ``latent``; an omniscient one
@@ -80,8 +92,8 @@ stages each repaired beat's ``verify_verdict`` and every rejected text as ``rend
 (both ``audit``), with ``turn_report.repairs`` and ``epistrel_repairs_total``. With the module
 off a contradicted beat stands, labelled.
 
-Not here (seams, #152/#154/#156): model composition, regeneration of a structured turn, budget
-planning. Logs carry ids and counts only (invariant 3).
+Not here (seams, #154/#156): regeneration of a structured turn, budget planning. Logs carry ids
+and counts only (invariant 3).
 """
 
 from __future__ import annotations
@@ -108,10 +120,18 @@ from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import operation_record
 from epistrel.core.errors import InvalidRequest, RevisionConflict, StoryArchived
 from epistrel.core.events import Operation
-from epistrel.core.events.types import BeatLabels, MessageRendered, PlayerInput, VerifyVerdict
+from epistrel.core.events.types import (
+    BeatLabels,
+    CompositionRejected,
+    MessageRendered,
+    PlayerInput,
+    VerifyVerdict,
+)
 from epistrel.core.genesis.structured import deferred_items
 from epistrel.core.history import turn_beats
 from epistrel.core.memory import records
+from epistrel.core.policies.evaluate import evaluate
+from epistrel.core.policies.model import ModelAssistedRule, Target
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
 from epistrel.core.profiles.fingerprint import Stamp
@@ -147,6 +167,7 @@ from epistrel.core.turns import (
     read_story_cast,
     read_turn_inputs,
 )
+from epistrel.core.turns.assembly import PRIVATE_KINDS
 from epistrel.core.turns.beats import (
     AGE,
     LATENT_UNNORMALIZED,
@@ -165,11 +186,17 @@ from epistrel.core.turns.beats import (
 from epistrel.core.verify.detect import DeclaredClaim, DetectBeat, DetectedClaim
 from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normalize_declared
 from epistrel.core.verify.rules import Record, VerdictKind, check
-from epistrel.core.viewpoint import character_viewpoint, resolve_viewpoint, try_resolve
+from epistrel.core.viewpoint import (
+    character_viewpoint,
+    is_omniscient,
+    resolve_viewpoint,
+    try_resolve,
+)
 from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import count_repair
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, counted_embedder
 from epistrel.orchestrator.commit import salience
+from epistrel.orchestrator.compose import compose as composing
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import prompt_hash
@@ -187,6 +214,7 @@ from epistrel.orchestrator.models.errors import ModelError
 from epistrel.orchestrator.models.facts import runtime_facts
 from epistrel.orchestrator.models.metrics import CallLog, recording
 from epistrel.orchestrator.models.registry import GenerationInputs, SceneContext
+from epistrel.orchestrator.models.registry import PlayerInput as PromptPlayer
 from epistrel.orchestrator.policies.implication import Implicator, draft_context, threshold_of
 from epistrel.orchestrator.policies.output_gate import (
     Draft,
@@ -718,22 +746,6 @@ async def _introductions(
         for d, where, _ in wanted
     ]
     return intros, (1 if missing else 0), 0
-
-
-def compose(beats: Sequence[TurnBeat], names: Mapping[str, str]) -> str:
-    """The M4 composed message (#152 composes with a model): the observable beats joined, a
-    ``say`` as ``Name: "…"``, a ``do`` as ``*…*``, narration verbatim. ``think`` and ``latent``
-    never appear in it (FR-TURN-3)."""
-    lines: list[str] = []
-    for beat in beats:
-        name = names.get(beat.character_id or "", "")
-        if beat.kind == SAY:
-            lines.append(f'{name}: "{beat.text}"' if name else f'"{beat.text}"')
-        elif beat.kind == DO:
-            lines.append(f"*{beat.text}*")
-        elif beat.kind == NARRATION:
-            lines.append(beat.text)
-    return "\n\n".join(lines)
 
 
 # -- the same-turn overlay -----------------------------------------------------------------------
@@ -1487,6 +1499,135 @@ def repairs_report(checked: Checked) -> list[dict[str, Any]]:
     return [entry for result in checked.repairs for entry in result.report()]
 
 
+# -- composition (#152) -----------------------------------------------------------------------
+
+
+COMPOSITION_CAUSE = "composition"
+POLISH_BUDGET_CAUSE = "budget"
+
+
+def composition_detection_calls(configuration: StoryProfile, config: DetectionConfig) -> int:
+    """C: the composed message's detection calls, one when the polish pass is on and the
+    story's verification runs the model layer (a deterministic assembly adds no new text, so
+    the call is only ever spent on a polished message)."""
+    polish = configuration.settings.repair.polish.enabled
+    return 1 if polish and config.extraction_on else 0
+
+
+def _composition_speaker(viewpoint: str, player_id: str | None) -> str:
+    """Who the composed message is detected as: the viewpoint's character (``player`` for the
+    player's own), ``narrator`` for ``omniscient``."""
+    if is_omniscient(viewpoint):
+        return NARRATOR
+    character = viewpoint.split(":", 1)[1] if ":" in viewpoint else viewpoint
+    return PLAYER if character == player_id else character
+
+
+async def compose_turn(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    read: TurnRead,
+    checked: Checked,
+    *,
+    viewpoint: str,
+    operation_id: str,
+    configuration: StoryProfile,
+    budget: TurnBudget,
+    context: Any,
+    render_ids: Sequence[str],
+    fallback: FallbackLines,
+    reserved: bool,
+) -> composing.Composition:
+    """The turn's message for ``viewpoint`` (``orchestrator.compose.compose``) from its
+    post-repair beats: the polish under #68's output gate and the final check, or the
+    deterministic assembly (see the module docstring)."""
+    settings = configuration.settings
+    routes = routes_of(settings)
+    policies = output_policies(context, render_ids)
+    plain = [p for p in policies if not isinstance(p.rule, ModelAssistedRule)]
+    assisted = len(policies) - len(plain)
+    speaker = _composition_speaker(viewpoint, read.player_id)
+    async with db.connect() as conn:
+        base_config = DetectionConfig.of(settings, await read_section(conn, VerifySettings))
+    scene_context = SceneContext(
+        present_entities=list(read.present)[:100], last_beats=list(read.last_beats)
+    )
+
+    async def detect(text: str, with_model: bool) -> tuple[DetectionOutcome, Registry]:
+        # Under ``gated`` extraction the composed message still spends its reserved call; the
+        # deterministic assembly is checked by layers (a) and (b) only.
+        config = (
+            replace(base_config, extraction_mode="always")
+            if with_model
+            else replace(base_config, level=DECLARED_LEVEL)
+        )
+        async with db.begin() as conn:
+            env = await extraction.load_env(
+                conn,
+                story_id,
+                StructuredReadSet(),
+                position=(read.turn, 0),
+                speakers=[speaker],
+                config=config,
+            )
+            detector = ClaimDetector(
+                config,
+                env,
+                models=models,
+                budget=budget,
+                routes=routes,
+                scene_context=scene_context,
+                conn=conn,
+                story_id=story_id,
+            )
+            outcome = await detector.message(
+                text, (read.turn, 0), operation_id=operation_id, speaker=speaker
+            )
+            return outcome, detector.env.registry
+
+    async def output_ok(text: str) -> bool:
+        return await output_passes(models, [text], context, budget=budget, render_ids=render_ids)
+
+    def deterministic_ok(text: str) -> bool:
+        return not evaluate(text, plain, Target.TEXT_OUTPUT)
+
+    safe = next(
+        (t for _, t in fallback.candidates() if deterministic_ok(t)), fallback.candidates()[-1][1]
+    )
+    shown = [b for b in checked.beats if b.beat > 1]
+    hidden = [] if is_omniscient(viewpoint) else [b for b in shown if b.kind in PRIVATE_KINDS]
+    composer = composing.Composer(
+        models=models,
+        inputs=GenerationInputs(
+            rating_guidance=read.inputs.guidance,
+            custom_instructions=read.inputs.instructions,
+            player_input=PromptPlayer(name=read.actor.name),
+        ),
+        params=ModelParams(temperature=read.resolved.temperature, top_p=read.resolved.top_p),
+        names=read.names,
+        detect=detect,
+        output_ok=output_ok,
+        deterministic_ok=deterministic_ok,
+        fallback_text=safe,
+        polish_on=settings.repair.polish.enabled,
+        assisted_checks=assisted,
+        detection_calls=composition_detection_calls(configuration, base_config),
+        hidden=hidden,
+    )
+    return await composing.compose(shown, viewpoint, budget, composer=composer, reserved=reserved)
+
+
+def _composition_degradation(composition: composing.Composition) -> list[tuple[str, str]]:
+    return [
+        (
+            step,
+            POLISH_BUDGET_CAUSE if step == composing.POLISH_SKIPPED_BUDGET else COMPOSITION_CAUSE,
+        )
+        for step in composition.degradation
+    ]
+
+
 # -- the turn ------------------------------------------------------------------------------------
 
 
@@ -1516,6 +1657,7 @@ async def play(
     gated: list[Gated] = []
     released: list[Rendered] = []
     found: list[Checked] = []
+    composed: list[composing.Composition] = []
     fixed: dict[str, Any] = {}
     rounds: list[int] = []
 
@@ -1761,6 +1903,14 @@ async def play(
             configuration=configuration,
             budget=budget,
         )
+        # The composed message's detection call (C): held before any optional work (#152).
+        async with db.connect() as conn:
+            detection_config = DetectionConfig.of(
+                settings, await read_section(conn, VerifySettings)
+            )
+        reserved = composing.reserve_detection(
+            budget, composition_detection_calls(configuration, detection_config)
+        )
         checked = await follow_up(
             db,
             models,
@@ -1801,10 +1951,32 @@ async def play(
             ),
         )
         found[:] = [checked]
-        stage(op, read, rendered, checked, outcome)
+        composition = await compose_turn(
+            db,
+            models,
+            story_id,
+            read,
+            checked,
+            viewpoint=viewpoint,
+            operation_id=op.operation_id,
+            configuration=configuration,
+            budget=budget,
+            context=context,
+            render_ids=cast_.render_ids,
+            fallback=lite._fallback_lines(read.inputs, cast_),
+            reserved=reserved,
+        )
+        composed[:] = [composition]
+        checked.degradation += _composition_degradation(composition)
+        stage(op, read, rendered, checked, outcome, composition)
 
     def stage(
-        op: Operation, read: TurnRead, rendered: Rendered, checked: Checked, outcome: Gated
+        op: Operation,
+        read: TurnRead,
+        rendered: Rendered,
+        checked: Checked,
+        outcome: Gated,
+        composition: composing.Composition,
     ) -> None:
         input_labels = (
             BeatLabels(
@@ -1842,6 +2014,22 @@ async def play(
             op.append(
                 event_type, payload, provenance=Provenance.ENGINE, character_id=None, beat=last + 1
             )
+        # A rejected polish (#152): audit only, its text never released.
+        if composition.rejected_text is not None:
+            op.append(
+                "composition_rejected",
+                CompositionRejected(
+                    text=composition.rejected_text,
+                    failures=tuple(
+                        f.payload()
+                        for f in (composition.rejected.failures if composition.rejected else ())
+                    ),
+                    cause=composition.cause,
+                ),
+                provenance=Provenance.ENGINE,
+                character_id=None,
+                beat=last + 1,
+            )
         beats = [
             replace(b, mentions=tuple(m.as_payload() for m in checked.mentions.get(b.beat, ())))
             for b in checked.beats
@@ -1851,7 +2039,7 @@ async def play(
         op.append(
             "message_rendered",
             MessageRendered(
-                text=compose(beats, read.names) or outcome.draft.text,
+                text=composition.text,
                 render_character_ids=(read.character.id,),
                 model=rendered.model,
                 prompt_hash=rendered.prompt_hash,
@@ -1983,7 +2171,17 @@ async def play(
             "age_repairs": rendered.age_repairs,
             "narrator": rendered.narrator,
         }
-        report["detection"] = extraction.detection_report(checked.outcomes, checked.checked)
+        composition = composed[0] if composed else None
+        message_outcomes = (
+            [composition.detection]
+            if composition is not None and composition.detection is not None
+            else []
+        )
+        report["detection"] = extraction.detection_report(
+            [*checked.outcomes, *message_outcomes], checked.checked
+        )
+        if composition is not None:
+            report["composition"] = composition.report()
         if checked.verifier is not None:
             report["verify"] = checked.verifier.report()
             report["uncertain_claims"] = checked.verifier.uncertain_claims()
@@ -1992,7 +2190,7 @@ async def play(
         report["commit"] = fixed.get("commit", {})
         if checked.repairs:
             report["repairs"] = repairs_report(checked)
-        extraction.record_metrics(checked.outcomes, checked.checked)
+        extraction.record_metrics([*checked.outcomes, *message_outcomes], checked.checked)
         for repaired in checked.repairs:
             count_repair(repaired.rung, repaired.repair_class.value)
         await conn.execute(
@@ -2021,7 +2219,11 @@ async def play(
         assert committed.timeline_revision is not None  # noqa: S101
         outcome = gated[0] if gated else None
         fields: dict[str, Any] = {
-            "message": FinishedMessage(message_id=reply.message_id, text=reply.text),
+            "message": FinishedMessage(
+                message_id=reply.message_id,
+                text=reply.text,
+                mode=composed[0].mode if composed else None,
+            ),
             "beats": beats,
             "turn": committed.narrative_turn,
             "variant": committed.turn_variant,
@@ -2179,7 +2381,7 @@ __all__ = [
     "Rendered",
     "StagedSource",
     "TurnRead",
-    "compose",
+    "compose_turn",
     "follow_up",
     "is_structured",
     "owed_references",

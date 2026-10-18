@@ -202,9 +202,11 @@ class MessageRendered(EventPayload):
     """The reply is the safe fallback line (#68): every generated draft broke an output policy
     (``model``/``prompt_hash`` null, ``finish_reason`` ``fallback``)."""
     composed: bool = Field(default=False, exclude_if=lambda v: not v)
-    """A structured turn's composed message (#150; #152 composes it): the observable beats
-    joined. The beats are the record; working memory and the episodic writer read them, never
-    this message. Absent from every Lite reply."""
+    """A structured turn's composed message (#150, #152): its verified beats as the turn's
+    output viewpoint receives them, polished under the composition check or deterministically
+    assembled. The beats are the record; working memory and the episodic writer read them,
+    never this message, and a history read for another viewpoint recomposes it from them.
+    Absent from every Lite reply."""
     present_character_ids: tuple[str, ...] = Field(default=(), exclude_if=lambda v: not v)
     """A scenario's opening narration (turn 1 of a story created from a scenario, #119): the
     characters of the roles present when the story opens (stored; the Lite pipeline does not
@@ -607,6 +609,19 @@ class VerifyVerdict(EventPayload):
 
     beat: int = Field(ge=1)
     verdicts: tuple[dict[str, JsonValue], ...] = ()
+
+
+@register("composition_rejected", category=EventCategory.AUDIT)
+class CompositionRejected(EventPayload):
+    """A polished composition the turn did not release (FR-RESP-8; #152): its text, the check's
+    failures (``{kind, span, beat}``: codes and offsets into ``text``) and why it was rejected
+    (``check``, ``length`` or ``output_policy``). The turn's message is the deterministic
+    assembly of its beats instead. Audit only: no story view, retrieval or prompt reads it;
+    written with its turn, so a truncation discards it with the turn."""
+
+    text: str
+    failures: tuple[dict[str, JsonValue], ...] = ()
+    cause: str | None = None
 
 
 # -- the structured turn (FR-TURN-1,4,5,6; #150) -------------------------------------------------

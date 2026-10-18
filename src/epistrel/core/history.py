@@ -34,6 +34,11 @@ Reads the ``transcript_messages`` projection (joined to each beat's event for a 
   turn 0, so on the last page) as ``[erasure marker: <subject id>, <scope>]``.
 - **Redaction** (#124): an item whose event an erasure rewrote carries ``redacted: true``; its
   text reads ``[erased]`` where it named the subject.
+- **Composed messages** (#152): a structured turn stores one composed message, for the
+  viewpoint its turn was played for (``operations.viewpoint``). A read for any other viewpoint
+  gets the deterministic assembly of the beats it receives instead
+  (``core.turns.assembly``), so an omniscient message never reaches a character read and a
+  character's message never stands in for an omniscient one.
 """
 
 from __future__ import annotations
@@ -52,6 +57,7 @@ from epistrel.core.errors import InvalidRequest, StoryNotFound
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.summary import included_segments
 from epistrel.core.tables import characters, events, operations, stories, transcript_messages
+from epistrel.core.turns.assembly import AssemblyBeat, deterministic_assembly
 from epistrel.core.variants import ChainRef, ChainSelection, chain_operations
 from epistrel.core.viewpoint import (
     AUDIENCE_FILTER,
@@ -192,7 +198,7 @@ async def read_history(
         upper = through if before_turn is None else min(through, before_turn - 1)
         lower, next_before = await _page(conn, story_id, resolved, upper, limit, chain)
         rows = await _rows(conn, story_id, lower=lower, upper=upper, chain=chain)
-        items = _items(rows, resolved, story.ages)
+        items = _items(rows, resolved, story.ages, await _names(conn, story_id, rows, resolved))
         audit = (
             await _audit(conn, story_id, lower, upper, story.ages, chain) if include_audit else None
         )
@@ -223,7 +229,8 @@ async def turn_beats(
     async with _connection(db) as conn:
         ages = await _ages(conn, story_id) if is_omniscient(viewpoint) else {}
         rows = await _rows(conn, story_id, operation_id=operation_id)
-    return _items(rows, viewpoint, ages)
+        names = await _names(conn, story_id, rows, viewpoint)
+    return _items(rows, viewpoint, ages, names)
 
 
 # -- reads ------------------------------------------------------------------------------------
@@ -331,7 +338,9 @@ async def _rows(
 ) -> Sequence[Any]:
     t = transcript_messages
     query = (
-        select(t, operations.c.origin, events.c.payload)
+        select(
+            t, operations.c.origin, operations.c.viewpoint.label("op_viewpoint"), events.c.payload
+        )
         .join(operations, operations.c.operation_id == t.c.operation_id)
         .join(events, events.c.id == t.c.message_id)
         .where(t.c.story_id == story_id, _on_chain(chain))
@@ -451,13 +460,63 @@ def _structured(row: Any, channel: str) -> dict[str, Any]:
     return found
 
 
-def _items(rows: Sequence[Any], viewpoint: str, ages: Mapping[str, int]) -> list[HistoryItem]:
+def _recomposed(row: Any, viewpoint: str) -> bool:
+    """Whether ``row`` is a structured turn's composed message stored for a viewpoint other
+    than ``viewpoint`` (#152): the read recomposes it."""
+    payload = row.payload or {}
+    stored = getattr(row, "op_viewpoint", None)
+    return (
+        row.kind == REPLY_KIND
+        and bool(payload.get("composed"))
+        and stored is not None
+        and stored != viewpoint
+    )
+
+
+async def _names(
+    conn: AsyncConnection, story_id: str, rows: Sequence[Any], viewpoint: str
+) -> dict[str, str]:
+    """The cast's names, when a composed message on the page is recomposed (#152)."""
+    if not any(_recomposed(r, viewpoint) for r in rows):
+        return {}
+    found = await conn.execute(
+        select(characters.c.id, characters.c.name).where(characters.c.story_id == story_id)
+    )
+    return {r.id: r.name for r in found}
+
+
+def _assemblies(rows: Sequence[Any], viewpoint: str, names: Mapping[str, str]) -> dict[str, str]:
+    """Each recomposed message's text (``_recomposed``), by its ``message_id``: the
+    deterministic assembly of its operation's beats for ``viewpoint``."""
+    wanted = {r.operation_id: r.message_id for r in rows if _recomposed(r, viewpoint)}
+    if not wanted:
+        return {}
+    beats: dict[str, list[AssemblyBeat]] = {}
+    for row in rows:
+        if row.operation_id in wanted and str(row.kind).startswith(STRUCTURED_PREFIX):
+            beats.setdefault(row.operation_id, []).append(
+                AssemblyBeat(row.channel, row.text, row.actor_character_id, int(row.beat or 0))
+            )
+    return {
+        message_id: deterministic_assembly(beats.get(op, []), names, viewpoint)
+        for op, message_id in wanted.items()
+    }
+
+
+def _items(
+    rows: Sequence[Any],
+    viewpoint: str,
+    ages: Mapping[str, int],
+    names: Mapping[str, str] | None = None,
+) -> list[HistoryItem]:
     omniscient = is_omniscient(viewpoint)
+    recomposed = _assemblies(rows, viewpoint, names or {})
     items: list[HistoryItem] = []
     for row in rows:
         if not visible_to(row.channel, viewpoint):
             continue
-        for channel, text in _parts(row):
+        for channel, part in _parts(row):
+            text = recomposed.get(row.message_id, part)
             items.append(
                 HistoryItem(
                     turn=row.narrative_turn,

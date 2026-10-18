@@ -8,7 +8,7 @@ outputs are ``audit``; truncate, untruncate, swap, fork, settings and story/char
 
 from __future__ import annotations
 
-from pydantic import Field, JsonValue
+from pydantic import ConfigDict, Field, JsonValue
 
 from epistrel.core.enums import EventCategory
 from epistrel.core.events.registry import EventPayload, register
@@ -574,7 +574,55 @@ class MemoriesImplicated(EventPayload):
     fact_ids: tuple[str, ...] = ()
 
 
+# -- the repair ladder (FR-REPAIR-3, FR-STORE-25; #151) ------------------------------------------
+
+
+@register("render_rejected", category=EventCategory.AUDIT)
+class RenderRejected(EventPayload):
+    """A beat's text the repair ladder rejected (FR-REPAIR-3; #151): the original beat when a
+    rung corrected it, and every regeneration that failed. ``beat`` is the beat it was (the
+    accepted correction keeps that position), ``attempt`` 0 for the original render and ``n``
+    for the n-th regeneration, ``rung`` the rung that rejected it (the one that replaced the
+    original, or the regeneration that failed). ``constraints`` are the typed constraints the
+    rung worked under, ``verdicts`` the claims' verdicts (ids and codes), ``detected_claims``
+    their spans and categories. Audit only: it holds the text, but no story view, retrieval or
+    prompt reads it; written with its turn, so a truncation discards it with the turn, and
+    nothing in it is ever canonized."""
+
+    beat: int = Field(ge=1)
+    attempt: int = Field(ge=0)
+    rung: int = Field(ge=1, le=4)
+    text: str
+    constraints: tuple[dict[str, JsonValue], ...] = ()
+    verdicts: tuple[dict[str, JsonValue], ...] = ()
+    detected_claims: tuple[dict[str, JsonValue], ...] = ()
+    prompt_hash: str | None = None
+
+
+@register("verify_verdict", category=EventCategory.AUDIT)
+class VerifyVerdict(EventPayload):
+    """The verdicts that sent one beat to the repair ladder (FR-STORE-25; #151): each claim's
+    verdict entry (``turn_report.verify``'s: ids and codes, no text) for the beat as rendered.
+    Audit only."""
+
+    beat: int = Field(ge=1)
+    verdicts: tuple[dict[str, JsonValue], ...] = ()
+
+
 # -- the structured turn (FR-TURN-1,4,5,6; #150) -------------------------------------------------
+
+
+class RepairedFrom(EventPayload):
+    """How a beat the repair ladder corrected was made (#151): the rung that was accepted
+    (1 narrowing, 2 substitution, 3 regeneration, 4 the safe fallback) and its FR-REPAIR-4
+    class (``cosmetic``, ``substitution``, ``cascade``), stored as ``class``."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", validate_by_name=True, serialize_by_alias=True
+    )
+
+    rung: int = Field(ge=1, le=4)
+    repair_class: str = Field(alias="class")
 
 
 class StructuredBeat(EventPayload):
@@ -582,12 +630,16 @@ class StructuredBeat(EventPayload):
     it declared with their verdicts, the claims detection found beyond them (``detected``) and
     its resolved mentions (#139's ``Mention.as_payload``: spans and entity ids). The event's
     ``character_id`` is the acting character (``None`` for narration) and its ``beat`` the
-    position in the turn. Never promoted to canon by being stored (FR-TURN-5)."""
+    position in the turn. Never promoted to canon by being stored (FR-TURN-5). A beat the
+    repair ladder corrected (#151) carries ``repaired_from``; the rejected text is only in the
+    turn's ``render_rejected`` audit events (left out when absent, so an unrepaired beat's
+    payload is #150's)."""
 
     text: str
     propositions: tuple[BeatProposition, ...] = ()
     detected: tuple[DetectedRef, ...] = Field(default=(), exclude_if=lambda v: not v)
     mentions: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
+    repaired_from: RepairedFrom | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 @register("beat_say", category=EventCategory.NARRATIVE_STATE)

@@ -862,13 +862,19 @@ DEFAULT_PROTECTED_INDEX_MAX = 5_000
 PROTECTED_INDEX_MAX_LIMIT = 100_000
 
 
+DEFAULT_CASCADE_THRESHOLD = 5
+CASCADE_THRESHOLD_LIMIT = 1_000
+
+
 class VerifySettings(BaseModel):
     """How much the verifier reads around a claim (FR-VERIFY-3,6; #142), stored under
     ``deployment_state.settings``: the most rows one ``fact_neighborhood`` returns
     (``neighborhood_max_facts``) and the most holder records one entailment request carries
-    (``entailment_max_records``), and claim detection's shadow sample rate and protected-index
-    cap (#148). The gate, the confidence floor, the safe disposition and ``extraction_mode`` are
-    engine-profile dials (``verification``). Prospective: a verify reads them when it runs."""
+    (``entailment_max_records``), claim detection's shadow sample rate and protected-index
+    cap (#148), and the neighborhood size above which a repair is a ``cascade``
+    (``cascade_threshold``, #151). The gate, the confidence floor, the safe disposition and
+    ``extraction_mode`` are engine-profile dials (``verification``). Prospective: a verify
+    reads them when it runs."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -888,6 +894,11 @@ class VerifySettings(BaseModel):
     )
     """The most protected-content terms one turn's index holds (#148); past it the index is cut
     (thunk candidates kept first) and the turn report says so."""
+    cascade_threshold: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_CASCADE_THRESHOLD, ge=1, le=CASCADE_THRESHOLD_LIMIT
+    )
+    """A repair whose neighborhood holds more facts than this is a ``cascade`` (FR-REPAIR-4;
+    #151): a signal on ``turn_report.repairs``, which changes no render."""
 
 
 DEFAULT_THUNKS_MAX_OPEN = 500

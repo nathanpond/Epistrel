@@ -17,7 +17,8 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
 - ``intent`` is a ``say``'s alone (``sincere``, ``deceptive``, ``joking``, ``unspecified``;
   ``unspecified`` when it is left out), ``visibility`` a ``latent``'s alone (``objective`` when
   left out; ``characters`` names cast members only), ``effects`` is empty in M4;
-- ``propositions`` are #140's text sketches (subject, relation, object, time, negated);
+- ``propositions`` are #140's text sketches (subject, relation, object, time, negated, and the
+  predicate's qualifiers it names, #151);
 - ``introduces`` names each new character a beat introduces (``{name, age?, age_range?,
   clue?}``): an age is 0 to 150, inside the range when one is given.
 
@@ -69,6 +70,7 @@ NAME_MAX = 120
 CLUE_MAX = 500
 SKETCH_TEXT_MAX = 200
 MAX_PROPOSITIONS = 20
+MAX_QUALIFIERS = 10
 MAX_INTRODUCTIONS = 10
 DEFAULT_REPAIRED_AGE = 40
 """The stub's age-repair answer (inside a clue's range when it has one)."""
@@ -89,6 +91,9 @@ class PropositionSketch(_Strict):
     object: str | None = Field(default=None, max_length=SKETCH_TEXT_MAX)
     time: str | None = Field(default=None, max_length=SKETCH_TEXT_MAX)
     negated: bool = False
+    qualifiers: dict[str, str] = Field(default_factory=dict, max_length=MAX_QUALIFIERS)
+    """The predicate's qualifiers the claim names (a degree's ``degree_id``, a membership's
+    ``role``; #151): normalization keeps only the declared ones."""
 
 
 class VisibilityDecl(_Strict):

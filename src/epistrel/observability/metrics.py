@@ -31,7 +31,9 @@ The registry holds:
   ``epistrel_hot_counts_corrected_total`` (the daily reconcile);
 - ``epistrel_claims_detected_total{layer,category}`` and
   ``epistrel_claims_checked_total{verdict,category}``: #148's claim detection, two separate
-  series (FR-VERIFY-13: detection and checking are reported apart), counted at a turn's commit.
+  series (FR-VERIFY-13: detection and checking are reported apart), counted at a turn's commit;
+- ``epistrel_repairs_total{rung,class}``: #151's repair ladder, one per corrected beat, counted
+  at a turn's commit.
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -125,6 +127,12 @@ CLAIMS_CHECKED = Counter(
     "Detected claims verification checked, by verdict (supported, contradicted, novel, "
     "uncertain, denied) and category: what was checked, apart from what was detected.",
     ("verdict", "category"),
+)
+REPAIRS = Counter(
+    "epistrel_repairs",
+    "Beats the repair ladder corrected, by the rung accepted (1 narrowing, 2 substitution, "
+    "3 regeneration, 4 safe fallback) and FR-REPAIR-4 class (cosmetic, substitution, cascade).",
+    ("rung", "class"),
 )
 HOT_SCOPES = ("character", "story")
 

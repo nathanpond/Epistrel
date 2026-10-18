@@ -27,6 +27,7 @@ per model tier are in [model-matrix.md](model-matrix.md).
 | `entailment` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
 | `salience_detection` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
 | `extraction_backstop` | yes | `default` | `parse_validate_retry` | 8,192 tokens |
+| `regeneration` | yes | `generation` | `parse_validate_retry` | 8,192 tokens |
 
 ### `generation`
 
@@ -90,7 +91,7 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 | `subjects.label` | `policy_text` |
 | `subjects.age` | `subject_true_age` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`
 
 ### `consolidation`
 
@@ -117,7 +118,7 @@ Compresses one window of episodic memories (and the canon in it) into standing f
 | `level` | `scope_meta` |
 | `covers` | `scope_meta` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`
 
 ### `lite_summary`
 
@@ -176,7 +177,7 @@ Reviews one catalog entry against one rating's content policy: its description, 
 | `elements.location` | `catalog_text` |
 | `elements.text` | `catalog_text` |
 
-**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`
+**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`
 
 ### `quality_judge`
 
@@ -196,7 +197,7 @@ Pairwise prose comparisons (eval only, never in a turn; NFR-QUAL-14,15).
 | `second` | `eval_text` |
 | `criteria` | `eval_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`
 
 ### `importance_scoring`
 
@@ -215,7 +216,7 @@ Scores one memory's importance, 0 (trivia) to 1 (pivotal) (FR-MEM-7).
 | `text` | `memory_text` |
 | `kind` | `memory_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`
 
 ### `entailment`
 
@@ -236,7 +237,7 @@ Judges the fuzzy residual of verify: one claim the deterministic check left unce
 | `records.holder` | `canon_record` |
 | `records.valid_time` | `canon_record` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`
 
 ### `salience_detection`
 
@@ -259,7 +260,7 @@ Tells content placed to be noticed from background texture in one render's beats
 | `scene_context.present_entities` | `scene` |
 | `scene_context.last_beats` | `scene` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`
 
 ### `extraction_backstop`
 
@@ -282,7 +283,57 @@ The model layer of claim detection: lists every factual claim one render's beats
 | `scene_context.present_entities` | `scene` |
 | `scene_context.last_beats` | `scene` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`
+
+### `regeneration`
+
+Rewrites one beat of a structured render that contradicted canon or asserted what its speaker may not introduce, under the repair's constraints, with the facts it contradicted and their neighborhood (FR-REPAIR-1,2; the repair ladder's rung 3).
+
+- **Hot path:** yes
+- **Default model:** the `generation` row of `model_config`, then the `default` row, per field, unless the purpose has its own
+- **Template:** `regeneration.j2`
+- **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
+- **Returns:** free text
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `rating_guidance` | `rating_guidance` |
+| `custom_instructions` | `custom_instructions` |
+| `scenario_text` | `scenario_text` |
+| `character_definitions.name` | `character_definition` |
+| `character_definitions.definition` | `character_definition` |
+| `character_definitions.deflection_style` | `character_definition` |
+| `director_notes` | `director_notes` |
+| `pinned_memories` | `pinned_memory` |
+| `summary_segments` | `rolling_summary` |
+| `recent_messages.name` | `recent_message` |
+| `recent_messages.say` | `recent_message` |
+| `recent_messages.do` | `recent_message` |
+| `recent_messages.text` | `recent_message` |
+| `recent_messages.role` | `recent_message` |
+| `voiced_characters` | `character_definition` |
+| `policy_constraints` | `policy_text` |
+| `player_input.name` | `player_input` |
+| `player_input.say` | `player_input` |
+| `player_input.do` | `player_input` |
+| `scene` | `scene` |
+| `working_memory` | `working_memory` |
+| `retrieved_memories` | `retrieved_memories` |
+| `canon_facts` | `canon_facts` |
+| `open_references` | `scene` |
+| `introductions.name` | `scene` |
+| `introductions.clue` | `scene` |
+| `rejected_text` | `render_text` |
+| `beat_kind` | `render_text` |
+| `constraints.kind` | `constraint` |
+| `constraints.text` | `constraint` |
+| `constraints.cites` | `constraint` |
+| `contradicted_facts` | `canon_record` |
+| `neighborhood` | `canon_record` |
+
+**Never receives:** `subject_true_age`, `checked_text`, `eval_text`
 
 ## Ports delivered
 
@@ -306,7 +357,7 @@ Embeds memory texts and retrieval queries over the OpenAI-compatible `/embedding
 |---|---|
 | `text` | `memory_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`
 
 ## Reserved purposes
 
@@ -315,7 +366,6 @@ its floor and data-flow row, in the milestone that delivers it.
 
 | Purpose | Kind | Milestone | Defaults to | Description |
 |---|---|---|---|---|
-| `regeneration` | purpose | M4 | — | Regenerates a span under corrected constraints. |
 | `belief_adjudication` | purpose | M5 | `entailment` | Adjudicated belief transitions. |
 | `time_estimation` | purpose | M6 | `extraction_backstop` | Best-guess duration of a narrated skip. |
 | `image_prompt` | purpose | M8 | `generation` | Writes image prompts. |
@@ -345,12 +395,13 @@ its floor and data-flow row, in the milestone that delivers it.
 | `record_meta` | The labels of each record consolidation compresses: its index, kind, holder, visibility, position and speaker; never other text (#143). |
 | `scope_meta` | The viewpoint scope, level and turns one consolidation call covers (#143). |
 | `claim_text` | One claim the deterministic check left uncertain, normalized and rendered with entity names and its valid-time in story-minutes, judged by entailment (#142). |
-| `canon_record` | One of the claim holder's records, rendered the same way with its holder and valid-time: only those the check fetched for the claim and the claim subject's own facts (#142). |
-| `render_text` | The beats of one render (index, kind, speaker's name, text). Salience detection (#146) reads the observable ones only (`say`, `do`, narration; never a `think` or `latent` beat or the player's input); the extraction backstop (#148) reads every beat it detects claims in, its own render's `think` and `latent` beats included, or the composed message. Never another render's text. |
+| `canon_record` | One of the claim holder's records, rendered the same way with its holder and valid-time: only those the check fetched for the claim and the claim subject's own facts (#142). A regeneration (#151) gets the canon facts the rejected beat contradicted and their neighborhood, rendered the same way. |
+| `render_text` | The beats of one render (index, kind, speaker's name, text). Salience detection (#146) reads the observable ones only (`say`, `do`, narration; never a `think` or `latent` beat or the player's input); the extraction backstop (#148) reads every beat it detects claims in, its own render's `think` and `latent` beats included, or the composed message; a regeneration (#151) reads the rejected beat it rewrites and its kind. Never another render's text. |
 | `scene` | The names of the entities present in the render's scene and the last six observable beats before it, read by salience detection (#146) and the extraction backstop (#148). A structured render (#150) gets its scene (the place and who is present); the age repair gets each introduced character's name and the render's clue about it. |
 | `working_memory` | A structured render's working memory (#150): the latest beats as the rendering character perceived them (its own thoughts included, never another character's or any `latent` beat), and this turn's narration and player input. |
 | `retrieved_memories` | What retrieval (#141) assembled for a structured render (#150) and the rendering character may know: open threads, pins, occasions, profiles and ranked memories. |
 | `canon_facts` | The canon facts retrieval found for a structured render (#150), filtered for the rendering character's viewpoint, without its own true age. |
+| `constraint` | A repair's constraint on the beat it regenerates (#151): its kind (`do_not_assert`, `avoid_binding`, `policy`), its text and the ids of the records it cites. |
 
 ## Hosted providers and retention
 

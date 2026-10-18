@@ -717,6 +717,13 @@ class Verifier:
         )
         return result
 
+    def adopt_answers(self, other: Verifier) -> None:
+        """Reuse ``other``'s validated entailment answers (the same turn's): a repair's
+        re-verification (#151) of a claim the turn already escalated, against the same records,
+        makes no second call."""
+        for key, answer in other._answers.items():
+            self._answers.setdefault(key, answer)
+
     def unnormalizable(
         self, found: Unnormalizable, *, ref: ClaimRef | None = None
     ) -> VerifyResult | None:

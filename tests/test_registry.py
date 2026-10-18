@@ -63,8 +63,9 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
     # M3 delivers rating_suggestion (#121), which defaults to guardrail_check's row (FR-MODEL-2);
     # M4 the eval harness's quality_judge (#134), memory importance_scoring (#135) and
     # verify's entailment (#142), memory consolidation (#143), which lite_summary now
-    # defaults to (#51's note), commitment's salience_detection (#146) and claim detection's
-    # extraction_backstop (#148).
+    # defaults to (#51's note), commitment's salience_detection (#146), claim detection's
+    # extraction_backstop (#148) and the repair ladder's regeneration (#151), which shares
+    # generation's row (docs/02 §5: usually the same model).
     assert set(DELIVERED) == {
         "generation",
         "guardrail_check",
@@ -76,9 +77,14 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
         "entailment",
         "salience_detection",
         "extraction_backstop",
+        "regeneration",
     }
     for purpose in DELIVERED.values():
-        parents = {"rating_suggestion": "guardrail_check", "lite_summary": "consolidation"}
+        parents = {
+            "rating_suggestion": "guardrail_check",
+            "lite_summary": "consolidation",
+            "regeneration": "generation",
+        }
         expected = parents.get(purpose.name, "default")
         assert purpose.default_model_key == expected
         assert purpose.capability_floor.min_context_tokens == 8_192

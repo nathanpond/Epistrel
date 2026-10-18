@@ -95,6 +95,7 @@ EXPECTED: dict[type[BaseModel], dict[str, ConfigClass]] = {
         "entailment_max_records": ConfigClass.prospective,
         "extraction_shadow_sample_rate": ConfigClass.prospective,
         "protected_index_max": ConfigClass.prospective,
+        "cascade_threshold": ConfigClass.prospective,
         "thunks_max_open": ConfigClass.prospective,
     },
 }

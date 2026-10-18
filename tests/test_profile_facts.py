@@ -318,7 +318,8 @@ def test_the_estimate_and_its_measured_latency() -> None:
 
 
 def test_model_ids_and_template_hashes() -> None:
-    """Each delivered purpose's model is its own row's, else the ``default`` row's; the
+    """Each delivered purpose's model is its own row's, else its parent purpose's
+    (``regeneration`` shares generation's, #151), else the ``default`` row's; the
     template hashes are the shipped files' SHA-256, one per delivered purpose's template and
     template variant (#150: ``generation``'s structured, narrator and age-repair renders)."""
     now = datetime.now(UTC)
@@ -331,7 +332,9 @@ def test_model_ids_and_template_hashes() -> None:
     )
     assert set(found) == set(STORY_PURPOSES)
     assert found["generation"].id == "big"
-    assert {found[name].id for name in STORY_PURPOSES if name != "generation"} == {"base"}
+    assert found["regeneration"].id == "big"
+    others = set(STORY_PURPOSES) - {"generation", "regeneration"}
+    assert {found[name].id for name in others} == {"base"}
     assert all(model.reported_version is None for model in found.values())
     assert identities({})["generation"].id is None
     folder = resources.files("epistrel.orchestrator.models").joinpath("templates")

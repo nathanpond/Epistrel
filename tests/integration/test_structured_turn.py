@@ -86,6 +86,9 @@ async def test_structured_turn(
     async with respond_client(stub_settings, engine) as (client, epistrel):
         story, ids = await structured_story(client, "Wren", "Ada")
         wren, ada = ids["Wren"], ids["Ada"]
+        # The repair ladder off (#151's ``repair.max_attempts`` 0): the contradicted say stands,
+        # labelled, as #150 renders it (tests/integration/test_i_12.py repairs it).
+        await override(client, story, {"repair": {"max_attempts": 0}})
         tavern = await place(engine, story, "tavern")
         await age_fact(engine, story, ada, 64)
         stub = epistrel.models.stub

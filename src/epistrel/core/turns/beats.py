@@ -12,7 +12,8 @@ erasure and runs the resurrection guard (#127): a character's beat with ``proven
 and ``authority = authoritative``, a narrator's with ``provenance = system``; the event's
 ``character_id`` is the actor (``None`` for narration) and its ``beat`` the beat's position.
 Its payload carries the text, the propositions it asserts with their verdicts, the claims
-detection found beyond them and its resolved mentions (#139, #148).
+detection found beyond them and its resolved mentions (#139, #148), and, for a beat the repair
+ladder corrected, ``repaired_from {rung, class}`` (#151).
 
 **Speech acts** (FR-TURN-5,6). Every ``say`` (and the player's own ``say``) is stored as an
 utterance (``write_utterances``, the ``utterances`` table) and is **never** canon by being said:
@@ -156,6 +157,8 @@ class TurnBeat:
     event_type: str | None = None
     participants: tuple[str, ...] = ()
     narrator: bool = False
+    repaired_from: tuple[int, str] | None = None
+    """``(rung, class)`` when the repair ladder corrected the beat (#151)."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:
@@ -219,6 +222,9 @@ def beat_payload(beat: TurnBeat) -> dict[str, Any]:
         payload["detected"] = detected
     if beat.mentions:
         payload["mentions"] = list(beat.mentions)
+    if beat.repaired_from is not None:
+        rung, repair_class = beat.repaired_from
+        payload["repaired_from"] = {"rung": rung, "class": repair_class}
     if beat.kind == "say":
         payload["intent"] = beat.intent
         payload["labels"] = beat.labels()

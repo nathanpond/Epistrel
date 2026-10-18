@@ -85,6 +85,10 @@ class ContentCategory(StrEnum):
     CANON_FACTS = "canon_facts"
     """The canon facts retrieval found for a structured render (#150), as the rendering
     character may read them: never its own true age or a fact hidden from it."""
+    CONSTRAINT = "constraint"
+    """A repair's constraint on the span it regenerates (#151): its kind (``do_not_assert``,
+    ``avoid_binding``, ``policy``), its text ("do not assert that Bobby enrolled at Florida")
+    and the ids of the records it cites."""
 
 
 class StructuredOutput(StrEnum):
@@ -201,6 +205,44 @@ class GenerationInputs(InputSchema):
     introductions: list[AgeClue] = Field(default_factory=list)
     """The age repair (#150): each character a render introduced without an age, with the
     render's clue."""
+
+
+ConstraintKind = Literal["do_not_assert", "avoid_binding", "policy"]
+"""What a repair constraint forbids (#151; shared with #154's reconciliation and #68's policy
+regeneration): asserting a claim, binding an open reference a certain way, or breaking an
+output policy."""
+
+
+class RepairConstraint(InputSchema):
+    """One constraint a regeneration must keep (#151): its kind, its text and the records it
+    cites (fact and closed-set ids; never rendered)."""
+
+    kind: Annotated[ConstraintKind, C.CONSTRAINT] = "do_not_assert"
+    text: Annotated[str, C.CONSTRAINT] = Field(max_length=1_000)
+    cites: Annotated[list[str], C.CONSTRAINT] = Field(default_factory=list, max_length=50)
+
+
+REGENERATION_MAX_RECORDS = 50
+"""The most contradicted facts, and the most neighborhood facts, one regeneration carries."""
+
+
+class RegenerationInputs(GenerationInputs):
+    """A repair's regeneration of one beat (FR-REPAIR-1; #151; docs/02 §5's Regeneration row):
+    the generation inputs of the render the beat came from, plus the rejected beat's text and
+    kind, the constraints it must keep, the canon facts it contradicted and their neighborhood
+    (each rendered like a claim). Edit in place: the beat is rewritten, not the turn."""
+
+    rejected_text: Annotated[str, C.RENDER_TEXT] = Field(default="", max_length=8_000)
+    beat_kind: Annotated[Literal["say", "think", "do", "latent", "narration"], C.RENDER_TEXT] = (
+        "say"
+    )
+    constraints: list[RepairConstraint] = Field(default_factory=list, max_length=50)
+    contradicted_facts: Annotated[list[str], C.CANON_RECORD] = Field(
+        default_factory=list, max_length=REGENERATION_MAX_RECORDS
+    )
+    neighborhood: Annotated[list[str], C.CANON_RECORD] = Field(
+        default_factory=list, max_length=REGENERATION_MAX_RECORDS
+    )
 
 
 SUBJECT_LABEL_PATTERN = r"^character_[1-9][0-9]{0,3}$"
@@ -879,8 +921,25 @@ EXTRACTION_BACKSTOP = Purpose(
     response_schema=ExtractionResult,
 )
 
+REGENERATION = Purpose(
+    name="regeneration",
+    description=(
+        "Rewrites one beat of a structured render that contradicted canon or asserted what its "
+        "speaker may not introduce, under the repair's constraints, with the facts it "
+        "contradicted and their neighborhood (FR-REPAIR-1,2; the repair ladder's rung 3)."
+    ),
+    # docs/02 §5: usually the same model as generation, so it shares generation's row.
+    default_model_key=GENERATION.name,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=RegenerationInputs,
+    template="regeneration.j2",
+    hot_path=True,
+    never_receives=frozenset({C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT, C.EVAL_TEXT}),
+)
+"""``regeneration`` (#151): the repair ladder's constrained rewrite of one beat. Its answer is a
+``response_schema`` the ladder passes (``orchestrator.repair.ladder.RegeneratedBeat``)."""
+
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
-    ReservedPurpose("regeneration", "Regenerates a span under corrected constraints.", "M4"),
     ReservedPurpose(
         "belief_adjudication", "Adjudicated belief transitions.", "M5", defaults_to="entailment"
     ),
@@ -1051,6 +1110,7 @@ DELIVERED: Mapping[str, Purpose] = _build(
         ENTAILMENT,
         SALIENCE_DETECTION,
         EXTRACTION_BACKSTOP,
+        REGENERATION,
     )
 )
 """Purposes a model call may use now, by name."""
@@ -1090,6 +1150,8 @@ __all__ = [
     "PORTS",
     "QUALITY_JUDGE",
     "RATING_SUGGESTION",
+    "REGENERATION",
+    "REGENERATION_MAX_RECORDS",
     "RESERVED",
     "SALIENCE_DETECTION",
     "SALIENCE_LAST_BEATS",
@@ -1104,6 +1166,7 @@ __all__ = [
     "ConsolidationRecord",
     "ConsolidationResult",
     "ConsolidationStatement",
+    "ConstraintKind",
     "ContentCategory",
     "ElementKind",
     "EmbeddingFloor",
@@ -1133,7 +1196,9 @@ __all__ = [
     "RatingSuggestionInputs",
     "RatingSuggestionVerdict",
     "RecordKind",
+    "RegenerationInputs",
     "RegistryError",
+    "RepairConstraint",
     "ReservedPurpose",
     "SalienceBeat",
     "SalienceInputs",

@@ -1,5 +1,5 @@
 """I-12 (M4): repair primitives (docs/04 §4). Every I-12 (M4) part lives in this file
-(traceability counts a test ID per milestone in one file); #151's ``test_i_12__repair`` joins it.
+(traceability counts a test ID per milestone in one file).
 
 ``test_i_12__neighborhood`` (#142, FR-VERIFY-6): a contradicted claim returns the contradicted
 fact, and ``fact_neighborhood`` returns its dependency cluster over real canon. The cluster
@@ -7,10 +7,16 @@ holds the facts with the same subject and predicate, the facts linked by a decla
 implication, the key's closed set, the facts on a shared subject in both directions (to depth
 2), the projections and the linked memories. It leaves out superseded, discarded, hidden and
 unconnected facts, and it is bounded.
+
+``test_i_12__repair`` (#151, FR-REPAIR-1,2,3, FR-VERIFY-6): structured turns played end to end
+with the stub adapter; the repair ladder corrects a contradicted say at rungs 1, 2 and 3 and
+falls back at rung 4, the report exposes the contradicted fact and its neighborhood, and both
+renders are recorded (the rejected one as audit, the correction as narrative state).
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -19,6 +25,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.config import Settings
 from epistrel.core.canon import facts as canon
 from epistrel.core.canon.facts import Visibility
 from epistrel.core.enums import OperationKind, Provenance, RecordProvenance
@@ -35,11 +42,24 @@ from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.tables.memories import memories
 from epistrel.core.verify.neighborhood import Edge, Neighborhood, Seed, fact_neighborhood
 from epistrel.core.verify.rules import Rule, VerdictKind
+from epistrel.core.views import audit_view
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.verify.verifier import story_verifier
+from tests.auth_support import auth_settings
 from tests.canon_support import KNOWS, LOCATED_AT, PRINCIPAL, World, at, commit, supersede, world
+from tests.event_support import rows
 from tests.memory_support import use_structured
 from tests.projection_support import truncate
+from tests.respond_support import body, respond, respond_client
+from tests.story_support import override
+from tests.structured_turn_support import (
+    age_fact,
+    beat,
+    claim,
+    render,
+    structured_story,
+    turn_report,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -263,3 +283,199 @@ PRIORITY_OF = {
     Edge.PROJECTION: 5,
     Edge.MEMORY: 6,
 }
+
+
+# -- test_i_12__repair (#151: FR-REPAIR-1,2,3, FR-VERIFY-6) ---------------------------------------
+
+
+@pytest.fixture
+def stub_settings(pg_url: str) -> Settings:
+    return auth_settings(pg_url, model_adapter="stub")
+
+
+def _regenerated(text_: str, *props: dict[str, Any]) -> str:
+    """A scripted ``regeneration`` answer (#151's ``RegeneratedBeat``)."""
+    return json.dumps({"text": text_, "propositions": list(props)})
+
+
+async def _audit(engine: AsyncEngine, story_id: str, event_type: str) -> list[Any]:
+    return [e for e in await audit_view(engine, story_id) if e.type == event_type]
+
+
+async def _age_story(client: Any, engine: AsyncEngine) -> tuple[str, dict[str, str], str]:
+    """Wren (the player) and Ada, whose canon age is 64: the story, the ids, the fact's id."""
+    story, ids = await structured_story(client, "Wren", "Ada")
+    await age_fact(engine, story, ids["Ada"], 64)
+    (fact,) = await rows(
+        engine,
+        "SELECT id FROM facts WHERE story_id = :s AND subject_id = :a",
+        s=story,
+        a=ids["Ada"],
+    )
+    return story, ids, str(fact.id)
+
+
+@pytest.mark.part("M4", "FR-REPAIR-1,2,3; FR-VERIFY-6")
+async def test_i_12__repair(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A contradicted claim returns the contradicted fact and its neighborhood (the repair's
+    report); the corrected span is re-verified before it is accepted; the rejected render is
+    recorded as a ``render_rejected`` audit event and the accepted correction as the beat's
+    ``narrative_state`` event (with ``repaired_from``). Rung 1 drops the contradicting sentence;
+    rung 2 swaps the object for canon's; rung 3 regenerates through ``regeneration`` under the
+    constraint. Complement: a correction that still fails verification is not accepted and the
+    next rung runs (a second regeneration, then the safe fallback); nothing a rejected text
+    asserted is ever canonized."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        # -- rung 2: a functional claim citing one fact takes canon's value
+        story, ids, age_id = await _age_story(client, engine)
+        wren = ids["Wren"]
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "say", "I'm 70.", intent="sincere", propositions=[claim("I", "age", "70")]
+                    ),
+                    beat("do", "She sits down by the fire."),
+                )
+            ],
+        )
+        played = (await respond(client, story, body(wren, "Ada, how old are you?"))).json()
+        assert played["message"]["text"] == 'Ada: "I\'m 64."\n\n*She sits down by the fire.*'
+        said = played["beats"][1]
+        assert said["labels"]["objective_relation"] == "true"
+        report = await turn_report(engine, story)
+        (entry,) = report["repairs"]
+        assert (entry["verdict"], entry["rung"], entry["class"], entry["accepted"]) == (
+            "contradicted",
+            2,
+            "cosmetic",
+            True,
+        )
+        # FR-REPAIR-1: the contradicted fact and its neighborhood (seeded at that fact).
+        assert entry["contradicted_facts"] == [age_id]
+        (cluster,) = entry["neighborhood"]
+        assert cluster["seed"] == {"fact_id": age_id}
+        assert age_id in {i["id"] for i in cluster["items"]}
+        assert entry["neighborhood_size"] == 1
+        (rejected,) = await _audit(engine, story, "render_rejected")
+        assert (rejected.payload.text, rejected.payload.rung) == ("I'm 70.", 2)
+        assert rejected.payload.attempt == 0
+        assert rejected.payload.verdicts[0]["kind"] == "contradicted"
+        assert rejected.category.value == "audit"
+        (verdict,) = await _audit(engine, story, "verify_verdict")
+        assert verdict.payload.beat == said["beat"]
+        (stored,) = await rows(
+            engine,
+            "SELECT payload, category FROM events WHERE story_id = :s AND type = 'beat_say'",
+            s=story,
+        )
+        assert stored.category == "narrative_state"
+        assert stored.payload["text"] == "I'm 64."
+        assert stored.payload["repaired_from"] == {"rung": 2, "class": "cosmetic"}
+        assert not [c for c in stub.calls if c.purpose == "regeneration"]
+
+        # -- rung 1: the contradicting sentence is dropped when another is left
+        story, ids, _ = await _age_story(client, engine)
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "say",
+                        "I'm 70. The fire is warm.",
+                        intent="sincere",
+                        propositions=[claim("I", "age", "70")],
+                    )
+                )
+            ],
+        )
+        played = (await respond(client, story, body(ids["Wren"], "How old are you?"))).json()
+        assert played["message"]["text"] == 'Ada: "The fire is warm."'
+        ((entry,),) = [(await turn_report(engine, story))["repairs"]]
+        assert (entry["rung"], entry["class"]) == (1, "cosmetic")
+
+        # -- rung 3 under its constraint; complement: a failing correction is not accepted
+        story, ids, age_id = await _age_story(client, engine)
+        await override(client, story, {"repair": {"max_attempts": 2}})
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "say",
+                        "I am seventy years old.",
+                        intent="sincere",
+                        propositions=[claim("I", "age", "70")],
+                    )
+                )
+            ],
+        )
+        stub.script(
+            "regeneration",
+            [
+                _regenerated("I'm 71.", claim("I", "age", "71")),
+                _regenerated("I'm sixty-four.", claim("I", "age", "64")),
+            ],
+        )
+        played = (await respond(client, story, body(ids["Wren"], "How old are you?"))).json()
+        assert played["message"]["text"] == 'Ada: "I\'m sixty-four."'
+        regenerations = [c for c in stub.calls if c.purpose == "regeneration"]
+        assert len(regenerations) == 2
+        prompt = "\n".join(m.content for m in regenerations[0].messages)
+        assert "I am seventy years old." in prompt  # edit in place: the rejected text
+        assert "Do not assert that Ada age 70" in prompt  # the constraint
+        assert "Ada age 64" in prompt  # the contradicted fact
+        ((entry,),) = [(await turn_report(engine, story))["repairs"]]
+        assert (entry["rung"], entry["attempts"], entry["accepted"]) == (3, 2, True)
+        texts = [
+            (e.payload.text, e.payload.attempt, e.payload.rung)
+            for e in await _audit(engine, story, "render_rejected")
+        ]
+        assert texts == [("I am seventy years old.", 0, 3), ("I'm 71.", 1, 3)]
+        assert await _ages(engine, story, ids["Ada"]) == [64]
+
+        # -- complement: the last rung, when every regeneration still fails
+        story, ids, _ = await _age_story(client, engine)
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "say",
+                        "I am seventy years old.",
+                        intent="sincere",
+                        propositions=[claim("I", "age", "70")],
+                    )
+                )
+            ],
+        )
+        stub.script("regeneration", [_regenerated("I'm 71.", claim("I", "age", "71"))])
+        played = (await respond(client, story, body(ids["Wren"], "How old are you?"))).json()
+        assert played["message"]["text"] == 'Ada: "Ada changes the subject."'
+        assert {"safe_fallback", "repair_deterministic"} <= set(played["degradation"])
+        ((entry,),) = [(await turn_report(engine, story))["repairs"]]
+        assert (entry["rung"], entry["class"], entry["accepted"]) == (4, "cascade", False)
+        assert [e.payload.text for e in await _audit(engine, story, "render_rejected")] == [
+            "I am seventy years old.",
+            "I'm 71.",
+        ]
+        assert await _ages(engine, story, ids["Ada"]) == [64]
+
+
+async def _ages(engine: AsyncEngine, story_id: str, character_id: str) -> list[int]:
+    found = await rows(
+        engine,
+        "SELECT p.literal FROM facts f JOIN propositions p ON p.id = f.proposition_id "
+        "WHERE f.story_id = :s AND f.subject_id = :a AND p.literal IS NOT NULL",
+        s=story_id,
+        a=character_id,
+    )
+    return sorted(int(r.literal["value"]) for r in found)

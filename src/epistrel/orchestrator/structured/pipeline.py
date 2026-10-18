@@ -70,8 +70,17 @@ A render that stays malformed after #53's retries fails the turn: 503 ``model_un
 ``details.reason = invalid_structure`` (``age_unrepaired`` for the age repair) with
 ``details.structural_errors``; the operation ends ``failed`` and nothing is recorded.
 
-Not here (seams, #151/#152/#154/#156): the repair ladder (a claim that ``needs_repair`` is
-reported, its beat stands), model composition, regeneration of a structured turn, budget
+**Repair** (#151, ``repair_turn``, after the follow-up render and before the commit): when the
+profile's ``repair`` module is on, every rendered beat with a claim that ``needs_repair``
+(contradicted, undecided under the ``repair`` disposition, or an ``unpermitted`` novel claim;
+not a ``say`` declared deceptive or joking) goes to ``orchestrator.repair.ladder.RepairLadder``;
+the correction it accepts (re-detected and re-verified) replaces the beat at its position with
+``repaired_from {rung, class}``, the rejected beat's canon requests are dropped, and the commit
+stages each repaired beat's ``verify_verdict`` and every rejected text as ``render_rejected``
+(both ``audit``), with ``turn_report.repairs`` and ``epistrel_repairs_total``. With the module
+off a contradicted beat stands, labelled.
+
+Not here (seams, #152/#154/#156): model composition, regeneration of a structured turn, budget
 planning. Logs carry ids and counts only (invariant 3).
 """
 
@@ -99,11 +108,11 @@ from epistrel.core.erasure.index import index_records
 from epistrel.core.erasure.records import operation_record
 from epistrel.core.errors import InvalidRequest, RevisionConflict, StoryArchived
 from epistrel.core.events import Operation
-from epistrel.core.events.types import BeatLabels, MessageRendered, PlayerInput
+from epistrel.core.events.types import BeatLabels, MessageRendered, PlayerInput, VerifyVerdict
 from epistrel.core.genesis.structured import deferred_items
 from epistrel.core.history import turn_beats
 from epistrel.core.memory import records
-from epistrel.core.profiles.capabilities import level_at_least
+from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
 from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.propositions import store
@@ -158,6 +167,7 @@ from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normaliz
 from epistrel.core.verify.rules import Record, VerdictKind, check
 from epistrel.core.viewpoint import character_viewpoint, resolve_viewpoint, try_resolve
 from epistrel.observability.logging import get_logger
+from epistrel.observability.metrics import REPAIRS
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, counted_embedder
 from epistrel.orchestrator.commit import salience
 from epistrel.orchestrator.lite import pipeline as lite
@@ -180,6 +190,7 @@ from epistrel.orchestrator.models.registry import GenerationInputs, SceneContext
 from epistrel.orchestrator.policies.implication import Implicator, draft_context, threshold_of
 from epistrel.orchestrator.policies.output_gate import (
     Draft,
+    FallbackLines,
     Gated,
     gate_output,
     output_policies,
@@ -189,6 +200,7 @@ from epistrel.orchestrator.policies.output_gate import (
 )
 from epistrel.orchestrator.policies.rebase import output_passes, output_recheck
 from epistrel.orchestrator.policies.store import guard_context
+from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
 from epistrel.orchestrator.structured import prompt as prompts
 from epistrel.orchestrator.structured.render import (
     NARRATOR as NARRATOR_VARIANT,
@@ -216,6 +228,7 @@ from epistrel.orchestrator.verify.verifier import ClaimSource, Verifier, story_v
 log = get_logger(__name__)
 
 PIPELINE = "pipeline"
+REPAIR_MODULE = "repair"
 STRUCTURED_LEVEL = "structured"
 QUERY_BEATS = 3
 """The retrieval query: the player's input and the rendering character's last beats."""
@@ -593,6 +606,11 @@ class Rendered:
     model: str | None = None
     prompt_hash: str | None = None
     finish_reason: str | None = None
+    character_inputs: GenerationInputs | None = None
+    """The rendering character's ``generation`` inputs (a repair's regeneration edits in place
+    from them, #151)."""
+    narrator_inputs: GenerationInputs | None = None
+    """The narrator render's ``generation`` inputs, when the narrator rendered."""
 
 
 def _canon_lines(result: RetrievalResult, own: str | None) -> tuple[list[str], list[str]]:
@@ -793,6 +811,8 @@ class Checked:
     follow_up_beats: frozenset[int] = frozenset()
     """The follow-up render's beat numbers."""
     follow_up_verifier: Verifier | None = None
+    repairs: list[RepairResult] = field(default_factory=list)
+    """What the repair ladder made of each beat it corrected (#151), in beat order."""
 
 
 def _verdict_of(result: CheckedClaim) -> str | None:
@@ -818,6 +838,7 @@ def _sketch(sketch: PropositionSketch) -> ClaimSketch:
         object_text=sketch.object,
         time_text=sketch.time,
         polarity=Polarity.NEGATED if sketch.negated else Polarity.AFFIRMED,
+        qualifiers=dict(sketch.qualifiers),
         declared=True,
     )
 
@@ -844,16 +865,22 @@ async def check_turn(
     staged_before: Sequence[Record] = (),
     first_claim: int = 0,
     with_salience: bool = True,
+    backstop: bool = True,
+    answers_from: Sequence[Verifier | None] = (),
 ) -> Checked:
     """Detect and verify the player's input and every render's beats (see the module
     docstring). A follow-up render's check (``first_claim``: where its claim ids start) sees
-    the claims the turn's earlier beats staged (``staged_before``) and reads no salience."""
+    the claims the turn's earlier beats staged (``staged_before``) and reads no salience. A
+    repair's re-check (#151) runs without the model backstop when ``backstop`` is off (layers
+    a and b only) and reuses the entailment answers of ``answers_from``, the turn's verifiers."""
     settings = configuration.settings
     routes = routes_of(settings)
     turn = read.turn
     input_speaker = PLAYER if read.actor.id == read.player_id else read.actor.id
     async with db.connect() as conn:
         config = DetectionConfig.of(settings, await read_section(conn, VerifySettings))
+        if not backstop:
+            config = replace(config, level=DECLARED_LEVEL)
         speakers = [input_speaker, read.character.id]
         env = await extraction.load_env(
             conn, story_id, read_set, position=(turn, 0), speakers=speakers, config=config
@@ -929,6 +956,9 @@ async def check_turn(
     requests: list[CanonRequest] = []
     async with db.connect() as conn:
         verifier = await story_verifier(conn, read_set, story_id, models=models, budget=budget)
+        for earlier in answers_from:
+            if earlier is not None:
+                verifier.adopt_answers(earlier)
         staged = StagedSource(verifier.source)
         staged.staged.extend(staged_before)
         verifier.source = staged
@@ -1265,6 +1295,198 @@ def _close_path(follow: Mapping[str, Any], minimal: int) -> str:
     return "minimal" if minimal else "none"
 
 
+# -- the repair ladder (#151) --------------------------------------------------------------------
+
+
+DECLARED_LEVEL = "declared"
+"""The verification level a repair's deterministic re-check detects at (no model backstop)."""
+UNREPAIRED_INTENTS = frozenset({"deceptive", "joking"})
+"""A ``say`` declared deceptive or joking is not meant as true: its claims are labelled, never
+repaired."""
+
+
+def repair_on(configuration: StoryProfile) -> bool:
+    """Whether the story's profile runs the repair ladder: its ``repair`` module is on
+    (``repair.max_attempts`` of 1 or more; ``Structured (M4)`` sets 1, the schema's default 0
+    leaves a contradicted beat standing, labelled, as #150 did)."""
+    return module_on(configuration.settings, REPAIR_MODULE)
+
+
+def _violations(checked: Checked, beat: TurnBeat) -> list[CheckedClaim]:
+    return [
+        c
+        for c in checked.checked
+        if c.claim.beat == beat.beat and c.result is not None and c.result.needs_repair
+    ]
+
+
+async def repair_turn(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    read: TurnRead,
+    rendered: Rendered,
+    checked: Checked,
+    *,
+    operation_id: str,
+    read_set: StructuredReadSet,
+    configuration: StoryProfile,
+    budget: TurnBudget,
+    context: Any,
+    render_ids: Sequence[str],
+    fallback: FallbackLines,
+    narrator_inputs: GenerationInputs,
+) -> Checked:
+    """FR-REPAIR-1..4 and FR-VERIFY-12 over the turn's verified beats (#151): every rendered
+    beat with a claim that ``needs_repair`` goes to ``orchestrator.repair.ladder``, in beat
+    order, and what it accepts replaces the beat at its position (a dropped ``think`` or
+    ``latent`` leaves the turn). The corrected beat's claims, canon requests, latent canon and
+    mentions replace the rejected beat's (nothing from a rejected render canonizes); its
+    salient spans are not read again. After the follow-up render, before any commit
+    transaction; a story whose profile has the repair module off (``repair_on``), or a turn
+    released as the safe fallback, is left as it is."""
+    if not repair_on(configuration) or rendered.finish_reason == "fallback":
+        return checked
+    wanted = [
+        (b, found)
+        for b in checked.beats
+        if b.beat > 1
+        and not (b.kind == SAY and b.intent in UNREPAIRED_INTENTS)
+        and (found := _violations(checked, b))
+    ]
+    if not wanted:
+        return checked
+    settings = configuration.settings
+    async with db.connect() as conn:
+        detection = DetectionConfig.of(settings, await read_section(conn, VerifySettings))
+    sketches = dict(rendered.sketches)
+    claims_made = [len(checked.checked)]
+
+    async def recheck(beat: TurnBeat, chosen: Sequence[PropositionSketch], backstop: bool) -> Any:
+        own = {
+            f"staged:{r.claim_id}" for r in checked.requests if r.beat == beat.beat and r.claim_id
+        }
+        found = await check_turn(
+            db,
+            models,
+            story_id,
+            read,
+            Rendered(
+                beats=[beat], sketches={beat.beat: list(chosen)}, introductions=[], retrievals=[]
+            ),
+            say=None,
+            do=None,
+            operation_id=operation_id,
+            read_set=read_set,
+            configuration=configuration,
+            budget=budget,
+            staged_before=[r for r in checked.staged if r.fact_id not in own],
+            first_claim=claims_made[0],
+            with_salience=False,
+            backstop=backstop,
+            answers_from=(checked.verifier, checked.follow_up_verifier),
+        )
+        claims_made[0] += len(found.checked)
+        (made,) = found.beats
+        return Recheck(
+            beat=made,
+            claims=found.checked,
+            degradation=[step for step, _ in found.degradation],
+            value=found,
+        )
+
+    def inputs_of(beat: TurnBeat) -> GenerationInputs | None:
+        if beat.narrator or beat.kind == NARRATION:
+            return rendered.narrator_inputs or narrator_inputs
+        return rendered.character_inputs
+
+    async def output_ok(text: str) -> bool:
+        return await output_passes(models, [text], context, budget=budget, render_ids=render_ids)
+
+    policies = output_policies(context, render_ids)
+    ladder = RepairLadder(
+        db,
+        models,
+        story_id,
+        turn=read.turn,
+        read_set=read_set,
+        max_attempts=settings.repair.max_attempts,
+        recheck=recheck,
+        output_ok=output_ok,
+        fallback=fallback,
+        inputs_of=inputs_of,
+        sketches_of=sketches,
+        params=render_params(
+            ModelParams(temperature=read.resolved.temperature, top_p=read.resolved.top_p),
+            read.resolved.max_tokens,
+        ),
+        extraction_calls=1 if detection.extraction_on else 0,
+        check_calls=regeneration_cost(policies) - 1,
+    )
+    for beat, violations in wanted:
+        result = await ladder.run(beat, violations, budget)
+        _merge_repair(checked, result)
+        checked.degradation += result.degradation
+    return checked
+
+
+def _merge_repair(checked: Checked, result: RepairResult) -> None:
+    """Lay ``result`` over ``checked``: the accepted beat at the original's position with its
+    claims, canon requests, latent canon and mentions; the rejected beat's gone."""
+    number = result.original.beat
+    found: Checked | None = None if result.recheck is None else result.recheck.value
+    accepted = result.beat
+    if accepted is not None and found is not None:
+        (made,) = found.beats
+        accepted = replace(made, repaired_from=accepted.repaired_from)
+    beats: list[TurnBeat] = []
+    for b in checked.beats:
+        if b.beat != number:
+            beats.append(b)
+        elif accepted is not None:
+            beats.append(accepted)
+    checked.beats = beats
+    checked.checked = [c for c in checked.checked if c.claim.beat != number]
+    checked.requests = [r for r in checked.requests if r.beat != number]
+    checked.latent = [(b, c) for b, c in checked.latent if b.beat != number]
+    checked.mentions.pop(number, None)
+    checked.salient = [s for s in checked.salient if s[0].index != number]
+    if found is not None and accepted is not None:
+        checked.checked += found.checked
+        checked.requests += [r for r in found.requests if not result.restates(r.claim)]
+        checked.latent += [(accepted, c) for _, c in found.latent]
+        if number in found.mentions:
+            checked.mentions[number] = found.mentions[number]
+        checked.degradation += [d for d in found.degradation if d not in checked.degradation]
+    checked.repairs.append(result)
+
+
+def _repair_events(checked: Checked) -> list[tuple[str, Any]]:
+    """The audit records of the turn's repairs (FR-REPAIR-3, FR-STORE-25): for each repaired
+    beat, its ``verify_verdict`` (the verdicts that sent it to the ladder) and a
+    ``render_rejected`` per rejected text, in beat order."""
+    found: list[tuple[str, Any]] = []
+    for result in checked.repairs:
+        found.append(
+            (
+                "verify_verdict",
+                VerifyVerdict(
+                    beat=result.original.beat,
+                    verdicts=tuple(
+                        r.as_payload(c.claim_id) for c in result.violations if (r := c.result)
+                    ),
+                ),
+            )
+        )
+        found += [("render_rejected", r.event()) for r in result.rejected]
+    return found
+
+
+def repairs_report(checked: Checked) -> list[dict[str, Any]]:
+    """``turn_report.repairs``: one entry per repaired claim (ids, codes and counts)."""
+    return [entry for result in checked.repairs for entry in result.report()]
+
+
 # -- the turn ------------------------------------------------------------------------------------
 
 
@@ -1380,6 +1602,7 @@ async def play(
             sketches: dict[int, list[PropositionSketch]] = {}
             retries = 0
             narration: list[str] = []
+            narrator_inputs: GenerationInputs | None = None
             next_beat = 2
             if read.triggers:
                 narr_retrieval = await retrieve_for(NARRATOR, OMNISCIENT, joined)
@@ -1394,11 +1617,12 @@ async def play(
                     constraints=constraints,
                 )
                 timing.assemble_s += time.perf_counter() - assembling
+                narrator_inputs = prompts.narrator_inputs(
+                    sections, read.actor, say=say, do=do, budget=budget_tokens
+                )
                 narr, n = await render_beats(
                     models,
-                    prompts.narrator_inputs(
-                        sections, read.actor, say=say, do=do, budget=budget_tokens
-                    ),
+                    narrator_inputs,
                     render_schema(
                         actor_id=None,
                         player_id=read.player_id,
@@ -1476,6 +1700,8 @@ async def play(
                 model=calls.calls[-1].model if calls.calls else None,
                 prompt_hash=prompt_hash(messages),
                 finish_reason="stop",
+                character_inputs=inputs,
+                narrator_inputs=narrator_inputs,
             )
             draft = Draft(
                 text="\n".join(b.text for b in beats),
@@ -1552,6 +1778,28 @@ async def play(
             context=context,
             render_ids=cast_.render_ids,
         )
+        checked = await repair_turn(
+            db,
+            models,
+            story_id,
+            read,
+            rendered,
+            checked,
+            operation_id=op.operation_id,
+            read_set=read_set,
+            configuration=configuration,
+            budget=budget,
+            context=context,
+            render_ids=cast_.render_ids,
+            fallback=lite._fallback_lines(read.inputs, cast_),
+            narrator_inputs=prompts.narrator_inputs(
+                replace(base, director_notes=read.director, working_memory=read.narrator_memory),
+                read.actor,
+                say=say,
+                do=do,
+                budget=budget_tokens,
+            ),
+        )
         found[:] = [checked]
         stage(op, read, rendered, checked, outcome)
 
@@ -1588,6 +1836,11 @@ async def play(
                 provenance=Provenance.ENGINE,
                 character_id=None,
                 beat=last + 1,
+            )
+        # The repair ladder's audit records (#151): never read by a story view.
+        for event_type, payload in _repair_events(checked):
+            op.append(
+                event_type, payload, provenance=Provenance.ENGINE, character_id=None, beat=last + 1
             )
         beats = [
             replace(b, mentions=tuple(m.as_payload() for m in checked.mentions.get(b.beat, ())))
@@ -1737,7 +1990,11 @@ async def play(
         if checked.follow_up_verifier is not None:
             report["verify_follow_up"] = checked.follow_up_verifier.report()
         report["commit"] = fixed.get("commit", {})
+        if checked.repairs:
+            report["repairs"] = repairs_report(checked)
         extraction.record_metrics(checked.outcomes, checked.checked)
+        for repaired in checked.repairs:
+            REPAIRS.labels(rung=str(repaired.rung), **{"class": repaired.repair_class.value}).inc()
         await conn.execute(
             update(operations)
             .where(operations.c.operation_id == op.operation_id)

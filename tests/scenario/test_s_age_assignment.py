@@ -22,7 +22,7 @@ from epistrel.config import Settings
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
-from tests.story_support import READ
+from tests.story_support import READ, override
 from tests.structured_turn_support import (
     UNKNOWN,
     ages,
@@ -64,6 +64,9 @@ async def test_s_age_assignment__structured(
     64 is ``false``, ``sincere`` and ``unknown``."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         story, ids = await structured_story(client, "Wren", "Ada")
+        # The repair ladder off (#151's ``repair.max_attempts`` 0): a false say stands, labelled;
+        # tests/integration/test_i_12.py repairs one.
+        await override(client, story, {"repair": {"max_attempts": 0}})
         wren = ids["Wren"]
         stub = epistrel.models.stub
         stub.script(

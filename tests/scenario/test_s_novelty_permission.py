@@ -14,6 +14,13 @@ Bobby's render introduces new material in a structured story (the Bobby/Jenni fi
   tagged ``unpermitted``, and zero ``facts`` rows exist for it after the turn. The turn report
   lists the denied claims under ``verify.denied`` with their reasons, and their verdict
   entries carry the permission code.
+- ``test_s_novelty_permission__repaired`` (#151, the carried obligation of #144): the same
+  fixture played end to end through ``respond``: with the arrival toggle off, Bobby's render
+  bringing a stranger into the kitchen is denied (``policy``) and repaired (rung 1 drops the
+  arrival's sentence); his claim of an enrollment at Michigan on the locked key is denied
+  (``locked_canon``) and repaired (rung 3, under "do not introduce facts about Bobby"); neither
+  is ever written. Complement: with the toggle on the same arrival is permitted and canonized,
+  and nothing is repaired.
 - ``test_s_novelty_permission__matrix``: FR-VERIFY-11's M4 matrix over structured data only
   (each asserter and each reason code; the later milestones' exception stubs and the
   precedence order are unit-tested in ``tests/test_permission.py``).
@@ -24,11 +31,13 @@ Bobby's render introduces new material in a structured story (the Bobby/Jenni fi
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.config import Settings
 from epistrel.core.propositions.model import Interval, Layer, Predicate, PredicateOwner
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.verify import permission as pm
@@ -45,7 +54,11 @@ from epistrel.core.verify.rules import VerdictKind
 from epistrel.orchestrator.models.registry import DELIVERED, PORTS, RESERVED
 from epistrel.orchestrator.verify.verifier import UNPERMITTED, ClaimRef
 from tests import novelty_support as ns
+from tests import structured_turn_support as st
 from tests import verify_support as vs
+from tests.auth_support import auth_settings
+from tests.canon_support import PRINCIPAL
+from tests.respond_support import body, respond, respond_client
 
 PERMISSION_MODULE = Path(pm.__file__)
 
@@ -198,6 +211,88 @@ def decide(
     chosen = EXTERNAL if predicate == "gold" else CORE_BY_NAME[predicate]
     given = PermissionFacts(entities=ENTITIES, predicate=chosen, **facts)  # type: ignore[arg-type]
     return pm.permission(found, asserter, pm.owner_of(found, given), given)
+
+
+@pytest.fixture
+def stub_settings(pg_url: str) -> Settings:
+    return auth_settings(pg_url, model_adapter="stub")
+
+
+AS_OWNER = {"X-Epistrel-Principal": PRINCIPAL}
+"""The fixture's stories belong to ``tests.canon_support.PRINCIPAL``."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-VERIFY-11,12")
+async def test_s_novelty_permission__repaired(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """See the module docstring."""
+    arrives = "Bobby looks up. A stranger walks into the kitchen."
+    arrival = st.claim("stranger", "located_at", "kitchen")
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        # -- the arrival toggle off: denied (policy), repaired at rung 1, never written
+        cast = await ns.bobby_and_jenni(engine, allow_new_arrivals=False)
+        stub.script("generation", [st.render(st.beat("do", arrives, propositions=[arrival]))])
+        response = await respond(
+            client, cast.story_id, body(cast.cal, "Anyone there?"), headers=AS_OWNER
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["message"]["text"] == "*Bobby looks up.*"
+        report = await st.turn_report(engine, cast.story_id)
+        assert [d["reason"] for d in report["verify"]["denied"]] == ["policy"]
+        (entry,) = report["repairs"]
+        assert (entry["tag"], entry["rung"], entry["accepted"]) == (UNPERMITTED, 1, True)
+        stranger = ns.claim(cast.stranger, ns.LOCATED_AT, cast.kitchen)
+        assert await ns.facts_of(engine, cast.story_id, stranger) == []
+
+        # -- the locked enrollment: denied (locked_canon), repaired by the regeneration
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                st.render(
+                    st.beat(
+                        "say",
+                        "I'm enrolled at Michigan.",
+                        intent="sincere",
+                        propositions=[st.claim("I", "enrolled_at", "Michigan")],
+                    )
+                )
+            ],
+        )
+        stub.script(
+            "regeneration", [json.dumps({"text": "I study at OSU, still.", "propositions": []})]
+        )
+        response = await respond(
+            client, cast.story_id, body(cast.cal, "Where do you study?"), headers=AS_OWNER
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["message"]["text"] == 'Bobby: "I study at OSU, still."'
+        report = await st.turn_report(engine, cast.story_id)
+        assert [d["reason"] for d in report["verify"]["denied"]] == ["locked_canon"]
+        (entry,) = report["repairs"]
+        assert (entry["tag"], entry["rung"]) == (UNPERMITTED, 3)
+        (call,) = [c for c in stub.calls if c.purpose == "regeneration"]
+        prompt = "\n".join(m.content for m in call.messages)
+        assert "Do not introduce facts about Bobby" in prompt
+        michigan = ns.claim(cast.bobby, ns.ENROLLED_AT, cast.michigan, ns.SEED_SPAN)
+        assert await ns.facts_of(engine, cast.story_id, michigan) == []
+
+        # -- complement: the toggle on, the same arrival is canonized and nothing repaired
+        cast = await ns.bobby_and_jenni(engine)
+        stub.reset()
+        stub.script("generation", [st.render(st.beat("do", arrives, propositions=[arrival]))])
+        response = await respond(
+            client, cast.story_id, body(cast.cal, "Anyone there?"), headers=AS_OWNER
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["message"]["text"] == f"*{arrives}*"
+        assert "repairs" not in await st.turn_report(engine, cast.story_id)
+        stranger = ns.claim(cast.stranger, ns.LOCATED_AT, cast.kitchen)
+        assert len(await ns.facts_of(engine, cast.story_id, stranger)) == 1
 
 
 @pytest.mark.part("M4", "FR-VERIFY-11,12")

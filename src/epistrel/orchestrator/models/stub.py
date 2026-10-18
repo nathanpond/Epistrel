@@ -37,10 +37,11 @@ resolves to the safe disposition, so an unscripted escalation never supports a c
 ``salience_detection`` (#146) answers its schema's defaults too, ``{"salient": [], "texture":
 []}``: every beat is texture, so an unscripted turn owes nothing.
 ``extraction_backstop`` (#148) answers ``{"claims": []}``: the deterministic layers stand
-alone. A response schema with a ``stub_example(digest, messages)`` classmethod answers that
-(#150: a structured render's default is one ``think``, one ``say`` with intent ``sincere`` and
-one ``do``, their texts from the request's hash; the age repair answers 40 for each character
-it names).
+alone. ``regeneration`` (#151) answers its ``RegeneratedBeat`` schema's ``stub_example``: a
+text from the request's hash and no claims. A response schema with a
+``stub_example(digest, messages)`` classmethod answers that (#150: a structured render's
+default is one ``think``, one ``say`` with intent ``sincere`` and one ``do``, their texts from
+the request's hash; the age repair answers 40 for each character it names).
 """
 
 from __future__ import annotations

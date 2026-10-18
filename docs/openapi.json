@@ -25558,6 +25558,13 @@
             "title": "Audit Retention Days",
             "type": "integer"
           },
+          "cascade_threshold": {
+            "default": 5,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Cascade Threshold",
+            "type": "integer"
+          },
           "config_revision": {
             "title": "Config Revision",
             "type": "integer"
@@ -26600,6 +26607,17 @@
               }
             ],
             "title": "Audit Retention Days"
+          },
+          "cascade_threshold": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cascade Threshold"
           },
           "default_content_rating_id": {
             "anyOf": [
@@ -31425,6 +31443,7 @@
                       {
                         "enum": [
                           "audit_retention_days",
+                          "cascade_threshold",
                           "default_content_rating_id",
                           "default_engine_profile_id",
                           "default_safe_fallback",

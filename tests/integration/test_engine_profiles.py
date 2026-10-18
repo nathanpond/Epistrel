@@ -116,6 +116,7 @@ from epistrel.orchestrator.models.registry import (
     ENTAILMENT,
     EXTRACTION_BACKSTOP,
     IMPORTANCE_SCORING,
+    REGENERATION,
     SALIENCE_DETECTION,
     STORY_PURPOSES,
 )
@@ -169,13 +170,14 @@ LITE_ROUTED = set(STORY_PURPOSES) - {
     CONSOLIDATION.name,
     SALIENCE_DETECTION.name,
     EXTRACTION_BACKSTOP.name,
+    REGENERATION.name,
 }
 """The story purposes the Lite preset names in ``models.purposes``: every one a Lite story calls.
 ``importance_scoring`` (#135) needs episodic memory, ``entailment`` (#142) verification at
 ``entailment``, ``consolidation`` (#143) the consolidation module, ``salience_detection``
-(#146) commitment and ``extraction_backstop`` (#148) verification at ``extraction``, which Lite
-has off; unnamed, each inherits the deployment's model
-configuration, as every purpose does under ``Structured (M4)``."""
+(#146) commitment, ``extraction_backstop`` (#148) verification at ``extraction`` and
+``regeneration`` (#151) the repair ladder, which Lite has off; unnamed, each inherits the
+deployment's model configuration, as every purpose does under ``Structured (M4)``."""
 
 
 def headers(principal: str, key: str | None = None) -> dict[str, str]:

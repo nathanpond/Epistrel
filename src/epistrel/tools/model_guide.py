@@ -90,14 +90,16 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
     ContentCategory.CANON_RECORD: (
         "One of the claim holder's records, rendered the same way with its holder and "
         "valid-time: only those the check fetched for the claim and the claim subject's own "
-        "facts (#142)."
+        "facts (#142). A regeneration (#151) gets the canon facts the rejected beat "
+        "contradicted and their neighborhood, rendered the same way."
     ),
     ContentCategory.RENDER_TEXT: (
         "The beats of one render (index, kind, speaker's name, text). Salience detection "
         "(#146) reads the observable ones only (`say`, `do`, narration; never a `think` or "
         "`latent` beat or the player's input); the extraction backstop (#148) reads every beat "
         "it detects claims in, its own render's `think` and `latent` beats included, or the "
-        "composed message. Never another render's text."
+        "composed message; a regeneration (#151) reads the rejected beat it rewrites and its "
+        "kind. Never another render's text."
     ),
     ContentCategory.SCENE: (
         "The names of the entities present in the render's scene and the last six observable "
@@ -117,6 +119,10 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
     ContentCategory.CANON_FACTS: (
         "The canon facts retrieval found for a structured render (#150), filtered for the "
         "rendering character's viewpoint, without its own true age."
+    ),
+    ContentCategory.CONSTRAINT: (
+        "A repair's constraint on the beat it regenerates (#151): its kind (`do_not_assert`, "
+        "`avoid_binding`, `policy`), its text and the ids of the records it cites."
     ),
 }
 

@@ -73,7 +73,18 @@ class ContentCategory(StrEnum):
     render's text."""
     SCENE = "scene"
     """What a render's scene holds (#146): the names of the entities present and the text of the
-    last few observable beats before it (``scene_context``)."""
+    last few observable beats before it (``scene_context``). A structured render (#150) gets its
+    ``## Scene`` section (the place and who is present) and, for the age repair, the introduced
+    characters' names and the clues the render gave about them."""
+    WORKING_MEMORY = "working_memory"
+    """A structured render's working memory (FR-MEM-5; #150): the latest beats as the rendering
+    character perceived them (never another character's ``think`` or any ``latent``)."""
+    RETRIEVED_MEMORIES = "retrieved_memories"
+    """What #141's retrieval assembled for a structured render (#150): the ledger's open
+    threads, pins, occasions, profiles and ranked memories the rendering character may know."""
+    CANON_FACTS = "canon_facts"
+    """The canon facts retrieval found for a structured render (#150), as the rendering
+    character may read them: never its own true age or a fact hidden from it."""
 
 
 class StructuredOutput(StrEnum):
@@ -141,6 +152,14 @@ class PlayerInput(InputSchema):
     do: Annotated[str | None, C.PLAYER_INPUT] = None
 
 
+class AgeClue(InputSchema):
+    """A character a structured render introduced without an age (#150): its name and what the
+    render said about it."""
+
+    name: Annotated[str, C.SCENE]
+    clue: Annotated[str, C.SCENE] = ""
+
+
 class GenerationInputs(InputSchema):
     """The Lite prompt's sections (FR-LITE-1), in prompt order; M3-only sections join in M3.
 
@@ -167,6 +186,18 @@ class GenerationInputs(InputSchema):
     """On a guardrail regeneration (FR-GUARD-6; #68): one line per output policy an earlier
     draft of this turn broke, naming the policy's message — never a subject or an age."""
     player_input: PlayerInput
+    # -- the structured pipeline's sections (#150; empty, and so absent, in a Lite prompt) ------
+    scene: Annotated[str, C.SCENE] = ""
+    """A structured render's ``## Scene``: the place and who is present."""
+    working_memory: Annotated[list[str], C.WORKING_MEMORY] = Field(default_factory=list)
+    """A structured render's ``## What you remember``: the latest beats as perceived."""
+    retrieved_memories: Annotated[list[str], C.RETRIEVED_MEMORIES] = Field(default_factory=list)
+    """A structured render's ``## Retrieved``: #141's assembled context."""
+    canon_facts: Annotated[list[str], C.CANON_FACTS] = Field(default_factory=list)
+    """A structured render's ``## Canon``: the facts retrieval found."""
+    introductions: list[AgeClue] = Field(default_factory=list)
+    """The age repair (#150): each character a render introduced without an age, with the
+    render's clue."""
 
 
 SUBJECT_LABEL_PATTERN = r"^character_[1-9][0-9]{0,3}$"
@@ -608,7 +639,20 @@ class Purpose:
     """Whether the purpose runs inside a story (its turns, its background work), so an engine
     profile may route it and a story's runtime facts name its model. ``rating_suggestion``
     reviews catalog entries and is deployment-level (#121)."""
+    variants: Mapping[str, str] = field(default_factory=lambda: types.MappingProxyType({}))
+    """Further templates over the same input schema, by name (#150: ``generation``'s
+    structured, narrator and age-repair renders). A call names one (``variant=``); the
+    ``template`` is the default."""
     status: PurposeStatus = field(default=PurposeStatus.DELIVERED, init=False)
+
+    def template_of(self, variant: str | None = None) -> str:
+        """The template a call renders: ``variant``'s, else the purpose's own."""
+        if variant is None:
+            return self.template
+        try:
+            return self.variants[variant]
+        except KeyError:
+            raise RegistryError(f"{self.name}: no template variant {variant!r}") from None
 
 
 @dataclass(frozen=True)
@@ -659,7 +703,11 @@ _EVERYTHING = frozenset(ContentCategory)
 
 GENERATION = Purpose(
     name="generation",
-    description="Writes the reply of a Lite turn from the story's prompt sections.",
+    description=(
+        "Writes the reply of a Lite turn from the story's prompt sections; in a structured "
+        "story (#150) the typed beats of one character's or the narrator's render (a "
+        "`response_schema`: constrained decoding or parse-validate-retry) and the age repair."
+    ),
     default_model_key=DEFAULT_MODEL_KEY,
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.NONE),
     input_schema=GenerationInputs,
@@ -669,7 +717,18 @@ GENERATION = Purpose(
     # messages, never a policy prompt, subject label or age.
     never_receives=frozenset({C.SUBJECT_TRUE_AGE, C.CHECKED_TEXT, C.EVAL_TEXT}),
     history_field="recent_messages",
+    variants=types.MappingProxyType(
+        {
+            "structured": "structured_generation.j2",
+            "narrator": "narrator_generation.j2",
+            "age_repair": "age_repair.j2",
+        }
+    ),
 )
+"""``generation``: the Lite reply (``lite_generation.j2``) and, under ``structured`` (#150), the
+character render (``structured_generation.j2``), the narrator render
+(``narrator_generation.j2``) and the age repair (``age_repair.j2``). The structured path needs
+``json_schema`` or ``parse_validate_retry`` (its beats are a ``response_schema``)."""
 
 GUARDRAIL_CHECK = Purpose(
     name="guardrail_check",
@@ -909,7 +968,7 @@ def validate_purpose(purpose: Purpose) -> None:
     if forbidden:
         names = ", ".join(sorted(forbidden))
         raise RegistryError(f"{purpose.name}: declares inputs it never receives: {names}")
-    if not purpose.template.endswith(".j2"):
+    if not all(t.endswith(".j2") for t in (purpose.template, *purpose.variants.values())):
         raise RegistryError(f"{purpose.name}: template must be a .j2 file")
     if (
         purpose.history_field is not None
@@ -1035,6 +1094,7 @@ __all__ = [
     "SALIENCE_MAX_SPANS",
     "STORY_PURPOSES",
     "SUBJECT_LABEL_PATTERN",
+    "AgeClue",
     "CapabilityFloor",
     "CharacterDefinition",
     "ConsolidationInputs",

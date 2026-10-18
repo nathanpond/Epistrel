@@ -412,6 +412,35 @@ class Repair(ProfileModel):
     polish: Polish = Field(default_factory=Polish)
 
 
+DEFAULT_MAX_BEATS = 6
+MAX_MAX_BEATS = 20
+DEFAULT_WORKING_MEMORY_BEATS = 20
+MAX_WORKING_MEMORY_BEATS = 200
+DEFAULT_PROMPT_TOKEN_BUDGET = 6_000
+MIN_PROMPT_TOKEN_BUDGET = 500
+MAX_PROMPT_TOKEN_BUDGET = 200_000
+
+
+class Render(ProfileModel):
+    """The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may
+    return, how much working memory and how large a prompt it is given."""
+
+    max_beats: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=DEFAULT_MAX_BEATS, ge=1, le=MAX_MAX_BEATS
+    )
+    """The most beats one render may return (the beat schema's ``max_items``; more is invalid
+    structure, which the model retries). #156's budget planning reuses it."""
+    working_memory_beats: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=DEFAULT_WORKING_MEMORY_BEATS, ge=1, le=MAX_WORKING_MEMORY_BEATS
+    )
+    """How many of the latest beats the rendering character's working memory holds (FR-MEM-5)."""
+    prompt_token_budget: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
+        default=DEFAULT_PROMPT_TOKEN_BUDGET, ge=MIN_PROMPT_TOKEN_BUDGET, le=MAX_PROMPT_TOKEN_BUDGET
+    )
+    """The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,
+    then working memory."""
+
+
 class Budgets(ProfileModel):
     """The per-turn model-call budget and deadline (NFR-PERF-6)."""
 
@@ -489,6 +518,7 @@ class ProfileSettings(ProfileModel):
     states: States = Field(default_factory=States)
     multi_character: MultiCharacter = Field(default_factory=MultiCharacter)
     repair: Repair = Field(default_factory=Repair)
+    render: Render = Field(default_factory=Render)
     budgets: Budgets = Field(default_factory=Budgets)
     models: Models = Field(default_factory=Models)
 
@@ -603,7 +633,7 @@ MODULES: tuple[Module, ...] = (
         "pipeline",
         (("lite", "lite"), ("structured", "structured")),
         owns=("pipeline",),
-        owns_at=(("structured", ("memory.hot_set", "repair.implication_threshold")),),
+        owns_at=(("structured", ("memory.hot_set", "repair.implication_threshold", "render")),),
     ),
     _flag("rolling_summary", "memory.rolling_summary.enabled", "memory.rolling_summary"),
     _flag("episodic", "memory.episodic.enabled", "memory.episodic"),

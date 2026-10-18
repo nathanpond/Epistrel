@@ -63,6 +63,7 @@ from epistrel.core.tables.readset import proposition_changes
 from epistrel.core.tables.stories import stories
 from epistrel.core.tables.timers import recurring_tasks, timers, worker_heartbeats
 from epistrel.core.tables.turn_queue import turn_queue
+from epistrel.core.tables.utterances import utterances
 
 __all__ = [
     "NAMING_CONVENTION",
@@ -122,5 +123,6 @@ __all__ = [
     "timers",
     "transcript_messages",
     "turn_queue",
+    "utterances",
     "worker_heartbeats",
 ]

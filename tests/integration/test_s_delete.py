@@ -14,7 +14,7 @@ from epistrel.core import clock, turn_gate
 from epistrel.core.commit import lifecycle
 from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.context import RequestContext
-from epistrel.core.enums import OpenSlot, OperationKind
+from epistrel.core.enums import OpenSlot, OperationKind, Provenance
 from epistrel.core.errors import GuardrailViolation
 from epistrel.core.events import Operation
 from epistrel.core.feedback import FeedbackRequest
@@ -25,6 +25,7 @@ from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
 from epistrel.core.tables.ownership import EntityType
+from epistrel.core.turns import beats
 from epistrel.core.verify import shadow
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import timers
@@ -237,6 +238,36 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
             missed=[shadow.Missed(beat=2, start=0, end=4, category="possession")],
         )
     assert written is not None
+    # The structured turn (#150): an utterance of the input of a turn of its own.
+    async with Operation(
+        engine, story_id=story_id, kind=OperationKind.TURN, principal="p-test"
+    ) as op:
+        op.append(
+            "player_input",
+            {"text": "Ann sails?", "say": "Ann sails?"},
+            provenance=Provenance.PLAYER,
+            character_id=ann,
+            beat=1,
+        )
+
+        async def speak(conn: AsyncConnection) -> None:
+            ids = await beats.beat_event_ids(conn, op.operation_id)
+            await beats.write_utterances(
+                conn,
+                op,
+                [
+                    beats.Utterance(
+                        beat=1,
+                        speaker_character_id=ann,
+                        proposition_ids=(),
+                        objective_relation="unresolved",
+                    )
+                ],
+                event_ids=ids,
+            )
+
+        op.add_commit_step(speak)
+        await op.commit()
 
 
 def _due() -> datetime:

@@ -665,7 +665,8 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     ),
     SubjectWriter(
         "characters",
-        ("epistrel.core.stories", "epistrel.core.genesis.create"),
+        # #150: a structured turn creates the characters its renders introduce.
+        ("epistrel.core.stories", "epistrel.core.genesis.create", "epistrel.core.turns.beats"),
         f"{_RECORDS}:read_characters",
     ),
     SubjectWriter(
@@ -684,6 +685,7 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
         (
             "epistrel.core.genesis.create",
             "epistrel.orchestrator.lite.pipeline",
+            "epistrel.orchestrator.structured.pipeline",
             "epistrel.core.verify.shadow",
         ),
         f"{_RECORDS}:read_operations",
@@ -764,6 +766,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "scopes of committed proposition changes (#136)",
     "extraction_shadow": "claim detection's shadow samples (#148): statuses, counts, spans, "
     "predicate ids and shape hashes; the beats the spans point into are indexed",
+    "utterances": "speech acts (#150): ids, proposition ids and three labels; the beat events "
+    "they point at are indexed",
     "overflow_episodes": "the hot set's overflow episodes (#147): scope kinds, ids and turn "
     "numbers",
     "relationships": "a projection of facts, which are erased; refolded by erasure's rebuilt "

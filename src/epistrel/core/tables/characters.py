@@ -32,6 +32,10 @@ violation (#68) stays in character. It is set when the character is created: fro
 (a story's cast, a character added later), or by #119's genesis from the catalog definition's
 ``definition.deflection_style``.
 
+#150 adds ``true_age_source`` (``TRUE_AGE_SOURCES``): where the one true age came from. A
+character a structured render introduces is ``declared`` when the render gave its age and
+``repaired`` when the turn's age-repair call supplied it (FR-CAT-12).
+
 #119 adds ``role_id`` (the scenario role a character of a story created from a scenario fills;
 ``NULL`` otherwise) and ``character_snapshots``: one row per catalog character a story was
 created with (FR-SCN-9, FR-CAT-3,9), keyed ``(story_id, character_id)``, holding the catalog id
@@ -63,6 +67,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from epistrel.core.tables.base import metadata, ulid_type
 
+TRUE_AGE_SOURCES: tuple[str, ...] = ("catalog", "genesis", "declared", "repaired")
+"""Where a character's one true age came from (#150, FR-CAT-12): its catalog entry, the
+scenario's genesis, the request that created it, or the structured turn's age repair."""
 TRUE_AGE_MIN = 0
 TRUE_AGE_MAX = 150
 DEFLECTION_STYLE_MAX = 2_000
@@ -94,7 +101,12 @@ characters = Table(
     Column("promoted_to", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     Column("deflection_style", Text, nullable=True),
     Column("role_id", Text, nullable=True),
+    Column("true_age_source", Text, nullable=False, server_default=text("'declared'")),
     CheckConstraint(f"true_age BETWEEN {TRUE_AGE_MIN} AND {TRUE_AGE_MAX}", name="true_age"),
+    CheckConstraint(
+        "true_age_source IN ('catalog', 'genesis', 'declared', 'repaired')",
+        name="true_age_source",
+    ),
     CheckConstraint(
         "(persona_id IS NULL AND persona_snapshot IS NULL) OR is_player", name="persona_player"
     ),

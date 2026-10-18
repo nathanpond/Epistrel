@@ -51,7 +51,7 @@ ALLOWED: dict[str, str] = {
     "src/epistrel/core/summary.py": "lite_summary_segments",
     "src/epistrel/core/tables/operations.py": "operations (active-turn index predicate)",
     "src/epistrel/core/timeline.py": "operations (truncate, untruncate, swap)",
-    "src/epistrel/core/turns.py": "operations",
+    "src/epistrel/core/turns/__init__.py": "operations",
     "src/epistrel/core/variants.py": "operations (variant tree)",
     "src/epistrel/core/views.py": "operations (corrected history)",
     "src/epistrel/orchestrator/jobs/handlers/lite_summary.py": "lite_summary_segments",

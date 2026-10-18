@@ -164,6 +164,7 @@ from epistrel.core.tables.propositions import (
     propositions,
 )
 from epistrel.core.tables.readset import proposition_changes
+from epistrel.core.tables.utterances import utterances
 from epistrel.core.trimmed import trim_as_sent
 
 Database = AsyncEngine | AsyncConnection
@@ -207,6 +208,8 @@ STORY_TABLES: tuple[Table, ...] = (
     facts,
     # Memory records (#135): a derived table, before the operations it references.
     memories,
+    # Speech acts (#150): a derived table, before the operations it references.
+    utterances,
     # The hot set's overflow episodes (#147): maintenance state, no foreign key.
     overflow_episodes,
     # Claim detection's shadow samples (#148): a derived table, before the operations it names.

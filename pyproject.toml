@@ -119,6 +119,7 @@ name = "policy-store-written-only-by-admin"
 type = "forbidden"
 source_modules = [
     "epistrel.orchestrator.lite",
+    "epistrel.orchestrator.structured",
     "epistrel.core.events",
     "epistrel.orchestrator.policies.store",
 ]

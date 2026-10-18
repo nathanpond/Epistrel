@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 import pytest
@@ -38,6 +39,7 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.schema import CreateIndex, CreateTable
 
@@ -45,7 +47,8 @@ from epistrel.core import fork as forking
 from epistrel.core import timeline
 from epistrel.core.canon import facts as canon
 from epistrel.core.commit import lifecycle
-from epistrel.core.enums import Membership
+from epistrel.core.enums import Membership, OperationKind, Provenance
+from epistrel.core.events import Operation
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import (
     DERIVED_COLUMNS,
@@ -70,6 +73,7 @@ from epistrel.core.memory import records as memory_records
 from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import operations
 from epistrel.core.tables.base import ulid_type
+from epistrel.core.turns import beats
 from epistrel.core.variants import ChainRef
 from tests import commit_support as c
 from tests.canon_support import at, commit, run, supersede, world
@@ -830,3 +834,96 @@ async def resolve_nothing(conn: AsyncConnection, op: Any) -> None:
 
 async def play(engine: AsyncEngine, story_id: str, step: Any) -> tuple[Any, Any]:
     return await run(engine, story_id, step)
+
+
+async def _utterance_story(engine: AsyncEngine, turns: int) -> tuple[str, dict[int, str]]:
+    """A ``Structured (M4)`` story of ``turns`` turns, each storing the player's ``say`` as one
+    utterance in its commit (the structured pipeline's writer): its id and ``{turn: id}``."""
+    w = await world(engine)
+    await use_structured(engine, w.story_id)
+    made: dict[int, str] = {}
+    cal = w.characters["Cal"]
+    for n in range(1, turns + 1):
+        found: dict[str, str] = {}
+
+        async def write(conn: AsyncConnection, op: Any, found: dict[str, str] = found) -> None:
+            ids = await beats.beat_event_ids(conn, op.operation_id)
+            (written,) = await beats.write_utterances(
+                conn,
+                op,
+                [
+                    beats.Utterance(
+                        beat=1,
+                        speaker_character_id=cal,
+                        proposition_ids=(),
+                        objective_relation="unresolved",
+                    )
+                ],
+                event_ids=ids,
+            )
+            found["id"] = written
+
+        async with Operation(
+            engine, story_id=w.story_id, kind=OperationKind.TURN, principal="p-test"
+        ) as op:
+            op.append(
+                "player_input",
+                {"text": f"line {n}", "say": f"line {n}"},
+                provenance=Provenance.PLAYER,
+                character_id=cal,
+                beat=1,
+            )
+            op.add_commit_step(partial(_write_one, write, op))
+            await op.commit()
+        made[n] = found["id"]
+    return w.story_id, made
+
+
+async def _write_one(write: Any, op: Any, conn: AsyncConnection) -> None:
+    await write(conn, op)
+
+
+async def _utterance_rows(engine: AsyncEngine, story_id: str) -> dict[str, Any]:
+    async with engine.connect() as conn:
+        found = await conn.execute(
+            text("SELECT * FROM utterances WHERE story_id = :s"), {"s": story_id}
+        )
+        return {str(r.id): r for r in found}
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-STORE-29")
+async def test_time__utterances(engine: AsyncEngine) -> None:
+    """TIME (c) for utterances (#150): each carries its beat event and the operation that
+    stored it, registered as a derived table with the standard columns, and follows that
+    operation's membership. A truncation flips the later turns' utterances to ``discarded``;
+    an untruncation restores them; their labels never change. Complement: the kept turn's
+    utterance is untouched, and the append-only trigger refuses a change of label."""
+    async with engine.connect() as conn:
+        assert await schema_findings(conn) == []
+    assert "utterances" in DERIVED_TABLES
+    assert "utterances" in {t.name for t in STORY_TABLES}
+    story, made = await _utterance_story(engine, 3)
+    before = await _utterance_rows(engine, story)
+    for row in before.values():
+        assert list(row.source_event_ids) == [row.event_id]
+        assert row.membership_tx == await _op_tx(engine, row.operation_id)
+
+    await truncate(engine, story, 1)
+    after = await _utterance_rows(engine, story)
+    for n, utterance_id in made.items():
+        row, was = after[utterance_id], before[utterance_id]
+        assert str(row.membership) == ("active" if n == 1 else "discarded"), n
+        assert (row.objective_relation, row.intent) == (was.objective_relation, was.intent)
+        if n == 1:
+            assert row.membership_tx == was.membership_tx
+    await untruncate(engine, story)
+    assert {str(r.membership) for r in (await _utterance_rows(engine, story)).values()} == {
+        "active"
+    }
+    with pytest.raises(DBAPIError):
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE utterances SET objective_relation = 'true' WHERE id = :i"),
+                {"i": made[1]},
+            )

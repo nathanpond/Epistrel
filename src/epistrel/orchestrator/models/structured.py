@@ -172,13 +172,17 @@ async def structured_call[T: BaseModel](
     params: ModelParams | None = None,
     deterministic_first: DeterministicFirst[T] | None = None,
     budget: TurnBudget,
+    variant: str | None = None,
+    failures: list[str] | None = None,
 ) -> T | Uncertain:
-    """See the module docstring."""
+    """See the module docstring. ``variant`` names the purpose's template variant (#150);
+    ``failures``, when given, collects each failed attempt's problem (what was wrong, never the
+    answer's text) for the caller's report."""
     if deterministic_first is None and purpose not in DETERMINISTIC_FIRST_EXEMPT:
         raise MissingDeterministicStep(
             f"a structured {purpose!r} call needs its deterministic_first step (FR-MODEL-5)"
         )
-    _, payload, base = mal.prepare(purpose, inputs)
+    _, payload, base = mal.prepare(purpose, inputs, variant=variant)
     if deterministic_first is not None:
         conclusive = deterministic_first()
         if conclusive is not None:
@@ -225,6 +229,8 @@ async def structured_call[T: BaseModel](
             if result.refused or result.finish_reason == "length":
                 return Uncertain("parse_error", attempts)
             outcome = parse(result.text, schema)
+            if isinstance(outcome, _Failure) and failures is not None:
+                failures.append(outcome.problem)
             if not isinstance(outcome, _Failure):
                 if _low_confidence(outcome, settings.uncertain_below):
                     return Uncertain("low_confidence", attempts)

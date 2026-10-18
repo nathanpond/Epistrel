@@ -37,7 +37,10 @@ resolves to the safe disposition, so an unscripted escalation never supports a c
 ``salience_detection`` (#146) answers its schema's defaults too, ``{"salient": [], "texture":
 []}``: every beat is texture, so an unscripted turn owes nothing.
 ``extraction_backstop`` (#148) answers ``{"claims": []}``: the deterministic layers stand
-alone.
+alone. A response schema with a ``stub_example(digest, messages)`` classmethod answers that
+(#150: a structured render's default is one ``think``, one ``say`` with intent ``sincere`` and
+one ``do``, their texts from the request's hash; the age repair answers 40 for each character
+it names).
 """
 
 from __future__ import annotations
@@ -75,6 +78,9 @@ STUB_URL = "http://stub.invalid/v1/chat/completions"
 STUB_MODEL = "stub"
 GARBAGE = '<<stub garbage>> {"violation": tru'
 DEFAULT_PREVIEW_CHARS = 40
+STUB_EXAMPLE = "stub_example"
+"""A response schema's classmethod ``stub_example(digest, messages)``: its default answer
+(#150), instead of ``conformant_example``."""
 
 type FaultKind = Literal[
     "timeout",
@@ -349,7 +355,10 @@ class StubAdapter:
         declared = DELIVERED.get(purpose)
         schema = response_schema or (declared.response_schema if declared else None)
         if schema is not None:
-            example = conformant_example(schema)
+            # A schema may name its own default answer (#150's beat schema: a think, a say and a
+            # do from the prompt's hash).
+            hook = getattr(schema, STUB_EXAMPLE, None)
+            example = hook(digest, messages) if callable(hook) else conformant_example(schema)
             return json.dumps(example, sort_keys=True, separators=(",", ":"))
         return self._default_text(purpose, digest, messages)
 
@@ -427,6 +436,7 @@ __all__ = [
     "FAULT_KINDS",
     "GARBAGE",
     "RETRY_AFTER",
+    "STUB_EXAMPLE",
     "STUB_MODEL",
     "StubAdapter",
     "StubCall",

@@ -319,7 +319,8 @@ def test_the_estimate_and_its_measured_latency() -> None:
 
 def test_model_ids_and_template_hashes() -> None:
     """Each delivered purpose's model is its own row's, else the ``default`` row's; the
-    template hashes are the shipped files' SHA-256, one per delivered purpose."""
+    template hashes are the shipped files' SHA-256, one per delivered purpose's template and
+    template variant (#150: ``generation``'s structured, narrator and age-repair renders)."""
     now = datetime.now(UTC)
 
     def row(purpose: str, model: str | None) -> ConfigRow:
@@ -335,11 +336,13 @@ def test_model_ids_and_template_hashes() -> None:
     assert identities({})["generation"].id is None
     folder = resources.files("epistrel.orchestrator.models").joinpath("templates")
     assert dict(TEMPLATE_HASHES) == {
-        purpose.template.removesuffix(".j2"): hashlib.sha256(
-            folder.joinpath(purpose.template).read_bytes()
+        template.removesuffix(".j2"): hashlib.sha256(
+            folder.joinpath(template).read_bytes()
         ).hexdigest()
         for purpose in STORY_PURPOSES.values()
+        for template in (purpose.template, *purpose.variants.values())
     }
+    assert {"structured_generation", "narrator_generation", "age_repair"} <= set(TEMPLATE_HASHES)
 
 
 def test_both_spellings_of_ignore_warnings() -> None:

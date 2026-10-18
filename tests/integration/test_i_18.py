@@ -33,6 +33,7 @@ from epistrel.core.enums import OperationKind
 from epistrel.core.errors import BudgetBelowSafetyMinimum, GuardrailViolation
 from epistrel.core.fork import Forked, ForkRequest
 from epistrel.core.ids import new_ulid
+from epistrel.core.propositions import store
 from epistrel.core.ratings import story_guidance
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.stories import StorySpec
@@ -51,6 +52,7 @@ from tests import genesis_support as g
 from tests import lite_genesis_support as lg
 from tests import scenario_support as scenarios
 from tests.auth_support import auth_settings
+from tests.canon_support import at, commit
 from tests.catalog_support import publish as catalog_publish
 from tests.catalog_support import save as catalog_save
 from tests.concurrency_support import set_instructions, set_pins, summarise
@@ -71,6 +73,7 @@ from tests.respond_support import (
 )
 from tests.story_support import READ, WRITE
 from tests.story_support import override as override_dials
+from tests.structured_turn_support import beat, claim, place, render, structured_story
 from tests.summary_support import run_due_jobs, segment_rows, summary_jobs
 
 DERIVED_KIND = OperationKind.CONSOLIDATION.value
@@ -951,3 +954,66 @@ async def test_i_18__summary_budget(stub_settings: Settings, engine: AsyncEngine
         assert all(
             c["purpose"] != "lite_summary" for r in reports for c in r.turn_report["model_calls"]
         )
+
+
+@pytest.mark.part("M4", "FR-LITE-1")
+async def test_i_18__structured_isolation(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Nothing from the Engine Core's structured stores enters a Lite prompt (#150): a Lite
+    story holding planted canon (an entity and a fact) beside a structured story that plays
+    turns in the same deployment makes only Lite's calls, and no captured Lite prompt names
+    the planted canon or anything the structured story stored. A violating Lite output is
+    caught as before: the output policy rejects the first reply and the regenerated one is
+    released (complement: the structured story's own prompt carries its canon)."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        lite_story, lite_ids = await new_story(client, PLAYER, FIRST)
+        planted = "Zorvathspire"
+        async with engine.begin() as conn:
+            spire = await store.add_entity(conn, lite_story, "place", planted)
+        await commit(
+            engine,
+            lite_story,
+            at(lite_ids[FIRST], spire, None, None),
+            kind=OperationKind.CONTROL,
+        )
+        structured, ids = await structured_story(client, PLAYER, FIRST)
+        await place(engine, structured, "Quillhaven")
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "do",
+                        "Ada walks to Quillhaven.",
+                        propositions=[claim("Ada", "located_at", "Quillhaven")],
+                    )
+                )
+            ],
+        )
+        await played(client, structured, body(ids[PLAYER], "Where to?"))
+
+        await lib.policies_set_story(AUTHOR, lite_story, [story_item(words("zzleakword"))])
+        stub.reset()
+        stub.script("generation", ["A zzleakword reply.", "A clean reply."])
+        reply = await played(client, lite_story, body(lite_ids[PLAYER], "Where is Ada?"))
+        assert reply["message"]["text"] == "A clean reply."
+        assert [v["name"] for v in reply["guardrail"]["violations"]] == []
+        assert {c.purpose for c in stub.calls} == {"generation"}
+        calls = generation_calls(stub)
+        assert len(calls) == 2
+        assert all(c.response_schema is None for c in calls)
+        sent = "\n".join(m.content for c in calls for m in c.messages)
+        assert planted not in sent
+        assert "Quillhaven" not in sent
+        assert "## What you remember" not in sent
+        assert "## Canon" not in sent
+        assert await scalar(engine, REJECTED_EVENTS, s=lite_story) == 1
+
+        # Complement: the structured story's own render does read its canon.
+        stub.reset()
+        stub.script("generation", [render(beat("say", "Here we are.", intent="sincere"))])
+        await played(client, structured, body(ids[PLAYER], "Are we at Quillhaven?"))
+        (character,) = [c for c in stub.calls if c.response_schema == "CharacterRender"]
+        assert "Quillhaven" in "\n".join(m.content for m in character.messages)

@@ -298,6 +298,18 @@ def calling(call: IdempotentCall) -> Iterator[IdempotentCall]:
         _CURRENT.reset(token)
 
 
+@contextlib.contextmanager
+def detached() -> Iterator[None]:
+    """Run work that commits operations of its own (#145's auto-quarantine, inside a turn) under
+    no idempotent call: they never bind the request's key, so the key keeps the turn's
+    operation and its stored result (#150)."""
+    token = _CURRENT.set(None)
+    try:
+        yield
+    finally:
+        _CURRENT.reset(token)
+
+
 class IdempotentCall:
     """One mutating request under its key; see the module docstring."""
 
@@ -785,6 +797,7 @@ __all__ = [
     "StoredResult",
     "calling",
     "current_call",
+    "detached",
     "drop_results",
     "idempotency_settings",
     "mark_replayed",

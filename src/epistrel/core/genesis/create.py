@@ -1510,6 +1510,7 @@ async def insert_cast(
             "name": member.name,
             "definition": member.definition,
             "true_age": member.true_age,
+            "true_age_source": "catalog" if member.catalog_id is not None else "genesis",
             "age_recorded_at": func.transaction_timestamp(),
             "is_player": member.is_player,
             "safe_fallback_text": member.safe_fallback_text,

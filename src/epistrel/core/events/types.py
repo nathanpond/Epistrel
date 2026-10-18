@@ -127,6 +127,45 @@ class CharacterDefined(EventPayload):
     """The catalog version a genesis character was created from (its snapshot row)."""
 
 
+class BeatProposition(EventPayload):
+    """One proposition a beat asserts (#150): the normalized proposition (#140's
+    ``Proposition`` document: ids, a literal, the polarity and the valid-time) and the verdict
+    it ended with (#142: ``supported``, ``contradicted``, ``novel``, ``uncertain`` or
+    ``denied``; ``None`` with verification off)."""
+
+    proposition: dict[str, JsonValue]
+    verdict: str | None = None
+    claim_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
+class BeatVisibility(EventPayload):
+    """A ``latent`` beat's declared scope (FR-TURN-4): ``objective`` (canon only),
+    ``public`` (every character may know it) or ``characters`` (only those listed)."""
+
+    scope: str = "objective"
+    characters: tuple[str, ...] = Field(default=(), exclude_if=lambda v: not v)
+
+
+class BeatLabels(EventPayload):
+    """An utterance's three independent labels (FR-TURN-6): the objective relation of what it
+    asserts (#142's verdicts), the speaker's belief relation (``unknown`` until M5) and its
+    communicative intent as declared."""
+
+    objective_relation: str
+    belief_relation: str = "unknown"
+    intent: str = "unspecified"
+
+
+class DetectedRef(EventPayload):
+    """A claim detection found in a beat that the beat did not declare (#148): its character
+    span, category and verdict. Spans and codes only."""
+
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    category: str
+    verdict: str | None = None
+
+
 @register("player_input", category=EventCategory.INPUT)
 class PlayerInput(EventPayload):
     """What the acting character said and did this turn: the turn's first beat (FR-RESP-9).
@@ -138,6 +177,13 @@ class PlayerInput(EventPayload):
     text: str
     say: str | None = None
     do: str | None = None
+    labels: BeatLabels | None = Field(default=None, exclude_if=lambda v: v is None)
+    """A structured turn (#150): the labels of the player's own ``say`` as an utterance
+    (``intent`` ``unspecified``); absent from every Lite input, whose payload is unchanged."""
+    propositions: tuple[BeatProposition, ...] = Field(default=(), exclude_if=lambda v: not v)
+    """A structured turn (#150): the propositions detected in the input, with their verdicts."""
+    mentions: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
+    """A structured turn (#150): the input's resolved mentions (#139)."""
 
 
 @register("message_rendered", category=EventCategory.NARRATIVE_STATE)
@@ -155,6 +201,10 @@ class MessageRendered(EventPayload):
     fallback_used: bool = False
     """The reply is the safe fallback line (#68): every generated draft broke an output policy
     (``model``/``prompt_hash`` null, ``finish_reason`` ``fallback``)."""
+    composed: bool = Field(default=False, exclude_if=lambda v: not v)
+    """A structured turn's composed message (#150; #152 composes it): the observable beats
+    joined. The beats are the record; working memory and the episodic writer read them, never
+    this message. Absent from every Lite reply."""
     present_character_ids: tuple[str, ...] = Field(default=(), exclude_if=lambda v: not v)
     """A scenario's opening narration (turn 1 of a story created from a scenario, #119): the
     characters of the roles present when the story opens (stored; the Lite pipeline does not
@@ -522,3 +572,65 @@ class MemoriesImplicated(EventPayload):
     attempt: int = Field(ge=0)
     memory_ids: tuple[str, ...] = ()
     fact_ids: tuple[str, ...] = ()
+
+
+# -- the structured turn (FR-TURN-1,4,5,6; #150) -------------------------------------------------
+
+
+class StructuredBeat(EventPayload):
+    """The payload every ``beat_*`` event shares (#150): the beat's ``text``, the propositions
+    it declared with their verdicts, the claims detection found beyond them (``detected``) and
+    its resolved mentions (#139's ``Mention.as_payload``: spans and entity ids). The event's
+    ``character_id`` is the acting character (``None`` for narration) and its ``beat`` the
+    position in the turn. Never promoted to canon by being stored (FR-TURN-5)."""
+
+    text: str
+    propositions: tuple[BeatProposition, ...] = ()
+    detected: tuple[DetectedRef, ...] = Field(default=(), exclude_if=lambda v: not v)
+    mentions: tuple[dict[str, JsonValue], ...] = Field(default=(), exclude_if=lambda v: not v)
+
+
+@register("beat_say", category=EventCategory.NARRATIVE_STATE)
+class BeatSay(StructuredBeat):
+    """A character's speech (FR-TURN-5): a speech act, stored with its labels and declared
+    ``intent`` (``sincere``, ``deceptive``, ``joking`` or ``unspecified``); its ``utterances``
+    row carries the same labels."""
+
+    intent: str = "unspecified"
+    labels: BeatLabels | None = None
+
+
+@register("beat_think", category=EventCategory.NARRATIVE_STATE)
+class BeatThink(StructuredBeat):
+    """A character's private thought: never in a character viewpoint's read (FR-TURN-3)."""
+
+
+@register("beat_do", category=EventCategory.NARRATIVE_STATE)
+class BeatDo(StructuredBeat):
+    """What a character does: an observable action."""
+
+
+@register("beat_latent", category=EventCategory.NARRATIVE_STATE)
+class BeatLatent(StructuredBeat):
+    """Unrendered narrative state (FR-TURN-4): it routes to canon with its declared
+    ``visibility`` and never appears in a character viewpoint's read."""
+
+    visibility: BeatVisibility = Field(default_factory=BeatVisibility)
+
+
+@register("beat_narration", category=EventCategory.NARRATIVE_STATE)
+class BeatNarration(StructuredBeat):
+    """The narrator's or director's narration (``character_id`` null): scene changes and
+    arrivals."""
+
+
+BEAT_TYPES: dict[str, type[StructuredBeat]] = {
+    "say": BeatSay,
+    "think": BeatThink,
+    "do": BeatDo,
+    "latent": BeatLatent,
+    "narration": BeatNarration,
+}
+"""Each structured beat kind's event model (its event type is ``beat_<kind>``)."""
+
+BEAT_EVENT_PREFIX = "beat_"

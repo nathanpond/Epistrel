@@ -33,7 +33,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.core import mutation
+from epistrel.core import idempotency, mutation
 from epistrel.core.mutation import RecordRef
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import Policy, Target
@@ -119,15 +119,18 @@ class Implicator:
         unique = tuple(dict.fromkeys(refs))
         if not unique:
             return Implicated()
-        done = await mutation.implicate(
-            self.db,
-            self.story_id,
-            unique,
-            turn_operation_id=self.turn_operation_id,
-            attempt=attempt,
-            threshold=self.threshold,
-            pins=[p.memory_id for p in pins],
-        )
+        # The implication's own control operation is no part of the request's idempotent call:
+        # the request's key belongs to the turn (#150 found it bound to this one).
+        with idempotency.detached():
+            done = await mutation.implicate(
+                self.db,
+                self.story_id,
+                unique,
+                turn_operation_id=self.turn_operation_id,
+                attempt=attempt,
+                threshold=self.threshold,
+                pins=[p.memory_id for p in pins],
+            )
         return Implicated(refs=unique, quarantined=done.quarantined, pins=done.pins)
 
 

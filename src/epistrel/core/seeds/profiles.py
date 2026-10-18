@@ -228,14 +228,23 @@ IMPLICATION_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
 it yet."""
 
 
+RENDER_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
+    {"render": {"max_beats": 6, "working_memory_beats": 20, "prompt_token_budget": 6_000}}
+)
+"""The structured renders' dials (#150), at the schema's defaults: migration
+``0063_structured_turn`` adds them to a deployment's ``profile_defaults`` that does not name them
+yet."""
+
+
 def profile_defaults() -> dict[str, Any]:
     """A deployment's seeded ``profile_defaults``: Lite's settings with ``M4_PROFILE_DEFAULTS``,
     ``VERIFY_DEPTH_DEFAULTS``, ``RETRIEVAL_DEFAULTS``, ``ESCALATION_DEFAULTS``,
-    ``CONSOLIDATION_DEFAULTS``, ``IMPLICATION_DEFAULTS`` and ``HOT_SET_DEFAULTS`` under them (a
-    complete document of every delivered setting)."""
+    ``CONSOLIDATION_DEFAULTS``, ``IMPLICATION_DEFAULTS``, ``HOT_SET_DEFAULTS`` and
+    ``RENDER_DEFAULTS`` under them (a complete document of every delivered setting)."""
     base = _merged(_merged(_thaw(M4_PROFILE_DEFAULTS), VERIFY_DEPTH_DEFAULTS), RETRIEVAL_DEFAULTS)
     base = _merged(_merged(base, ESCALATION_DEFAULTS), CONSOLIDATION_DEFAULTS)
     base = _merged(_merged(base, IMPLICATION_DEFAULTS), HOT_SET_DEFAULTS)
+    base = _merged(base, RENDER_DEFAULTS)
     return _merged(base, LITE_SETTINGS)
 
 
@@ -249,6 +258,7 @@ __all__ = [
     "LITE_SETTINGS",
     "M4_PROFILE_DEFAULTS",
     "PREVIOUS_ENTAILMENT_GATE",
+    "RENDER_DEFAULTS",
     "RETRIEVAL_DEFAULTS",
     "SEED_PRINCIPAL",
     "STRUCTURED_M4_NAME",

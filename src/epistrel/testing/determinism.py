@@ -195,6 +195,11 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, t.status, "
         "t.extraction_claims, t.missed_count, t.missed::text"
     ),
+    # Speech acts (#150): by the beat's position, then the labels.
+    "utterances": (
+        f"{_STORY_RANK}, t.narrative_turn NULLS FIRST, t.turn_variant NULLS FIRST, "
+        "t.objective_relation, t.belief_relation, t.intent, t.created_at"
+    ),
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

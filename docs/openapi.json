@@ -344,6 +344,66 @@
         "title": "BackfillEstimate",
         "type": "object"
       },
+      "BeatPropositionModel": {
+        "description": "A proposition a structured beat asserts, with its verdict (#150).",
+        "properties": {
+          "proposition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposition"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          }
+        },
+        "required": [
+          "proposition",
+          "verdict"
+        ],
+        "title": "BeatPropositionModel",
+        "type": "object"
+      },
+      "BeatVisibilityModel": {
+        "description": "A ``latent`` beat's scope (FR-TURN-4; #150).",
+        "properties": {
+          "characters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Characters",
+            "type": "array"
+          },
+          "scope": {
+            "enum": [
+              "objective",
+              "public",
+              "characters"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "title": "BeatVisibilityModel",
+        "type": "object"
+      },
       "Bound": {
         "additionalProperties": false,
         "description": "One end of an interval: exact (``inner == outer``) or approximate (see the module\ndocstring for which side is outer).",
@@ -3497,6 +3557,41 @@
         "title": "DepictedSubject",
         "type": "object"
       },
+      "DetectedClaimModel": {
+        "description": "A claim detection found in a beat beyond what it declared (#148, #150).",
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "category"
+        ],
+        "title": "DetectedClaimModel",
+        "type": "object"
+      },
       "Dispositions": {
         "additionalProperties": false,
         "description": "The behavioural dispositions (FR-CAT-2): five axes, each a closed five-step ``setting``\nplus free-text ``nuance``. Each may be missing from a draft; a publish needs all five.",
@@ -4232,6 +4327,38 @@
                 "title": "Pipeline",
                 "type": "string"
               },
+              "render": {
+                "additionalProperties": false,
+                "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                "properties": {
+                  "max_beats": {
+                    "default": 6,
+                    "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Max Beats",
+                    "type": "integer"
+                  },
+                  "prompt_token_budget": {
+                    "default": 6000,
+                    "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                    "maximum": 200000.0,
+                    "minimum": 500.0,
+                    "title": "Prompt Token Budget",
+                    "type": "integer"
+                  },
+                  "working_memory_beats": {
+                    "default": 20,
+                    "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                    "maximum": 200.0,
+                    "minimum": 1.0,
+                    "title": "Working Memory Beats",
+                    "type": "integer"
+                  }
+                },
+                "title": "Render",
+                "type": "object"
+              },
               "repair": {
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
@@ -4776,6 +4903,38 @@
                 ],
                 "title": "Pipeline",
                 "type": "string"
+              },
+              "render": {
+                "additionalProperties": false,
+                "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                "properties": {
+                  "max_beats": {
+                    "default": 6,
+                    "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Max Beats",
+                    "type": "integer"
+                  },
+                  "prompt_token_budget": {
+                    "default": 6000,
+                    "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                    "maximum": 200000.0,
+                    "minimum": 500.0,
+                    "title": "Prompt Token Budget",
+                    "type": "integer"
+                  },
+                  "working_memory_beats": {
+                    "default": 20,
+                    "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                    "maximum": 200.0,
+                    "minimum": 1.0,
+                    "title": "Working Memory Beats",
+                    "type": "integer"
+                  }
+                },
+                "title": "Render",
+                "type": "object"
               },
               "repair": {
                 "additionalProperties": false,
@@ -5562,6 +5721,38 @@
                 ],
                 "title": "Pipeline",
                 "type": "string"
+              },
+              "render": {
+                "additionalProperties": false,
+                "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                "properties": {
+                  "max_beats": {
+                    "default": 6,
+                    "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Max Beats",
+                    "type": "integer"
+                  },
+                  "prompt_token_budget": {
+                    "default": 6000,
+                    "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                    "maximum": 200000.0,
+                    "minimum": 500.0,
+                    "title": "Prompt Token Budget",
+                    "type": "integer"
+                  },
+                  "working_memory_beats": {
+                    "default": 20,
+                    "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                    "maximum": 200.0,
+                    "minimum": 1.0,
+                    "title": "Working Memory Beats",
+                    "type": "integer"
+                  }
+                },
+                "title": "Render",
+                "type": "object"
               },
               "repair": {
                 "additionalProperties": false,
@@ -8653,9 +8844,51 @@
             "title": "Channel",
             "type": "string"
           },
+          "detected": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DetectedClaimModel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A structured turn's beat (#150): claims detection found in it that it did not declare, as spans, categories and verdicts.",
+            "title": "Detected"
+          },
+          "effects": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A structured turn's beat (#150): its state effects (empty in M4).",
+            "title": "Effects"
+          },
           "kind": {
             "title": "Kind",
             "type": "string"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UtteranceLabelsModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A `say` of a structured turn (#150): the utterance's three independent labels (FR-TURN-6)."
           },
           "message_id": {
             "title": "Message Id",
@@ -8672,6 +8905,21 @@
             ],
             "title": "Origin",
             "type": "string"
+          },
+          "propositions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BeatPropositionModel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A structured turn's beat (#150): each proposition it asserts (the normalized proposition) with its verdict (`supported`, `contradicted`, `novel`, `uncertain`, `denied`; `null` with verification off). Absent from a Lite item.",
+            "title": "Propositions"
           },
           "redacted": {
             "default": false,
@@ -8718,6 +8966,17 @@
               }
             ],
             "title": "Variant"
+          },
+          "visibility": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BeatVisibilityModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A `latent` beat (#150; omniscient reads only): its declared scope."
           }
         },
         "required": [
@@ -9839,6 +10098,66 @@
                         ],
                         "title": "Pipeline",
                         "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "render": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                        "properties": {
+                          "max_beats": {
+                            "anyOf": [
+                              {
+                                "default": 6,
+                                "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                                "maximum": 20.0,
+                                "minimum": 1.0,
+                                "title": "Max Beats",
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "prompt_token_budget": {
+                            "anyOf": [
+                              {
+                                "default": 6000,
+                                "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                                "maximum": 200000.0,
+                                "minimum": 500.0,
+                                "title": "Prompt Token Budget",
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "working_memory_beats": {
+                            "anyOf": [
+                              {
+                                "default": 20,
+                                "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                                "maximum": 200.0,
+                                "minimum": 1.0,
+                                "title": "Working Memory Beats",
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "Render",
+                        "type": "object"
                       },
                       {
                         "type": "null"
@@ -12965,9 +13284,51 @@
             "title": "Channel",
             "type": "string"
           },
+          "detected": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DetectedClaimModel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A structured turn's beat (#150): claims detection found in it that it did not declare, as spans, categories and verdicts.",
+            "title": "Detected"
+          },
+          "effects": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A structured turn's beat (#150): its state effects (empty in M4).",
+            "title": "Effects"
+          },
           "kind": {
             "title": "Kind",
             "type": "string"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UtteranceLabelsModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A `say` of a structured turn (#150): the utterance's three independent labels (FR-TURN-6)."
           },
           "message_id": {
             "title": "Message Id",
@@ -12984,6 +13345,21 @@
             ],
             "title": "Origin",
             "type": "string"
+          },
+          "propositions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BeatPropositionModel"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A structured turn's beat (#150): each proposition it asserts (the normalized proposition) with its verdict (`supported`, `contradicted`, `novel`, `uncertain`, `denied`; `null` with verification off). Absent from a Lite item.",
+            "title": "Propositions"
           },
           "redacted": {
             "default": false,
@@ -13037,6 +13413,17 @@
               }
             ],
             "title": "Variant"
+          },
+          "visibility": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BeatVisibilityModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A `latent` beat (#150; omniscient reads only): its declared scope."
           }
         },
         "required": [
@@ -13762,6 +14149,38 @@
                 ],
                 "title": "Pipeline",
                 "type": "string"
+              },
+              "render": {
+                "additionalProperties": false,
+                "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                "properties": {
+                  "max_beats": {
+                    "default": 6,
+                    "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Max Beats",
+                    "type": "integer"
+                  },
+                  "prompt_token_budget": {
+                    "default": 6000,
+                    "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                    "maximum": 200000.0,
+                    "minimum": 500.0,
+                    "title": "Prompt Token Budget",
+                    "type": "integer"
+                  },
+                  "working_memory_beats": {
+                    "default": 20,
+                    "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                    "maximum": 200.0,
+                    "minimum": 1.0,
+                    "title": "Working Memory Beats",
+                    "type": "integer"
+                  }
+                },
+                "title": "Render",
+                "type": "object"
               },
               "repair": {
                 "additionalProperties": false,
@@ -16273,6 +16692,38 @@
                 "title": "Pipeline",
                 "type": "string"
               },
+              "render": {
+                "additionalProperties": false,
+                "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                "properties": {
+                  "max_beats": {
+                    "default": 6,
+                    "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Max Beats",
+                    "type": "integer"
+                  },
+                  "prompt_token_budget": {
+                    "default": 6000,
+                    "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                    "maximum": 200000.0,
+                    "minimum": 500.0,
+                    "title": "Prompt Token Budget",
+                    "type": "integer"
+                  },
+                  "working_memory_beats": {
+                    "default": 20,
+                    "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                    "maximum": 200.0,
+                    "minimum": 1.0,
+                    "title": "Working Memory Beats",
+                    "type": "integer"
+                  }
+                },
+                "title": "Render",
+                "type": "object"
+              },
               "repair": {
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
@@ -16919,6 +17370,38 @@
                 ],
                 "title": "Pipeline",
                 "type": "string"
+              },
+              "render": {
+                "additionalProperties": false,
+                "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                "properties": {
+                  "max_beats": {
+                    "default": 6,
+                    "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Max Beats",
+                    "type": "integer"
+                  },
+                  "prompt_token_budget": {
+                    "default": 6000,
+                    "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                    "maximum": 200000.0,
+                    "minimum": 500.0,
+                    "title": "Prompt Token Budget",
+                    "type": "integer"
+                  },
+                  "working_memory_beats": {
+                    "default": 20,
+                    "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                    "maximum": 200.0,
+                    "minimum": 1.0,
+                    "title": "Working Memory Beats",
+                    "type": "integer"
+                  }
+                },
+                "title": "Render",
+                "type": "object"
               },
               "repair": {
                 "additionalProperties": false,
@@ -17960,6 +18443,66 @@
                   }
                 ]
               },
+              "render": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                    "properties": {
+                      "max_beats": {
+                        "anyOf": [
+                          {
+                            "default": 6,
+                            "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                            "maximum": 20.0,
+                            "minimum": 1.0,
+                            "title": "Max Beats",
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "prompt_token_budget": {
+                        "anyOf": [
+                          {
+                            "default": 6000,
+                            "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                            "maximum": 200000.0,
+                            "minimum": 500.0,
+                            "title": "Prompt Token Budget",
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "working_memory_beats": {
+                        "anyOf": [
+                          {
+                            "default": 20,
+                            "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                            "maximum": 200.0,
+                            "minimum": 1.0,
+                            "title": "Working Memory Beats",
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "title": "Render",
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "repair": {
                 "anyOf": [
                   {
@@ -18723,6 +19266,38 @@
                 "title": "Pipeline",
                 "type": "string"
               },
+              "render": {
+                "additionalProperties": false,
+                "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                "properties": {
+                  "max_beats": {
+                    "default": 6,
+                    "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Max Beats",
+                    "type": "integer"
+                  },
+                  "prompt_token_budget": {
+                    "default": 6000,
+                    "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                    "maximum": 200000.0,
+                    "minimum": 500.0,
+                    "title": "Prompt Token Budget",
+                    "type": "integer"
+                  },
+                  "working_memory_beats": {
+                    "default": 20,
+                    "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                    "maximum": 200.0,
+                    "minimum": 1.0,
+                    "title": "Working Memory Beats",
+                    "type": "integer"
+                  }
+                },
+                "title": "Render",
+                "type": "object"
+              },
               "repair": {
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
@@ -19300,6 +19875,38 @@
                     ],
                     "title": "Pipeline",
                     "type": "string"
+                  },
+                  "render": {
+                    "additionalProperties": false,
+                    "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                    "properties": {
+                      "max_beats": {
+                        "default": 6,
+                        "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                        "maximum": 20.0,
+                        "minimum": 1.0,
+                        "title": "Max Beats",
+                        "type": "integer"
+                      },
+                      "prompt_token_budget": {
+                        "default": 6000,
+                        "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                        "maximum": 200000.0,
+                        "minimum": 500.0,
+                        "title": "Prompt Token Budget",
+                        "type": "integer"
+                      },
+                      "working_memory_beats": {
+                        "default": 20,
+                        "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                        "maximum": 200.0,
+                        "minimum": 1.0,
+                        "title": "Working Memory Beats",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "Render",
+                    "type": "object"
                   },
                   "repair": {
                     "additionalProperties": false,
@@ -25681,6 +26288,38 @@
                 "title": "Pipeline",
                 "type": "string"
               },
+              "render": {
+                "additionalProperties": false,
+                "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                "properties": {
+                  "max_beats": {
+                    "default": 6,
+                    "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Max Beats",
+                    "type": "integer"
+                  },
+                  "prompt_token_budget": {
+                    "default": 6000,
+                    "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                    "maximum": 200000.0,
+                    "minimum": 500.0,
+                    "title": "Prompt Token Budget",
+                    "type": "integer"
+                  },
+                  "working_memory_beats": {
+                    "default": 20,
+                    "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                    "maximum": 200.0,
+                    "minimum": 1.0,
+                    "title": "Working Memory Beats",
+                    "type": "integer"
+                  }
+                },
+                "title": "Render",
+                "type": "object"
+              },
               "repair": {
                 "additionalProperties": false,
                 "description": "Repair and polish (FR-PROF-2).",
@@ -26819,6 +27458,38 @@
                     ],
                     "title": "Pipeline",
                     "type": "string"
+                  },
+                  "render": {
+                    "additionalProperties": false,
+                    "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                    "properties": {
+                      "max_beats": {
+                        "default": 6,
+                        "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                        "maximum": 20.0,
+                        "minimum": 1.0,
+                        "title": "Max Beats",
+                        "type": "integer"
+                      },
+                      "prompt_token_budget": {
+                        "default": 6000,
+                        "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                        "maximum": 200000.0,
+                        "minimum": 500.0,
+                        "title": "Prompt Token Budget",
+                        "type": "integer"
+                      },
+                      "working_memory_beats": {
+                        "default": 20,
+                        "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                        "maximum": 200.0,
+                        "minimum": 1.0,
+                        "title": "Working Memory Beats",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "Render",
+                    "type": "object"
                   },
                   "repair": {
                     "additionalProperties": false,
@@ -29902,6 +30573,46 @@
         "title": "UploadState",
         "type": "string"
       },
+      "UtteranceLabelsModel": {
+        "description": "An utterance's three independent labels (FR-TURN-6; #150).",
+        "properties": {
+          "belief_relation": {
+            "enum": [
+              "consistent",
+              "inconsistent",
+              "unknown"
+            ],
+            "title": "Belief Relation",
+            "type": "string"
+          },
+          "intent": {
+            "enum": [
+              "sincere",
+              "deceptive",
+              "joking",
+              "unspecified"
+            ],
+            "title": "Intent",
+            "type": "string"
+          },
+          "objective_relation": {
+            "enum": [
+              "true",
+              "false",
+              "unresolved"
+            ],
+            "title": "Objective Relation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "objective_relation",
+          "belief_relation",
+          "intent"
+        ],
+        "title": "UtteranceLabelsModel",
+        "type": "object"
+      },
       "ValidateRequest": {
         "additionalProperties": false,
         "description": "``POST /catalog/scenarios/{id}/validate`` (#111): optionally the draft revision the\ncaller holds, so the report is known to be about that draft (a stale one is 409\n``draft_stale``). Without it, the current draft is validated; ``?version=n`` validates a\npublished version instead.",
@@ -30816,6 +31527,10 @@
                           "profile_defaults.pins.enabled",
                           "profile_defaults.pins.max_pinned",
                           "profile_defaults.pipeline",
+                          "profile_defaults.render",
+                          "profile_defaults.render.max_beats",
+                          "profile_defaults.render.prompt_token_budget",
+                          "profile_defaults.render.working_memory_beats",
                           "profile_defaults.repair",
                           "profile_defaults.repair.implication_threshold",
                           "profile_defaults.repair.max_attempts",
@@ -50224,6 +50939,10 @@
                           "profile_overrides.pins.enabled",
                           "profile_overrides.pins.max_pinned",
                           "profile_overrides.pipeline",
+                          "profile_overrides.render",
+                          "profile_overrides.render.max_beats",
+                          "profile_overrides.render.prompt_token_budget",
+                          "profile_overrides.render.working_memory_beats",
                           "profile_overrides.repair",
                           "profile_overrides.repair.implication_threshold",
                           "profile_overrides.repair.max_attempts",

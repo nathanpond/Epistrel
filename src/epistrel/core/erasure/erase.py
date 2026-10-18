@@ -217,7 +217,20 @@ log = get_logger(__name__)
 STORY = "story"
 CATALOG = "catalog"
 MARKER = "erasure_marker"
-BEATS = frozenset({"player_input", "message_rendered", "think", "latent"})
+BEATS = frozenset(
+    {
+        "player_input",
+        "message_rendered",
+        "think",
+        "latent",
+        # A structured turn's typed beats (#150).
+        "beat_say",
+        "beat_think",
+        "beat_do",
+        "beat_latent",
+        "beat_narration",
+    }
+)
 """Event types that are beats: one the subject authored is erased whole."""
 BEAT_TEXTS = ("text", "say", "do")
 SUMMARY_EVENT = "lite_summary_segment"

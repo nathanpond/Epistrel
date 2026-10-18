@@ -455,12 +455,17 @@ class ModelAccessLayer:
         return result
 
     def prepare(
-        self, purpose: str, inputs: InputSchema | Mapping[str, Any]
+        self,
+        purpose: str,
+        inputs: InputSchema | Mapping[str, Any],
+        *,
+        variant: str | None = None,
     ) -> tuple[Purpose, InputSchema, list[Message]]:
-        """The delivered purpose, ``inputs`` validated as its schema, and the rendered prompt."""
+        """The delivered purpose, ``inputs`` validated as its schema, and the rendered prompt
+        (through the purpose's template ``variant`` when one is named, #150)."""
         declared = get_delivered(purpose)
         payload = build_inputs(declared, inputs)
-        return declared, payload, render(declared, payload)
+        return declared, payload, render(declared, payload, variant)
 
     async def call(
         self,
@@ -488,6 +493,8 @@ class ModelAccessLayer:
         params: ModelParams | None = None,
         deterministic_first: DeterministicFirst[T] | None = None,
         budget: TurnBudget,
+        variant: str | None = None,
+        failures: list[str] | None = None,
     ) -> T | Uncertain:
         """A validated ``schema`` instance or ``Uncertain`` (see ``structured.structured_call``)."""
         return await structured_call(
@@ -498,6 +505,8 @@ class ModelAccessLayer:
             params=params,
             deterministic_first=deterministic_first,
             budget=budget,
+            variant=variant,
+            failures=failures,
         )
 
     async def probe(self, purpose: str) -> ProbeResult:

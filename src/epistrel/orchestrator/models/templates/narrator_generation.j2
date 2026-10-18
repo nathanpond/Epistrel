@@ -1,0 +1,75 @@
+{#- The narrator's (director's) render of a structured turn (FR-TURN-1,4; #150).
+
+Rendered before the character's when the turn needs narration (a scene change, a player input
+that addresses no character, an open salient reference). The ``system`` block holds the rating
+guidance (always first, FR-RATE-4), the custom instructions, the scenario text, the director's
+notes labelled apart from the facts (#122, FR-SCN-11: the narrator's context alone), the scene
+and who is present, the working memory as the narrator perceives it (omniscient, ``think``
+excluded), the retrieved context and the canon, then the narration contract and, on a
+guardrail regeneration, the constraint lines (#68). The ``user`` block is the player input. -#}
+{% macro line(entry) -%}
+{% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
+{%- endmacro %}
+{% block system %}
+{% if rating_guidance %}
+## Content rating guidance
+{{ rating_guidance }}
+
+{% endif %}
+{% if custom_instructions %}
+## Custom instructions
+{{ custom_instructions }}
+
+{% endif %}
+{% if scenario_text %}
+{{ scenario_text }}
+
+{% endif %}
+{% if director_notes %}
+{{ director_notes }}
+
+{% endif %}
+{% if pinned_memories %}
+## Pinned memories
+{% for memory in pinned_memories %}
+- {{ memory }}
+{% endfor %}
+
+{% endif %}
+{% if scene %}
+## Scene
+{{ scene }}
+
+{% endif %}
+{% if working_memory %}
+## What has happened
+{% for beat in working_memory %}
+- {{ beat }}
+{% endfor %}
+
+{% endif %}
+{% if retrieved_memories %}
+## Retrieved
+{% for item in retrieved_memories %}
+- {{ item }}
+{% endfor %}
+
+{% endif %}
+{% if canon_facts %}
+## Canon
+{% for fact in canon_facts %}
+- {{ fact }}
+{% endfor %}
+
+{% endif %}
+## Your part
+You are the narrator. Never speak, think or act for {{ player_input.name }} or for any character.
+Answer with typed beats in order: `narration` (what the scene shows: places, arrivals, what happens) and `latent` (a fact of the world that is true but not shown, with who may know it).
+Declare each factual claim as a proposition (subject, relation, object). Name every new character the narration introduces in `introduces`, with an age in whole years.
+{% for constraint in policy_constraints %}
+{{ constraint }}
+{% endfor %}
+{% endblock %}
+{% block user %}
+{{ player_input.name }}:{% if player_input.say %} "{{ player_input.say }}"{% endif %}{% if player_input.do %} *{{ player_input.do }}*{% endif %}
+{% endblock %}

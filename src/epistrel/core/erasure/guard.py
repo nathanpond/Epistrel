@@ -339,6 +339,7 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.ingest", OPERATION),
     WritePath("epistrel.orchestrator.jobs.queue", OPERATION),
     WritePath("epistrel.orchestrator.lite.pipeline", OPERATION),
+    WritePath("epistrel.orchestrator.structured.pipeline", OPERATION),
     WritePath("epistrel.core.stories", OPERATION),
     WritePath("epistrel.core.genesis.create", OPERATION),
     WritePath("epistrel.core.fork", FORK_FENCE),
@@ -388,6 +389,7 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.memory.records", DIRECT),
     WritePath("epistrel.core.mutation", DIRECT),
     WritePath("epistrel.core.commit.lifecycle", DIRECT),
+    WritePath("epistrel.core.turns.beats", DIRECT),
     WritePath(
         "epistrel.core.verify.shadow",
         EXEMPT,

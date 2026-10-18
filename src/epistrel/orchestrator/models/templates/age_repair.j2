@@ -1,0 +1,34 @@
+{#- The age repair of a structured render (FR-CAT-12, FR-PROF-13; #150).
+
+A render introduced characters without an age: one call asks for each one's age, at
+temperature 0. The ``system`` block holds the rating guidance (always first, FR-RATE-4), the
+custom instructions and the scene; the ``user`` block lists each introduced character with the
+clue the render gave. The answer is the call's ``response_schema`` (``{ages: [{name, age}]}``). -#}
+{% macro line(entry) -%}
+{% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
+{%- endmacro %}
+{% block system %}
+{% if rating_guidance %}
+## Content rating guidance
+{{ rating_guidance }}
+
+{% endif %}
+{% if custom_instructions %}
+## Custom instructions
+{{ custom_instructions }}
+
+{% endif %}
+{% if scene %}
+## Scene
+{{ scene }}
+
+{% endif %}
+## Your part
+A scene introduced new characters. Give each one a single plausible age in whole years that fits what the scene says about them.
+{% endblock %}
+{% block user %}
+{% for intro in introductions %}
+- {{ intro.name }}{% if intro.clue %}: {{ intro.clue }}{% endif %}
+
+{% endfor %}
+{% endblock %}

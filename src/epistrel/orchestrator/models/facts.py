@@ -37,8 +37,9 @@ def _template_hashes() -> dict[str, str]:
     folder = resources.files(TEMPLATE_PACKAGE).joinpath("templates")
     found: dict[str, str] = {}
     for purpose in STORY_PURPOSES.values():
-        source = folder.joinpath(purpose.template).read_bytes()
-        found[purpose.template.removesuffix(TEMPLATE_SUFFIX)] = hashlib.sha256(source).hexdigest()
+        for template in (purpose.template, *purpose.variants.values()):
+            source = folder.joinpath(template).read_bytes()
+            found[template.removesuffix(TEMPLATE_SUFFIX)] = hashlib.sha256(source).hexdigest()
     return dict(sorted(found.items()))
 
 

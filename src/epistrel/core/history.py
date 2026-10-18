@@ -90,6 +90,17 @@ class HistoryItem:
     redacted: bool = False
     """Erasure (#124) rewrote the item's event in place: its spans naming the erased subject
     read ``[erased]``."""
+    propositions: list[dict[str, Any]] | None = None
+    """A structured turn's beat (#150): the propositions it asserts, each
+    ``{proposition, verdict}``; ``None`` for a Lite item."""
+    effects: list[dict[str, Any]] | None = None
+    """A structured turn's beat (#150): its state effects (always empty in M4)."""
+    labels: dict[str, Any] | None = None
+    """A ``say`` (#150): the utterance's three labels (FR-TURN-6)."""
+    visibility: dict[str, Any] | None = None
+    """A ``latent`` beat (#150, omniscient reads only): its declared scope (FR-TURN-4)."""
+    detected: list[dict[str, Any]] | None = None
+    """A structured turn's beat (#150): the claims detection found that it did not declare."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,6 +423,34 @@ def _named_ages(
     return {cid: ages[cid] for cid in named if cid is not None and cid in ages}
 
 
+STRUCTURED_PREFIX = "beat_"
+
+
+def _structured(row: Any, channel: str) -> dict[str, Any]:
+    """A structured turn's fields of one item (#150): a ``beat_*`` event's propositions,
+    effects, labels, visibility and detected claims; a structured player input's (one that
+    carries labels) for its ``say`` and ``do`` parts. Empty for every Lite item."""
+    payload = row.payload or {}
+    structured = str(row.kind).startswith(STRUCTURED_PREFIX)
+    if not structured and not (row.kind == INPUT_KIND and "labels" in payload):
+        return {}
+    found: dict[str, Any] = {
+        "propositions": [
+            {"proposition": p.get("proposition"), "verdict": p.get("verdict")}
+            for p in payload.get("propositions") or ()
+        ],
+        "effects": [],
+    }
+    labels = payload.get("labels")
+    if labels is not None and channel == "say":
+        found["labels"] = dict(labels)
+    if row.kind == "beat_latent":
+        found["visibility"] = dict(payload.get("visibility") or {"scope": "objective"})
+    if payload.get("detected"):
+        found["detected"] = [dict(d) for d in payload["detected"]]
+    return found
+
+
 def _items(rows: Sequence[Any], viewpoint: str, ages: Mapping[str, int]) -> list[HistoryItem]:
     omniscient = is_omniscient(viewpoint)
     items: list[HistoryItem] = []
@@ -438,6 +477,7 @@ def _items(rows: Sequence[Any], viewpoint: str, ages: Mapping[str, int]) -> list
                         else None
                     ),
                     redacted=bool(row.redacted),
+                    **_structured(row, channel),
                 )
             )
     return items

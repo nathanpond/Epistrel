@@ -184,11 +184,27 @@ def test_template_with_undeclared_field_fails(source: str, complaint: str) -> No
 
 
 def test_shipped_templates_were_checked_at_import() -> None:
-    assert set(prompts.TEMPLATES) == set(DELIVERED)
+    """Every delivered purpose's template and each of its variants (#150) was checked."""
+    assert set(prompts.TEMPLATES) == set(DELIVERED) | {
+        prompts.variant_key(name, variant)
+        for name, purpose in DELIVERED.items()
+        for variant in purpose.variants
+    }
     for purpose in DELIVERED.values():
-        messages = prompts.render(purpose, prompts.example_instance(purpose.input_schema))
-        assert [m.role for m in messages] == ["system", "user"]
-        assert all(m.content for m in messages)
+        for variant in (None, *purpose.variants):
+            messages = prompts.render(
+                purpose, prompts.example_instance(purpose.input_schema), variant
+            )
+            assert [m.role for m in messages] == ["system", "user"]
+            assert all(m.content for m in messages)
+
+
+def test_an_unknown_template_variant_is_a_registry_error() -> None:
+    """A call naming a variant its purpose does not have is refused (#150)."""
+    with pytest.raises(registry.RegistryError):
+        prompts.render(
+            registry.GENERATION, prompts.example_instance(GenerationInputs), "no_such_variant"
+        )
 
 
 @pytest.mark.parametrize("purpose", sorted(DELIVERED))

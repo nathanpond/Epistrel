@@ -102,7 +102,21 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
     ContentCategory.SCENE: (
         "The names of the entities present in the render's scene and the last six observable "
         "beats before it, read by salience detection (#146) and the extraction backstop "
-        "(#148)."
+        "(#148). A structured render (#150) gets its scene (the place and who is present); the "
+        "age repair gets each introduced character's name and the render's clue about it."
+    ),
+    ContentCategory.WORKING_MEMORY: (
+        "A structured render's working memory (#150): the latest beats as the rendering "
+        "character perceived them (its own thoughts included, never another character's or "
+        "any `latent` beat), and this turn's narration and player input."
+    ),
+    ContentCategory.RETRIEVED_MEMORIES: (
+        "What retrieval (#141) assembled for a structured render (#150) and the rendering "
+        "character may know: open threads, pins, occasions, profiles and ranked memories."
+    ),
+    ContentCategory.CANON_FACTS: (
+        "The canon facts retrieval found for a structured render (#150), filtered for the "
+        "rendering character's viewpoint, without its own true age."
     ),
 }
 
@@ -223,7 +237,12 @@ def _purpose(purpose: Purpose) -> list[str]:
             if purpose.default_model_key == "default"
             else "then the `default` row, per field, unless the purpose has its own"
         ),
-        f"- **Template:** {_code(purpose.template)}",
+        f"- **Template:** {_code(purpose.template)}"
+        + (
+            "; variants: " + ", ".join(f"{name} {_code(t)}" for name, t in purpose.variants.items())
+            if purpose.variants
+            else ""
+        ),
         "- **Capability floor:** structured output: "
         f"{STRUCTURED_LABELS[floor.structured_output]}; minimum context "
         f"{floor.min_context_tokens:,} tokens",

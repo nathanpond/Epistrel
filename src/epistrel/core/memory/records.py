@@ -89,7 +89,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import (
@@ -147,9 +147,34 @@ BeatKind = Literal["say", "do", "narration", "think", "latent"]
 OBSERVABLE: frozenset[str] = frozenset({"say", "do", "narration"})
 """The beats an episodic memory is written for; ``think`` and ``latent`` never are."""
 
-BEAT_EVENT_TYPES: tuple[str, ...] = ("player_input", "message_rendered", "think", "latent")
-"""The M2/M3 beat events ``beats_of_operation`` and ``working_memory`` read (#150's typed beat
-events join them when it lands)."""
+STRUCTURED_BEAT_TYPES: tuple[str, ...] = (
+    "beat_say",
+    "beat_think",
+    "beat_do",
+    "beat_latent",
+    "beat_narration",
+)
+"""#150's typed beat events: a structured turn's beats, one event each."""
+BEAT_EVENT_TYPES: tuple[str, ...] = (
+    "player_input",
+    "message_rendered",
+    "think",
+    "latent",
+    *STRUCTURED_BEAT_TYPES,
+)
+"""The beat events ``beats_of_operation`` and ``working_memory`` read: the M2/M3 ones and #150's
+typed beats. A structured turn's composed message (``message_rendered`` with ``composed``) is
+derived from its beats and is never read as a beat."""
+OBSERVED_TYPES: tuple[str, ...] = (
+    "player_input",
+    "message_rendered",
+    "beat_say",
+    "beat_do",
+    "beat_narration",
+)
+"""The beat events every character perceives in M4 (shared knowledge)."""
+PRIVATE_TYPES: tuple[str, ...] = ("think", "beat_think")
+"""A character's own thoughts: only that character perceives them."""
 
 _TRUST: Mapping[RecordProvenance, MemoryTrustTier] = {
     RecordProvenance.AUTHOR: MemoryTrustTier.AUTHOR,
@@ -756,8 +781,19 @@ def _beat_parts(
         if len(voiced) == 1:
             return [("say", voiced[0], text)]
         return [("narration", None, text)]
+    if type_.startswith("beat_"):
+        structured = cast(BeatKind, type_.removeprefix("beat_"))
+        return [(structured, None if structured == "narration" else actor, str(payload["text"]))]
     kind: BeatKind = "think" if type_ == "think" else "latent"
     return [(kind, actor, str(payload.get("text") or ""))]
+
+
+def not_composed() -> Any:
+    """Not a structured turn's composed message (#150): its beats are read instead."""
+    return or_(
+        events.c.type != "message_rendered",
+        not_(events.c.payload.has_key("composed")),
+    )
 
 
 async def beats_of_operation(conn: AsyncConnection, operation_id: str) -> list[Beat]:
@@ -767,7 +803,11 @@ async def beats_of_operation(conn: AsyncConnection, operation_id: str) -> list[B
     (``director``); and ``think``/``latent`` as themselves."""
     found = await conn.execute(
         select(events.c.id, events.c.type, events.c.beat, events.c.character_id, events.c.payload)
-        .where(events.c.operation_id == operation_id, events.c.type.in_(BEAT_EVENT_TYPES))
+        .where(
+            events.c.operation_id == operation_id,
+            events.c.type.in_(BEAT_EVENT_TYPES),
+            not_composed(),
+        )
         .order_by(events.c.seq)
     )
     beats: list[Beat] = []
@@ -865,11 +905,12 @@ async def working_memory(
                     and_(e.c.narrative_turn == turn, or_(e.c.beat.is_(None), e.c.beat <= beat)),
                 )
             )
+    where.append(not_composed())
     if character_id is not None:
         where.append(
             or_(
-                e.c.type.in_(("player_input", "message_rendered")),
-                and_(e.c.type == "think", e.c.character_id == character_id),
+                e.c.type.in_(OBSERVED_TYPES),
+                and_(e.c.type.in_(PRIVATE_TYPES), e.c.character_id == character_id),
             )
         )
     found = await conn.execute(

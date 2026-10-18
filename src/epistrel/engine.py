@@ -71,6 +71,7 @@ from epistrel.core.erasure import erase as erasure
 from epistrel.core.erasure import guard as erasure_guard
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.errors import (
+    EpistrelError,
     InvalidRequest,
     LedgerUnavailable,
     ModuleOff,
@@ -189,6 +190,7 @@ from epistrel.orchestrator.policies.schemas import (
     StoryPolicyItem,
 )
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
+from epistrel.orchestrator.structured import pipeline as structured_turn
 from epistrel.orchestrator.verify import extraction as extraction_job
 from epistrel.testing import crash
 
@@ -914,6 +916,26 @@ class Engine:
             idempotency_key=item.idempotency_key,
             viewpoint=item.request.get("viewpoint"),
         )
+        configuration = concurrency.configuration
+        if configuration is not None and structured_turn.is_structured(configuration):
+            # A structured story's queued turn (#150).
+            await self._as_queued(
+                item,
+                "respond",
+                lambda: structured_turn.run_queued(
+                    self.db,
+                    self.models,
+                    ctx,
+                    item.story_id,
+                    request,
+                    operation_id=item.operation_id,
+                    principal=item.principal,
+                    concurrency=concurrency,
+                    planned=item.request.get("turn_budget"),
+                    lexical=lexical_backend(self.settings.lexical_backend),
+                ),
+            )
+            return
         await self._as_queued(
             item,
             "respond",
@@ -1618,6 +1640,19 @@ class Engine:
                     respond_async=respond_async,
                 )
 
+            if await self._plays_structured(story_id):
+                # The story's effective configuration runs the structured pipeline (#150).
+                return await structured_turn.respond(
+                    self.db,
+                    self.models,
+                    ctx,
+                    story_id,
+                    request,
+                    principal=principal,
+                    gate=gate,
+                    queue_turn=queue_turn,
+                    lexical=lexical_backend(self.settings.lexical_backend),
+                )
             return await lite.respond(
                 self.db,
                 self.models,
@@ -1634,6 +1669,18 @@ class Engine:
         return await self._keyed(
             ctx, "respond", run, story_id=story_id, respond_async=respond_async
         )
+
+    async def _plays_structured(self, story_id: str) -> bool:
+        """Whether ``story_id``'s effective configuration runs the ``structured`` pipeline
+        (#129's ``level_at_least``; #113's effective configuration): a turn is routed by it,
+        never by a request flag (#150). An unreadable story is ``False``: the Lite path's
+        prechecks then answer for it (404, …) exactly as before."""
+        try:
+            async with self.db.connect() as conn:
+                found = await effective.effective_configuration(conn, story_id, validate=False)
+        except EpistrelError:
+            return False
+        return structured_turn.is_structured(found)
 
     async def ingest(
         self,

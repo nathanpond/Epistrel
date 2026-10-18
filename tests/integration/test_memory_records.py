@@ -50,8 +50,17 @@ from tests.memory_support import (
     turn,
     use_structured,
 )
+from tests.respond_support import body, respond_client
 from tests.respond_support import new_story as new_rest_story
-from tests.respond_support import respond_client
+from tests.respond_support import respond as respond_turn
+from tests.structured_turn_support import (
+    beat,
+    claim,
+    history,
+    place,
+    render,
+    structured_story,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("drained_embedding_jobs")]
 
@@ -460,6 +469,67 @@ async def test_a_fork_copies_memories_with_their_vectors(engine: AsyncEngine) ->
         for r in await rows(engine, "SELECT id FROM events WHERE story_id = :s", s=forked.story_id)
     }
     assert set(row.source_event_ids) <= fork_events
+
+
+@pytest.mark.part("M4", "FR-TURN-4")
+async def test_u_11__latent(pg_url: str, engine: AsyncEngine) -> None:
+    """A structured turn's ``latent`` beat (FR-TURN-4; #150) routes to canon with the scope it
+    declares (``characters``: Ada alone), never to a memory, and no character viewpoint's
+    message or history shows it, while an omniscient read returns it with its scope. A
+    ``latent`` that declares nothing normalizable is kept as an ``objective`` episodic memory
+    instead, reported ``latent_unnormalized`` (complement: no fact)."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, "Wren", "Ada")
+        wren, ada = ids["Wren"], ids["Ada"]
+        await place(engine, story, "cellar")
+        secret, loose = "Ada hid the ledger in the cellar.", "Something stirs below."
+        epistrel.models.stub.script(
+            "generation",
+            [
+                render(
+                    beat("say", "Nothing to see.", intent="sincere"),
+                    beat(
+                        "latent",
+                        secret,
+                        visibility={"scope": "characters", "characters": [ada]},
+                        propositions=[claim("Ada", "located_at", "cellar")],
+                    ),
+                    beat("latent", loose),
+                )
+            ],
+        )
+        response = await respond_turn(client, story, body(wren, "Ada?"))
+        assert response.status_code == 200, response.text
+        played = response.json()
+        assert "latent_unnormalized" in played["degradation"]
+        assert secret not in played["message"]["text"]
+        assert all(b["channel"] != "latent" for b in played["beats"])
+        facts = await rows(
+            engine,
+            "SELECT visibility, beat FROM facts WHERE story_id = :s AND provenance = 'render'",
+            s=story,
+        )
+        assert [(f.visibility, f.beat) for f in facts] == [
+            ({"scope": "characters", "characters": [ada]}, 3)
+        ]
+        memories = await rows(
+            engine,
+            "SELECT text, visibility, beat FROM memories WHERE story_id = :s ORDER BY beat",
+            s=story,
+        )
+        assert [(m.beat, m.visibility) for m in memories if m.text == loose] == [
+            (4, {"scope": "objective"})
+        ]
+        assert all(secret not in m.text for m in memories)
+        for viewpoint in (f"character:{wren}", f"character:{ada}"):
+            items = await history(client, story, viewpoint)
+            assert all(i["channel"] != "latent" for i in items)
+            assert all(secret not in i["text"] for i in items)
+        omniscient = [i for i in await history(client, story, "omniscient") if i["text"] == secret]
+        assert [i["visibility"] for i in omniscient] == [
+            {"scope": "characters", "characters": [ada]}
+        ]
 
 
 # -- I-09 (M4) ---------------------------------------------------------------------------------

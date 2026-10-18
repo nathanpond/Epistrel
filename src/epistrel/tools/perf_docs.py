@@ -58,6 +58,25 @@ def host_label(host: Mapping[str, Any] | None) -> str:
     return f"{name} (not the reference host)"
 
 
+def _host_note(host: Mapping[str, Any]) -> str:
+    """Whose numbers these are: the owner's round-one decision on #153 makes the GitHub-hosted
+    runner the host of the weekly suite; any other host is named as such."""
+    tail = (
+        "They are not the reference host's (NFR-PERF-4's 4 vCPU / 16 GB / NVMe machine). Model "
+        "time is excluded throughout (the stub adapter answers every call), and percentiles are "
+        "nearest-rank."
+    )
+    if host.get("host") == "github-runner":
+        return (
+            "The owner's round-one decision on #153 makes the GitHub-hosted runner the host of "
+            "the performance suites, so these are the runner's numbers. " + tail
+        )
+    return (
+        "These numbers were measured on that host, not on the GitHub-hosted runner the weekly "
+        "run uses; the first weekly pull request replaces them. " + tail
+    )
+
+
 def load(results: Path) -> dict[str, dict[str, Any]]:
     """The run's result files that exist, by name."""
     found: dict[str, dict[str, Any]] = {}
@@ -129,11 +148,7 @@ def perf_page(found: Mapping[str, Mapping[str, Any]], existing: str = "") -> str
         "",
         GENERATED,
         "",
-        f"**Host: {label}.** The owner's round-one decision on #153 makes the GitHub-hosted "
-        "runner the host of the performance suites, so these numbers are the runner's. They "
-        "are not the reference host's (NFR-PERF-4's 4 vCPU / 16 GB / NVMe machine). Model time "
-        "is excluded throughout (the stub adapter answers every call), and percentiles are "
-        "nearest-rank.",
+        f"**Host: {label}.** " + _host_note(host),
         "",
         "## Budgets",
         "",
